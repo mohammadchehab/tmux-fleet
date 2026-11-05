@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# fleet-up: start (or restart) the fleet. One tmux session per peer (fleet-<profile>-<role>, fleet-<role> with no
+# FLEET_PROFILE; Claude keys its session name on
+# the tmux session, so peers sharing one tmux session share one name), each in its own worktree
+# <repo>/.claude/worktrees/<role> (detached at origin/main), renamed to the role; plus an outer tmux session fleet-<profile>
+# ("fleet" with no profile) whose tiled panes attach to the peers, so one window shows all of them.
+#   fleet-up [squad | peer ...]  a squad is a file in ../squads/, e.g. fleet-up squad; default squad: ../squads/default.
+#                                 One peer per line: <peer> [role] [cli]. Without a role, the peer's name minus a -N
+#                                 suffix; without a cli, FLEET_CLI. Peers named on the command line take the same defaults.
+#                                 fleet-up records each peer's role and CLI on its session (@fleet-role, @fleet-cli);
+#                                 fleet-clear, fleet-handoff and fleet-peek read them there.
+#   FLEET_PEER_DIRS="p=<dir> …"  a peer that works in its own clone instead of a worktree of FLEET_REPO (a profile key:
+#                                 paths are the user's, never the repo's). Space-separated; ~ is expanded.
+#   FLEET_PROFILE=<name>       load profiles/<name>.env (fleet-only defaults; the environment still wins). Needs no other setup.
+#                              Names the sessions fleet-<name>-<peer> and fleet-<name>, so two profiles' fleets run side by
+#                              side; passed to every peer, so its fleet-send/peek/handoff/clear hit the same fleet.
+#   FLEET_REPO=<path>          the target repo; default: the profile's, else the main checkout of the repo you are in
+#   FLEET_USER=<name>          who the peers work for ("the user" in the roles), passed to every peer; default: the profile's,
+#                              else git user.name in the target repo
+#   FLEET_TRACKER_SITE=<host>  optional per-user override of the tracker named in the target repo's AGENTS.md (a personal
+#   FLEET_TRACKER_PROJECT=<key|none>  or temporary board); none = no ticket keys. Both passed to every peer.
+#   FLEET_SQUAD=<name>         squad started with no arguments; default: the profile's, else "default"
+#   FLEET_TMUX=<socket>        private tmux socket name (tmux -L). Unset: inside tmux the same server, else the default one. Tests must set one.
+#                              fleet-up never kills the tmux session it runs in; it says what it skipped.
+#   FLEET_BASE=<ref>           base for new peer worktrees; default origin/main (local main without a remote)
+#   FLEET_FLAGS="..."          default --dangerously-skip-permissions (peers must share the PM's permission mode)
+#   FLEET_CLI=claude|agent     default claude (Claude Code); agent = Cursor's CLI. For agent: FLEET_FLAGS defaults to
+#                              --force (Cursor's allow-all, the nearest to --dangerously-skip-permissions);
+#                              --model and --effort are skipped (../models holds Claude aliases and Cursor has no
+#                              effort flag; pass a Cursor model in FLEET_FLAGS, e.g. FLEET_FLAGS="--force --model X");
+#                              /rename is skipped (Cursor has none; the tmux session fleet-<profile>-<peer> names the peer) and
+#                              the role is loaded with a plain prompt to read the fleet skill, not /fleet <role>.
+#                              fleet-send's busy check reads Claude Code's "esc to interrupt" and may not see a busy
+#                              Cursor peer.
+#   FLEET_BOARD_PORT=<port>   the board's port (lib/backlog.sh); default 6420 with no profile, else one derived from the profile
+# The board (Backlog.md, lib/backlog.sh): fleet-up creates $FLEET_STATE/backlog when it is missing, gives every peer
+# BACKLOG_CWD=$FLEET_STATE (the backlog CLI then reaches that board from any worktree) and, for Claude Code peers,
+# --mcp-config $FLEET_STATE/backlog-mcp.json (the stdio `backlog` MCP server; the target repo is not touched), and starts the
+# page in fleet-<profile>-board unless it runs already. No backlog CLI: a warning, and the fleet starts without a board.
+# View: tmux [-L $FLEET_TMUX] attach -t fleet-<profile>; rebuild it alone with fleet-view   (iTerm2 native panes: tmux -CC attach
+# -t fleet-<profile>). One peer alone: tmux attach -t fleet-<profile>-<role>. No profile: fleet, fleet-<role>
+set -euo pipefail
+source "$(dirname "$0")/lib/tmux.sh"
+fleet_refuse_in_peer fleet-up
+source "$(dirname "$0")/lib/profile.sh"
+source "$(dirname "$0")/lib/worktree.sh"
+source "$(dirname "$0")/lib/backlog.sh"
+CLI_FROM=${FLEET_CLI:+environment}
+fleet_resolve_repo || exit 1
+# one fleet-up/down/scale/view per profile at a time (lib/lock.sh); fleet-scale add already holds it and passes it down
+fleet_lock "$(fleet_state_dir)" fleet "${FLEET_LOCK_WAIT:-60}" "$@" || exit 1
+CLI=${FLEET_CLI:-claude}
+if [ -n "$CLI_FROM" ]; then :; elif [ -n "${FLEET_CLI:-}" ]; then CLI_FROM="profile ${FLEET_PROFILE:-}"; else CLI_FROM=default; fi
+case "$CLI" in
+  claude) FLAGS=${FLEET_FLAGS---dangerously-skip-permissions} ;;
+  agent)  FLAGS=${FLEET_FLAGS---force} ;;
+  *) echo "fleet-up: FLEET_CLI must be claude or agent, not '$CLI'" >&2; exit 1 ;;
+esac
+SKILL="$(cd "$(dirname "$0")/.." && pwd)"
+SQUADS="$(cd "$(dirname "$0")/../squads" && pwd)"
+if [ $# -eq 0 ]; then set -- "${FLEET_SQUAD:-default}"; fi
+# ROLES holds the peer names (the tmux session is $FLEET_SESSION-<peer>); ROLE_OF and CLI_OF their role and CLI
+declare -A ROLE_OF CLI_OF DIR_OF
+ROLES=()
+if [ $# -eq 1 ] && [ -f "$SQUADS/$1" ]; then
+  while read -r peer role cli _; do
+    [ -n "$peer" ] && [[ "$peer" != \#* ]] || continue
+    ROLES+=("$peer"); ROLE_OF[$peer]=${role:-${peer%-[0-9]*}}; CLI_OF[$peer]=${cli:-$CLI}
+  done < "$SQUADS/$1"
+else
+  for peer in "$@"; do ROLES+=("$peer"); ROLE_OF[$peer]=${peer%-[0-9]*}; CLI_OF[$peer]=$CLI; done
+fi
+for r in "${ROLES[@]}"; do
+  [ -f "$SKILL/roles/${ROLE_OF[$r]}.md" ] || { echo "fleet-up: $r: no role file roles/${ROLE_OF[$r]}.md" >&2; exit 1; }
+  case "${CLI_OF[$r]}" in claude|agent) ;; *) echo "fleet-up: $r: cli must be claude or agent, not '${CLI_OF[$r]}'" >&2; exit 1 ;; esac
+done
+for pair in ${FLEET_PEER_DIRS:-}; do
+  d=${pair#*=}; [[ "$d" == \~ || "$d" == \~/* ]] && d=$HOME${d:1}
+  [ -d "$d" ] || { echo "fleet-up: FLEET_PEER_DIRS: ${pair%%=*}: no folder $d" >&2; exit 1; }
+  DIR_OF[${pair%%=*}]=$d
+done
+# flags per CLI: FLEET_FLAGS is for the default CLI; a peer on the other CLI gets that CLI's default
+flags_for() { if [ "$1" = "$CLI" ]; then echo "$FLAGS"; elif [ "$1" = claude ]; then echo --dangerously-skip-permissions; else echo --force; fi; }
+# the board's MCP server, Claude Code only (Cursor's agent has no --mcp-config; its peers use the backlog CLI)
+mcp_flags() { [ "$1" = claude ] && [ -n "$BOARD_MCP" ] && echo "--mcp-config $(printf '%q' "$BOARD_MCP")" || true; }
+echo "fleet-up: peers run $CLI ($CLI_FROM)"
+fleet_kill_session "$FLEET_SESSION" || true
+for r in "${ROLES[@]}"; do fleet_kill_session "$(fleet_session "$r")" || true; done
+# base for new worktrees: origin/main when the repo has a remote, the local main otherwise
+if [ -n "${FLEET_BASE:-}" ]; then BASE=$FLEET_BASE
+elif git -C "$REPO" remote get-url origin >/dev/null 2>&1; then git -C "$REPO" fetch -q origin main; BASE=origin/main; else BASE=main; fi
+git -C "$REPO" rev-parse -q --verify "$BASE^{commit}" >/dev/null || { echo "fleet-up: base $BASE does not exist" >&2; exit 1; }
+# A tmux server started from inside Claude Code carries that session's CLAUDE_* identity in its global environment;
+# peers that inherit it share one session id, so a /rename in one renames all. Strip it before starting peers.
+for v in $(tmux show-environment -g 2>/dev/null | grep -oE '^(CLAUDE[A-Z_]*|AI_AGENT)=' | tr -d =); do tmux set-environment -gu "$v"; done
+# grep finds nothing outside Claude Code (Cursor's agent, a plain shell); under pipefail that would end the script
+UNSET=$(env | { grep -oE '^(CLAUDE[A-Z_]*|AI_AGENT)=' || true; } | tr -d = | sed 's/^/-u /' | tr '\n' ' ')
+# peers' worktrees live in the target repo's own .claude/worktrees (lib/worktree.sh): exclude the folder locally so `task check`
+# (no unignored nested repo) stays green; child repos get the same line from fleet-worktree
+fleet_worktree_exclude "$REPO"
+WT_ROOT=$(fleet_worktree_root "$REPO")
+MODELS="$(dirname "$0")/../models"
+model_flags() {  # --model/--effort for a peer, from ../models by its role; Claude Code only
+  [ "${CLI_OF[$1]}" = claude ] || return 0
+  local role=${ROLE_OF[$1]} m e
+  read -r m e < <(awk -v r="$role" '$1==r{print $2, $3}' "$MODELS" 2>/dev/null) || true
+  echo "${m:+--model $m} ${e:+--effort $e}"
+}
+PEER_ENV=($(fleet_tmux_env))   # every peer inherits FLEET_TMUX, so its own fleet-send/down hit the same server
+# and FLEET_PROFILE, so its own fleet-send/peek/handoff/clear hit the same fleet (session prefix and profile)
+if [ -n "${FLEET_PROFILE:-}" ]; then PEER_ENV+=(-e "FLEET_PROFILE=$FLEET_PROFILE"); fi
+# who the peers work for ("the user" in the roles): the profile's FLEET_USER, else the target repo's git user.name
+FLEET_USER=${FLEET_USER:-$(git -C "$REPO" config user.name || true)}
+if [ -n "$FLEET_USER" ]; then PEER_ENV+=(-e "FLEET_USER=$FLEET_USER"); fi
+# where this fleet's state lives (~/.fleet-state/<profile>, ~/.fleet-state with no profile; FLEET_STATE wins), so every peer
+# reads and writes the same fleet-context.md, scratchpad.md and handoffs
+FLEET_STATE=$(fleet_state_dir); mkdir -p "$FLEET_STATE"; PEER_ENV+=(-e "FLEET_STATE=$FLEET_STATE")
+# the board in $FLEET_STATE/backlog: the backlog CLI of every peer finds it through BACKLOG_CWD, Claude Code peers also get its
+# MCP server through --mcp-config (a file in $FLEET_STATE)
+PEER_ENV+=(-e "BACKLOG_CWD=$FLEET_STATE"); BOARD_MCP=""
+if fleet_backlog_check && fleet_backlog_init "$FLEET_STATE"; then BOARD_MCP=$(fleet_backlog_mcp_config "$FLEET_STATE") || BOARD_MCP=""
+else echo "fleet-up: no board this time (see above); peers start without it"; fi
+# the tracker override (rule 9), when the profile or the environment sets one
+for v in FLEET_TRACKER_SITE FLEET_TRACKER_PROJECT; do [ -z "${!v:-}" ] || PEER_ENV+=(-e "$v=${!v}"); done
+for r in "${ROLES[@]}"; do
+  d=${DIR_OF[$r]:-$WT_ROOT/$r}; [ -d "$d" ] || git -C "$REPO" worktree add -q --detach "$d" "$BASE"
+  s=$(fleet_session "$r")
+  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") ${CLI_OF[$r]} $(flags_for "${CLI_OF[$r]}") $(model_flags "$r") $(mcp_flags "${CLI_OF[$r]}")"
+  tmux set-option -t "$(fleet_target "$s")" @fleet-role "${ROLE_OF[$r]}"; tmux set-option -t "$(fleet_target "$s")" @fleet-cli "${CLI_OF[$r]}"; fleet_tag_session "$s"
+done
+sleep 8
+for r in "${ROLES[@]}"; do
+  [ "${CLI_OF[$r]}" = claude ] || continue
+  s=$(fleet_peer_target "$r"); tmux send-keys -t "$s" "/rename $r"; sleep 0.6; tmux send-keys -t "$s" Enter
+done
+sleep 2
+for r in "${ROLES[@]}"; do
+  if [ "${CLI_OF[$r]}" = claude ]; then load="/fleet ${ROLE_OF[$r]}"
+  else load="You are fleet peer $r. Read $SKILL/SKILL.md and $SKILL/roles/${ROLE_OF[$r]}.md now and follow them."; fi
+  s=$(fleet_peer_target "$r"); tmux send-keys -t "$s" -l "$load"; sleep 0.6; tmux send-keys -t "$s" Enter
+done
+# the outer view of every running peer (rebuild it alone with fleet-view)
+"$(dirname "$0")/fleet-view"
+# the board's page, in its own session; one that runs already is left alone
+[ -z "$BOARD_MCP" ] || fleet_board_start "$FLEET_STATE" || echo "fleet-up: the board did not start; try fleet-board"
+sleep 2
+for r in "${ROLES[@]}"; do s=$(fleet_session "$r"); echo "$s $(tmux display -p -t "$(fleet_target "$s")" '#{pane_tty} #{pane_title}')"; done
+echo "attach: tmux${FLEET_TMUX_FLAGS} attach -t $FLEET_SESSION   (or: fleet${FLEET_PROFILE:+ --profile $FLEET_PROFILE} attach)"
+[ -z "${FLEET_PROFILE:-}" ] || echo "from another shell: fleet --profile $FLEET_PROFILE ls|capacity|send|board …, or export FLEET_PROFILE=$FLEET_PROFILE"
+[ -z "$BOARD_MCP" ] || echo "board:  $(fleet_board_url)   (open it with fleet-board)"

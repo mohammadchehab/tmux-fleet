@@ -1,0 +1,15 @@
+# role               model    effort   — read by scripts/fleet-up; aliases: fable, opus, sonnet, haiku
+# Cheap by default (target about $10 per person per day): sonnet everywhere, opus only where judgement is the
+# job (project-manager, which reads every peer and routes their questions; architect; spec-reviewer).
+project-manager      opus     medium
+architect            opus     high
+pr-architect         sonnet   medium
+security-architect   sonnet   medium
+designer             sonnet   medium
+engineer             sonnet   low
+dev-support          sonnet   low
+e2e-engineer         sonnet   medium
+performance-engineer sonnet   medium
+ba                   sonnet   medium
+spec-reviewer        opus     high
+jira                 haiku    low

@@ -1,0 +1,8 @@
+# spec squad: writes and refines requirements, runs spikes that answer open questions (the engineer, no feature code), and
+# reviews the existing stories on the board for gaps, contradictions and design bugs (spec-reviewer and architect).
+project-manager
+ba
+spec-reviewer
+architect
+pr-architect
+engineer

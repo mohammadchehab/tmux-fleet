@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# fleet-board: open this fleet's board (Backlog.md) in the browser and print its URL. The page runs in the tmux session
+# fleet-<profile>-board (fleet-board with no profile) that fleet-up starts; when it is not running, fleet-board starts it the same
+# way (creating $FLEET_STATE/backlog if it is missing), so the board opens with the fleet down too. fleet-down stops it.
+#   fleet-board [--no-open]   --no-open: start it if needed and print the URL, no browser tab
+# The URL is stable per profile: http://127.0.0.1:<FLEET_BOARD_PORT>, 6420 with no profile, else a port derived from the profile.
+set -euo pipefail
+source "$(dirname "$0")/lib/tmux.sh"
+source "$(dirname "$0")/lib/profile.sh"
+source "$(dirname "$0")/lib/backlog.sh"
+fleet_load_profile || exit 1
+st=$(fleet_state_dir)
+fleet_backlog_check || exit 1
+fleet_board_start "$st" || { echo "fleet-board: could not start the board in $st/backlog" >&2; exit 1; }
+url=$(fleet_board_url)
+echo "board: $url   (session $(fleet_board_session), files $st/backlog)"
+[ "${1:-}" = --no-open ] || ! command -v open >/dev/null 2>&1 || open "$url"

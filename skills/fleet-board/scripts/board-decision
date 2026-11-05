@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# board-decision: the user's decisions on this fleet's board (Backlog.md decisions in $FLEET_STATE/backlog/decisions). Backlog's
+# MCP server has no decision tools and its CLI sets only a decision's status, so this script writes the sections too.
+#   board-decision ask "<question>" "<context: what is asked, the options with their impact, the recommendation>"
+#        creates a proposed decision with that text under ## Context; prints its id
+#   board-decision answer <decision-id> "<the user's answer, verbatim, with the date>"
+#        writes it under ## Decision and sets the status to accepted
+#   board-decision list [proposed|accepted|all]   default all: id, status, title, one per line
+#   board-decision show <decision-id>             the whole decision file
+# Peers read accepted decisions before acting and never ask again what one already answers.
+set -euo pipefail
+source "$(dirname "$0")/../../fleet/scripts/lib/tmux.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/profile.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/backlog.sh"
+fleet_load_profile || exit 1
+STATE=$(fleet_state_dir); export BACKLOG_CWD=$STATE
+fleet_backlog_check || exit 1
+fleet_lock "$STATE" board || exit 1   # one board script at a time (lib/lock.sh; lib/backlog.sh sources it)
+BL=$(fleet_backlog)
+[ -f "$STATE/backlog/config.yml" ] || fleet_backlog_init "$STATE" || { echo "board-decision: no board in $STATE/backlog" >&2; exit 1; }
+usage() { sed -n '4,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+file_of() {  # <id> -> its file
+  local f; f=$(find "$STATE/backlog/decisions" -maxdepth 1 -name "$1 - *.md" | head -1)
+  [ -n "$f" ] || { echo "board-decision: no decision $1" >&2; exit 1; }; echo "$f"
+}
+# set_section <file> <heading> <text>: replace the body of "## <heading>" (up to the next "## ") with <text>
+set_section() {
+  TEXT=$3 awk -v h="## $2" '$0 == h {print; print ""; print ENVIRON["TEXT"]; print ""; skip=1; next}
+    skip && /^## / {skip=0} !skip' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+case "${1:-}" in
+  ask)
+    [ $# -eq 3 ] || usage
+    id=$("$BL" decision create "$2" --plain | sed -n 's/^Created decision //p')
+    [ -n "$id" ] || { echo "board-decision: backlog did not create the decision" >&2; exit 1; }
+    set_section "$(file_of "$id")" Context "$3"; echo "$id" ;;
+  answer)
+    [ $# -eq 3 ] || usage
+    f=$(file_of "$2"); set_section "$f" Decision "$3"
+    "$BL" decision edit "$2" -s accepted --plain >/dev/null; echo "$2 accepted" ;;
+  list)
+    "$BL" decision list --json | jq -r --arg s "${2:-all}" '.decisions[] | select($s == "all" or .status == $s) | "\(.id)\t\(.status)\t\(.title)"' ;;
+  show)
+    [ $# -eq 2 ] || usage; cat "$(file_of "$2")" ;;
+  *) usage ;;
+esac

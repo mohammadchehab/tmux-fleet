@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# fleet-attach: open this fleet in the terminal, no raw tmux needed.
+#   fleet-attach          the view fleet-<profile> (fleet with no profile); rebuilt first with fleet-view when it is gone
+#   fleet-attach <peer>   that peer's own session fleet-<profile>-<peer>
+# Inside tmux on the same server it switches this client to the session (no nested tmux); otherwise it attaches. Exact targets
+# (fleet_target) and FLEET_TMUX are honoured. Changes nothing but the view, when it has to rebuild it.
+set -uo pipefail
+source "$(dirname "$0")/lib/tmux.sh"
+p=${1:-}
+if [ -z "$p" ]; then
+  s=$FLEET_SESSION
+  tmux has-session -t "$(fleet_target "$s")" 2>/dev/null || "$(dirname "$0")/fleet-view" || exit 1
+else
+  s=$(fleet_session "$p")
+  tmux has-session -t "$(fleet_target "$s")" 2>/dev/null || {
+    echo "fleet-attach: no session $s. Peers of $FLEET_SESSION: $(fleet_peers | sort | paste -sd' ' -)" >&2; exit 1; }
+fi
+# inside tmux, and the fleet is on this very server: switch this client; else attach (TMUX unset, so it is allowed)
+if [ -n "${TMUX:-}" ] && [ "$(tmux display -p '#{socket_path}' 2>/dev/null)" = "${TMUX%%,*}" ]; then
+  tmux switch-client -t "$(fleet_target "$s")"
+else
+  TMUX='' tmux attach -t "$(fleet_target "$s")"
+fi

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# fleet-down: stop this fleet's tmux sessions (fleet-<profile> + fleet-<profile>-*; fleet + fleet-* with no FLEET_PROFILE).
+# Also stops this fleet's board page (fleet-<profile>-board); its files in $FLEET_STATE/backlog stay.
+# Another profile's fleet on the same server is left running. Worktrees are left alone (they may hold unpushed work): it prints
+# the one-line worktree summary (fleet wt), or says it skipped them when there is no target repo.
+set -uo pipefail
+source "$(dirname "$0")/lib/tmux.sh"
+source "$(dirname "$0")/lib/backlog.sh"
+source "$(dirname "$0")/lib/profile.sh"
+fleet_refuse_in_peer fleet-down
+fleet_load_profile || exit 1
+fleet_lock "$(fleet_state_dir)" fleet "${FLEET_LOCK_WAIT:-60}" || exit 1
+fleet_kill_session "$FLEET_SESSION" && echo "killed $FLEET_SESSION"
+for p in $(fleet_peers); do s=$(fleet_session "$p"); fleet_kill_session "$s" && echo "killed $s"; done
+b=$(fleet_board_session); ! tmux has-session -t "$(fleet_target "$b")" 2>/dev/null || { fleet_kill_session "$b" && echo "killed $b (the board; its files stay)"; }
+# the worktrees stay (they may hold unpushed work): one summary line, from the last worktree scan (fleet wt ls has the list)
+if fleet_resolve_repo 2>/dev/null; then
+  sum=$(FLEET_REPO=$REPO "$(dirname "$0")/fleet-worktree" summary --cached 2>/dev/null | grep -v '(fleet repo)' | head -1)
+  echo "${sum:-worktrees: none}   (they stay; fleet wt ls lists them, fleet wt prune removes the stale ones)"
+else
+  echo "worktrees: no target repo, skipped (set FLEET_PROFILE or FLEET_REPO, or run inside the repo; fleet wt ls covers every profile)"
+fi
+exit 0

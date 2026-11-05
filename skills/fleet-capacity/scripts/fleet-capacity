@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# fleet-capacity — who in the fleet is busy, idle or asking, and what each pane shows last (Claude Code and Cursor peers).
+# States come from ../../fleet/scripts/lib/pane.sh: busy, asking (the last reply ends with a question), held (a peer
+# message waits for approval there), unknown (no input box on screen), idle.
+# Then the board (Backlog.md in $FLEET_STATE/backlog, read with the pinned backlog CLI's JSON): each peer's In Progress tasks
+# (assignee @<peer>), the unassigned tasks waiting in Next, the decisions proposed and waiting on the user, and a line pairing
+# the idle peers with that waiting work. No board (no backlog folder or no CLI): the Active Team table of fleet-context.md.
+# The board's own session (fleet-<profile>-board) is not a peer: it is never listed or counted.
+# Usage: fleet-capacity [lines]   (lines = last pane lines to show per peer, default 2)
+set -u
+source "$(dirname "$0")/../../fleet/scripts/lib/tmux.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/pane.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/backlog.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/profile.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/worktree.sh"
+LINES_SHOWN=${1:-2}
+STATE=$(fleet_state_dir)
+CTX=${FLEET_CONTEXT:-$STATE/fleet-context.md}
+
+peers=$(fleet_peers | sort)
+if [ -z "$peers" ]; then
+  echo "No $FLEET_SESSION-* tmux sessions running (fleet is down)."
+  exit 0
+fi
+
+busy=0; idle=0; held=0; asking=0; unknown=0; askers=""; idlers=""
+printf '%-20s %-6s %-7s %s\n' PEER CLI STATE "LAST OUTPUT"
+for p in $peers; do
+  pane=$(fleet_pane "$p")
+  state=$(fleet_pane_state "$pane")
+  case $state in
+    busy) busy=$((busy + 1)) ;; held) held=$((held + 1)) ;; unknown) unknown=$((unknown + 1)) ;;
+    asking) asking=$((asking + 1)); askers+=" $p" ;; *) idle=$((idle + 1)); idlers+="${idlers:+, }$p" ;;
+  esac
+  last=$(fleet_pane_reply <<<"$pane" | tail -n "$LINES_SHOWN" | cut -c1-110 | paste -sd '|' -)
+  printf '%-20s %-6s %-7s %s\n' "$p" "$(fleet_pane_cli "$p" "$pane")" "$state" "$last"
+done
+echo
+echo "Total: $((busy + idle + held + asking + unknown)) peers — $busy busy, $idle idle, $asking asking, $held held, $unknown unknown."
+[ $asking = 0 ] || echo "Asking (a question waits for an answer; read it with fleet-peek):$askers"
+[ $held = 0 ] || echo "Held: approve the pending peer message in that pane."
+[ $unknown = 0 ] || echo "Unknown: no input box on screen (a dialog or a review view); look with fleet-peek."
+# peers sitting in a stale worktree (merged, gone, idle), from the last worktree scan (fleet_wt_cached; refreshed in the background)
+wtrows=$(fleet_wt_cached "${FLEET_SESSION_PROFILE:-(none)}" 2>/dev/null || true); stalein=""
+if [ -n "$wtrows" ]; then
+  for p in $peers; do
+    cwd=$(tmux display -p -t "$(fleet_peer_target "$p")" '#{pane_current_path}' 2>/dev/null) || continue
+    hit=$(awk -F'\t' -v c="$cwd/" 'index(c, $3 "/") == 1 && length($3) > best {best = length($3); row = $13 " " $6 " " $7} END {print row}' <<<"$wtrows")
+    read -r hc hb hpr hst <<<"$hit"
+    case "$hpr" in -|none|"?") hpr="" ;; *) hpr=" $hpr $hst" ;; esac
+    case "$hc" in merged|gone|idle) stalein+="${stalein:+, }$p ($hc: $hb$hpr)" ;; esac
+  done
+fi
+[ -z "$stalein" ] || echo "In a stale worktree: $stalein (fleet wt ls --stale)"
+
+# The board, when this fleet has one: what each peer holds, and what waits
+BL=$(fleet_backlog)
+if [ -n "$BL" ] && [ -f "$STATE/backlog/config.yml" ] \
+  && tasks=$(BACKLOG_CWD=$STATE "$BL" task list --json 2>/dev/null) && decisions=$(BACKLOG_CWD=$STATE "$BL" decision list --json 2>/dev/null); then
+  echo
+  echo "Board ($(fleet_board_url)):"
+  for p in $peers; do
+    doing=$(jq -r --arg a "@$p" '[.tasks[] | select(.status == "In Progress" and ((.assignees // []) | index($a))) | "\(.id) \(.title)"] | join(" · ")' <<<"$tasks")
+    printf '  %-20s %s\n' "$p" "${doing:-no In Progress task}"
+  done
+  waiting=$(jq '[.tasks[] | select(.status == "Next" and ((.assignees // []) | length == 0))] | length' <<<"$tasks")
+  proposed=$(jq '[.decisions[] | select(.status == "proposed")] | length' <<<"$decisions")
+  echo "Waiting: $waiting unassigned in Next · $proposed decisions proposed (waiting on the user)"
+  echo "idle: ${idlers:-nobody} · $waiting tasks waiting in Next"
+elif [ -f "$CTX" ]; then
+  # no board: the assignments as the PM last recorded them in fleet-context.md
+  echo
+  echo "Recorded assignments ($(grep -m1 '^\*\*Date' "$CTX" | sed 's/\*//g')):"
+  awk '/^## Active Team/{f=1;next} /^## /{f=0} f && /^\|/' "$CTX"
+fi

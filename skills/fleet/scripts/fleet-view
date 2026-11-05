@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# fleet-view: (re)build the outer tmux session fleet-<profile> ("fleet" with no FLEET_PROFILE): one tiled pane per running
+# fleet-<profile>-<peer> session, nested attach,
+# project-manager first. Peers are never touched; only the view is replaced. fleet-up runs it last.
+# View: tmux [-L $FLEET_TMUX] attach -t fleet-<profile>   (iTerm2 native panes: tmux -CC attach -t fleet-<profile>)
+set -uo pipefail
+source "$(dirname "$0")/lib/tmux.sh"
+source "$(dirname "$0")/lib/profile.sh"
+source "$(dirname "$0")/lib/lock.sh"
+fleet_load_profile || exit 1
+fleet_lock "$(fleet_state_dir)" fleet "${FLEET_LOCK_WAIT:-60}" || exit 1   # held already when fleet-up runs it
+VIEW=($(fleet_peers | sort | awk '$0=="project-manager"{print;next}{a[n++]=$0}END{for(i=0;i<n;i++)print a[i]}'))
+[ ${#VIEW[@]} -gt 0 ] || { echo "no $FLEET_SESSION-* sessions running; start the fleet with fleet-up"; exit 1; }
+V=$FLEET_SESSION
+if tmux has-session -t "$(fleet_target "$V")" 2>/dev/null; then fleet_kill_session "$V" || exit 1; fi
+first=1
+for r in "${VIEW[@]}"; do
+  # TMUX unset so tmux allows the nested attach
+  # the pane runs this through tmux's default-shell, zsh on macOS, which expands a bare word starting with "=" (=name: is
+  # taken for =cmd and fails, the pane exits and the view dies); printf %q leaves "=" alone, so single-quote the target
+  tg=$(fleet_peer_target "$r"); a="TMUX= tmux$FLEET_TMUX_FLAGS attach -t '${tg//\'/\'\\\'\'}'"
+  if [ $first = 1 ]; then tmux new-session -d -s "$V" -n peers -x 250 -y 60 "$a"; first=0
+  else tmux split-window -t "$(fleet_target "$V" peers)" "$a"; tmux select-layout -t "$(fleet_target "$V" peers)" tiled; fi
+done
+fleet_tag_session "$V"
+tmux set-option -w -t "$(fleet_target "$V" peers)" pane-border-status top
+tmux set-option -w -t "$(fleet_target "$V" peers)" pane-border-format ' #{pane_title} '
+echo "fleet view $V: ${#VIEW[@]} peers (${VIEW[*]})"

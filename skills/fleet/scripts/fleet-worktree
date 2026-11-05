@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+# fleet-worktree: give a peer its own topic worktree of the target repo, or of a child repo (a git repo nested inside the target
+# repo: a submodule or a nested clone), so two peers never share one checkout.
+# A topic worktree always lands in <main checkout of that repo>/.claude/worktrees/<topic>, never nested in a peer's own
+# worktree: a path given from inside a worktree (".", the peer's launch worktree, a child repo's worktree) is redirected to
+# that repo's main checkout first. (A plain `git worktree add .claude/worktrees/<topic>` run in a peer's launch worktree makes
+# <repo>/.claude/worktrees/<peer>/.claude/worktrees/<topic>: the nesting this script exists to prevent.) Touches only <child-repo>: adds the worktree and a local `.claude/worktrees/` line to its
+# .git/info/exclude (so the child's own tree stays clean for `task check`); nothing is committed or pushed.
+#   fleet-worktree <peer> <repo-path> <branch>
+#       <repo-path>: "." (or any path in the target repo or one of its worktrees) for the target repo, else a child repo's folder.
+#       Creates <main checkout>/.claude/worktrees/<topic> on <branch> and prints its path; the topic is the branch name with
+#       anything outside A-Za-z0-9._- turned into '-' (no peer name in the folder; the peer is recorded in the worktree's git
+#       dir, see lib/worktree.sh). The branch is used if it exists (local, then origin/<branch>), otherwise created from the
+#       child's origin/main (main when the child has no remote). Same branch name in every repo of a feature (AGENTS.md
+#       cross-repo rule). If the worktree already exists its path is printed and nothing changes.
+#       <repo-path> is relative to the target repo's main checkout, or absolute. Folders the target repo's
+#       AGENTS.md says are never edited stay that way; this script does not know them.
+#   fleet-worktree list [peer]
+#       lists the worktrees under every child repo's .claude/worktrees/ (only the ones [peer] created with [peer]; worktrees made
+#       before the topic-only naming are matched by their <peer>- name prefix too).
+#   fleet-worktree new <peer> <repo-path> <branch>   the same, by name (fleet wt new)
+#
+# Inventory and cleanup, across every repo the fleet touches (lib/worktree.sh, fleet_wt_scan: each profile's target repo and its
+# child repos, plus the fleet repo; FLEET_PROFILE or FLEET_REPO narrows it to one target):
+#   fleet-worktree ls [--stale] [--json] [--no-size] [--no-pr] [--no-fetch]
+#       fetches each repo first (--prune; --no-fetch skips it), then every linked worktree: path, owner peer, branch, PR (number and state, from gh, cached 10 min), age (last commit or
+#       file change), dirty files, unpushed commits, disk size (du, cached), the peer whose pane is in it, and its class:
+#       active, idle (no change for FLEET_WT_IDLE_DAYS, default 7), merged, gone, orphaned (folder missing, a launch worktree
+#       of a peer that is not running, a topic whose owner is not running while its fleet runs) or nested. Totals per repo,
+#       per profile and overall. --stale: only the ones that are not active.
+#   fleet-worktree prune [--idle] [--nested] [--yes]
+#       DRY RUN unless --yes. Removes merged, gone and orphaned worktrees (idle and nested only when asked), never one that is
+#       dirty, has unpushed commits, has a running peer's pane in it, has any process of the user sitting in it (a peer on
+#       another tmux server too), holds the caller's cwd, or holds a nested worktree that stays; nested worktrees go before
+#       the one holding them, and a folder's size excludes its nested worktrees. Then deletes its local branch
+#       (merged or gone, or pushed with nothing unpushed: the remote keeps it), runs git worktree prune for missing folders and
+#       reports the disk space freed. Fetches each repo first (--prune). Under each touched profile's fleet lock and the user's
+#       worktrees lock (lib/lock.sh).
+#   fleet-worktree summary   one line per profile: "worktrees: 12, 3 stale (2 merged, 1 idle), 4.1 GB" (cached sizes; fleet ls)
+#   fleet-worktree remind [--dry-run]   tell the running owner of each merged or gone worktree to remove it, once per worktree
+#       (recorded in that profile's $FLEET_STATE/worktree-reminders); never removes anything (keep-busy runs it)
+#   FLEET_REPO=<path>   the target repo; default: the profile's (FLEET_PROFILE), else the main checkout of the repo you are in
+set -euo pipefail
+source "$(dirname "$0")/lib/profile.sh"
+source "$(dirname "$0")/lib/worktree.sh"
+source "$(dirname "$0")/lib/tmux.sh"
+source "$(dirname "$0")/lib/lock.sh"
+fleet_load_profile || exit 1
+
+hsize() { local k=${1:-}; case "$k" in ""|-) echo - ;; *) awk -v k="$k" 'BEGIN{ if (k >= 1048576) printf "%.1fG", k/1048576; else if (k >= 1024) printf "%dM", k/1024; else printf "%dK", k }' ;; esac; }
+hage() { local d=$(( ($(date +%s) - $1) )); if [ "$1" = 0 ]; then echo -; elif [ $d -ge 86400 ]; then echo "$((d / 86400))d"; elif [ $d -ge 3600 ]; then echo "$((d / 3600))h"; else echo "$((d / 60))m"; fi; }
+stale() { [ "$1" != active ]; }
+
+case "${1:-}" in
+  ls)
+    shift; only_stale=0; json=0; size=fresh; pr=1; fetch=1
+    for a in "$@"; do case "$a" in --stale) only_stale=1 ;; --json) json=1 ;; --no-size) size=cache ;; --no-pr) pr=0 ;; --tsv) json=2 ;;
+      --no-fetch) fetch=0 ;;
+      *) echo "usage: fleet-worktree ls [--stale] [--json] [--no-size] [--no-pr] [--no-fetch]" >&2; exit 2 ;; esac; done
+    [ $fetch = 0 ] || fleet_wt_fetch   # a branch deleted on the remote shows as gone now, not after the next fetch
+    rows=$(fleet_wt_scan "$pr" "$size")
+    [ $only_stale = 0 ] || rows=$(awk -F'\t' '$13 != "active"' <<<"$rows")
+    if [ $json = 2 ]; then printf '%s\n' "$rows"; exit 0; fi
+    if [ $json = 1 ]; then
+      jq -Rn '[inputs | select(length > 0) | split("\t") | {profile: .[0], repo: .[1], path: .[2], owner: .[3], kind: .[4], branch: .[5],
+        pr: .[6], last_change: (.[7] | tonumber), dirty: (.[8] | tonumber), unpushed: (.[9] | tonumber),
+        size_kb: (if .[10] == "-" then null else (.[10] | tonumber) end), in_use: .[11], class: .[12]}]' <<<"$rows"; exit 0
+    fi
+    [ -n "$rows" ] || { echo "no worktrees${only_stale:+ to show}"; exit 0; }
+    tot=0; totn=0; tots=0
+    while IFS= read -r prof; do
+      prow=$(awk -F'\t' -v p="$prof" '$1 == p' <<<"$rows")
+      pk=$(awk -F'\t' '$11 != "-" {s += $11} END {print s + 0}' <<<"$prow"); pn=$(grep -c . <<<"$prow"); ps=$(awk -F'\t' '$13 != "active"' <<<"$prow" | grep -c . || true)
+      echo "profile $prof: $pn worktrees, $ps stale, $(hsize "$pk")"
+      while IFS= read -r repo; do
+        rrow=$(awk -F'\t' -v r="$repo" '$2 == r' <<<"$prow")
+        echo "  repo $repo ($(grep -c . <<<"$rrow") worktrees, $(hsize "$(awk -F'\t' '$11 != "-" {s += $11} END {print s + 0}' <<<"$rrow")"))"
+        printf '    %-34s %-16s %-24s %-12s %-5s %-6s %-8s %-6s %-14s %s\n' PATH OWNER BRANCH PR AGE DIRTY UNPUSHED SIZE "IN USE" CLASS
+        while IFS=$'\t' read -r _ _ path owner kind br prs age dirty unp sz inuse class _ _; do
+          rel=${path#"$repo"/}; [ "$kind" = launch ] && owner="$owner (launch)"
+          printf '    %-34s %-16s %-24s %-12s %-5s %-6s %-8s %-6s %-14s %s\n' "$rel" "$owner" "$br" "$prs" "$(hage "$age")" "$dirty" "$unp" "$(hsize "$sz")" "$inuse" "$class"
+        done <<<"$rrow"
+      done < <(cut -f2 <<<"$prow" | awk '!s[$0]++')
+      tot=$((tot + pk)); totn=$((totn + pn)); tots=$((tots + ps))
+    done < <(cut -f1 <<<"$rows" | awk 'NF && !s[$0]++')
+    echo "total: $totn worktrees, $tots stale, $(hsize "$tot")$( [ $tots = 0 ] || echo '; fleet wt prune shows what can go')"
+    exit 0 ;;
+  summary)
+    # one line per profile; --cached: from the last scan's rows (fast, refreshed in the background; fleet ls), else a fresh scan
+    if [ "${2:-}" = --cached ]; then rows=$(fleet_wt_cached "${FLEET_PROFILE:-}")
+      [ -n "$rows" ] || { echo "worktrees: counting (first scan running; fleet wt ls for the full list)"; exit 0; }
+    else rows=$(fleet_wt_scan 0 cache); fi
+    while IFS= read -r prof; do
+      prow=$(awk -F'\t' -v p="$prof" '$1 == p' <<<"$rows")
+      by=$(awk -F'\t' '$13 != "active" {c[$13]++} END {for (k in c) printf "%s%d %s", (n++ ? ", " : ""), c[k], k}' <<<"$prow")
+      ns=$(awk -F'\t' '$13 != "active"' <<<"$prow" | grep -c . || true)
+      echo "worktrees ($prof): $(grep -c . <<<"$prow"), $ns stale${by:+ ($by)}, $(hsize "$(awk -F'\t' '$11 != "-" {s += $11} END {print s + 0}' <<<"$prow")")$( [ "$ns" = 0 ] || echo '; fleet wt prune')"
+    done < <(cut -f1 <<<"$rows" | awk 'NF && !s[$0]++')
+    exit 0 ;;
+  remind)
+    dry=0; [ "${2:-}" = --dry-run ] && dry=1
+    send="$(dirname "$0")/fleet-send"; n=0
+    while IFS='|' read -r prof _ state _; do
+      [ -n "$prof" ] && [ "$prof" != "(fleet repo)" ] || continue
+      rec="$state/worktree-reminders"; mkdir -p "$state"; touch "$rec"
+      while IFS=$'\t' read -r _ _ path owner kind br prs _ _ _ _ _ class _ _; do
+        [ "$kind" = topic ] && { [ "$class" = merged ] || [ "$class" = gone ]; } || continue
+        [ "$owner" != - ] && grep -qx "$owner" < <(fleet_wt_panes | awk -F'|' -v p="$prof" '$1 == p {print $2}') || continue
+        grep -qxF "$path" "$rec" && continue
+        msg="${prs/%none/}${prs:+ }branch $br is $class: remove your worktree $path and its branch (fleet wt prune does it once it is clean and pushed)."
+        msg=${msg# }; n=$((n + 1))
+        if [ $dry = 1 ]; then echo "would tell $owner: $msg"
+        else FLEET_PROFILE=$prof "$send" "$msg" "$owner" >/dev/null && echo "$path" >> "$rec" && echo "told $owner: $msg"; fi
+      done < <(FLEET_PROFILE=$prof fleet_wt_scan 1 none)
+    done < <(fleet_wt_targets)
+    [ $n -gt 0 ] || echo "remind: nothing to remind"
+    exit 0 ;;
+  prune)
+    shift; yes=0; idle=0; nested=0
+    for a in "$@"; do case "$a" in --yes|-y) yes=1 ;; --idle) idle=1 ;; --nested) nested=1 ;;
+      *) echo "usage: fleet-worktree prune [--idle] [--nested] [--yes]" >&2; exit 2 ;; esac; done
+    if [ $yes = 1 ]; then
+      fleet_lock "${FLEET_WT_LOCK_DIR:-$HOME/.fleet-state}" worktrees || exit 1
+      while IFS='|' read -r prof _ state _; do
+        [ -n "$prof" ] && [ "$prof" != "(fleet repo)" ] || continue; fleet_lock "$state" fleet "${FLEET_LOCK_WAIT:-60}" || exit 1
+      done < <(fleet_wt_targets)
+      echo "fleet wt prune: removing"
+    else echo "fleet wt prune: dry run (nothing is removed; pass --yes)"; fi
+    fleet_wt_fetch   # current "gone" and "merged" states
+    me=$(pwd -P); freed=0; nrem=0; nskip=0; cwds=$(fleet_wt_cwds)
+    # 1. decide every row: R (remove), K<why> (keep), - (not a candidate: it stays too), M (folder missing)
+    rows=(); dec=()
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      IFS=$'\t' read -r prof repo path owner kind br _ _ dirty unp sz inuse class _ missing <<<"$line"; rows+=("$line")
+      case "$class" in merged|gone|orphaned) ;; idle) [ $idle = 1 ] || { dec+=(-); continue; } ;; nested) [ $nested = 1 ] || { dec+=(-); continue; } ;;
+        *) dec+=(-); continue ;; esac
+      if [ "$missing" = 1 ]; then dec+=(M); continue; fi
+      why=""
+      [ "$dirty" = 0 ] || why="dirty: $dirty files"
+      [ -n "$why" ] || [ "$unp" = 0 ] || why="$unp unpushed commits"
+      [ -n "$why" ] || [ "$inuse" = - ] || why="$inuse is in it"
+      [ -n "$why" ] || case "$me/" in "$path"/*) why="it is your current directory" ;; esac
+      # any process sitting in it, whichever tmux server runs it (a peer on another server than the one targeted)
+      [ -n "$why" ] || why=$(awk -F'\t' -v p="$path" '$2 == p || index($2, p "/") == 1 {print "process " $1 " is in it"; exit}' <<<"$cwds")
+      if [ -n "$why" ]; then dec+=("K$why"); else dec+=(R); fi
+    done < <(fleet_wt_scan 0 fresh)
+    # 2. a worktree holding one that stays stays too: removing it would delete the nested one with it. Containment is by path,
+    #    so a grandparent sees a kept grandchild directly and one pass is enough.
+    n=${#rows[@]}; paths=(); sizes=(); classes=()
+    for ((i = 0; i < n; i++)); do IFS=$'\t' read -r _ _ x _ _ _ _ _ _ _ y _ z _ <<<"${rows[i]}"; paths+=("$x"); sizes+=("${y/-/0}"); classes+=("$z"); done
+    for ((i = 0; i < n; i++)); do
+      [ "${dec[i]}" = R ] || continue
+      for ((j = 0; j < n; j++)); do
+        [ $j != $i ] && [ "${dec[j]}" != R ] && [ "${dec[j]}" != M ] || continue
+        case "${paths[j]}" in "${paths[i]}"/*)
+          dec[i]="Kcontains kept worktree ${paths[j]}"
+          case "${dec[j]}:${classes[j]}" in -:nested|-:idle) dec[i]+=" (${classes[j]}; skipped without --${classes[j]})" ;; esac
+          break ;; esac
+      done
+    done
+    # own size: du of the folder minus its direct nested worktrees, so freed counts nothing twice
+    ownsz=()
+    for ((i = 0; i < n; i++)); do
+      o=${sizes[i]}; [ "${dec[i]}" = R ] || { ownsz+=("$o"); continue; }
+      for ((j = 0; j < n; j++)); do
+        case "${paths[j]}" in "${paths[i]}"/*) ;; *) continue ;; esac
+        direct=1; for ((k = 0; k < n; k++)); do
+          [ $k != $j ] && [ $k != $i ] || continue; case "${paths[j]}" in "${paths[k]}"/*) case "${paths[k]}" in "${paths[i]}"/*) direct=0; break ;; esac ;; esac
+        done
+        [ $direct = 0 ] || o=$((o - sizes[j]))
+      done
+      ownsz+=($((o < 0 ? 0 : o)))
+    done
+    # 3. act, deepest first: nested worktrees go before the one that holds them
+    stays=(); for ((i = 0; i < n; i++)); do [ "${dec[i]}" = R ] || [ "${dec[i]}" = M ] || stays+=("${paths[i]}"); done
+    while read -r _ i; do
+      IFS=$'\t' read -r prof repo path owner kind br _ _ dirty unp sz inuse class _ missing <<<"${rows[i]}"
+      case "${dec[i]}" in
+        -) continue ;;
+        M) echo "$( [ $yes = 1 ] && echo prune || echo 'would prune') $path (folder missing; git worktree prune)"
+           [ $yes = 0 ] || git -C "$repo" worktree prune; nrem=$((nrem + 1)); continue ;;
+        K*) echo "keep $path ($class; ${dec[i]#K})"; nskip=$((nskip + 1)); continue ;;
+      esac
+      sz=${ownsz[i]}; [ "$owner" != - ] || owner=""; [ "$br" != - ] || br=""
+      label="$path ($class${owner:+, $owner}${br:+, branch $br}, $(hsize "$sz"))"; br=${br:--}
+      if [ $yes = 0 ]; then echo "would remove $label"; freed=$((freed + sz)); nrem=$((nrem + 1)); continue; fi
+      held=""; for x in ${stays[@]+"${stays[@]}"}; do case "$x" in "$path"/*) held=$x; break ;; esac; done
+      if [ -n "$held" ]; then echo "keep $path ($class; contains kept worktree $held)"; nskip=$((nskip + 1)); stays+=("$path"); continue; fi
+      if git -C "$repo" worktree remove "$path" 2>/dev/null; then
+        echo "removed $label"; freed=$((freed + sz)); nrem=$((nrem + 1))
+        if [ "$br" != - ]; then
+          case "$class" in merged|gone) git -C "$repo" branch -q -D "$br" 2>/dev/null && echo "  deleted branch $br" ;;
+            *) if [ -n "$(git -C "$repo" for-each-ref --format='%(upstream)' "refs/heads/$br")" ]; then git -C "$repo" branch -q -D "$br" 2>/dev/null && echo "  deleted branch $br (the remote keeps it)"
+               else echo "  kept branch $br (never pushed)"; fi ;;
+          esac
+        fi
+      else echo "keep $path ($class; git worktree remove refused)"; nskip=$((nskip + 1)); stays+=("$path"); fi
+    done < <(for ((i = 0; i < n; i++)); do printf '%s %s\n' "$(tr -cd / <<<"${paths[i]}" | wc -c | tr -d ' ')" "$i"; done | sort -k1,1nr -k2,2n)
+    echo "$( [ $yes = 1 ] && echo freed || echo 'would free') $(hsize "$freed") ($nrem worktrees)$( [ "$nskip" = 0 ] || echo ", kept $nskip")"
+    exit 0 ;;
+  new) shift ;;
+esac
+fleet_resolve_repo || exit 1
+
+if [ "${1:-}" = list ]; then
+  peer=${2:-}
+  fleet_child_repos "$REPO" | while read -r c; do
+    root=$(fleet_worktree_root "$c")
+    git -C "$c" worktree list | while read -r path rest; do
+      case "$path" in "$root"/*) ;; *) continue ;; esac
+      if [ -n "$peer" ]; then
+        [ "$(fleet_worktree_owner "$path")" = "$peer" ] || case "$(basename "$path")" in "$peer"-*) ;; *) continue ;; esac
+      fi
+      echo "$path $rest"
+    done
+  done
+  exit 0
+fi
+
+peer=${1:?usage: fleet-worktree <peer> <repo-path> <branch> | fleet-worktree list [peer]}
+child=${2:?usage: fleet-worktree <peer> <repo-path> <branch>   (repo-path: . for the target repo)}
+branch=${3:?usage: fleet-worktree <peer> <repo-path> <branch>}
+main=$(fleet_main_checkout "$REPO" 2>/dev/null || echo "$REPO"); main=$(cd "$main" && pwd -P)   # a workspace may be no repo itself
+case "$child" in /*) ;; *) child="$main/$child" ;; esac
+child=${child%/}
+[ -d "$child" ] || { echo "fleet-worktree: no such folder: $child" >&2; exit 1; }
+child=$(cd "$child" && pwd -P)
+# redirect to the repo's main checkout: "." or a peer's launch worktree is the target repo; a child repo's worktree is that child
+own=$(fleet_main_checkout "$child" 2>/dev/null) && own=$(cd "$own" && pwd -P) || own=
+if [ "$own" = "$main" ]; then
+  child=$main
+else
+  case "$child" in
+    "$main"/?*) ;;
+    *) echo "fleet-worktree: $child is not the target repo $main nor a repo nested inside it" >&2; exit 1 ;;
+  esac
+  [ "$(git -C "$child" rev-parse --show-toplevel 2>/dev/null)" = "$child" ] \
+    || { echo "fleet-worktree: $child is not its own git repo" >&2; exit 1; }
+  child=$own
+fi
+
+# keep the child's own checkout clean: the worktrees folder is excluded locally, never through its .gitignore
+fleet_worktree_exclude "$child"
+
+slug=$(printf '%s' "$branch" | tr -c 'A-Za-z0-9._-' '-')
+wt="$(fleet_worktree_root "$child")/$slug"
+if [ -d "$wt" ]; then echo "$wt"; exit 0; fi
+
+if git -C "$child" remote get-url origin >/dev/null 2>&1; then
+  git -C "$child" fetch -q origin
+  base=origin/main
+else
+  base=main
+fi
+if git -C "$child" show-ref -q --verify "refs/heads/$branch"; then
+  git -C "$child" worktree add -q "$wt" "$branch"
+elif git -C "$child" show-ref -q --verify "refs/remotes/origin/$branch"; then
+  git -C "$child" worktree add -q --track -b "$branch" "$wt" "origin/$branch"
+else
+  git -C "$child" worktree add -q -b "$branch" "$wt" "$base"
+fi
+fleet_worktree_owner_set "$wt" "$peer"
+echo "$wt"

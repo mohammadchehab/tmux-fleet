@@ -1,0 +1,15 @@
+# One peer per line: <peer> [role] [cli]. Peers named after the team they work for, each in its own clone
+# (FLEET_PEER_DIRS in your profile; without it, a worktree of FLEET_REPO). cli: claude (default) or agent (Cursor).
+project-manager
+architect
+jira            jira
+designer        designer
+android         engineer
+ios             engineer
+web             engineer
+be              engineer
+identity        engineer
+platform        engineer
+da              engineer       agent
+qa-web          e2e-engineer   agent
+qa-mobile       e2e-engineer   agent

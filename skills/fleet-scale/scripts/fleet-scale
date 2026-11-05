@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# fleet-scale — grow or shrink the running fleet one peer at a time, without touching the other peers.
+#   fleet-scale add <role> [n]     start n (default 1) new peers of <role>, named <role>-<next free number>
+#                                  (a role with no running peer gets the bare name, e.g. designer)
+#   fleet-scale add <peer-name>    start exactly that peer, e.g. engineer-3
+#   fleet-scale remove <peer> [-f] stop one peer. Refuses while it is busy or its worktree holds uncommitted or
+#                                  unpushed work (target-repo or child-repo worktrees), unless -f. The worktree is left in place (git worktree remove
+#                                  it once its PRs are merged or closed).
+#   fleet-scale roles              list the roles a peer can take
+# Starting a peer goes through fleet-up, which also rebuilds the fleet-<profile> view with every running peer.
+set -uo pipefail
+source "$(dirname "$0")/../../fleet/scripts/lib/tmux.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/pane.sh"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+FLEET="$(cd "$HERE/../../fleet" && pwd)"
+source "$(dirname "$0")/../../fleet/scripts/lib/profile.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/worktree.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/lock.sh"
+fleet_resolve_repo || exit 1
+# add and remove hold the fleet lock (lib/lock.sh) for the whole change; fleet-up, run by add, sees it held and goes on
+case "${1:-}" in add|remove) fleet_lock "$(fleet_state_dir)" fleet "${FLEET_LOCK_WAIT:-60}" "$@" || exit 1 ;; esac
+
+running() { fleet_peers; }
+roles() { ls "$FLEET/roles" | sed 's/\.md$//'; }
+is_role() { roles | grep -qx "$1"; }
+
+next_name() {  # first free name for a role: bare name if none runs, else <role>-<n>
+  local role=$1 n=1
+  running | grep -qx -e "$role" -e "$role-[0-9]*" || { echo "$role"; return; }
+  while running | grep -qx "$role-$n"; do n=$((n + 1)); done
+  echo "$role-$n"
+}
+
+case "${1:-}" in
+  roles) roles ;;
+
+  add)
+    target=${2:?usage: fleet-scale add <role|peer-name> [n]}
+    if is_role "$target"; then
+      count=${3:-1}; names=()
+      for _ in $(seq "$count"); do
+        nm=$(next_name "$target")
+        # reserve the name so the next loop turn picks another one
+        while printf '%s\n' "${names[@]:-}" | grep -qx "$nm"; do nm="$target-$(( ${nm##*-} + 1 ))"; done
+        names+=("$nm")
+      done
+    else
+      is_role "${target%-[0-9]*}" || { echo "unknown role '${target%-[0-9]*}'. Roles:"; roles; exit 1; }
+      running | grep -qx "$target" && { echo "$target is already running"; exit 1; }
+      names=("$target")
+    fi
+    echo "starting: ${names[*]}"
+    FLEET_ALLOW_IN_PEER=1 "$FLEET/scripts/fleet-up" "${names[@]}"   # safe from a peer: only new names, checked above
+    ;;
+
+  remove)
+    p=${2:?usage: fleet-scale remove <peer> [-f]}; force=${3:-}
+    tmux has-session -t "$(fleet_peer_target "$p")" 2>/dev/null || { echo "no session $(fleet_session "$p"). Running:"; running; exit 1; }
+    [ "$p" = project-manager ] && { echo "refusing to remove the project-manager"; exit 1; }
+    problems=()
+    fleet_busy "$p" && problems+=("busy: a turn is running")
+    wt="$(fleet_worktree_root "$REPO")/$p"
+    if [ -d "$wt" ]; then
+      dirty=$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      [ "$dirty" != 0 ] && problems+=("$dirty uncommitted file(s) in $wt")
+      if git -C "$wt" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+        ahead=$(git -C "$wt" rev-list --count '@{u}..HEAD')
+        [ "$ahead" != 0 ] && problems+=("$ahead unpushed commit(s) on $(git -C "$wt" branch --show-current)")
+      elif [ -n "$(git -C "$wt" branch --show-current)" ]; then
+        problems+=("branch $(git -C "$wt" branch --show-current) was never pushed")
+      fi
+    fi
+    # the peer's child-repo worktrees (fleet-worktree) count too
+    while read -r cwt _; do
+      [ -n "$cwt" ] || continue
+      dirty=$(git -C "$cwt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      [ "$dirty" != 0 ] && problems+=("$dirty uncommitted file(s) in $cwt")
+      git -C "$cwt" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 \
+        || problems+=("branch $(git -C "$cwt" branch --show-current) in $cwt was never pushed")
+    done < <("$FLEET/scripts/fleet-worktree" list "$p")
+    if [ ${#problems[@]} -gt 0 ] && [ "$force" != -f ]; then
+      echo "not removing $p:"; printf '  - %s\n' "${problems[@]}"; echo "fix those first, or: fleet-scale remove $p -f"; exit 2
+    fi
+    fleet_kill_session "$(fleet_session "$p")" && echo "stopped $p"
+    [ -d "$wt" ] && echo "worktree kept: $wt (git worktree remove it once its PRs are merged or closed)"
+    echo "running now: $(running | tr '\n' ' ')"
+    ;;
+
+  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
