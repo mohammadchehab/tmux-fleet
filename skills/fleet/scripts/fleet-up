@@ -103,8 +103,13 @@ MODELS="$(dirname "$0")/../models"
 model_flags() {  # --model/--effort for a peer, from ../models by its role; Claude Code only
   [ "${CLI_OF[$1]}" = claude ] || return 0
   local role=${ROLE_OF[$1]} m e
-  read -r m e < <(awk -v r="$role" '$1==r{print $2, $3}' "$MODELS" 2>/dev/null) || true
+  read -r m e _ < <(awk -v r="$role" '$1==r{print $2, $3, $4}' "$MODELS" 2>/dev/null) || true
   echo "${m:+--model $m} ${e:+--effort $e}"
+}
+window_env() {  # CLAUDE_CODE_AUTO_COMPACT_WINDOW=<n> for a peer, from column 4 of ../models; Claude Code only
+  [ "${CLI_OF[$1]}" = claude ] || return 0
+  local w; w=$(awk -v r="${ROLE_OF[$1]}" '$1==r{print $4}' "$MODELS" 2>/dev/null)
+  [[ $w =~ ^[0-9]+$ ]] && echo "CLAUDE_CODE_AUTO_COMPACT_WINDOW=$w" || true
 }
 PEER_ENV=($(fleet_tmux_env))   # every peer inherits FLEET_TMUX, so its own fleet-send/down hit the same server
 # and FLEET_PROFILE, so its own fleet-send/peek/handoff/clear hit the same fleet (session prefix and profile)
@@ -125,7 +130,7 @@ for v in FLEET_TRACKER_SITE FLEET_TRACKER_PROJECT; do [ -z "${!v:-}" ] || PEER_E
 for r in "${ROLES[@]}"; do
   d=${DIR_OF[$r]:-$WT_ROOT/$r}; [ -d "$d" ] || git -C "$REPO" worktree add -q --detach "$d" "$BASE"
   s=$(fleet_session "$r")
-  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") ${CLI_OF[$r]} $(flags_for "${CLI_OF[$r]}") $(model_flags "$r") $(mcp_flags "${CLI_OF[$r]}")"
+  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") $(window_env "$r") ${CLI_OF[$r]} $(flags_for "${CLI_OF[$r]}") $(model_flags "$r") $(mcp_flags "${CLI_OF[$r]}")"
   tmux set-option -t "$(fleet_target "$s")" @fleet-role "${ROLE_OF[$r]}"; tmux set-option -t "$(fleet_target "$s")" @fleet-cli "${CLI_OF[$r]}"; fleet_tag_session "$s"
 done
 sleep 8

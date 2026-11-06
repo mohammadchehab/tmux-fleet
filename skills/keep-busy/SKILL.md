@@ -46,9 +46,10 @@ so nobody sits idle between the user's check-ins.
 
    Nothing fits → leave the peer idle and note it. Never invent work or open new tickets.
 5. **Busy peers:** leave them alone. Never interrupt a peer to hand it something.
-5b. **Done worktrees:** run `~/.claude/skills/fleet/scripts/fleet-worktree remind`. It tells the running owner of each merged
-   or gone worktree, once per worktree (recorded in `$FLEET_STATE/worktree-reminders`), to remove it. It never removes
-   anything, and neither does the tick: cleanup is `fleet wt prune`, run by the user or the owner.
+5b. **Done worktrees:** run `~/.claude/skills/fleet/scripts/fleet-worktree prune --yes`. It removes merged, gone and
+   orphaned worktrees that are clean and pushed, and names the ones it kept (dirty or unpushed). For each kept one, run
+   `fleet-worktree remind` so its running owner is told once (recorded in `$FLEET_STATE/worktree-reminders`). Only a
+   human removes a worktree with dirty or unpushed work.
 6. **Record.** The assignment is on the board (step 4); no board: update the Active Team table in
    `$FLEET_STATE/fleet-context.md` instead. Log each call you made in `$FLEET_STATE/scratchpad.md`.
 7. **Report** in one line: `keep-busy: assigned engineer-1 TASK-12, designer #418; answered architect; idle: engineer-2 (Next empty)`.
