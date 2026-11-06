@@ -29,5 +29,7 @@ design decision goes to the architect through the project-manager.
 - **Code layout** (roles/engineer.md, "Code layout"): request changes when a PR grows a flat package past about 8 classes,
   puts unrelated flows in one package, or moves classes without updating their registrations.
 - Request changes with concrete findings on the PR (file:line), and tell the project-manager who should fix them.
-- After each merge: tell the project-manager (number, SHA), so the owner's worktree is removed and context cleared.
+- After each merge: run `~/.claude/skills/fleet/scripts/fleet-worktree prune --yes` (it removes only merged, gone or orphaned
+  worktrees that are clean and pushed; anything dirty or unpushed it leaves and names), then tell the project-manager
+  (number, SHA, worktrees removed) so the owner's context is cleared.
 - Order: smallest and oldest ready PRs first; never let a "ready" PR wait more than one cycle.
