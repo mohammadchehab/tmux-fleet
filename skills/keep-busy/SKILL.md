@@ -28,7 +28,11 @@ so nobody sits idle between the user's check-ins.
 1. **Read the fleet.** Run `~/.claude/skills/fleet-capacity/scripts/fleet-capacity`. Never judge state from memory. With a
    board it ends with each peer's In Progress card, the unassigned cards waiting in **Next**, the decisions proposed, and a
    line pairing the idle peers with that waiting work (the `fleet-board` skill).
-2. **Asking peers** (the last reply ends with a question): answer from the accepted decisions
+1b. **Read the replies.** Every Claude Code peer's reply lands in `$FLEET_STATE/replies.log` (Stop hook, one line each:
+   time, peer, card/PR refs, `ASK` or `-`, the reply). Read only the lines added since your last tick: keep the line count
+   you reached in `$FLEET_STATE/replies.offset` (`tail -n +$((offset+1))`). This is the record of what each peer said,
+   and it survives the peer's `/clear`; prefer it to reading panes. Note the `ASK` lines for step 2.
+2. **Asking peers** (an `ASK` line in step 1b, or the last reply ends with a question): answer from the accepted decisions
    (`~/.claude/skills/fleet-board/scripts/board-decision list accepted`), `scratchpad.md` and the target repo's `AGENTS.md`.
    If only the user can decide, record it with `board-decision ask` and tell the user once. Never ask the user again about
    something a decision already answers, or one that is still proposed.

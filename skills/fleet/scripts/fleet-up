@@ -83,6 +83,10 @@ done
 flags_for() { if [ "$1" = "$CLI" ]; then echo "$FLAGS"; elif [ "$1" = claude ]; then echo --dangerously-skip-permissions; else echo --force; fi; }
 # the board's MCP server, Claude Code only (Cursor's agent has no --mcp-config; its peers use the backlog CLI)
 mcp_flags() { [ "$1" = claude ] && [ -n "$BOARD_MCP" ] && echo "--mcp-config $(printf '%q' "$BOARD_MCP")" || true; }
+# every Claude Code peer gets the fleet's hooks (hooks/peer-settings.json: Stop → scripts/fleet-reply-log, which appends each
+# reply to $FLEET_STATE/replies.log); --settings keeps them per peer, so the user's own sessions and settings.json stay untouched
+PEER_HOOKS="$(dirname "$0")/../hooks/peer-settings.json"
+hook_flags() { [ "$1" = claude ] && [ -f "$PEER_HOOKS" ] && echo "--settings $(printf '%q' "$PEER_HOOKS")" || true; }
 echo "fleet-up: peers run $CLI ($CLI_FROM)"
 fleet_kill_session "$FLEET_SESSION" || true
 for r in "${ROLES[@]}"; do fleet_kill_session "$(fleet_session "$r")" || true; done
@@ -130,7 +134,7 @@ for v in FLEET_TRACKER_SITE FLEET_TRACKER_PROJECT; do [ -z "${!v:-}" ] || PEER_E
 for r in "${ROLES[@]}"; do
   d=${DIR_OF[$r]:-$WT_ROOT/$r}; [ -d "$d" ] || git -C "$REPO" worktree add -q --detach "$d" "$BASE"
   s=$(fleet_session "$r")
-  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") $(window_env "$r") ${CLI_OF[$r]} $(flags_for "${CLI_OF[$r]}") $(model_flags "$r") $(mcp_flags "${CLI_OF[$r]}")"
+  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") $(window_env "$r") ${CLI_OF[$r]} $(flags_for "${CLI_OF[$r]}") $(model_flags "$r") $(mcp_flags "${CLI_OF[$r]}") $(hook_flags "${CLI_OF[$r]}")"
   tmux set-option -t "$(fleet_target "$s")" @fleet-role "${ROLE_OF[$r]}"; tmux set-option -t "$(fleet_target "$s")" @fleet-cli "${CLI_OF[$r]}"; fleet_tag_session "$s"
 done
 sleep 8

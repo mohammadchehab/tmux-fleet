@@ -28,6 +28,9 @@ Only the user, from their own shell, starts or stops the fleet: inside a peer se
   that keeps the tracker in step; each peer's own clone comes from `FLEET_PEER_DIRS` in the profile. Each peer's model and effort
   come from `models` (role → model, effort): sonnet by default, opus only for the project-manager, architect and
   spec-reviewer.
+- **replies**: every Claude Code peer's reply is appended to `$FLEET_STATE/replies.log` by the Stop hook in
+  `hooks/peer-settings.json` (`scripts/fleet-reply-log`, passed by fleet-up as `--settings`): one line per reply with time,
+  peer, card/PR refs and `ASK` when it ends in a question or says blocked. `tail -f $FLEET_STATE/replies.log` to watch.
 - **`peek [peer …]`**: run `scripts/fleet-peek [-n lines] [peer …]` (each peer's last reply without its CLI's chrome,
   with its state: busy, asking, held, unknown or idle; read-only).
 - **`handoff`**: load the `fleet-handoff` skill (any peer: write your state file, then clear yourself) — see
