@@ -230,6 +230,8 @@ fleet_wt_scan() {
       for x in ${all[@]+"${all[@]}"}; do [ "$x" != "$wt" ] && case "$wt/" in "$x"/*) class=nested ;; esac; done
       if [ -z "$class" ]; then
         case "$bstate" in merged|gone) class=$bstate ;; esac
+        # a squash merge leaves no ancestry, and a repo that keeps branches leaves nothing gone: the PR's own state decides
+        case "$pr" in *" merged"*) class=merged ;; esac
       fi
       if [ -z "$class" ] && [ $kind = topic ] && [ $(( (now - age) / 86400 )) -ge "$idle" ]; then class=idle; fi
       class=${class:-active}

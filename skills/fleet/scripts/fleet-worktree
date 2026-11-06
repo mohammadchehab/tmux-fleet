@@ -144,7 +144,7 @@ case "${1:-}" in
       # any process sitting in it, whichever tmux server runs it (a peer on another server than the one targeted)
       [ -n "$why" ] || why=$(awk -F'\t' -v p="$path" '$2 == p || index($2, p "/") == 1 {print "process " $1 " is in it"; exit}' <<<"$cwds")
       if [ -n "$why" ]; then dec+=("K$why"); else dec+=(R); fi
-    done < <(fleet_wt_scan 0 fresh)
+    done < <(fleet_wt_scan 1 fresh)   # with PR states: a squash-merged PR is "merged" only through its PR
     # 2. a worktree holding one that stays stays too: removing it would delete the nested one with it. Containment is by path,
     #    so a grandparent sees a kept grandchild directly and one pass is enough.
     n=${#rows[@]}; paths=(); sizes=(); classes=()
