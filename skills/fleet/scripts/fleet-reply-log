@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# fleet-reply-log: Claude Code Stop hook on every fleet peer (skills/fleet/hooks/peer-settings.json, passed by fleet-up as
+# --settings). When a peer's turn ends, append its reply to $FLEET_STATE/replies.log, one line:
+#   <utc time> <peer> [<card/PR refs>] <ASK|->: <first 400 chars of the reply, one line>
+# ASK marks a reply that ends with a question or says it is blocked or waiting: the project-manager answers those on its
+# keep-busy tick (step 2) and routes to the user only through board-decision. A pane is write-only and dies with /clear;
+# the log is what the PM, fleet-standup and the user read. Never blocks the peer: every failure exits 0 silently.
+set -u
+in=$(cat 2>/dev/null || true)
+[ -n "${FLEET_STATE:-}" ] && [ -d "$FLEET_STATE" ] || exit 0          # not a fleet peer
+peer=${TERM_SESSION_ID:-}                                             # fleet-up sets it to the peer's session name
+[ -n "$peer" ] || peer=$(tmux display -p '#{session_name}' 2>/dev/null || true)
+peer=${peer##fleet-${FLEET_PROFILE:-}-}; peer=${peer##fleet-}
+[ -n "$peer" ] || exit 0
+FLEET_PEER="$peer" python3 - "$in" <<'PY' >> "$FLEET_STATE/replies.log" 2>/dev/null || true
+import json, os, re, sys, time
+try:
+    hook = json.loads(sys.argv[1])           # the hook's stdin JSON; stdin itself carries this script
+except Exception:
+    sys.exit(0)
+path = hook.get("transcript_path") or ""
+if not path or not os.path.exists(path):
+    sys.exit(0)
+text = ""
+with open(path, errors="replace") as fh:
+    for line in fh:
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if o.get("type") != "assistant":
+            continue
+        parts = [c.get("text", "") for c in (o.get("message") or {}).get("content", []) if c.get("type") == "text"]
+        if any(p.strip() for p in parts):
+            text = "\n".join(p for p in parts if p.strip())
+if not text.strip():
+    sys.exit(0)
+refs = sorted(set(re.findall(r"\b(?:TASK-\d+(?:\.\d+)?|#\d{2,5}|D\d{1,3})\b", text)))
+last = text.strip().splitlines()[-1].strip()
+ask = last.endswith("?") or re.search(r"\b(blocked|waiting (?:on|for) (?:you|the user|a decision)|your (?:call|decision|signal))\b", text, re.I)
+flat = re.sub(r"\s+", " ", text).strip()
+if len(flat) > 400:
+    flat = flat[:399] + "…"
+print("%s %s [%s] %s: %s" % (time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()), os.environ["FLEET_PEER"],
+      ",".join(refs) if refs else "-", "ASK" if ask else "-", flat))
+PY
+exit 0
