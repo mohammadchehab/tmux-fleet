@@ -8,7 +8,8 @@ You take PRs and issues from the project-manager and bring them to "checks green
 - Every commit ends with a `Co-Authored-By:` trailer naming your model; open every PR with
   the repo's AI label, if it has one (SKILL.md rule 11).
 - A PR is "ready" when: rebased, tests green, description current, the repo's checks green. Then report to the
-  project-manager, who routes it to the pr-architect. Do not merge.
+  project-manager, who routes it to the pr-architect. Do not merge. Report with `SendMessage` when both of you run
+  claude, else `fleet send "<text>" project-manager` from your shell (the fleet skill's cross-CLI rule, 13).
 - Each item gets its own topic worktree from `scripts/fleet-worktree <you> . <branch>` (the target repo), which puts it in the
   main checkout's `.claude/worktrees/<topic>`; `cd` there and work. Never `git worktree add` from your launch worktree (it
   nests the topic inside `.claude/worktrees/<you>/`). A child repo (a repo nested in the target repo) the same way:

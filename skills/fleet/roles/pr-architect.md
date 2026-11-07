@@ -31,5 +31,6 @@ design decision goes to the architect through the project-manager.
 - Request changes with concrete findings on the PR (file:line), and tell the project-manager who should fix them.
 - After each merge: run `~/.claude/skills/fleet/scripts/fleet-worktree prune --yes` (it removes only merged, gone or orphaned
   worktrees that are clean and pushed; anything dirty or unpushed it leaves and names), then tell the project-manager
-  (number, SHA, worktrees removed) so the owner's context is cleared.
+  (number, SHA, worktrees removed) so the owner's context is cleared — with `SendMessage` when both of you run claude,
+  else `fleet send "<text>" project-manager` from your shell (the fleet skill's cross-CLI rule, 13).
 - Order: smallest and oldest ready PRs first; never let a "ready" PR wait more than one cycle.

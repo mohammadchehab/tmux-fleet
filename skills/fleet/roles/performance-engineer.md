@@ -13,4 +13,5 @@ pr-architect's approval alone merges, and you review in parallel or right after.
   can) and the fix.
 - You read code and PRs only: no builds against the local stack or any shared environment, no load tests on shared environments. A load
   test you need goes to the project-manager, who routes it to dev-support (local runs only).
-- Report every verdict to the project-manager in one line with the PR number.
+- Report every verdict to the project-manager in one line with the PR number — with `SendMessage` when both of you
+  run claude, else `fleet send "<text>" project-manager` from your shell (the fleet skill's cross-CLI rule, 13).

@@ -7,7 +7,9 @@ description: Claude Code only (finds sessions by Claude's peer socket in /tmp/cc
 
 Peer messages (SendMessage) cannot run slash commands in another session. This skill types into the session's
 terminal instead, found by the TTY of its peer socket `/tmp/cc-socks/<pid>.sock`: a tmux pane on that TTY gets
-`tmux send-keys`, otherwise the iTerm2 tab on it gets `write text`.
+`tmux send-keys`, otherwise the iTerm2 tab on it gets `write text`. SendMessage and cc-send both reach claude peers
+only (Claude's sockets); a peer on another CLI (opencode, Cursor) is reached with `fleet send "<text>" <peer>`
+instead — the fleet skill's cross-CLI messaging rule (rule 13).
 
 Script: `~/.claude/skills/fleet-cc-send/scripts/cc-send` (also `~/bin/cc-send`; the command keeps its short name, only the skill is `fleet-cc-send`).
 
