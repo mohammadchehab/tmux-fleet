@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: Needs tmux; peers run Claude Code, or Cursor's CLI with FLEET_CLI=agent. Bring up a fleet of Claude peers in tmux (/fleet squad, /fleet default, /fleet up engineer-3 designer), stop it (/fleet down), interrupt or clear peers (/fleet interrupt, /fleet clear [peer]), or load a peer's role and operating rules (/fleet engineer, /fleet architect, /fleet designer …).
+description: Needs tmux; peers run Claude Code, Cursor's CLI with FLEET_CLI=agent, or OpenCode through Ori's launcher with FLEET_CLI=opencode. Bring up a fleet of Claude peers in tmux (/fleet squad, /fleet default, /fleet up engineer-3 designer), stop it (/fleet down), interrupt or clear peers (/fleet interrupt, /fleet clear [peer]), or load a peer's role and operating rules (/fleet engineer, /fleet architect, /fleet designer …).
 ---
 
 # The fleet
@@ -67,6 +67,15 @@ caller waits, then reports `busy: <lock> is held by pid <n> (<command>)`; wait a
 Claude aliases, so for `agent` both `--model` and `--effort` are skipped (put a Cursor model in `FLEET_FLAGS`);
 `/rename` is skipped too, and each peer is told in plain text to read `SKILL.md` and `roles/<role>.md`. The script
 header lists the limits.
+
+**OpenCode (via Ori).** `FLEET_CLI=opencode` launches every peer with Ori's launcher, `ori opencode` (needs `ori` on
+PATH and an OpenRouter sign-in, `ori doctor` checks; peers spend OpenRouter credits, not a Claude or Cursor
+subscription). The peer starts `--auto` (FLEET_FLAGS' default for opencode) and its role load goes in as `--prompt`,
+which OpenCode auto-submits at launch — nothing is typed into the peer after it starts. `/rename`, the board's
+`--mcp-config` and the reply-log hooks are skipped (the board is reached through the `backlog` CLI, as for agent;
+`replies.log` stays a Claude Code thing). A role's `models` cols 5–6 — an OpenRouter model ID and a reasoning effort —
+become `--model`/`--reasoning-effort` when present (left to OpenCode's own selection otherwise). The script header
+lists the details.
 Never set `FLEET_CLI` (or any `CLAUDE_*` workaround) on the command line yourself: the environment beats the
 profile, so a `FLEET_CLI=claude` you add overrides a profile's `FLEET_CLI=agent`. Run `FLEET_PROFILE=<name> scripts/fleet-up …`
 and let the profile or the user choose; `fleet-up` prints `peers run <cli> (<where from>)`. If it fails, report the error.

@@ -23,7 +23,7 @@ for s in skills/fleet/squads/*; do
     case "$peer" in ""|"#"*) continue ;; esac; role=${role:-${peer%-[0-9]*}}
     check test -f "skills/fleet/roles/$role.md"
     check grep -q "^${role}[[:space:]]" skills/fleet/models
-    check bash -c "case '${cli:-claude}' in claude|agent) ;; *) exit 1 ;; esac"
+    check bash -c "case '${cli:-claude}' in claude|agent|opencode) ;; *) exit 1 ;; esac"
   done < "$s"
 done
 # link.sh: links, idempotent, leaves a foreign folder alone; uninstall removes only our links

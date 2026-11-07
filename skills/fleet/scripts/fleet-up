@@ -24,14 +24,19 @@
 #                              fleet-up never kills the tmux session it runs in; it says what it skipped.
 #   FLEET_BASE=<ref>           base for new peer worktrees; default origin/main (local main without a remote)
 #   FLEET_FLAGS="..."          default --dangerously-skip-permissions (peers must share the PM's permission mode)
-#   FLEET_CLI=claude|agent     default claude (Claude Code); agent = Cursor's CLI. For agent: FLEET_FLAGS defaults to
-#                              --force (Cursor's allow-all, the nearest to --dangerously-skip-permissions);
-#                              --model and --effort are skipped (../models holds Claude aliases and Cursor has no
-#                              effort flag; pass a Cursor model in FLEET_FLAGS, e.g. FLEET_FLAGS="--force --model X");
-#                              /rename is skipped (Cursor has none; the tmux session fleet-<profile>-<peer> names the peer) and
-#                              the role is loaded with a plain prompt to read the fleet skill, not /fleet <role>.
-#                              fleet-send's busy check reads Claude Code's "esc to interrupt" and may not see a busy
-#                              Cursor peer.
+#   FLEET_CLI=claude|agent|opencode
+#                              default claude (Claude Code); agent = Cursor's CLI; opencode = OpenCode through Ori's launcher
+#                              (the `ori opencode` binary; OpenRouter credential, `ori doctor`). For agent: FLEET_FLAGS defaults
+#                              to --force (Cursor's allow-all, the nearest to --dangerously-skip-permissions); --model and
+#                              --effort are skipped (../models holds Claude aliases and Cursor has no effort flag; pass a Cursor
+#                              model in FLEET_FLAGS, e.g. FLEET_FLAGS="--force --model X"); /rename is skipped (Cursor has none;
+#                              the tmux session fleet-<profile>-<peer> names the peer) and the role is loaded with a plain prompt
+#                              to read the fleet skill, not /fleet <role>. For opencode: FLEET_FLAGS defaults to --auto
+#                              (auto-approve); the role load goes in as --prompt (auto-submitted at launch, nothing typed after);
+#                              /rename, --mcp-config and the reply-log hooks are skipped (the board is reached through the backlog
+#                              CLI, as for agent); a role's ../models cols 5–6 (OpenRouter model ID and reasoning effort) become
+#                              --model/--reasoning-effort, which Ori must see before the upstream flags (fleet-up orders them so).
+#                              fleet-send's busy check reads OpenCode's "esc interrupt" pane hint.
 #   FLEET_BOARD_PORT=<port>   the board's port (lib/backlog.sh); default 6420 with no profile, else one derived from the profile
 # The board (Backlog.md, lib/backlog.sh): fleet-up creates $FLEET_STATE/backlog when it is missing, gives every peer
 # BACKLOG_CWD=$FLEET_STATE (the backlog CLI then reaches that board from any worktree) and, for Claude Code peers,
@@ -52,9 +57,10 @@ fleet_lock "$(fleet_state_dir)" fleet "${FLEET_LOCK_WAIT:-60}" "$@" || exit 1
 CLI=${FLEET_CLI:-claude}
 if [ -n "$CLI_FROM" ]; then :; elif [ -n "${FLEET_CLI:-}" ]; then CLI_FROM="profile ${FLEET_PROFILE:-}"; else CLI_FROM=default; fi
 case "$CLI" in
-  claude) FLAGS=${FLEET_FLAGS---dangerously-skip-permissions} ;;
-  agent)  FLAGS=${FLEET_FLAGS---force} ;;
-  *) echo "fleet-up: FLEET_CLI must be claude or agent, not '$CLI'" >&2; exit 1 ;;
+  claude)   FLAGS=${FLEET_FLAGS---dangerously-skip-permissions} ;;
+  agent)    FLAGS=${FLEET_FLAGS---force} ;;
+  opencode) FLAGS=${FLEET_FLAGS---auto} ;;
+  *) echo "fleet-up: FLEET_CLI must be claude, agent or opencode, not '$CLI'" >&2; exit 1 ;;
 esac
 SKILL="$(cd "$(dirname "$0")/.." && pwd)"
 SQUADS="$(cd "$(dirname "$0")/../squads" && pwd)"
@@ -72,7 +78,7 @@ else
 fi
 for r in "${ROLES[@]}"; do
   [ -f "$SKILL/roles/${ROLE_OF[$r]}.md" ] || { echo "fleet-up: $r: no role file roles/${ROLE_OF[$r]}.md" >&2; exit 1; }
-  case "${CLI_OF[$r]}" in claude|agent) ;; *) echo "fleet-up: $r: cli must be claude or agent, not '${CLI_OF[$r]}'" >&2; exit 1 ;; esac
+  case "${CLI_OF[$r]}" in claude|agent|opencode) ;; *) echo "fleet-up: $r: cli must be claude, agent or opencode, not '${CLI_OF[$r]}'" >&2; exit 1 ;; esac
 done
 for pair in ${FLEET_PEER_DIRS:-}; do
   d=${pair#*=}; [[ "$d" == \~ || "$d" == \~/* ]] && d=$HOME${d:1}
@@ -80,7 +86,7 @@ for pair in ${FLEET_PEER_DIRS:-}; do
   DIR_OF[${pair%%=*}]=$d
 done
 # flags per CLI: FLEET_FLAGS is for the default CLI; a peer on the other CLI gets that CLI's default
-flags_for() { if [ "$1" = "$CLI" ]; then echo "$FLAGS"; elif [ "$1" = claude ]; then echo --dangerously-skip-permissions; else echo --force; fi; }
+flags_for() { if [ "$1" = "$CLI" ]; then echo "$FLAGS"; elif [ "$1" = claude ]; then echo --dangerously-skip-permissions; elif [ "$1" = opencode ]; then echo --auto; else echo --force; fi; }
 # the board's MCP server, Claude Code only (Cursor's agent has no --mcp-config; its peers use the backlog CLI)
 mcp_flags() { [ "$1" = claude ] && [ -n "$BOARD_MCP" ] && echo "--mcp-config $(printf '%q' "$BOARD_MCP")" || true; }
 # every Claude Code peer gets the fleet's hooks (hooks/peer-settings.json: Stop → scripts/fleet-reply-log, which appends each
@@ -103,12 +109,18 @@ UNSET=$(env | { grep -oE '^(CLAUDE[A-Z_]*|AI_AGENT)=' || true; } | tr -d = | sed
 # (no unignored nested repo) stays green; child repos get the same line from fleet-worktree
 fleet_worktree_exclude "$REPO"
 WT_ROOT=$(fleet_worktree_root "$REPO")
-MODELS="$(dirname "$0")/../models"
-model_flags() {  # --model/--effort for a peer, from ../models by its role; Claude Code only
-  [ "${CLI_OF[$1]}" = claude ] || return 0
+MODELS="${FLEET_MODELS:-$(dirname "$0")/../models}"
+model_flags() {  # --model/--effort for a peer, from ../models by its role; Claude Code (cols 2–3) and opencode
+  # (cols 5–6: OpenRouter IDs and effort, through Ori's launcher); Cursor's agent gets none
   local role=${ROLE_OF[$1]} m e
-  read -r m e _ < <(awk -v r="$role" '$1==r{print $2, $3, $4}' "$MODELS" 2>/dev/null) || true
-  echo "${m:+--model $m} ${e:+--effort $e}"
+  case "${CLI_OF[$1]}" in
+    claude)
+      read -r m e _ < <(awk -v r="$role" '$1==r{print $2, $3, $4}' "$MODELS" 2>/dev/null) || true
+      echo "${m:+--model $m} ${e:+--effort $e}" ;;
+    opencode)
+      read -r _ _ _ m e < <(awk -v r="$role" '$1==r{print $2, $3, $4, $5, $6, $7}' "$MODELS" 2>/dev/null) || true
+      echo "${m:+--model $m} ${e:+--reasoning-effort $e}" ;;
+  esac
 }
 window_env() {  # CLAUDE_CODE_AUTO_COMPACT_WINDOW=<n> for a peer, from column 4 of ../models; Claude Code only
   [ "${CLI_OF[$1]}" = claude ] || return 0
@@ -131,10 +143,19 @@ if fleet_backlog_check && fleet_backlog_init "$FLEET_STATE"; then BOARD_MCP=$(fl
 else echo "fleet-up: no board this time (see above); peers start without it"; fi
 # the tracker override (rule 9), when the profile or the environment sets one
 for v in FLEET_TRACKER_SITE FLEET_TRACKER_PROJECT; do [ -z "${!v:-}" ] || PEER_ENV+=(-e "$v=${!v}"); done
+peer_cmd() {  # the command that starts a peer in its pane: the CLI, its flags, and for opencode the role load in --prompt
+  # (auto-submitted at launch, so nothing is typed after it). Ori's --model/--reasoning-effort precede the upstream flags.
+  if [ "$1" = opencode ]; then
+    local load="You are fleet peer $2. Read $SKILL/SKILL.md and $SKILL/roles/${ROLE_OF[$2]}.md now and follow them."
+    echo "ori opencode $(model_flags "$2") $(flags_for opencode) --prompt $(printf '%q' "$load")"
+  else
+    echo "$1 $(flags_for "$1") $(model_flags "$2") $(mcp_flags "$1") $(hook_flags "$1")"
+  fi
+}
 for r in "${ROLES[@]}"; do
   d=${DIR_OF[$r]:-$WT_ROOT/$r}; [ -d "$d" ] || git -C "$REPO" worktree add -q --detach "$d" "$BASE"
   s=$(fleet_session "$r")
-  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") $(window_env "$r") ${CLI_OF[$r]} $(flags_for "${CLI_OF[$r]}") $(model_flags "$r") $(mcp_flags "${CLI_OF[$r]}") $(hook_flags "${CLI_OF[$r]}")"
+  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") $(window_env "$r") $(peer_cmd "${CLI_OF[$r]}" "$r")"
   tmux set-option -t "$(fleet_target "$s")" @fleet-role "${ROLE_OF[$r]}"; tmux set-option -t "$(fleet_target "$s")" @fleet-cli "${CLI_OF[$r]}"; fleet_tag_session "$s"
 done
 sleep 8
@@ -144,6 +165,7 @@ for r in "${ROLES[@]}"; do
 done
 sleep 2
 for r in "${ROLES[@]}"; do
+  if [ "${CLI_OF[$r]}" = opencode ]; then continue; fi   # its role load went out in --prompt at launch
   if [ "${CLI_OF[$r]}" = claude ]; then load="/fleet ${ROLE_OF[$r]}"
   else load="You are fleet peer $r. Read $SKILL/SKILL.md and $SKILL/roles/${ROLE_OF[$r]}.md now and follow them."; fi
   s=$(fleet_peer_target "$r"); tmux send-keys -t "$s" -l "$load"; sleep 0.6; tmux send-keys -t "$s" Enter

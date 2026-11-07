@@ -40,12 +40,12 @@ Squads (`skills/fleet/squads/<name>`, one peer per line; `-N` suffixes give seve
 Everyone uses the same skills and the same role files (`skills/fleet/roles/<role>.md`); only how the peers run and talk
 differs. Install once with `task install` (below); it links the skills for both Claude Code and Cursor.
 
-| | Claude Code | Cursor CLI (in tmux) | Cursor IDE (Agent chats) |
-| :- | :- | :- | :- |
-| Peers run as | `claude` in tmux, one session per peer | Cursor's `agent` in tmux | one Agent chat per role |
-| Start | `/fleet <squad>` or `fleet-up <squad>` | `fleet-up` with `FLEET_CLI=agent` | "Load the fleet skill and act as <role>" |
-| Messages | peers `fleet-send` each other | the project-manager relays with `fleet-send` | you paste briefs between chats |
-| Status | supported, the default | experimental | supported |
+| | Claude Code | Cursor CLI (in tmux) | OpenCode (via Ori) | Cursor IDE (Agent chats) |
+| :- | :- | :- | :- | :- |
+| Peers run as | `claude` in tmux, one session per peer | Cursor's `agent` in tmux | `ori opencode` in tmux, one session per peer | one Agent chat per role |
+| Start | `/fleet <squad>` or `fleet-up <squad>` | `fleet-up` with `FLEET_CLI=agent` | `fleet-up` with `FLEET_CLI=opencode` | "Load the fleet skill and act as <role>" |
+| Messages | peers `fleet-send` each other | the project-manager relays with `fleet-send` | peers `fleet-send` each other | you paste briefs between chats |
+| Status | supported, the default | experimental | supported | supported |
 
 ### Claude Code users
 
@@ -68,6 +68,23 @@ Limits (see the `fleet-up` header):
 - peers do not message each other: the project-manager relays.
 - Cost: a sample run (one fleet, a couple of peers, a few minutes, 2026-10-25) used about $4 of a $70 monthly Cursor
   seat. Measure before running a squad for hours; for long runs prefer Claude Code peers.
+
+### OpenCode (via Ori) users
+
+OpenCode peers run through Ori's launcher, which spends an OpenRouter credential (not a Claude or Cursor
+subscription): `ori` on PATH and signed in (`ori doctor` checks). Set `FLEET_CLI=opencode` in your profile (or the
+environment), or name it per peer on a squad line (`oc-eng engineer opencode`); a mixed fleet runs any combination.
+
+Each peer starts `ori opencode --auto` with its role load in `--prompt` (OpenCode auto-submits it, so `fleet-up` types
+nothing into opencode peers afterwards). Where the Claude Code and Cursor sections diverge:
+
+- no `/rename` (the tmux session `fleet-<profile>-<peer>` names the peer, as for Cursor);
+- the board has no `--mcp-config` for these peers — they use the `backlog` CLI through `BACKLOG_CWD`, as for Cursor;
+- `replies.log` (the reply-log hook) is a Claude Code thing; opencode peers do not write it;
+- the peer's model comes from the role's `models` cols 5–6 (an OpenRouter model ID and a reasoning effort, e.g.
+  `anthropic/claude-sonnet-4.6` `high`) when present, else OpenCode's own selection; reasoning effort is one of
+  `max xhigh high medium low minimal none`;
+- cost: OpenRouter pricing for the model you pin — measure before running a squad for hours.
 
 ### Cursor IDE users
 
@@ -237,10 +254,12 @@ its own sessions, so two run side by side on one tmux server and `fleet-down` st
 
 - `FLEET_REPO`: the repo the peers work on (default: the profile's, else the main checkout of the repo you are in).
 - `FLEET_BASE`: base ref for new worktrees (default `origin/main`).
-- `FLEET_FLAGS`: flags for each peer's CLI (default `--dangerously-skip-permissions`; `--force` for `agent`). A peer
+- `FLEET_FLAGS`: flags for each peer's CLI (default `--dangerously-skip-permissions`; `--force` for `agent`;
+  `--auto` for `opencode`). A peer
   whose squad line names the other CLI gets that CLI's default.
-- `FLEET_CLI`: `claude` (default) or `agent` (Cursor's CLI). Never inferred from the session that runs `fleet-up`;
-  set it in the environment or the profile. A squad line `<peer> [role] [cli]` overrides it for that peer.
+- `FLEET_CLI`: `claude` (default), `agent` (Cursor's CLI) or `opencode` (OpenCode through Ori's launcher). Never inferred
+  from the session that runs `fleet-up`; set it in the environment or the profile. A squad line `<peer> [role] [cli]`
+  overrides it for that peer.
 - `FLEET_PEER_DIRS`: `peer=folder …`, for peers that work in their own clone instead of a worktree of `FLEET_REPO`
   (the `teams` squad). Keep it in your profile: the paths are yours.
 - `FLEET_STATE`: where the project-manager keeps its handoff and the board lives (default `~/.fleet-state/<profile>/`, `~/.fleet-state/` with no profile).
@@ -273,7 +292,8 @@ In Claude Code, `/fleet interrupt`, `/fleet clear`, `/fleet send`, `/fleet peek`
 
 ## Skills in this repo
 
-- `fleet`: bring the fleet up and down, and load a role (`/fleet <squad|role>`). Needs tmux; peers run Claude Code, or Cursor's CLI with `FLEET_CLI=agent`.
+- `fleet`: bring the fleet up and down, and load a role (`/fleet <squad|role>`). Needs tmux; peers run Claude Code,
+  Cursor's CLI with `FLEET_CLI=agent`, or OpenCode through Ori's launcher with `FLEET_CLI=opencode`.
 - `fleet-pm`: the project-manager's orchestration workflow. Needs tmux peers started by `fleet-up`.
 - `fleet-board`: the fleet's board (Backlog.md): open it, sync your Jira tickets onto it (`board-jira`), copy the repo's
   specs and architecture into its Docs (`board-docs`), record and answer decisions (`board-decision`), and who moves which
