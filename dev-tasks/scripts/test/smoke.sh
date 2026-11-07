@@ -83,6 +83,15 @@ mkdir -p "$t/blbin"; printf '#!/bin/sh\n[ "$1" = --version ] && echo %s\n' "$PIN
 check bash -c 'env PATH="$1:/usr/bin:/bin" dev-tasks/scripts/install/backlog.sh | grep -q "already installed"' _ "$t/blbin"
 mkdir -p "$t/blstate/backlog"; : > "$t/blstate/backlog/config.yml"   # board-jira refuses input that is not a JSON array
 check bash -c 'echo "{}" | env PATH="$1:$PATH" FLEET_STATE="$2/blstate" skills/fleet-board/scripts/board-jira; [ $? -eq 2 ]' _ "$t/blbin" "$t"
+# fleet-board --iterm: the terminal Kanban (backlog board) in a split, never the page; a stub backlog writes how it was run
+printf '#!/bin/sh\n[ "$1" = --version ] && { echo %s; exit; }\necho "$BACKLOG_CWD $*" > "%s/board.out"\n' "$PIN" "$t" > "$t/blbin/bl-board"
+chmod +x "$t/blbin/bl-board"; B=(env -u TMUX -u TERM_PROGRAM FLEET_BACKLOG_BIN="$t/blbin/bl-board" FLEET_STATE="$t/blstate")
+check bash -c '"$@" skills/fleet/scripts/fleet-board --iterm --bogus 2>/dev/null; [ $? -eq 2 ]' _ "${B[@]}"
+check bash -c '"${@:2}" skills/fleet/scripts/fleet-board --iterm --vertical && grep -qx "$1/blstate board --vertical" "$1/board.out"' _ "$t" "${B[@]}"
+rm -f "$t/board.out"; command tmux -L fleet-smoke-board new-session -d -x 120 -y 30
+sock=$(command tmux -L fleet-smoke-board display -p '#{socket_path}')
+check bash -c '"${@:3}" TMUX="$2,0,0" TMUX_PANE=%0 skills/fleet/scripts/fleet-board --iterm && sleep 1 && grep -qx "$1/blstate board" "$1/board.out"' _ "$t" "$sock" "${B[@]}"
+command tmux -L fleet-smoke-board kill-server 2>/dev/null || true
 # with the real backlog CLI at the pinned version (task install:backlog), the board scripts end to end in a temp state folder
 if [ "$(backlog --version 2>/dev/null)" = "$PIN" ]; then
   export FLEET_STATE="$t/board"; R="$t/docrepo"; mkdir -p "$R/docs/architecture" "$R/src"; git -C "$R" init -q

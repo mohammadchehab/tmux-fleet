@@ -140,7 +140,7 @@ dispatcher: `fleet up` is `fleet-up`, `fleet install` is `task install`, and so 
 fleet --profile <name> up squad      # start that profile's fleet; --profile works anywhere before "--"
 fleet ls                             # every fleet on this machine: view, board URL and status, each peer's role, CLI and state
 fleet attach [peer]                  # open the view (rebuilt if gone) or one peer; inside tmux it switches, no nested tmux
-fleet board                          # open the board
+fleet board                          # open the board; --iterm shows it as a Kanban in a terminal split
 fleet capacity · fleet send "text" engineer-1 · fleet peek · fleet scale add engineer · fleet down
 fleet install · fleet update · fleet lint · fleet test
 ```
