@@ -1,6 +1,6 @@
 ---
 name: fleet-triage
-description: "Works in Claude Code (SendMessage to the architect) and Cursor (paste the brief into the architect chat). Use when the user reports a bug, broken screen, error, or \"why does X behave like Y\" in the fleet — routes it to the architect for root cause and classification (design bug vs implementation bug vs data/config vs environment). The PM never diagnoses or classifies. Alias: rca."
+description: "Works in Claude Code (SendMessage to the architect, or fleet send when it is not claude) and Cursor (a tmux peer fleet-sends the brief; an IDE chat asks the human to paste it into the architect chat). Use when the user reports a bug, broken screen, error, or \"why does X behave like Y\" in the fleet — routes it to the architect for root cause and classification (design bug vs implementation bug vs data/config vs environment). The PM never diagnoses or classifies. Alias: rca."
 ---
 
 # Triage / RCA
@@ -9,7 +9,10 @@ The project-manager **does not diagnose, classify, or propose fixes**. The archi
 
 ## 1. Send to the architect (immediately, no PM analysis)
 
-SendMessage to `architect`, with `notify_when_idle: true`. Include only facts from the user:
+If the architect runs claude (`fleet ls` shows each peer's CLI), SendMessage to `architect`, with `notify_when_idle:
+true`. If its CLI is not claude, run `fleet send "<brief>" architect` from your shell instead — `SendMessage`
+reaches only claude peers and a non-claude peer has no such tool (the fleet skill's cross-CLI rule, 13); `fleet peek
+architect` first when it runs opencode. Include only facts from the user:
 
 ```
 TRIAGE <short title> — from the user.

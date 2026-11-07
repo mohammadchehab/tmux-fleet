@@ -6,7 +6,8 @@ the specs folder only.
 - Draft each journey where the target repo's `AGENTS.md` says specs live, in your own worktree on a `docs/<area>-spec`
   branch; the pr-architect reviews and merges it. Source documents are cited by ID and paraphrased, never quoted;
   third-party IP is never copied.
-- Hand each draft to the spec-reviewer through the project-manager. Address every finding, or answer why not with
+- Hand each draft to the spec-reviewer through the project-manager (message it with `SendMessage` when both of you
+  run claude, else `fleet send "<text>" project-manager` from your shell — the fleet skill's cross-CLI rule, 13). Address every finding, or answer why not with
   the source ID, in the draft's review log. Two rounds at most, then the project-manager decides.
 - The tracker (the project named in the target repo's AGENTS.md) is written only after the user's go, relayed by the
   project-manager: one issue per story, linking to its spec file and section, source IDs listed, the epic linked.

@@ -24,13 +24,15 @@ Only the user, from their own shell, starts or stops the fleet: inside a peer se
   `squads/squad` = project-manager, architect, pr-architect, security-architect, engineer-1, engineer-2, designer.
   `squads/spec` = project-manager, ba, spec-reviewer, architect, pr-architect, engineer: writing
   and refining requirements; the engineer only runs spikes that answer the squad's open questions, no feature code. `squads/solo` = one `engineer`, the cheapest fleet. `squads/teams` = peers named after the team they work for (android, ios, web, be, identity,
-  platform, da, qa-web, qa-mobile), each with its role and CLI on its line (`<peer> [role] [cli]`), plus a `jira` peer
+  platform, da, qa-web, qa-mobile), each with its role and CLI on its line (`<peer> [role] [cli]` — keep the
+   project-manager and coordinating roles on claude; non-claude peers do leaf work), plus a `jira` peer
   that keeps the tracker in step; each peer's own clone comes from `FLEET_PEER_DIRS` in the profile. Each peer's model and effort
   come from `models` (role → model, effort): sonnet by default, opus only for the project-manager, architect and
   spec-reviewer.
 - **replies**: every Claude Code peer's reply is appended to `$FLEET_STATE/replies.log` by the Stop hook in
   `hooks/peer-settings.json` (`scripts/fleet-reply-log`, passed by fleet-up as `--settings`): one line per reply with time,
   peer, card/PR refs and `ASK` when it ends in a question or says blocked. `tail -f $FLEET_STATE/replies.log` to watch.
+   A non-claude peer writes no line there — read its replies with `peek` (rule 13).
 - **`peek [peer …]`**: run `scripts/fleet-peek [-n lines] [peer …]` (each peer's last reply without its CLI's chrome,
   with its state: busy, asking, held, unknown or idle; read-only).
 - **`handoff`**: load the `fleet-handoff` skill (any peer: write your state file, then clear yourself) — see
@@ -52,7 +54,8 @@ Only the user, from their own shell, starts or stops the fleet: inside a peer se
 - **`clear [peer …]`**: run `scripts/fleet-send -f /clear [peer …]` (busy peers are interrupted first, then cleared),
   then `scripts/fleet-send "/fleet <role>" <peer>` for each cleared peer so it reloads its role.
 - **`send "<text>" [peer …]`**: run `scripts/fleet-send [-f] "<text>" [peer …]` (type a line into peers' prompts;
-  `-f` interrupts busy ones first, otherwise the line queues until their turn ends).
+  `-f` interrupts busy ones first, otherwise the line queues until their turn ends). The way to message a peer whose
+  CLI is not claude (rule 13).
 - **A role** (`project-manager`, `engineer`, `architect`, `pr-architect`, `security-architect`, `designer`,
   `dev-support`, `ba`, `spec-reviewer`):
   you are that peer. Read `roles/<role>.md` in this skill's folder now and follow it.
@@ -154,6 +157,15 @@ These rules apply to everyone:
     merged and the worktree is gone; blocked: label `blocked` and a comment naming who unblocks. Read the accepted
     decisions (`board-decision list accepted`) before you act and never ask again what one answers; a question only the
     user can answer goes to the project-manager, who records it as a decision.
+13. **Cross-CLI messaging.** `SendMessage` is a Claude Code tool: it reaches only claude peers (its peer sockets are
+    Claude's, in `/tmp/cc-socks`), and a peer on another CLI (opencode, Cursor) has no `SendMessage` tool, so in a mixed
+    squad Claude <-> non-Claude messages silently go nowhere. Between claude peers `SendMessage` stays the default. To a
+    peer whose CLI is not claude (`fleet ls` shows each peer's CLI), message it with `fleet send "<text>" <peer>` — it
+    types the line into the peer's tmux pane and works for every CLI. A non-claude peer reports to anyone (the
+    project-manager, a peer) the same way, `fleet send "<text>" <peer>` from its shell tool, and never assumes
+    `SendMessage` exists. Limits: `fleet send`'s busy check does not recognise opencode's screen yet, so run
+    `fleet peek <peer>` before sending to an opencode peer; opencode replies are not in `$FLEET_STATE/replies.log`
+    (that is a Claude-only Stop hook) — read them with `fleet peek <peer>`.
 
 Project rules in the target repo's AGENTS.md, CLAUDE.md and memory still apply (no direct pushes to main; PRs squash-merge;
 the repo's checks before every push and in every review; a child repo's docs and tests live in that repo).

@@ -33,7 +33,7 @@ Squads (`skills/fleet/squads/<name>`, one peer per line; `-N` suffixes give seve
 - `default`: the squad `fleet-up` starts when you name none.
 - `teams`: peers named after the team they work for (android, ios, web, be, identity, platform, da, qa-web,
   qa-mobile), a `jira` peer for the tracker, and the project-manager and architect. Mixed CLIs; each line is
-  `<peer> [role] [cli]`.
+  `<peer> [role] [cli]`. Keep the project-manager and coordinating roles on claude; non-claude peers do leaf work.
 
 ## Claude Code users, Cursor CLI users, Cursor IDE users
 
@@ -44,7 +44,7 @@ differs. Install once with `task install` (below); it links the skills for both 
 | :- | :- | :- | :- | :- |
 | Peers run as | `claude` in tmux, one session per peer | Cursor's `agent` in tmux | `ori opencode` in tmux, one session per peer | one Agent chat per role |
 | Start | `/fleet <squad>` or `fleet-up <squad>` | `fleet-up` with `FLEET_CLI=agent` | `fleet-up` with `FLEET_CLI=opencode` | "Load the fleet skill and act as <role>" |
-| Messages | peers `fleet-send` each other | the project-manager relays with `fleet-send` | peers `fleet-send` each other | you paste briefs between chats |
+| Messages | `SendMessage` between claude peers, `fleet send` to a non-claude peer | the project-manager relays with `fleet send`; a cursor peer reports with `fleet send` | no `SendMessage`: peers report with `fleet send` | you paste briefs between chats |
 | Status | supported, the default | experimental | supported | supported |
 
 ### Claude Code users
@@ -65,7 +65,9 @@ Limits (see the `fleet-up` header):
   (`FLEET_FLAGS="--force --model X"`), since `skills/fleet/models` holds Claude aliases;
 - a line sent into a Cursor peer can land as a new line instead of being submitted, so a peer may sit on an unsent
   prompt; `/model` opens Cursor's model picker instead of switching;
-- peers do not message each other: the project-manager relays.
+- peers do not message each other: the project-manager relays. A cursor peer's own reports go out with
+  `fleet send "<text>" project-manager` from its shell — it has no `SendMessage` tool (the `fleet` skill's
+  cross-CLI rule, 13).
 - Cost: a sample run (one fleet, a couple of peers, a few minutes, 2026-10-25) used about $4 of a $70 monthly Cursor
   seat. Measure before running a squad for hours; for long runs prefer Claude Code peers.
 
@@ -80,7 +82,11 @@ nothing into opencode peers afterwards). Where the Claude Code and Cursor sectio
 
 - no `/rename` (the tmux session `fleet-<profile>-<peer>` names the peer, as for Cursor);
 - the board has no `--mcp-config` for these peers — they use the `backlog` CLI through `BACKLOG_CWD`, as for Cursor;
-- `replies.log` (the reply-log hook) is a Claude Code thing; opencode peers do not write it;
+- `replies.log` (the reply-log hook) is a Claude Code thing; opencode peers do not write it — read their replies
+  with `fleet peek <peer>`;
+- messaging: opencode peers have no `SendMessage` tool, so they report to the project-manager (or any peer) with
+  `fleet send "<text>" <peer>` from their shell; and because `fleet send`'s busy check does not recognise
+  opencode's screen yet, senders run `fleet peek <peer>` first (the `fleet` skill's cross-CLI rule, 13);
 - the peer's model comes from the role's `models` cols 5–6 (an OpenRouter model ID and a reasoning effort, e.g.
   `anthropic/claude-sonnet-4.6` `high`) when present, else OpenCode's own selection; reasoning effort is one of
   `max xhigh high medium low minimal none`;

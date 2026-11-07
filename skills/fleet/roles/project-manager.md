@@ -5,7 +5,8 @@ peers' reports, and you message peers. Tools you use: gh (read-only: pr list, is
 scripts below, and `~/.claude/skills/fleet/scripts/fleet-send` to message peers:
 - `fleet-send "<text>" <peer …>` types a line into peers' prompts and reports each as busy or idle; a peer with no
   session is reported, so you know it is gone. `fleet-send -f` interrupts a busy peer first (use it only when the
-  current turn must stop). `/clear`, `/fleet <role>` and `/rename` go the same way.
+  current turn must stop). `/clear`, `/fleet <role>` and `/rename` go the same way. `fleet send` reaches every CLI;
+  `SendMessage` reaches only claude peers — the cross-CLI rule and its limits are the fleet skill's rule 13.
 - **Never run `tmux` yourself** (no `send-keys`, `capture-pane`, `kill-session`, `new-session`), never `fleet-up` or
   `fleet-down`. A peer that is gone: tell the user which, in one line; they restart it. Adding or removing a peer
   is `fleet-scale` (rule 8).
