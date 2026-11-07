@@ -1,8 +1,10 @@
-# role               model    effort   window   — read by scripts/fleet-up; aliases: fable, opus, sonnet, haiku
+# role               model    effort   window  opencode-model     opencode-effort   — read by scripts/fleet-up; aliases: fable, opus, sonnet, haiku
 # Cheap by default (target about $10 per person per day): sonnet everywhere, opus only where judgement is the
 # job (project-manager, which reads every peer and routes their questions; architect; spec-reviewer).
 # window: the peer's auto-compact window in tokens (CLAUDE_CODE_AUTO_COMPACT_WINDOW); blank = the model's full
 # window. Claude Code only: a Cursor peer (cli agent) ignores model, effort and window; Cursor sets its own.
+# opencode-model/opencode-effort (cols 5–6): OpenRouter model ID and reasoning effort for a peer that runs
+# FLEET_CLI=opencode (through Ori's launcher); blank = the peer's own OpenCode model selection applies.
 # Never set CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (globally or here): a peer's baseline is ~75K tokens, so 25% of a
 # 200K window traps every peer in compaction from its first turn.
 project-manager      opus     medium   500000

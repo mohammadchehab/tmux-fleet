@@ -20,5 +20,20 @@ is held   "$(pane '⏺ Done.' 'Deliver this message to Claude?')"               
 is unknown "$(printf '%s\n' 'Select an option:' '  1. Yes' '  2. No')"                    "a dialog, no input box"
 reply=$(PROMPT_LINE="❯ What's next on the board?" pane '⏺ Done. TASK-3 is in Review.' | fleet_pane_reply | tail -1)
 if [ "$reply" = '⏺ Done. TASK-3 is in Review.' ]; then pass=$((pass+1)); else echo "FAIL: the reply shown must not be the suggestion: $reply"; fail=$((fail+1)); fi
+# opencode (via Ori) peer: the input box's border lines, the hint and MCP footer lines, the busy hint and the turn
+# footer are chrome. Fixtures as captured from a real pane.
+oc_box() { printf '┃\n┃  Ask anything… "Fix a TODO in the codebase"\n┃\n┃  Build · Qwen3.8 27B OpenRouter · medium\n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n/tmp/proj  shift+tab agents  ctrl+p commands\n⊙ 1 MCP /mcps'; }
+oc_pane() { printf '%s\n' "$1"; oc_box; }
+oc_busy_pane() { printf '%s\n' "$1"; printf '┃\n┃\n┃  Build · Qwen3.8 27B OpenRouter · medium\n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n⬝⬝⬝⬝⬝⬝⬝⬝ esc interrupt  20.5K (2%%) · $0.02  ctrl+p commands'; }
+is idle   "$(oc_pane 'Done. TASK-5 is in Review.')"      "an opencode finished reply"
+is asking "$(oc_pane 'Shall I take TASK-6 next?')"       "an opencode reply that ends with a question"
+is busy   "$(oc_busy_pane 'Working…')"                   "an opencode running turn"
+is unknown "$(printf '%s\n' 'Select an option:' '  1. Yes' '  2. No')" "an opencode dialog, no input box"
+reply=$( { printf 'PONG\nBuild · Qwen3.8 27B · 1.4s · 14.8 tok/s\n'; oc_box; } | fleet_pane_reply | tail -1)
+if [ "$reply" = 'PONG' ]; then pass=$((pass+1)); else echo "FAIL: the opencode reply must not include the turn footer: $reply"; fi
+# capture-pane pads every line to the pane width, and the right-hand panel (Context, tokens, spend, MCP) rides on the
+# reply's line as a far-right suffix: the reply keeps, the suffix goes
+reply=$( { printf '%s%*s\n' 'The answer is B.' 100 '28,549 tokens'; printf '%*s%*s\n' 100 '' 50 'Context'; } | fleet_pane_clean)
+if [ "$reply" = 'The answer is B.' ]; then pass=$((pass+1)); else echo "FAIL: the padded panel lines must be stripped, not the reply: $(printf '%s' "$reply" | sed 's/ */_/g')"; fi
 echo "pane: $pass passed, $fail failed"
 [ $fail -eq 0 ]

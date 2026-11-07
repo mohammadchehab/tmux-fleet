@@ -344,6 +344,36 @@ echo "$out" | grep -q 'a handoff of engineer is already queued' && ! has fleet-a
 kill "$hw" 2>/dev/null; wait "$hw" 2>/dev/null || true
 unset FLEET_TMUX FAKE_REQUIRE_FLAG FLEET_USER_PROFILES_DIR
 
+# (P) FLEET_CLI=opencode: the peer starts via Ori's launcher, `ori opencode`, whose --model/--reasoning-effort must come
+# before the upstream flags; --auto for approval; the role load goes in as --prompt (no /rename, no typed prompt, no
+# Claude-only --mcp-config/--settings); @fleet-cli is tagged opencode. The opencode model comes from the models file's
+# 5th–6th columns when the role's row has them.
+reset; export FLEET_TMUX=private FAKE_REQUIRE_FLAG=1; unset TMUX TMUX_PANE FAKE_OWN
+: > "$t/models"; printf 'engineer sonnet low 150000 openrouter/test-model high\n' > "$t/models"
+out=$(env FLEET_MODELS="$t/models" FLEET_CLI=opencode $S/fleet-up engineer 2>&1) || bad "fleet-up with FLEET_CLI=opencode failed: $out"
+echo "$out" | grep -q 'peers run opencode (environment)' && ok || bad "fleet-up did not report the opencode CLI: $out"
+n=$(grep -- '-s fleet-engineer ' "$t/calls.log" | grep new-session | tail -1 || true)
+echo "$n" | grep -q -- 'ori opencode' && ok || bad "opencode peer not launched with ori opencode: $n"
+echo "$n" | grep -q -- '--model openrouter/test-model --reasoning-effort high --auto' && ok || bad "opencode model/effort/auto flags wrong or misordered: $n"
+echo "$n" | grep -q -- '--prompt' && ok || bad "opencode peer not started with the role load in --prompt: $n"
+echo "$n" | grep -q -- '--mcp-config' && bad "opencode peer got the Claude-only --mcp-config: $n" || ok
+[ "$(cat "$t/srv/private/.opt/fleet-engineer.@fleet-cli" 2>/dev/null)" = opencode ] && ok || bad "@fleet-cli not tagged opencode"
+rm -f "$t/srv/private"/*.keys
+[ ! -e "$t/srv/private/fleet-engineer.keys" ] && ok || bad "opencode peer got send-keys it should not (/rename or a typed prompt): $(cat "$t/srv/private/fleet-engineer.keys")"
+# without 5th–6th columns the opencode peer gets no model flags (its default applies)
+: > "$t/models"; printf 'engineer sonnet low\n' > "$t/models"
+$S/fleet-down >/dev/null 2>&1 || true
+out=$(env FLEET_MODELS="$t/models" FLEET_CLI=opencode $S/fleet-up engineer 2>&1) || bad "fleet-up opencode without model columns failed: $out"
+n=$(grep -- '-s fleet-engineer ' "$t/calls.log" | grep new-session | tail -1 || true)
+echo "$n" | grep -qE -- '--model|--reasoning-effort' && bad "opencode peer got model flags from a row without them: $n" || ok
+# (P2) fleet-peek shows the opencode CLI from the pane's chrome when @fleet-cli is unset; state still reads idle
+export FLEET_TMUX=private FAKE_REQUIRE_FLAG=1; unset TMUX TMUX_PANE FAKE_OWN
+reset; sess private fleet-engineer engineer; : > "$t/calls.log"
+FKOC=$'Done. TASK-5 is in Review.\n┃\n┃  Ask anything… "Fix a TODO"\n╹▀▀▀▀▀\n/tmp/proj  shift+tab agents  ctrl+p commands\n⊙ 1 MCP /mcps'
+out=$(FAKE_PANE="$FKOC" $S/fleet-peek 2>&1) || true
+echo "$out" | grep -q '^===== engineer (opencode, idle)$' && ok || bad "fleet-peek did not read the opencode CLI and idle state from the pane: $out"
+unset FLEET_TMUX FAKE_REQUIRE_FLAG FLEET_MODELS
+
 # (G) clean.sh (crash 2): --force alone never kills a session; --force --sessions kills only the private server's
 # sessions, keeps the caller's own, and never deletes fleet state (a stand-in for ~/.fleet-state/fleet-context.md)
 export FLEET_STATE="$t/state" FLEET_HOME="$t/nohome" FLEET_REPO="$t/notarget"; : > "$t/state/fleet-context.md"; C=dev-tasks/scripts/clean/clean.sh
