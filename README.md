@@ -287,7 +287,7 @@ In Claude Code, `/fleet interrupt`, `/fleet clear`, `/fleet send`, `/fleet peek`
 - `fleet-next`: after a merge, check the worktree is gone and give the peer its next item. Needs gh and `fleet-context.md`.
 - `fleet-cc-send`: type a command or text into other running Claude Code sessions. Claude Code only (finds sessions by Claude's socket).
 - `fleet-triage`, `fleet-rca`: route a bug to the architect for root cause; the project-manager never diagnoses. Works in Claude Code and Cursor.
-- `code-graph`: ask a project's Understand-Anything knowledge graph where code lives, what a file does and what depends on it, in a few hundred tokens instead of reading files. Any repo with a graph from `/understand`. Needs node.
+- `codegraph`: ask the project's CodeGraph index (`.codegraph/`, from `codegraph init`) where code lives, a symbol's source, who calls it and what a change breaks, instead of grepping and reading files. Any indexed repo. Needs the `codegraph` CLI (`npm i -g @colbymchenry/codegraph`).
 - Project-specific skills belong in their own repo; the target repo's `AGENTS.md` names the ones a project needs.
 
 ## Rules that bite
