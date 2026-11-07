@@ -35,7 +35,7 @@ _fleet() {
     decision) [ -n "$sub" ] || words="ask answer list show" ;;
     completion) words="bash zsh" ;;
     profile) [ -n "$sub" ] || words="init" ;;
-    board) words="--no-open" ;;
+    board) words="--no-open --iterm --vertical --milestones" ;;
   esac
   COMPREPLY=($(compgen -W "${words-}" -- "$cur"))
 }

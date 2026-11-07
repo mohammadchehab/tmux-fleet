@@ -16,7 +16,7 @@ fleet [--profile <name>] <command> [args]      (checkout: $FLEET_CHECKOUT)
 Run the fleet
   up [squad | peer …]        start the fleet (fleet-up)               down          stop it; worktrees and board files stay
   ls                         every fleet: view, board, peers + state  attach [peer] open the view, or one peer's session
-  board [--no-open]          open the board (starts it if needed)     view          rebuild the tiled view
+  board [--no-open|--iterm]  the board: web, or a terminal split      view          rebuild the tiled view
   scale add|remove|roles …   add or remove one peer                   clear [-n] [peer …]  clear idle peers over the token limit
   send [-f|-i] "text" [peer …]  type into peers' prompts             peek [-n N] [peer …] each peer's last reply
   capacity [lines]           who is busy, idle, asking; the board     handoff [peer] hand a peer over to a fresh copy

@@ -3,6 +3,8 @@
 # fleet-<profile>-board (fleet-board with no profile) that fleet-up starts; when it is not running, fleet-board starts it the same
 # way (creating $FLEET_STATE/backlog if it is missing), so the board opens with the fleet down too. fleet-down stops it.
 #   fleet-board [--no-open]   --no-open: start it if needed and print the URL, no browser tab
+#   fleet-board --iterm [--vertical] [--milestones]   the board as a Kanban (backlog board, q quits) in a split beside this one, no
+#     page, no browser: a tmux split inside tmux, an iTerm2 split in iTerm2, else in this terminal itself
 # The URL is stable per profile: http://127.0.0.1:<FLEET_BOARD_PORT>, 6420 with no profile, else a port derived from the profile.
 set -euo pipefail
 source "$(dirname "$0")/lib/tmux.sh"
@@ -11,6 +13,29 @@ source "$(dirname "$0")/lib/backlog.sh"
 fleet_load_profile || exit 1
 st=$(fleet_state_dir)
 fleet_backlog_check || exit 1
+if [ "${1:-}" = --iterm ]; then
+  shift
+  for a in "$@"; do case "$a" in --vertical|--milestones) ;; *) echo "fleet-board: --iterm takes --vertical or --milestones, not '$a'" >&2; exit 2 ;; esac; done
+  fleet_backlog_init "$st" || { echo "fleet-board: could not create the board in $st/backlog" >&2; exit 1; }
+  cmd="BACKLOG_CWD=$(printf '%q' "$st") $(printf '%q' "$(fleet_backlog)") board"; for a in "$@"; do cmd+=" $a"; done
+  # inside tmux: the user's own server ($TMUX), not the fleet's private socket, so command tmux, not the lib's wrapper
+  if [ -n "${TMUX:-}" ]; then command tmux split-window -h -c "$st" "$cmd"; exit
+  elif [ "${TERM_PROGRAM:-}" = iTerm.app ] && command -v osascript >/dev/null 2>&1; then
+    # the command goes in as an argument, never spliced into the AppleScript; "; exit" closes the split when the board quits
+    osascript - "$cmd; exit" >/dev/null <<'APPLESCRIPT'
+on run argv
+  tell application "iTerm2"
+    tell current session of current window
+      set s to (split vertically with default profile)
+    end tell
+    tell s to write text (item 1 of argv)
+  end tell
+end run
+APPLESCRIPT
+    exit
+  fi
+  BACKLOG_CWD=$st exec "$(fleet_backlog)" board "$@"
+fi
 fleet_board_start "$st" || { echo "fleet-board: could not start the board in $st/backlog" >&2; exit 1; }
 url=$(fleet_board_url)
 echo "board: $url   (session $(fleet_board_session), files $st/backlog)"
