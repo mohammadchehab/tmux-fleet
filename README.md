@@ -194,7 +194,9 @@ fleet wt new <peer> . <branch>   # a topic worktree in <main checkout>/.claude/w
 
 Classes: **active**; **idle** (no commit or file change for `FLEET_WT_IDLE_DAYS`, default 7); **merged** and **gone** (the
 branch is in main, or deleted on the remote); **orphaned** (the folder is missing, a peer's launch worktree whose peer is
-not running, or a topic whose owner is not running while its fleet runs); **nested** (inside another worktree). Prune never
+not running, a topic whose owner is not running while its fleet runs, or an opencode worktree — kind opencode,
+under the opencode data dir outside the repo (`FLEET_OPENCODE_WT_ROOT` overrides the root) — with nothing running
+in it); **nested** (inside another worktree). Prune never
 removes a worktree that is dirty, has unpushed commits, has a running peer's pane in it or is your current directory, and
 runs under the fleet lock. `fleet ls` and the standup show one line per profile ("worktrees (p): 12, 3 stale, 4.1 GB"),
 keep-busy reminds the owner of a merged worktree once, and capacity flags a peer sitting in a stale one. PR state comes from

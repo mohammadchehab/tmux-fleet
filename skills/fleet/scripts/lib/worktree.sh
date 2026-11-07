@@ -3,7 +3,9 @@
 #
 # The rule: every repo's worktrees live in <main checkout of that repo>/.claude/worktrees/<topic>, named after the
 # topic only (no peer name, no folder per repo). The fleet repo is a repo like any other: FLEET_HOME is its main checkout
-# (FLEET_HOME overrides it, for tests). Nothing here moves a worktree that exists.
+# (FLEET_HOME overrides it, for tests). Worktrees an opencode session makes live outside the repo, under the opencode
+# worktree root (FLEET_OPENCODE_WT_ROOT, default the opencode data dir) — the same inventory and prune cover them
+# (kind opencode, orphaned while nothing runs in them). Nothing here moves a worktree that exists.
 # Provides: FLEET_HOME, fleet_main_checkout, fleet_worktree_root, fleet_worktree_exclude, fleet_worktree_owner_set,
 # fleet_worktree_owner, fleet_child_repos, fleet_branch_state.
 
@@ -17,6 +19,9 @@ fleet_main_checkout() {
 source "$(dirname "${BASH_SOURCE[0]}")/lock.sh"   # fleet_wt_cached refreshes under a lock
 _fleet_wt_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 FLEET_HOME=${FLEET_HOME:-$(fleet_main_checkout "$_fleet_wt_lib" || true)}
+# opencode's worktrees (a peer's opencode session makes them with its own tool) live outside the repo, under opencode's
+# data dir; fleet wt tracks them like any worktree (kind opencode). Override for tests.
+FLEET_OPENCODE_WT_ROOT=${FLEET_OPENCODE_WT_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode/worktree}
 unset _fleet_wt_lib
 
 # <main checkout>/.claude/worktrees for the repo containing <path>
@@ -192,7 +197,10 @@ fleet_wt_scan() {
     local owner="" kind=topic pr="-" age=0 dirty=0 unp=0 size="" inuse="-" class="" bstate="" missing=0 x
     [ "$want_pr" = 1 ] && pr="?"
     if [ "$prunable" = 1 ] || [ ! -d "$wt" ]; then missing=1; fi
-    # a peer's launch worktree: <repo>/.claude/worktrees/<peer>, named after a role (detached, or on a branch it checked out)
+    # a peer's launch worktree: <repo>/.claude/worktrees/<peer>, named after a role (detached, or on a branch it checked out);
+    # an opencode worktree: one an opencode session made (this worktree, fleet wt new's target, a peer's opencode tool),
+    # registered in the repo but living under the opencode worktree root
+    case "$wt" in "$FLEET_OPENCODE_WT_ROOT"/*) kind=opencode ;; esac
     if [ "$(basename "$(dirname "$wt")")" = worktrees ] && [ -f "${FLEET_ROLES_DIR:-$_fleet_wt_roles}/$(basename "$wt" | sed 's/-[0-9]*$//').md" ]; then
       kind=launch; owner=$(basename "$wt")
     elif [ $missing = 0 ]; then owner=$(fleet_worktree_owner "$wt"); fi
@@ -226,6 +234,8 @@ fleet_wt_scan() {
     if [ $missing = 1 ]; then class=orphaned
     elif [ $kind = launch ] && ! grep -qx "$owner" <<<"$running"; then class=orphaned
     elif [ $kind = topic ] && [ -n "$owner" ] && [ $fleet_up = 1 ] && ! grep -qx "$owner" <<<"$running"; then class=orphaned
+    # an opencode worktree lives while something runs in it: a peer's pane, or a process a prune protects; nothing in it, it is orphaned
+    elif [ $kind = opencode ] && [ "$inuse" = - ]; then class=orphaned
     else
       for x in ${all[@]+"${all[@]}"}; do [ "$x" != "$wt" ] && case "$wt/" in "$x"/*) class=nested ;; esac; done
       if [ -z "$class" ]; then

@@ -26,7 +26,8 @@
 #       fetches each repo first (--prune; --no-fetch skips it), then every linked worktree: path, owner peer, branch, PR (number and state, from gh, cached 10 min), age (last commit or
 #       file change), dirty files, unpushed commits, disk size (du, cached), the peer whose pane is in it, and its class:
 #       active, idle (no change for FLEET_WT_IDLE_DAYS, default 7), merged, gone, orphaned (folder missing, a launch worktree
-#       of a peer that is not running, a topic whose owner is not running while its fleet runs) or nested. Totals per repo,
+#       of a peer that is not running, a topic whose owner is not running while its fleet runs, an opencode worktree nothing
+#       runs in) or nested. Totals per repo,
 #       per profile and overall. --stale: only the ones that are not active.
 #   fleet-worktree prune [--idle] [--nested] [--yes]
 #       DRY RUN unless --yes. Removes merged, gone and orphaned worktrees (idle and nested only when asked), never one that is
@@ -189,6 +190,7 @@ case "${1:-}" in
       if [ -n "$held" ]; then echo "keep $path ($class; contains kept worktree $held)"; nskip=$((nskip + 1)); stays+=("$path"); continue; fi
       if git -C "$repo" worktree remove "$path" 2>/dev/null; then
         echo "removed $label"; freed=$((freed + sz)); nrem=$((nrem + 1))
+        case "$kind" in opencode) rmdir "$(dirname "$path")" 2>/dev/null || true ;; esac
         if [ "$br" != - ]; then
           case "$class" in merged|gone) git -C "$repo" branch -q -D "$br" 2>/dev/null && echo "  deleted branch $br" ;;
             *) if [ -n "$(git -C "$repo" for-each-ref --format='%(upstream)' "refs/heads/$br")" ]; then git -C "$repo" branch -q -D "$br" 2>/dev/null && echo "  deleted branch $br (the remote keeps it)"
