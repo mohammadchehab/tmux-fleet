@@ -179,6 +179,28 @@ git --git-dir="$R.git" branch -q -D t-late
 [ "$(cls "$($WT ls --tsv --no-pr --no-fetch)" "$W/t-late")" = active ] && ok || bad "--no-fetch must not fetch"
 [ "$(cls "$($WT ls --tsv --no-pr)" "$W/t-late")" = gone ] && ok || bad "ls must fetch and show a branch deleted on the remote as gone"
 
+# ---- opencode worktrees: registered in the repo but living under the opencode worktree root (a peer's opencode session
+# made them). Kind opencode; orphaned when no pane or process sits in them (prune takes them, with their empty hash
+# parent), active while a process is in them, never pruned while dirty
+O="$t/ocwt"; mkdir -p "$O/h1"
+G "$R" worktree add -q --detach "$O/h1/topic1" main
+tsv=$(FLEET_OPENCODE_WT_ROOT=$O $WT ls --tsv --no-pr --no-fetch)
+[ "$(awk -F'\t' -v p="$O/h1/topic1" '$3 == p {print $5, $13}' <<<"$tsv")" = "opencode orphaned" ] \
+  && ok || bad "an opencode worktree must be kind opencode, class orphaned: $(awk -F'\t' -v p="$O/h1/topic1" '$3 == p {print $5, $13}' <<<"$tsv")"
+# a process sitting in it: still orphaned by class (no pane on the targeted server, like a peer on another server),
+# but prune keeps it until the process is gone
+(cd "$O/h1/topic1" && exec /bin/sleep 60) & op=$!
+tsv=$(FLEET_OPENCODE_WT_ROOT=$O $WT ls --tsv --no-pr --no-fetch)
+[ "$(cls "$tsv" "$O/h1/topic1")" = orphaned ] && ok || bad "a process in an opencode worktree must not make it active (prune protects it instead): $(cls "$tsv" "$O/h1/topic1")"
+G "$R" worktree add -q --detach "$O/h2/dirty1" main; echo x > "$O/h2/dirty1/scratch"
+out=$(FLEET_OPENCODE_WT_ROOT=$O $WT prune --yes 2>&1)
+[ -d "$O/h1/topic1" ] && ok || bad "prune must keep an opencode worktree a process sits in"
+kill $op 2>/dev/null; wait $op 2>/dev/null || true
+out=$(FLEET_OPENCODE_WT_ROOT=$O $WT prune --yes 2>&1)
+[ ! -e "$O/h1/topic1" ] && [ ! -e "$O/h1" ] && ok || bad "prune --yes must remove an orphaned opencode worktree and its empty hash parent: $(ls "$O" 2>/dev/null)"
+! G "$R" worktree list --porcelain | grep -q 'topic1' && ok || bad "the pruned opencode worktree's registration must go"
+[ -d "$O/h2/dirty1" ] && ok || bad "a dirty opencode worktree must be kept"
+
 # ---- the fleet command routes wt and worktree here
 [ "$(bin/fleet wt ls --tsv | grep -c .)" = "$($WT ls --tsv | grep -c .)" ] && bin/fleet worktree summary >/dev/null && ok || bad "fleet wt / fleet worktree"
 echo "wt: $pass passed, $fail failed"
