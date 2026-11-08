@@ -1,0 +1,5 @@
+# mix: one peer per CLI — engineer-1 on the default CLI (claude), designer on Cursor's agent, dev-support on
+# opencode through Ori. The resume test squad (dev-tasks/scripts/test/resume.sh).
+engineer-1
+designer  designer  agent
+dev-support dev-support opencode

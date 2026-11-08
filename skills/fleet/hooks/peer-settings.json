@@ -1,11 +1,27 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/skills/fleet/scripts/fleet-session-record",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "~/.claude/skills/fleet/scripts/fleet-reply-log",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/skills/fleet/scripts/fleet-session-record",
             "timeout": 10
           }
         ]
