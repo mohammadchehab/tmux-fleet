@@ -5,6 +5,10 @@
 # window. Claude Code only: a Cursor peer (cli agent) ignores model, effort and window; Cursor sets its own.
 # opencode-model/opencode-effort (cols 5–6): OpenRouter model ID and reasoning effort for a peer that runs
 # FLEET_CLI=opencode (through Ori's launcher); blank = the peer's own OpenCode model selection applies.
+# deepinfra:<model id> in col 2 runs a Claude Code peer on DeepInfra's Anthropic-compatible endpoint instead of Claude: fleet-up
+# sets ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and ANTHROPIC_MODEL for that peer alone (key: DEEPINFRA_API_KEY, else the first
+# line of ~/.config/deepinfra/key) and passes no --model. Its code goes to DeepInfra: check the target repo's data rules first.
+#   engineer  deepinfra:deepseek-ai/DeepSeek-V4.1-Flash-1017  low  150000
 # Never set CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (globally or here): a peer's baseline is ~75K tokens, so 25% of a
 # 200K window traps every peer in compaction from its first turn.
 project-manager      opus     medium   500000
