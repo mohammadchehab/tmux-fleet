@@ -168,6 +168,7 @@ model_flags() {  # --model/--effort for a peer, from ../models by its role; Clau
   case "${CLI_OF[$1]}" in
     claude)
       read -r m e _ < <(awk -v r="$role" '$1==r{print $2, $3, $4}' "$MODELS" 2>/dev/null) || true
+      case "$m" in deepinfra:*) m= ;; esac   # a <provider>:<model> row sets the model through provider_env, not --model
       echo "${m:+--model $m} ${e:+--effort $e}" ;;
     opencode)
       read -r _ _ _ m e < <(awk -v r="$role" '$1==r{print $2, $3, $4, $5, $6, $7}' "$MODELS" 2>/dev/null) || true
@@ -178,6 +179,17 @@ window_env() {  # CLAUDE_CODE_AUTO_COMPACT_WINDOW=<n> for a peer, from column 4 
   [ "${CLI_OF[$1]}" = claude ] || return 0
   local w; w=$(awk -v r="${ROLE_OF[$1]}" '$1==r{print $4}' "$MODELS" 2>/dev/null)
   [[ $w =~ ^[0-9]+$ ]] && echo "CLAUDE_CODE_AUTO_COMPACT_WINDOW=$w" || true
+}
+provider_env() {  # ANTHROPIC_* for a Claude Code peer whose models col 2 is deepinfra:<model>: it talks to DeepInfra's
+  # Anthropic-compatible endpoint. The key is DEEPINFRA_API_KEY, else the first line of ~/.config/deepinfra/key (or
+  # DEEPINFRA_KEY_FILE); passed on the peer's own command line, as tmux's server env does not carry the caller's exports
+  [ "${CLI_OF[$1]}" = claude ] || return 0
+  local m id key; m=$(awk -v r="${ROLE_OF[$1]}" '$1==r{print $2}' "$MODELS" 2>/dev/null)
+  case "$m" in deepinfra:?*) id=${m#deepinfra:} ;; *) return 0 ;; esac
+  key=${DEEPINFRA_API_KEY:-}
+  [ -n "$key" ] || key=$(head -n 1 "${DEEPINFRA_KEY_FILE:-$HOME/.config/deepinfra/key}" 2>/dev/null) || true
+  [ -n "$key" ] || echo "fleet-up: deepinfra peer ${ROLE_OF[$1]}: no DEEPINFRA_API_KEY and no key file" >&2
+  echo "ANTHROPIC_BASE_URL=https://api.deepinfra.com/anthropic ANTHROPIC_AUTH_TOKEN=$(printf '%q' "$key") ANTHROPIC_API_KEY= ANTHROPIC_MODEL=$(printf '%q' "$id") ANTHROPIC_SMALL_FAST_MODEL=$(printf '%q' "$id")"
 }
 PEER_ENV=($(fleet_tmux_env))   # every peer inherits FLEET_TMUX, so its own fleet-send/down hit the same server
 # and FLEET_PROFILE, so its own fleet-send/peek/handoff/clear hit the same fleet (session prefix and profile)
@@ -230,7 +242,7 @@ for r in "${ROLES[@]}"; do
     rid=$(agent create-chat 2>/dev/null | tr -d '[:space:]' || true)
     [ -n "$rid" ] || echo "fleet-up: $r: agent create-chat failed; it starts without a saved chat"
   fi
-  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") $(window_env "$r") $(peer_cmd "${CLI_OF[$r]}" "$r" "$rid")"
+  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") $(window_env "$r") $(provider_env "$r") $(peer_cmd "${CLI_OF[$r]}" "$r" "$rid")"
   tmux set-option -t "$(fleet_target "$s")" @fleet-role "${ROLE_OF[$r]}"; tmux set-option -t "$(fleet_target "$s")" @fleet-cli "${CLI_OF[$r]}"; fleet_tag_session "$s"
   # the roster (lib/roster.sh): one file per peer — peer, role, cli, dir, session id; what a later no-argument fleet-up
   # resumes from. A fresh claude's id is empty here: its fleet-session-record hook fills it at SessionStart and keeps it

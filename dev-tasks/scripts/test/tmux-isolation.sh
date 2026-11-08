@@ -366,6 +366,24 @@ $S/fleet-down >/dev/null 2>&1 || true
 out=$(env FLEET_MODELS="$t/models" FLEET_CLI=opencode $S/fleet-up engineer 2>&1) || bad "fleet-up opencode without model columns failed: $out"
 n=$(grep -- '-s fleet-engineer ' "$t/calls.log" | grep new-session | tail -1 || true)
 echo "$n" | grep -qE -- '--model|--reasoning-effort' && bad "opencode peer got model flags from a row without them: $n" || ok
+# (P3) a Claude Code peer whose models col 2 is deepinfra:<model> gets the DeepInfra endpoint, token and model in its environment and
+# no --model flag; a plain row gets neither; the key is read from DEEPINFRA_API_KEY.
+reset; export FLEET_TMUX=private FAKE_REQUIRE_FLAG=1; unset TMUX TMUX_PANE FAKE_OWN
+: > "$t/models"; printf 'engineer deepinfra:vendor/Test-Model low 150000\n' > "$t/models"
+$S/fleet-down >/dev/null 2>&1 || true
+out=$(env FLEET_MODELS="$t/models" DEEPINFRA_API_KEY=testkey $S/fleet-up engineer 2>&1) || bad "fleet-up with a deepinfra: row failed: $out"
+n=$(grep -- '-s fleet-engineer ' "$t/calls.log" | grep new-session | tail -1 || true)
+echo "$n" | grep -q 'ANTHROPIC_BASE_URL=https://api.deepinfra.com/anthropic' && ok || bad "deepinfra peer has no ANTHROPIC_BASE_URL: $n"
+echo "$n" | grep -q 'ANTHROPIC_AUTH_TOKEN=testkey' && ok || bad "deepinfra peer has no token from DEEPINFRA_API_KEY: $n"
+echo "$n" | grep -q 'ANTHROPIC_MODEL=vendor/Test-Model' && ok || bad "deepinfra peer has no ANTHROPIC_MODEL: $n"
+echo "$n" | grep -q -- '--model' && bad "deepinfra peer also got a --model flag: $n" || ok
+: > "$t/models"; printf 'engineer sonnet low\n' > "$t/models"
+$S/fleet-down >/dev/null 2>&1 || true
+out=$(env FLEET_MODELS="$t/models" DEEPINFRA_API_KEY=testkey $S/fleet-up engineer 2>&1) || bad "fleet-up with a plain row failed: $out"
+n=$(grep -- '-s fleet-engineer ' "$t/calls.log" | grep new-session | tail -1 || true)
+echo "$n" | grep -q 'ANTHROPIC_' && bad "a plain model row got ANTHROPIC_* variables: $n" || ok
+echo "$n" | grep -q -- '--model sonnet' && ok || bad "a plain model row lost its --model flag: $n"
+rm -f "$t/srv/private"/*.keys
 # (P2) fleet-peek shows the opencode CLI from the pane's chrome when @fleet-cli is unset; state still reads idle
 export FLEET_TMUX=private FAKE_REQUIRE_FLAG=1; unset TMUX TMUX_PANE FAKE_OWN
 reset; sess private fleet-engineer engineer; : > "$t/calls.log"
