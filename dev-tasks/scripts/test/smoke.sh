@@ -67,6 +67,7 @@ check bash -c '! env PATH="$1/bin:$PATH" dev-tasks/scripts/clean/clean.sh --sess
 check env PATH="$t/bin:$PATH" FLEET_TMUX=smoke FLEET_STATE="$t/state" dev-tasks/scripts/clean/clean.sh --force --sessions
 check grep -q -- '-L smoke kill-session -t =fleet-x' "$t/tmux.log"
 check dev-tasks/scripts/test/tmux-isolation.sh
+check dev-tasks/scripts/test/resume.sh
 check dev-tasks/scripts/test/cmd.sh
 check dev-tasks/scripts/test/pane.sh
 check dev-tasks/scripts/test/wt.sh

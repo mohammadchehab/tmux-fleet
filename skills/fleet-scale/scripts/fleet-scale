@@ -6,6 +6,8 @@
 #   fleet-scale remove <peer> [-f] stop one peer. Refuses while it is busy or its worktree holds uncommitted or
 #                                  unpushed work (target-repo or child-repo worktrees), unless -f. The worktree is left in place (git worktree remove
 #                                  it once its PRs are merged or closed).
+# The roster ($FLEET_STATE/roster.d, lib/roster.sh) mirrors the running fleet: add writes the new peer's entry
+# (through fleet-up), remove drops the stopped one, so a no-argument fleet-up resumes exactly what is saved.
 #   fleet-scale roles              list the roles a peer can take
 # Starting a peer goes through fleet-up, which also rebuilds the fleet-<profile> view with every running peer.
 set -uo pipefail
@@ -16,6 +18,7 @@ FLEET="$(cd "$HERE/../../fleet" && pwd)"
 source "$(dirname "$0")/../../fleet/scripts/lib/profile.sh"
 source "$(dirname "$0")/../../fleet/scripts/lib/worktree.sh"
 source "$(dirname "$0")/../../fleet/scripts/lib/lock.sh"
+source "$(dirname "$0")/../../fleet/scripts/lib/roster.sh"
 fleet_resolve_repo || exit 1
 # add and remove hold the fleet lock (lib/lock.sh) for the whole change; fleet-up, run by add, sees it held and goes on
 case "${1:-}" in add|remove) fleet_lock "$(fleet_state_dir)" fleet "${FLEET_LOCK_WAIT:-60}" "$@" || exit 1 ;; esac
@@ -82,6 +85,9 @@ case "${1:-}" in
       echo "not removing $p:"; printf '  - %s\n' "${problems[@]}"; echo "fix those first, or: fleet-scale remove $p -f"; exit 2
     fi
     fleet_kill_session "$(fleet_session "$p")" && echo "stopped $p"
+    # the roster mirrors the running fleet: drop the stopped peer's entry, so a no-argument fleet-up never revives it
+    kept=$(roster_peers "$(fleet_state_dir)" | grep -vx "$p" || true)
+    roster_prune "$(fleet_state_dir)" $kept
     [ -d "$wt" ] && echo "worktree kept: $wt (git worktree remove it once its PRs are merged or closed)"
     echo "running now: $(running | tr '\n' ' ')"
     ;;

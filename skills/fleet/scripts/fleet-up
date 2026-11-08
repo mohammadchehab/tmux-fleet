@@ -4,7 +4,15 @@
 # the tmux session, so peers sharing one tmux session share one name), each in its own worktree
 # <repo>/.claude/worktrees/<role> (detached at origin/main), renamed to the role; plus an outer tmux session fleet-<profile>
 # ("fleet" with no profile) whose tiled panes attach to the peers, so one window shows all of them.
-#   fleet-up [squad | peer ...]  a squad is a file in ../squads/, e.g. fleet-up squad; default squad: ../squads/default.
+# Resume: with NO argument, a saved roster ($FLEET_STATE/roster.d, lib/roster.sh) and no fleet of this profile
+# running, fleet-up resumes the last fleet after a restart or reboot — every roster peer comes back in its saved
+# worktree with its saved conversation: claude
+# `--resume <id>` (the peer's fleet-session-record hook keeps the id live across /clear), opencode `-s <id>` (creates
+# the session if it is gone), agent `--resume <chatId>`. Model and effort come from the current models file, not the
+# roster. A peer with no saved id or a gone worktree starts fresh (said so on stdout); a broken roster entry is skipped,
+# never blocking the rest. A squad or peer-list argument always starts fresh and records that roster instead.
+#   fleet-up [squad | peer ...]  a squad is a file in ../squads/, e.g. fleet-up squad; with no argument: the saved roster
+#                                when there is one, else the default squad: ../squads/default.
 #                                 One peer per line: <peer> [role] [cli]. Without a role, the peer's name minus a -N
 #                                 suffix; without a cli, FLEET_CLI. Peers named on the command line take the same defaults.
 #                                 fleet-up records each peer's role and CLI on its session (@fleet-role, @fleet-cli);
@@ -50,6 +58,7 @@ fleet_refuse_in_peer fleet-up
 source "$(dirname "$0")/lib/profile.sh"
 source "$(dirname "$0")/lib/worktree.sh"
 source "$(dirname "$0")/lib/backlog.sh"
+source "$(dirname "$0")/lib/roster.sh"
 CLI_FROM=${FLEET_CLI:+environment}
 fleet_resolve_repo || exit 1
 # one fleet-up/down/scale/view per profile at a time (lib/lock.sh); fleet-scale add already holds it and passes it down
@@ -64,42 +73,85 @@ case "$CLI" in
 esac
 SKILL="$(cd "$(dirname "$0")/.." && pwd)"
 SQUADS="$(cd "$(dirname "$0")/../squads" && pwd)"
-if [ $# -eq 0 ]; then set -- "${FLEET_SQUAD:-default}"; fi
-# ROLES holds the peer names (the tmux session is $FLEET_SESSION-<peer>); ROLE_OF and CLI_OF their role and CLI
-declare -A ROLE_OF CLI_OF DIR_OF
-ROLES=()
-if [ $# -eq 1 ] && [ -f "$SQUADS/$1" ]; then
-  while read -r peer role cli _; do
-    [ -n "$peer" ] && [[ "$peer" != \#* ]] || continue
-    ROLES+=("$peer"); ROLE_OF[$peer]=${role:-${peer%-[0-9]*}}; CLI_OF[$peer]=${cli:-$CLI}
-  done < "$SQUADS/$1"
-else
-  for peer in "$@"; do ROLES+=("$peer"); ROLE_OF[$peer]=${peer%-[0-9]*}; CLI_OF[$peer]=$CLI; done
+# mode: no argument with a saved roster (lib/roster.sh, written by the last fleet-up of this fleet) and no fleet of
+# this profile running (a restart or reboot) -> resume that roster; a squad or peer-list argument starts fresh and
+# records the roster of the peers it starts
+RESUME=""
+if [ $# -eq 0 ] && roster_has "$(fleet_state_dir)" && [ -z "$(fleet_peers)" ]; then RESUME=1; fi
+# ROLES holds the peer names (the tmux session is $FLEET_SESSION-<peer>); ROLE_OF and CLI_OF their role and CLI;
+# DIR_OF a saved own-clone dir; RID_OF the saved session id to resume (empty = start that peer fresh)
+declare -A ROLE_OF CLI_OF DIR_OF RID_OF
+ROLES=(); FRESH_MSG=()
+if [ -n "$RESUME" ]; then
+  state=$(fleet_state_dir)
+  for p in $(roster_peers "$state"); do
+    # a bad roster file never blocks fleet-up: an unusable name, role, cli or dir skips (or freshens) just that peer
+    case "$p" in ''|*[!A-Za-z0-9._-]*) FRESH_MSG+=("$p: not a valid peer name, skipping it"); continue ;; esac
+    role=$(roster_get "$state" "$p" role); [ -n "$role" ] || role=${p%-[0-9]*}
+    cli=$(roster_get "$state" "$p" cli); [ -n "$cli" ] || cli=$CLI
+    case "$cli" in claude|agent|opencode) ;; *) FRESH_MSG+=("$p: the roster's cli '$cli' is not claude, agent or opencode, skipping it"); continue ;; esac
+    [ -f "$SKILL/roles/$role.md" ] || { FRESH_MSG+=("$p: no role file roles/$role.md, skipping it"); continue; }
+    ROLES+=("$p"); ROLE_OF[$p]=$role; CLI_OF[$p]=$cli; RID_OF[$p]=""
+    d=$(roster_get "$state" "$p" dir)
+    # a saved dir is fleet-up's own absolute path; anything else is a corrupt entry, so ignore it and start fresh
+    if [ -n "$d" ] && [ "${d#/}" = "$d" ]; then
+      FRESH_MSG+=("$p: its saved worktree '$d' is not an absolute path, starting it fresh"); d=""; RID_OF[$p]=""
+    elif [ -n "$d" ]; then DIR_OF[$p]=$d; fi
+    rid=$(roster_get "$state" "$p" session_id)
+    if [ -n "$rid" ] && { [ -z "$d" ] || [ -d "$d" ]; }; then
+      RID_OF[$p]=$rid
+    elif [ -z "$rid" ]; then
+      FRESH_MSG+=("$p: no saved session id, starting it fresh")
+    else
+      FRESH_MSG+=("$p: its worktree $d is gone, starting it fresh")
+    fi
+  done
+  if [ ${#ROLES[@]} -eq 0 ]; then
+    RESUME=""; echo "fleet-up: the roster has no usable peer, starting the default squad fresh"
+  fi
 fi
-for r in "${ROLES[@]}"; do
-  [ -f "$SKILL/roles/${ROLE_OF[$r]}.md" ] || { echo "fleet-up: $r: no role file roles/${ROLE_OF[$r]}.md" >&2; exit 1; }
-  case "${CLI_OF[$r]}" in claude|agent|opencode) ;; *) echo "fleet-up: $r: cli must be claude, agent or opencode, not '${CLI_OF[$r]}'" >&2; exit 1 ;; esac
-done
-for pair in ${FLEET_PEER_DIRS:-}; do
-  d=${pair#*=}; [[ "$d" == \~ || "$d" == \~/* ]] && d=$HOME${d:1}
-  [ -d "$d" ] || { echo "fleet-up: FLEET_PEER_DIRS: ${pair%%=*}: no folder $d" >&2; exit 1; }
-  DIR_OF[${pair%%=*}]=$d
-done
+if [ -z "$RESUME" ]; then
+  [ $# -eq 0 ] && set -- "${FLEET_SQUAD:-default}"
+  if [ $# -eq 1 ] && [ -f "$SQUADS/$1" ]; then
+    while read -r peer role cli _; do
+      [ -n "$peer" ] && [[ "$peer" != \#* ]] || continue
+      ROLES+=("$peer"); ROLE_OF[$peer]=${role:-${peer%-[0-9]*}}; CLI_OF[$peer]=${cli:-$CLI}
+    done < "$SQUADS/$1"
+  else
+    for peer in "$@"; do ROLES+=("$peer"); ROLE_OF[$peer]=${peer%-[0-9]*}; CLI_OF[$peer]=$CLI; done
+  fi
+  for r in "${ROLES[@]}"; do
+    [ -f "$SKILL/roles/${ROLE_OF[$r]}.md" ] || { echo "fleet-up: $r: no role file roles/${ROLE_OF[$r]}.md" >&2; exit 1; }
+    case "${CLI_OF[$r]}" in claude|agent|opencode) ;; *) echo "fleet-up: $r: cli must be claude, agent or opencode, not '${CLI_OF[$r]}'" >&2; exit 1 ;; esac
+  done
+  for pair in ${FLEET_PEER_DIRS:-}; do
+    d=${pair#*=}; [[ "$d" == \~ || "$d" == \~/* ]] && d=$HOME${d:1}
+    [ -d "$d" ] || { echo "fleet-up: FLEET_PEER_DIRS: ${pair%%=*}: no folder $d" >&2; exit 1; }
+    DIR_OF[${pair%%=*}]=$d
+  done
+fi
 # flags per CLI: FLEET_FLAGS is for the default CLI; a peer on the other CLI gets that CLI's default
 flags_for() { if [ "$1" = "$CLI" ]; then echo "$FLAGS"; elif [ "$1" = claude ]; then echo --dangerously-skip-permissions; elif [ "$1" = opencode ]; then echo --auto; else echo --force; fi; }
 # the board's MCP server, Claude Code only (Cursor's agent has no --mcp-config; its peers use the backlog CLI)
 mcp_flags() { [ "$1" = claude ] && [ -n "$BOARD_MCP" ] && echo "--mcp-config $(printf '%q' "$BOARD_MCP")" || true; }
 # every Claude Code peer gets the fleet's hooks (hooks/peer-settings.json: Stop → scripts/fleet-reply-log, which appends each
 # reply to $FLEET_STATE/replies.log); --settings keeps them per peer, so the user's own sessions and settings.json stay untouched
-PEER_HOOKS="$(dirname "$0")/../hooks/peer-settings.json"
+PEER_HOOKS="$(cd "$(dirname "$0")/../hooks" && pwd)/peer-settings.json"
 hook_flags() { [ "$1" = claude ] && [ -f "$PEER_HOOKS" ] && echo "--settings $(printf '%q' "$PEER_HOOKS")" || true; }
-echo "fleet-up: peers run $CLI ($CLI_FROM)"
+if [ -n "$RESUME" ]; then echo "fleet-up: resuming the saved roster: ${ROLES[*]}"
+else echo "fleet-up: peers run $CLI ($CLI_FROM)"; fi
+for m in ${FRESH_MSG[@]+"${FRESH_MSG[@]}"}; do echo "fleet-up: $m"; done
 fleet_kill_session "$FLEET_SESSION" || true
 for r in "${ROLES[@]}"; do fleet_kill_session "$(fleet_session "$r")" || true; done
-# base for new worktrees: origin/main when the repo has a remote, the local main otherwise
-if [ -n "${FLEET_BASE:-}" ]; then BASE=$FLEET_BASE
-elif git -C "$REPO" remote get-url origin >/dev/null 2>&1; then git -C "$REPO" fetch -q origin main; BASE=origin/main; else BASE=main; fi
-git -C "$REPO" rev-parse -q --verify "$BASE^{commit}" >/dev/null || { echo "fleet-up: base $BASE does not exist" >&2; exit 1; }
+# base for new worktrees: origin/main when the repo has a remote, the local main otherwise. Resolved on demand
+# (resolve_base): a resume whose worktrees all exist does no git work at all
+BASE=""
+resolve_base() {
+  [ -n "$BASE" ] && return 0
+  if [ -n "${FLEET_BASE:-}" ]; then BASE=$FLEET_BASE
+  elif git -C "$REPO" remote get-url origin >/dev/null 2>&1; then git -C "$REPO" fetch -q origin main; BASE=origin/main; else BASE=main; fi
+  git -C "$REPO" rev-parse -q --verify "$BASE^{commit}" >/dev/null || { echo "fleet-up: base $BASE does not exist" >&2; exit 1; }
+}
 # A tmux server started from inside Claude Code carries that session's CLAUDE_* identity in its global environment;
 # peers that inherit it share one session id, so a /rename in one renames all. Strip it before starting peers.
 for v in $(tmux show-environment -g 2>/dev/null | grep -oE '^(CLAUDE[A-Z_]*|AI_AGENT)=' | tr -d =); do tmux set-environment -gu "$v"; done
@@ -109,7 +161,7 @@ UNSET=$(env | { grep -oE '^(CLAUDE[A-Z_]*|AI_AGENT)=' || true; } | tr -d = | sed
 # (no unignored nested repo) stays green; child repos get the same line from fleet-worktree
 fleet_worktree_exclude "$REPO"
 WT_ROOT=$(fleet_worktree_root "$REPO")
-MODELS="${FLEET_MODELS:-$(dirname "$0")/../models}"
+MODELS="${FLEET_MODELS:-$(cd "$(dirname "$0")/.." && pwd)/models}"
 model_flags() {  # --model/--effort for a peer, from ../models by its role; Claude Code (cols 2–3) and opencode
   # (cols 5–6: OpenRouter IDs and effort, through Ori's launcher); Cursor's agent gets none
   local role=${ROLE_OF[$1]} m e
@@ -144,28 +196,75 @@ else echo "fleet-up: no board this time (see above); peers start without it"; fi
 # the tracker override (rule 9), when the profile or the environment sets one
 for v in FLEET_TRACKER_SITE FLEET_TRACKER_PROJECT; do [ -z "${!v:-}" ] || PEER_ENV+=(-e "$v=${!v}"); done
 peer_cmd() {  # the command that starts a peer in its pane: the CLI, its flags, and for opencode the role load in --prompt
-  # (auto-submitted at launch, so nothing is typed after it). Ori's --model/--reasoning-effort precede the upstream flags.
+  # (auto-submitted at launch, so nothing is typed after it). $3 = the saved session id: a resume restarts the saved
+  # conversation instead (claude --resume <id>, ori opencode -s <id>, agent --resume <chatId>). Ori's
+  # --model/--reasoning-effort precede the upstream flags.
   if [ "$1" = opencode ]; then
-    local load="You are fleet peer $2. Read $SKILL/SKILL.md and $SKILL/roles/${ROLE_OF[$2]}.md now and follow them."
-    echo "ori opencode $(model_flags "$2") $(flags_for opencode) --prompt $(printf '%q' "$load")"
+    if [ -n "$3" ]; then
+      echo "ori opencode -s $(printf '%q' "$3") $(model_flags "$2") $(flags_for opencode)"
+    else
+      local load="You are fleet peer $2. Read $SKILL/SKILL.md and $SKILL/roles/${ROLE_OF[$2]}.md now and follow them."
+      echo "ori opencode $(model_flags "$2") $(flags_for opencode) --prompt $(printf '%q' "$load")"
+    fi
   else
-    echo "$1 $(flags_for "$1") $(model_flags "$2") $(mcp_flags "$1") $(hook_flags "$1")"
+    local resume=""
+    [ -n "$3" ] && resume="--resume $(printf '%q' "$3")"
+    echo "$1 $resume $(flags_for "$1") $(model_flags "$2") $(mcp_flags "$1") $(hook_flags "$1")"
   fi
 }
+STARTED=()
 for r in "${ROLES[@]}"; do
-  d=${DIR_OF[$r]:-$WT_ROOT/$r}; [ -d "$d" ] || git -C "$REPO" worktree add -q --detach "$d" "$BASE"
+  d=${DIR_OF[$r]:-$WT_ROOT/$r}
+  if [ ! -d "$d" ]; then
+    resolve_base
+    git -C "$REPO" worktree add -q --detach "$d" "$BASE" 2>/dev/null || true
+  fi
+  if [ ! -d "$d" ]; then
+    echo "fleet-up: $r: could not create its worktree $d, skipping it"
+    continue
+  fi
   s=$(fleet_session "$r")
-  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") $(window_env "$r") $(peer_cmd "${CLI_OF[$r]}" "$r")"
+  rid=${RID_OF[$r]:-}
+  # an agent peer without a saved chat gets a new one up front: create-chat prints its id, which the roster records below
+  if [ -z "$rid" ] && [ "${CLI_OF[$r]}" = agent ]; then
+    rid=$(agent create-chat 2>/dev/null | tr -d '[:space:]' || true)
+    [ -n "$rid" ] || echo "fleet-up: $r: agent create-chat failed; it starts without a saved chat"
+  fi
+  tmux new-session -d ${PEER_ENV[@]+"${PEER_ENV[@]}"} -s "$s" -x 200 -y 50 -c "$d" "env $UNSET -u FLEET_LOCKS -u ITERM_SESSION_ID -u TERM_SESSION_ID TERM_SESSION_ID=$(printf '%q' "$s") $(window_env "$r") $(peer_cmd "${CLI_OF[$r]}" "$r" "$rid")"
   tmux set-option -t "$(fleet_target "$s")" @fleet-role "${ROLE_OF[$r]}"; tmux set-option -t "$(fleet_target "$s")" @fleet-cli "${CLI_OF[$r]}"; fleet_tag_session "$s"
+  # the roster (lib/roster.sh): one file per peer — peer, role, cli, dir, session id; what a later no-argument fleet-up
+  # resumes from. A fresh claude's id is empty here: its fleet-session-record hook fills it at SessionStart and keeps it
+  # live across /clear; a fresh opencode's is recorded after launch (below). A peer with no saved id (fresh) gets an
+  # empty one, so a later resume starts it fresh.
+  roster_write "$FLEET_STATE" "$r" "${ROLE_OF[$r]}" "${CLI_OF[$r]}" "$d" "$rid"
+  STARTED+=("$r")
 done
+# the roster mirrors the running fleet: the peers this fleet-up started plus the ones already running (fleet-scale add
+# starts just the new ones against a running fleet). A skipped or corrupt entry drops out here.
+kept=(${STARTED[@]+"${STARTED[@]}"} $(fleet_peers))
+roster_prune "$FLEET_STATE" ${kept[@]+"${kept[@]}"}
 sleep 8
-for r in "${ROLES[@]}"; do
+for r in ${STARTED[@]+"${STARTED[@]}"}; do
+  [ -n "${RID_OF[$r]:-}" ] && continue   # resumed: /rename and the role load are already in the conversation
   [ "${CLI_OF[$r]}" = claude ] || continue
   s=$(fleet_peer_target "$r"); tmux send-keys -t "$s" "/rename $r"; sleep 0.6; tmux send-keys -t "$s" Enter
 done
 sleep 2
-for r in "${ROLES[@]}"; do
-  if [ "${CLI_OF[$r]}" = opencode ]; then continue; fi   # its role load went out in --prompt at launch
+for r in ${STARTED[@]+"${STARTED[@]}"}; do
+  [ -n "${RID_OF[$r]:-}" ] && continue   # resumed: nothing is typed; the conversation is what it is
+  if [ "${CLI_OF[$r]}" = opencode ]; then
+    # record the session id this launch created (its roster entry is empty until then), so a later no-argument
+    # fleet-up resumes it: the newest session of the peer's own project, listed from its worktree
+    d=${DIR_OF[$r]:-$WT_ROOT/$r}; sid=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sid=$( { (cd "$d" && opencode session list 2>/dev/null) || true; } | head -1 | cut -f1 )
+      [ -n "$sid" ] && break
+      sleep 0.3
+    done
+    if [ -n "$sid" ]; then roster_set_id "$FLEET_STATE" "$r" "$sid"
+    else echo "fleet-up: $r: no opencode session id yet; its roster entry stays empty (it will start fresh on resume)"; fi
+    continue
+  fi
   if [ "${CLI_OF[$r]}" = claude ]; then load="/fleet ${ROLE_OF[$r]}"
   else load="You are fleet peer $r. Read $SKILL/SKILL.md and $SKILL/roles/${ROLE_OF[$r]}.md now and follow them."; fi
   s=$(fleet_peer_target "$r"); tmux send-keys -t "$s" -l "$load"; sleep 0.6; tmux send-keys -t "$s" Enter
@@ -175,7 +274,7 @@ done
 # the board's page, in its own session; one that runs already is left alone
 [ -z "$BOARD_MCP" ] || fleet_board_start "$FLEET_STATE" || echo "fleet-up: the board did not start; try fleet-board"
 sleep 2
-for r in "${ROLES[@]}"; do s=$(fleet_session "$r"); echo "$s $(tmux display -p -t "$(fleet_target "$s")" '#{pane_tty} #{pane_title}')"; done
+for r in ${STARTED[@]+"${STARTED[@]}"}; do s=$(fleet_session "$r"); echo "$s $(tmux display -p -t "$(fleet_target "$s")" '#{pane_tty} #{pane_title}')"; done
 echo "attach: tmux${FLEET_TMUX_FLAGS} attach -t $FLEET_SESSION   (or: fleet${FLEET_PROFILE:+ --profile $FLEET_PROFILE} attach)"
 [ -z "${FLEET_PROFILE:-}" ] || echo "from another shell: fleet --profile $FLEET_PROFILE ls|capacity|send|board …, or export FLEET_PROFILE=$FLEET_PROFILE"
 [ -z "$BOARD_MCP" ] || echo "board:  $(fleet_board_url)   (open it with fleet-board)"

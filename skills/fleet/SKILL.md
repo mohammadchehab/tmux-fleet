@@ -29,6 +29,16 @@ Only the user, from their own shell, starts or stops the fleet: inside a peer se
   that keeps the tracker in step; each peer's own clone comes from `FLEET_PEER_DIRS` in the profile. Each peer's model and effort
   come from `models` (role → model, effort): sonnet by default, opus only for the project-manager, architect and
   spec-reviewer.
+- **Resume after a restart** (no argument): run `scripts/fleet-up` with **no squad and no peer names** — when a roster
+  exists (`$FLEET_STATE/roster.d`, one entry per peer) and no fleet of this profile is running, it resumes the saved
+  fleet instead of starting the default squad. Every peer comes back in the same worktree with its role and CLI (and
+  `@fleet-role`/`@fleet-cli`/`@fleet-profile` tags), and its CLI restarts the saved conversation: claude `--resume <id>`
+  (the `fleet-session-record` hook keeps the id live across `/clear`), opencode `-s <id>`, Cursor `agent --resume <chatId>`.
+  Model and effort are read from the current `models`, not the roster. A peer with no saved id or a gone worktree starts
+  fresh (that is said in the output), and a broken roster entry is skipped, never blocking the rest. `fleet-down` keeps
+  the roster, so `fleet down` then `fleet up` (no argument) resumes too. **To force a fresh start, pass a squad or peer
+  names** (`scripts/fleet-up default`, `scripts/fleet-up engineer-3`): an argument always starts fresh and rewrites the
+  roster for the peers it starts.
 - **replies**: every Claude Code peer's reply is appended to `$FLEET_STATE/replies.log` by the Stop hook in
   `hooks/peer-settings.json` (`scripts/fleet-reply-log`, passed by fleet-up as `--settings`): one line per reply with time,
   peer, card/PR refs and `ASK` when it ends in a question or says blocked. `tail -f $FLEET_STATE/replies.log` to watch.
@@ -48,7 +58,8 @@ Only the user, from their own shell, starts or stops the fleet: inside a peer se
 - **`view`**: run `scripts/fleet-view` (rebuilds the tiled `fleet-<profile>` session over every running peer when it is gone
   or out of date; peers are not touched).
 - **`down`**: run `scripts/fleet-down` (stops `fleet-<profile>` and every `fleet-<profile>-*` session, the board's page included,
-  never another profile's; worktrees and the board's files stay).
+  never another profile's; worktrees and the board's files stay, and so does the roster — a no-argument `fleet up` after
+  it resumes the fleet).
 - **`interrupt [peer …]`**: run `scripts/fleet-send -i [peer …]` (Escape to every peer, or the named ones; their
   current turn stops, in-flight work is lost).
 - **`clear [peer …]`**: run `scripts/fleet-send -f /clear [peer …]` (busy peers are interrupted first, then cleared),
