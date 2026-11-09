@@ -92,9 +92,11 @@ if [ -n "$BL" ] && [ -f "$STATE/backlog/config.yml" ]; then
   tasks=$("$BL" task list --json 2>/dev/null) || tasks='{"tasks":[]}'
   decisions=$("$BL" decision list --json 2>/dev/null) || decisions='{"decisions":[]}'
 fi
+# PRs from forks are left out: their branch names and check names are not the fleet's, and nothing of theirs reaches a peer
 open=$(cd "$REPO" && gh pr list --state open --limit 100 \
-  --json number,title,headRefName,headRefOid,isDraft,reviewDecision,statusCheckRollup 2>/dev/null) || open='[]'
-merged=$(cd "$REPO" && gh pr list --state merged --limit 30 --json number,headRefName,mergedAt 2>/dev/null) || merged='[]'
+  --json number,title,headRefName,headRefOid,isDraft,reviewDecision,statusCheckRollup,isCrossRepository 2>/dev/null) || open='[]'
+merged=$(cd "$REPO" && gh pr list --state merged --limit 30 --json number,headRefName,mergedAt,isCrossRepository 2>/dev/null) || merged='[]'
+open=$(jq '[.[] | select(.isCrossRepository | not)]' <<<"$open"); merged=$(jq '[.[] | select(.isCrossRepository | not)]' <<<"$merged")
 open_count=$(jq length <<<"$open")
 
 # ---- merged
@@ -129,7 +131,7 @@ done < <(jq -r '.[] | (.statusCheckRollup // []) as $c
   | ([$c[] | select((.status? and .status != "COMPLETED") or .state == "PENDING")] | length) as $pending
   | [.number, .headRefName, .headRefOid, .isDraft, (.reviewDecision // ""),
      (if ($bad | length) > 0 then "red" elif $pending > 0 or ($c | length) == 0 then "pending" else "green" end),
-     ($bad | unique | join(", "))] | @tsv' <<<"$open")
+     ($bad | unique | join(", ") | gsub("[^A-Za-z0-9 _./(),:-]"; "") | .[0:200])] | @tsv' <<<"$open")   # check names go into a prompt
 
 # ---- asking
 for p in $peers; do
