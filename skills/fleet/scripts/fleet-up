@@ -135,7 +135,8 @@ flags_for() { if [ "$1" = "$CLI" ]; then echo "$FLAGS"; elif [ "$1" = claude ]; 
 # the board's MCP server, Claude Code only (Cursor's agent has no --mcp-config; its peers use the backlog CLI)
 mcp_flags() { [ "$1" = claude ] && [ -n "$BOARD_MCP" ] && echo "--mcp-config $(printf '%q' "$BOARD_MCP")" || true; }
 # every Claude Code peer gets the fleet's hooks (hooks/peer-settings.json: Stop → scripts/fleet-reply-log, which appends each
-# reply to $FLEET_STATE/replies.log); --settings keeps them per peer, so the user's own sessions and settings.json stay untouched
+# reply to $FLEET_STATE/replies.log, and scripts/fleet-context-guard, which hands a peer over the token limit off; PreCompact logs
+# autocompacts); --settings keeps them per peer, so the user's own sessions and settings.json stay untouched
 PEER_HOOKS="$(cd "$(dirname "$0")/../hooks" && pwd)/peer-settings.json"
 hook_flags() { [ "$1" = claude ] && [ -f "$PEER_HOOKS" ] && echo "--settings $(printf '%q' "$PEER_HOOKS")" || true; }
 if [ -n "$RESUME" ]; then echo "fleet-up: resuming the saved roster: ${ROLES[*]}"
