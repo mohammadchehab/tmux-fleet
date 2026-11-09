@@ -10,8 +10,8 @@
 #             first one assigned to it, else an unassigned one for its role (label role:<role>; else a title starting
 #             "Design" is the designer's, the rest the engineer's). fleet-judge brief-ready checks the card first; a thin
 #             one goes to the architect. At FLEET_PR_CAP open PRs engineers get no new card.
-#   asking    a peer whose reply ends in a question: fleet-judge route sends it to the architect, pr-architect or
-#             security-architect; "owner" tells the asker it is its own call; "user" or no confident answer escalates.
+#   asking    a peer whose reply ends in a question: fleet-judge route points the architect, pr-architect or
+#             security-architect at it (fleet peek <peer>; the question itself is never relayed); "owner" tells the asker it is its own call; "user" or no confident answer escalates.
 #   merged    a PR merged in the last day: its cards (a reference to #<n> or /pull/<n>) go Done; the peer on its branch is
 #             told to remove the worktree.
 #   red       an open PR with a failing check: its peer gets the failing checks, once per head commit.
@@ -144,7 +144,8 @@ for p in $peers; do
     owner) send "$p" "Your call: you own this work. Decide, note it on your card, and carry on." ;;
     user) escalate "$p asks a question only the user can answer: $(tail -1 <<<"$text")" ;;
     *) t=$(peer_with_role "$to")
-      if [ -n "$t" ] && [ "$t" != "$p" ]; then send "$t" "$p asks (answer it with fleet send \"…\" $p): $(tr '\n' ' ' <<<"$text" | tail -c 1200)"
+      # a pointer, never the question itself: a peer's words are not typed into another peer's prompt
+      if [ -n "$t" ] && [ "$t" != "$p" ]; then send "$t" "$p has a question for you. Read it with: fleet peek $p. Answer it with: fleet send \"<answer>\" $p"
       else escalate "$p asks a question for the $to, and no $to peer runs: $(tail -1 <<<"$text")"; fi ;;
   esac
 done
