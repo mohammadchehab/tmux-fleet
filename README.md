@@ -287,6 +287,8 @@ fleet-send "text" [peer ...]      # type a line into peers' prompts; -f interrup
 fleet-send -i [peer ...]          # interrupt (Escape), send nothing
 fleet-send -f /clear <peer>       # clear a peer, then fleet-send "/fleet <role>" <peer> to reload its role
 fleet-clear-heavy [-n] [k]        # clear idle peers over k thousand tokens of context (-n dry run)
+fleet-dispatch [--live]           # one project-manager tick as rules (dry run logs to $FLEET_STATE/dispatch.log)
+fleet-judge route|brief-ready     # one typed judgment from stdin: rules, then FLEET_JUDGE_CMD (Jev), then claude -p
 fleet-handoff [peer]              # hand over to a fresh copy after writing the state file (fleet-handoff skill)
 fleet-peek [-n 15] [peer ...]     # each peer's last reply and state (busy, asking, held, unknown, idle); read-only
 fleet-view                        # rebuild the tiled fleet view over the running peers; peers untouched
@@ -295,6 +297,18 @@ fleet-ls                          # every fleet: view, board, peers with role, C
 fleet-attach [peer]               # open the view or one peer's session (fleet attach)
 fleet-down                        # stop the tmux sessions and the board's page; worktrees and the board's files stay
 ```
+
+**Running without a project-manager.** `fleet dispatch --live` does the project-manager's loop as plain rules: an idle
+peer gets the top card of Next (a thin card goes to the architect first), a question goes to the architect, pr-architect
+or security-architect, red and merged PRs go to their owner, green ones to the pr-architect, and old decisions and gone
+peers escalate. Run it every five minutes from a session outside the fleet (`/loop 5m fleet --profile <name> dispatch --live`,
+or a crontab line), and start the squad without `project-manager`. Run it without `--live` for a day first and compare
+`$FLEET_STATE/dispatch.log` with what the project-manager did. Judgment comes from `fleet-judge`: keyword rules, then
+`FLEET_JUDGE_CMD` (a wrapper around a typed-verdict model such as Jev that prints `<answer> <confidence>`), then
+`claude -p` on Haiku asked twice; `FLEET_JUDGE` sets the order and `FLEET_JUDGE_MIN` (0.8) the lowest confidence
+accepted. Anything not answered confidently goes to `$FLEET_STATE/escalations.log`, and to the peer named in
+`FLEET_DISPATCH_ESCALATE`. Other settings: `FLEET_DISPATCH_ROLES` (roles that get cards, default `engineer designer`),
+`FLEET_PR_CAP` (5), `FLEET_GH_USER` (the gh account for the target repo).
 
 In Claude Code, `/fleet interrupt`, `/fleet clear`, `/fleet send`, `/fleet peek`, `/fleet view`, `/fleet board`, `/fleet down` and `/fleet handoff` do the same.
 

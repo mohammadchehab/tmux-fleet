@@ -47,6 +47,12 @@ Only the user, from their own shell, starts or stops the fleet: inside a peer se
   with its state: busy, asking, held, unknown or idle; read-only).
 - **`handoff`**: load the `fleet-handoff` skill (any peer: write your state file, then clear yourself) — see
   `roles/project-manager.md`, "Your own context".
+- **`dispatch`**: run `scripts/fleet-dispatch` (one project-manager tick as plain rules: assign idle peers from Next,
+  route a peer's question, tell owners about red and merged PRs, tell the pr-architect about green ones, escalate old
+  decisions and gone peers; a dry run that only logs to `$FLEET_STATE/dispatch.log` unless `--live`). Where a rule needs
+  judgment it calls `scripts/fleet-judge` (keyword rules, then `FLEET_JUDGE_CMD` for a typed-verdict model such as Jev, then
+  `claude -p` on Haiku asked twice); what nobody answers confidently goes to `$FLEET_STATE/escalations.log` and to
+  `FLEET_DISPATCH_ESCALATE`. Run every few minutes from a session outside the fleet, it replaces the project-manager peer.
 - **`wt` / `worktree`**: run `scripts/fleet-worktree ls|prune|new|summary` (`fleet wt …`): the worktree inventory across
   every repo the fleet touches, safe cleanup (a dry run unless `--yes`), and a new topic worktree (`new <peer> . <branch>`).
 - **`ls`**: run `scripts/fleet-ls` (every fleet on this machine: view, board URL and status, each peer's role, CLI and

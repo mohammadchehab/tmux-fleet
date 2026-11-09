@@ -74,6 +74,7 @@ check dev-tasks/scripts/test/wt.sh
 check dev-tasks/scripts/test/profile.sh
 check dev-tasks/scripts/test/profile-init.sh
 check dev-tasks/scripts/test/worktrees.sh
+check dev-tasks/scripts/test/dispatch.sh
 # no ops role: no agent touches production (the user, 2026-10-24)
 check test ! -f skills/fleet/roles/ops.md
 check bash -c '! grep -rqE "^ops([[:space:]]|$)" skills/fleet/squads skills/fleet/models'
