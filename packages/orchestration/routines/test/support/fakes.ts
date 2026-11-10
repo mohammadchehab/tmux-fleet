@@ -24,8 +24,10 @@ import {
   type Peer,
   type PmAction,
   type ProjectManager,
+  type PullRequest,
   type ReadModel,
   type Routine,
+  type Work,
 } from '@fleet/foundation-contracts'
 import type { EventSink, Timers } from '../../src/scheduler.ts'
 
@@ -98,9 +100,13 @@ export interface FakeRows {
   readonly peers: readonly Peer[]
   readonly routines: readonly Routine[]
   readonly notifications: readonly Notification[]
+  /** The `Work` rows a `pr-babysit` nudge is addressed from (§5.1, §6). */
+  readonly work: readonly Work[]
+  /** The `PR` projection, which is what `pr-babysit` compares an observation against (§10). */
+  readonly pullRequests: readonly PullRequest[]
 }
 
-const EMPTY: FakeRows = { peers: [], routines: [], notifications: [] }
+const EMPTY: FakeRows = { peers: [], routines: [], notifications: [], work: [], pullRequests: [] }
 
 export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
   const current: FakeRows = { ...EMPTY, ...rows }
@@ -115,7 +121,10 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
       all: async () => [],
       forPeer: async () => [],
     },
-    work: { all: async () => [], get: async () => undefined },
+    work: {
+      all: async () => current.work,
+      get: async (id) => current.work.find((row) => row.workId === id),
+    },
     decisions: { all: async () => [], open: async () => [], get: async () => undefined },
     notifications: {
       all: async () => current.notifications,
@@ -123,7 +132,7 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
     },
     findings: { all: async () => [] },
     messages: { all: async () => [], forPeer: async () => [] },
-    pullRequests: { all: async () => [] },
+    pullRequests: { all: async () => current.pullRequests },
     worktrees: { all: async () => [] },
     routines: { all: async () => current.routines },
     put: (next) => {

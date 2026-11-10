@@ -24,8 +24,24 @@
 
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { persistentDirs, profilePaths, systemClock, type Clock, type PathRoots, type Repo } from '@fleet/foundation-core'
-import type { BranchHead, EventSink, ProjectManager, ProviderRegistry, PullRequests } from '@fleet/foundation-contracts'
+import {
+  parse,
+  persistentDirs,
+  profilePaths,
+  repo,
+  systemClock,
+  type Clock,
+  type PathRoots,
+  type Repo,
+} from '@fleet/foundation-core'
+import type {
+  BranchHead,
+  EventSink,
+  ProjectManager,
+  ProviderRegistry,
+  PullRequests,
+  RoutineKind,
+} from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import { createGitHubPullRequests } from '@fleet/integrations-github'
 import type { Notifier } from '@fleet/notify-core'
@@ -44,6 +60,7 @@ import { createExecutorRouter, type KindExecutor } from './executor.ts'
 import { createDaemonExecutors } from './executors.ts'
 import { createDaemonJudge } from './judge.ts'
 import { createNotifyFactory, notifierFor } from './notify.ts'
+import { createPrBabysitFactory } from './pr-babysit.ts'
 import { loadProfile, type Profile } from './profile.ts'
 import { createSecurityScanFactory } from './security.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
@@ -261,7 +278,20 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // must not look like it is doing it.
   const notifier = deps.notifier ?? notifierFor(profile)
   const scanners = profile.security?.scanners
-  const overrides: Record<string, RoutineFactory> = {
+  const overrides: Partial<Record<RoutineKind, RoutineFactory>> = {
+    // §6's `pr-babysit` is always on — it is the fleet's only poller of its own PRs,
+    // and without it a row never leaves `checks: pending`. It needs the forge's port,
+    // a sink and the Mailbox, so it is registered here like `notify`. The repos are
+    // decoded now rather than on the first poll: a misspelt repo is a profile
+    // mistake, and `fleet up` should be where it is refused.
+    'pr-babysit': createPrBabysitFactory({
+      pullRequests,
+      // The raw store, like `notify`: these facts are the outcome of a wake, and
+      // routing them through the waking sink would run this routine inside itself.
+      store: { append: (batch) => store.append(batch) },
+      mailbox,
+      repos: profile.repos.map((name) => parse(repo(), name)),
+    }),
     ...(notifier === undefined
       ? {}
       : { notify: createNotifyFactory({ store: { append: (batch) => store.append(batch) }, notifier }) }),
@@ -285,7 +315,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
           }),
         }),
   }
-  const factories = Object.keys(overrides).length === 0 ? undefined : { ...installedFactories, ...overrides }
+  const factories: Readonly<Partial<Record<RoutineKind, RoutineFactory>>> = { ...installedFactories, ...overrides }
 
   // The scheduler appends through the *raw* store on purpose: its own routine
   // events (`routine.started`, `routine.finished`) are the outcome of a wake, and
@@ -298,7 +328,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     executor,
     config: profile.routines,
     clock,
-    ...(factories === undefined ? {} : { factories }),
+    factories,
     ...(profile.tickIntervalMs === undefined ? {} : { tickIntervalMs: profile.tickIntervalMs }),
   })
 
