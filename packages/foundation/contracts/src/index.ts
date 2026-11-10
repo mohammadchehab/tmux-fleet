@@ -15,6 +15,12 @@ export * from './shapes.ts'
 // the typed questions an LLM may be asked, and the port that answers them (§5.3)
 export * from './judge.ts'
 
+// what the PM decides, and who performs it (§5.2, §5.4, §10)
+export * from './actions.ts'
+
+// the PM's tick, as the routines call it (§5.2, §6)
+export * from './pm.ts'
+
 // the event registry: every type in §3, §5, §6, §7, §8
 export * from './events/registry.ts'
 export * from './events/peer.ts'

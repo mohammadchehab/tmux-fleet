@@ -1,0 +1,11 @@
+{
+  "kind": "request_decision",
+  "causedBy": [83],
+  "decisionId": "dec_0123456789abcdef",
+  "decisionKind": "scope",
+  "question": "Does the transfer-limit work include the business-account screen?",
+  "options": ["card A only", "card A and business accounts"],
+  "workId": "wrk_0123456789abcdef",
+  "inputsHash": "sha256-9c4a7e1f00c0ffee",
+  "routedTo": "architect"
+}

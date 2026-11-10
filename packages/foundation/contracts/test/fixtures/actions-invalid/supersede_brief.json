@@ -1,0 +1,18 @@
+{
+  "input": {
+    "kind": "supersede_brief",
+    "causedBy": [57],
+    "workId": "wrk_0123456789abcdef",
+    "peerId": "engineer-1",
+    "supersededBriefId": "brf_0123456789abcdef",
+    "supersededVersion": 0,
+    "brief": {
+      "briefId": "brf_fedcba9876543210",
+      "version": 3,
+      "contractVersions": [{ "contractId": "con_0123456789abcdef", "version": 4 }],
+      "text": "Contract v4 renamed limit to transferLimit; rebuild the DTO."
+    },
+    "reason": "contract v4 moved the limit field"
+  },
+  "path": "supersededVersion"
+}

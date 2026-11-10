@@ -59,6 +59,13 @@ export const routineFinished = event(
     durationMs: count(),
     /** How many actions the run produced; zero is a legitimate, visible outcome. */
     actions: count(),
+    /**
+     * How many of those the fleet could not carry out (§5.2, §6). Recorded here
+     * rather than only in the executor's log: a decision the fleet failed to
+     * perform is exactly the kind of silence §6 exists to prevent, and the run
+     * itself must not read as clean.
+     */
+    actionsFailed: count(),
   }),
 )
 

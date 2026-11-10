@@ -12,7 +12,8 @@
       "routineId": "dispatch",
       "kind": "not-a-valid-value",
       "durationMs": 41,
-      "actions": 1
+      "actions": 1,
+      "actionsFailed": 0
     }
   },
   "path": "data.kind"

@@ -1,0 +1,8 @@
+{
+  "input": {
+    "kind": "render_standup",
+    "causedBy": [110],
+    "date": "10/11/2026"
+  },
+  "path": "date"
+}
