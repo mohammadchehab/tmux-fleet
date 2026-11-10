@@ -9,7 +9,7 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "test": "node --test 'packages/**/test/**/*.test.ts' 'tests/**/*.test.ts'",
+    "test": "node --test 'packages/**/test/**/*.test.ts' 'apps/**/test/**/*.test.ts' 'tests/**/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {

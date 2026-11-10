@@ -1,0 +1,29 @@
+{
+  "name": "@fleet/app-daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "fleetd: the only place the groups are wired together (architecture §2).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*",
+    "@fleet/foundation-store": "workspace:*",
+    "@fleet/orchestration-gate": "workspace:*",
+    "@fleet/orchestration-routines": "workspace:*",
+    "@fleet/runtime-mailbox": "workspace:*",
+    "@fleet/runtime-provider-claude": "workspace:*",
+    "@fleet/runtime-provider-deepinfra": "workspace:*",
+    "@fleet/runtime-provider-sdk": "workspace:*",
+    "@fleet/runtime-supervisor": "workspace:*",
+    "yaml": "^2.8.1"
+  },
+  "bin": {
+    "fleetd": "./src/main.ts"
+  }
+}
