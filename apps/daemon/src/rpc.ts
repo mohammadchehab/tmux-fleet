@@ -26,6 +26,7 @@ import {
   optional,
   parseStrict,
   peerId,
+  SchemaError,
   text,
   toFleetError,
   type FleetError,
@@ -132,6 +133,24 @@ export interface RpcErrorBody {
   readonly message: string
 }
 
+/**
+ * Strict decode, with a schema failure reported as the client's fault.
+ *
+ * `parseStrict` throws a `SchemaError`, which is a `RangeError`: at this
+ * boundary that is always the *client's* mistake, and answering `internal`
+ * would blame the daemon for a bad request and hide the field that was wrong.
+ */
+const decode = <T>(schema: Schema<T>, value: unknown): T => {
+  try {
+    return parseStrict(schema, value)
+  } catch (thrown) {
+    if (thrown instanceof SchemaError) {
+      throw fleetError('invalid_input', thrown.message, { cause: thrown, details: { issues: thrown.issues } })
+    }
+    throw thrown
+  }
+}
+
 const requestSchema = (): Schema<RpcRequest> =>
   objectAs<RpcRequest>()({
     id: optional(text(64)),
@@ -154,7 +173,7 @@ export const decodeRequest = (line: string): RpcRequest => {
   } catch (cause) {
     throw fleetError('invalid_input', `the request is not JSON: ${(cause as Error).message}`, { cause })
   }
-  return parseStrict(requestSchema(), value)
+  return decode(requestSchema(), value)
 }
 
 const sendParams = () =>
@@ -188,20 +207,20 @@ const noParams = (): Schema<Record<string, never>> => object({}) as unknown as S
 export const dispatch = async (api: DaemonApi, request: RpcRequest): Promise<unknown> => {
   switch (request.method) {
     case 'up':
-      parseStrict(noParams(), request.params ?? {})
+      decode(noParams(), request.params ?? {})
       return api.up()
     case 'down':
-      parseStrict(noParams(), request.params ?? {})
+      decode(noParams(), request.params ?? {})
       return api.down()
     case 'ls':
-      parseStrict(noParams(), request.params ?? {})
+      decode(noParams(), request.params ?? {})
       return api.ls()
     case 'send':
-      return api.send(parseStrict(sendParams(), request.params ?? {}))
+      return api.send(decode(sendParams(), request.params ?? {}))
     case 'peek':
-      return api.peek(parseStrict(peekParams(), request.params ?? {}))
+      return api.peek(decode(peekParams(), request.params ?? {}))
     case 'decide':
-      return api.decide(parseStrict(decideParams(), request.params ?? {}))
+      return api.decide(decode(decideParams(), request.params ?? {}))
   }
 }
 
