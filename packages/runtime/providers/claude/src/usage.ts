@@ -15,6 +15,12 @@
  * `costUsd` is emitted only when the provider declares `usageCost`: a number
  * that looks like money but is not comparable between endpoints is worse than
  * no number, and the spike found exactly that shape on DeepInfra.
+ *
+ * `autoCompactAt` is the third number and the one §8's guard reads: the count
+ * at which the CLI will compact by itself. It comes from the same call as the
+ * measurement, for the same reason `contextTokens` does — only the running
+ * process knows when it will give up — and it can sit far below the configured
+ * window, which is precisely the gap the guard exists to close.
  */
 
 import { fleetError } from '@fleet/foundation-core'
@@ -40,6 +46,41 @@ export const contextLimitFor = (limits: ContextLimits, model: string): number =>
 export interface ContextUsageAnswer {
   readonly totalTokens?: number
   readonly maxTokens?: number
+  /** The resolved autocompact window: what `maxTokens` is measured against. */
+  readonly rawMaxTokens?: number
+  /** The token count at which the CLI compacts by itself, when it reports one. */
+  readonly autoCompactThreshold?: number
+  /** Whether auto-compaction is on at all; `false` means nothing will compact behind us. */
+  readonly autoCompactEnabled?: boolean
+  /** The `/context` rows, where the compaction reserve is `autocompact_buffer`. */
+  readonly categories?: readonly { readonly kind?: string; readonly id?: string; readonly tokens?: number }[]
+}
+
+/**
+ * When the CLI will compact on its own, in tokens — the number a purge has to
+ * beat (§8).
+ *
+ * It is read from the session rather than configured, unlike the window, and
+ * the difference is deliberate. `contextLimit` answers "how much can this model
+ * hold", which a vendor's SDK guesses wrong (it believes DeepInfra's 1M models
+ * hold 200K); `autoCompactAt` answers "when will this process throw my context
+ * away", which the process knows exactly and which is sometimes far below the
+ * window (a 1M model under a 200K compaction policy). Trusting the SDK's guess
+ * where it is *wrong about the window* is fine here, because the compaction
+ * really does fire there: beating it is the whole job.
+ */
+export const autoCompactAtFrom = (answer: ContextUsageAnswer | undefined): number | undefined => {
+  if (answer === undefined || answer.autoCompactEnabled === false) return undefined
+  const threshold = answer.autoCompactThreshold
+  if (typeof threshold === 'number' && threshold > 0) return Math.round(threshold)
+  // Older CLIs answer without the threshold but with the pieces: the window it
+  // measures against, and the reserve it keeps for the compaction itself.
+  const window = answer.rawMaxTokens
+  const reserved = answer.categories?.find((row) => row.id === 'autocompact_buffer')?.tokens
+  if (typeof window === 'number' && window > 0 && typeof reserved === 'number' && reserved > 0) {
+    return Math.max(1, Math.round(window - reserved))
+  }
+  return undefined
 }
 
 /**
@@ -62,9 +103,13 @@ export const usageFrom = (input: {
   const tokens =
     typeof measured === 'number' && measured > 0 ? measured : Math.max(0, input.fallbackTokens ?? 0)
   const contextLimit = contextLimitFor(input.limits, input.model)
-  return input.costUsd === undefined
-    ? { contextTokens: Math.round(tokens), contextLimit }
-    : { contextTokens: Math.round(tokens), contextLimit, costUsd: input.costUsd }
+  const autoCompactAt = autoCompactAtFrom(input.answer)
+  const base = {
+    contextTokens: Math.round(tokens),
+    contextLimit,
+    ...(autoCompactAt === undefined ? {} : { autoCompactAt }),
+  }
+  return input.costUsd === undefined ? base : { ...base, costUsd: input.costUsd }
 }
 
 /**

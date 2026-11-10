@@ -58,12 +58,24 @@ export const mapMessage = (
   }
 
   if (message.type === 'system' && message.subtype === 'compact_boundary') {
-    if (turnId === undefined) return []
+    // A compaction is not an intra-turn event: an auto-compaction can land
+    // between turns and a person's `/compact` always does. Dropping those was
+    // how a peer could lose its context without the fleet ever seeing it (§8).
     const meta = isRecord(message.compact_metadata) ? message.compact_metadata : undefined
     const after = typeof meta?.post_tokens === 'number' ? meta.post_tokens : undefined
     const before = typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : state.contextTokensBefore
-    if (after === undefined || before === undefined) return []
-    return [{ type: 'compaction', turnId, contextTokensBefore: before, contextTokensAfter: after }]
+    if (before === undefined) return []
+    const trigger =
+      meta?.trigger === 'auto' || meta?.trigger === 'manual' ? meta.trigger : ('unknown' as const)
+    return [
+      {
+        type: 'compaction',
+        ...(turnId === undefined ? {} : { turnId }),
+        trigger,
+        contextTokensBefore: before,
+        ...(after === undefined ? {} : { contextTokensAfter: after }),
+      },
+    ]
   }
 
   if (message.type === 'assistant') {

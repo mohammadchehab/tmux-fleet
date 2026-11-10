@@ -85,6 +85,14 @@ export interface PeerSessionPorts {
     failure: unknown,
     stateFile: StateFile | undefined,
   ) => Promise<SessionHandle>
+  /**
+   * What re-sending `preTokens` of context cost, at this model's configured
+   * price (§11); `undefined` when the profile prices nothing, which the event
+   * records as absent rather than as zero. It is injected because a price is
+   * configuration and the supervisor is not the place configuration lives, and
+   * because a test that asserts a bill should hand it its own arithmetic.
+   */
+  readonly estimateCompactionCost?: (preTokens: number) => number | undefined
 }
 
 interface Deferred<T> {
@@ -323,6 +331,13 @@ export class PeerSession {
       case 'question.abandoned':
         this.#pending.delete(event.questionId)
         break
+      case 'compaction':
+        // Recorded whether or not a turn is open. An auto-compaction can land
+        // between turns and a person's `/compact` always does; both rewrite the
+        // peer's context and both cost a bill, and neither has a turn to hang
+        // the record on (§8).
+        await this.#recordCompaction(handle, event)
+        break
       default:
         break
     }
@@ -340,6 +355,61 @@ export class PeerSession {
     }
     if (event.type === 'session.ended') {
       await this.#recordEnd(handle, endReasonOf(event, purging), event.code)
+    }
+  }
+
+  /**
+   * One compaction, as the store hears about it. The cost is an estimate of the
+   * tokens the provider had to read again to summarise, priced by the profile;
+   * when nothing prices them the field is left out rather than set to zero,
+   * because "not priced here" and "free" are different claims (§8).
+   *
+   * The configured window is recorded beside the tokens the provider actually
+   * compacted at, because that pair is the only way to see from the store that a
+   * profile's `contextLimit` is too high for its model: the provider compacted
+   * at 40K while the fleet thought it had 200K, so no ratio against 200K would
+   * ever have fired. `usage` is asked at compaction time rather than cached,
+   * since it is the running session's number and the whole point is to catch it
+   * disagreeing with config. A provider that cannot report usage has no window
+   * to compare against, and a failing `usage` must not cost the record.
+   */
+  async #recordCompaction(
+    handle: SessionHandle,
+    event: Extract<ProviderEvent, { type: 'compaction' }>,
+  ): Promise<void> {
+    const { clock, peerId, record, provider, estimateCompactionCost } = this.#ports
+    const contextLimit = await this.#contextLimit(handle)
+    const estimate = estimateCompactionCost?.(event.contextTokensBefore)
+    // Rounded to a ten-thousandth of a dollar: raw float arithmetic on a price
+    // produces `0.6000000000000001`, which is not a number anybody should read in
+    // a notification, and a sub-cent cost still rounds to a nonzero figure.
+    const estimated = estimate === undefined ? undefined : Math.round(estimate * 10_000) / 10_000
+    await record({
+      type: 'peer.compacted',
+      ts: clock.now(),
+      subject: peerId,
+      actor: peerActor(peerId),
+      data: {
+        peerId,
+        trigger: event.trigger,
+        preTokens: event.contextTokensBefore,
+        ...(event.contextTokensAfter === undefined ? {} : { postTokens: event.contextTokensAfter }),
+        ...(contextLimit === undefined ? {} : { contextLimit }),
+        ...(estimated === undefined ? {} : { estimatedCostUsd: estimated }),
+      },
+    })
+  }
+
+  /** The window this session is configured with, or `undefined` when it cannot be known (§4, §8). */
+  async #contextLimit(handle: SessionHandle): Promise<number | undefined> {
+    const { provider } = this.#ports
+    if (!provider.capabilities.usageTokens) return undefined
+    try {
+      return (await provider.usage(handle)).contextLimit
+    } catch {
+      // A compaction is still news when the usage call fails; the comparison is
+      // what is lost, and an absent field says exactly that.
+      return undefined
     }
   }
 

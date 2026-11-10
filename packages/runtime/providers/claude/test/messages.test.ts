@@ -101,7 +101,41 @@ test('a compact boundary reports what it dropped', () => {
     live,
     at,
   )
-  assert.deepEqual(events, [{ type: 'compaction', turnId: turn, contextTokensBefore: 15492, contextTokensAfter: 4476 }])
+  assert.deepEqual(events, [
+    { type: 'compaction', turnId: turn, trigger: 'manual', contextTokensBefore: 15492, contextTokensAfter: 4476 },
+  ])
+})
+
+test('a compaction between turns is reported too, since that is the one nobody sees', () => {
+  const events = mapMessage(
+    {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', pre_tokens: 198400, post_tokens: 21400 },
+    },
+    undefined,
+    live,
+    at,
+  )
+  assert.deepEqual(events, [
+    { type: 'compaction', trigger: 'auto', contextTokensBefore: 198400, contextTokensAfter: 21400 },
+  ])
+})
+
+test('a compact boundary with an unrecognised trigger is reported as unknown, not dropped', () => {
+  const events = mapMessage(
+    {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'something-new', pre_tokens: 900, post_tokens: 100 },
+    },
+    turn,
+    live,
+    at,
+  )
+  assert.deepEqual(events, [
+    { type: 'compaction', turnId: turn, trigger: 'unknown', contextTokensBefore: 900, contextTokensAfter: 100 },
+  ])
 })
 
 test('every other message kind is silent', () => {

@@ -1,9 +1,10 @@
 {
   "input": {
     "type": "compaction",
-    "turnId": 42,
+    "turnId": "trn_8192a3b4c5d6e7f8",
+    "trigger": 42,
     "contextTokensBefore": 198400,
     "contextTokensAfter": 21400
   },
-  "path": "turnId"
+  "path": "trigger"
 }

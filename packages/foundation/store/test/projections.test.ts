@@ -448,12 +448,114 @@ test('`strictProjection` turns a miss into a throw, and keeps none of the batch'
     'the message names the miss, so a test does not have to go and read the table to find it',
   )
 
-  assert.deepEqual(await store.health(), { latestSeq: 0, events: 0, anomalies: 0 }, 'the whole batch rolled back')
+  assert.deepEqual(await store.health(), { latestSeq: 0, events: 0, anomalies: 0, compactions: 0 }, 'the whole batch rolled back')
   assert.equal(await store.reader().peers.get('engineer-1' as PeerId), undefined, 'including the event that did project')
 
   // Strict about misses, not about logs: an event every projection can follow still lands.
   await store.append([appendable('peer.registered.json')])
   await store.rebuild()
-  assert.deepEqual(await store.health(), { latestSeq: 1, events: 1, anomalies: 0 })
+  assert.deepEqual(await store.health(), { latestSeq: 1, events: 1, anomalies: 0, compactions: 0 })
+  await store.close()
+})
+
+test('a compaction is one row a peer, and every one of them raises its own notification', async () => {
+  const store = await open()
+  await store.append([appendable('peer.registered.json')])
+  await store.append([
+    event('peer.compacted', 'engineer-1', { peerId: 'engineer-1', trigger: 'auto', preTokens: 180_000 }),
+  ])
+  await store.append([
+    event(
+      'peer.compacted',
+      'engineer-1',
+      { peerId: 'engineer-1', trigger: 'manual', preTokens: 90_000, estimatedCostUsd: 0.27 },
+      '2026-11-10T11:00:00.000Z',
+    ),
+  ])
+  await store.append([
+    event('peer.compacted', 'architect-1', { peerId: 'architect-1', trigger: 'auto', preTokens: 40_000 }),
+  ])
+
+  const rows = await store.reader().compactions.all()
+  assert.deepEqual(rows, [
+    {
+      peerId: 'architect-1',
+      count: 1,
+      lastAt: '2026-11-10T10:00:00.000Z',
+      lastTrigger: 'auto',
+      lastPreTokens: 40_000,
+    },
+    {
+      peerId: 'engineer-1',
+      count: 2,
+      lastAt: '2026-11-10T11:00:00.000Z',
+      lastTrigger: 'manual',
+      lastPreTokens: 90_000,
+    },
+  ])
+
+  // §6.1 `failure`: one notification per compaction, not one per peer. A key
+  // built from the peer alone would have deduped the second one away, which is
+  // the exact silence the alert exists to break.
+  const raised = (await store.reader().notifications.all()).filter((row) => String(row.key).includes('compacted'))
+  assert.equal(raised.length, 3)
+  assert.deepEqual(
+    raised.map((row) => row.class),
+    ['failure', 'failure', 'failure'],
+  )
+
+  // The same rows after a replay: the table is a projection of the log, not state
+  // `append` kept on the side.
+  await store.rebuild()
+  assert.deepEqual(await store.reader().compactions.all(), rows)
+  assert.equal((await store.health()).compactions, 3, 'health counts them too, which is what `fleet status` reads')
+  await store.close()
+})
+
+test('a compaction says whether the configured limit was the reason, which is the whole alert', async () => {
+  const store = await open()
+  await store.append([appendable('peer.registered.json')])
+  // The same trigger and the same peer three times over: only the numbers differ,
+  // and the numbers are what a reader needs to act on. A banner that only said
+  // "compacted" would leave the one question it exists to answer — is the limit
+  // I configured wrong for this model? — to the user.
+  await store.append([
+    event('peer.compacted', 'engineer-1', {
+      peerId: 'engineer-1',
+      trigger: 'auto',
+      preTokens: 40_000,
+      contextLimit: 200_000,
+    }),
+  ])
+  await store.append([
+    event('peer.compacted', 'engineer-1', {
+      peerId: 'engineer-1',
+      trigger: 'auto',
+      preTokens: 200_000,
+      contextLimit: 200_000,
+    }),
+  ])
+  // A provider that reports no window at all (§4): nothing to compare against,
+  // and saying "too low" or "too high" here would be inventing the comparison.
+  await store.append([
+    event('peer.compacted', 'engineer-1', { peerId: 'engineer-1', trigger: 'manual', preTokens: 90_000 }),
+  ])
+
+  const raised = (await store.reader().notifications.all())
+    .filter((row) => String(row.key).includes('compacted'))
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+  assert.equal(raised.length, 3)
+
+  // Named with the model, from the peer row: the limit that is wrong is the
+  // limit *for this model*, so the alert has to say which one.
+  assert.match(raised[0]?.body ?? '', /engineer-1 \(claude-sonnet-5-5\)/)
+  assert.match(raised[0]?.body ?? '', /40,000 tokens/)
+  assert.match(raised[0]?.body ?? '', /configured limit is too high for this model/)
+
+  assert.match(raised[1]?.body ?? '', /200,000 tokens/)
+  assert.match(raised[1]?.body ?? '', /limit fits this model/)
+
+  assert.match(raised[2]?.body ?? '', /no context limit/)
+
   await store.close()
 })

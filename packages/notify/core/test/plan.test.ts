@@ -215,3 +215,32 @@ describe('a banner is a glance, not a page', () => {
     assert.ok((standupSend?.body ?? '').length <= 2000)
   })
 })
+
+describe('a failure that knows what it is talking about', () => {
+  it('sends the row’s own words when the projection wrote them, not a render of its key', () => {
+    // A compaction is the case: its key says "failure:engineer-1:compacted:17",
+    // which is unreadable, and the projection already wrote the sentence worth
+    // reading — the tokens, the limit, and the verdict on the limit.
+    const compaction = row({
+      key: 'failure:engineer-1:compacted:17',
+      class: 'failure',
+      state: 'pending',
+      title: 'Compaction: engineer-1',
+      body: 'engineer-1 (claude-sonnet-5-5) — compacted 40,000 tokens (auto) under a configured limit of 200,000.',
+    })
+
+    const [send] = plan([compaction], '2026-11-10T09:05:00.000Z').send
+
+    assert.equal(send?.title, 'Compaction: engineer-1')
+    assert.match(send?.body ?? '', /configured limit of 200,000/)
+  })
+
+  it('still renders the key when the row carries no words of its own', () => {
+    // Every other failure: a crash, an unreadable profile. Nothing wrote a
+    // sentence, so the fallback is what the user gets — and it has to stay.
+    const [send] = plan([row({ key: 'failure:builder:auth', class: 'failure', state: 'pending' })], '2026-11-10T09:05:00.000Z').send
+
+    assert.match(send?.title ?? '', /Failure: auth/)
+    assert.match(send?.body ?? '', /builder — auth\./)
+  })
+})

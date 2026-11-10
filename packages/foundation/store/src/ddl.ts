@@ -336,6 +336,26 @@ CREATE INDEX IF NOT EXISTS projection_anomalies_projection ON projection_anomali
 `
 
 /**
+ * Compactions, one row per `peer.compacted`. A separate table rather than a
+ * counter on `peers`, because the count is read per peer *and* summed across the
+ * fleet, and a peer's context can be rewritten more than once in a session (§8).
+ */
+const COMPACTIONS = `
+CREATE TABLE IF NOT EXISTS peer_compactions (
+  seq           INTEGER PRIMARY KEY,
+  peer_id       TEXT NOT NULL,
+  trigger       TEXT NOT NULL,
+  pre_tokens    INTEGER NOT NULL,
+  -- The window the peer was configured with, kept beside the tokens it actually
+  -- compacted at: a compaction well under the limit means the limit is wrong for
+  -- the model. NULL when the provider cannot report one.
+  context_limit INTEGER,
+  ts            TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS peer_compactions_peer ON peer_compactions (peer_id);
+`
+
+/**
  * Migrations, in order. A store records the highest applied version in
  * `store_meta` and applies everything above it; version 1 is the initial
  * schema (architecture §3).
@@ -357,6 +377,12 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 3,
     name: 'evals',
     statements: [EVALS],
+  },
+  {
+    // additive: compactions are new events too; a replay fills the table from the log
+    version: 4,
+    name: 'peer_compactions',
+    statements: [COMPACTIONS],
   },
 ]
 

@@ -6,6 +6,7 @@
 
 import {
   boolean,
+  count,
   event,
   number,
   object,
@@ -21,7 +22,7 @@ import {
 } from '@fleet/foundation-core'
 import { peerId, providerSessionRef, sessionId, worktreeId } from '@fleet/foundation-core'
 import { peerState } from '@fleet/foundation-core'
-import { permissionMode, providerId } from '../provider.ts'
+import { compactionTriggers, permissionMode, providerId } from '../provider.ts'
 
 /** A peer exists. Written once per peer, from the profile's squad (§6, §1.1 config). */
 export const peerRegistered = event(
@@ -103,6 +104,41 @@ export const peerFailed = event(
     (value) => value.reason !== 'config_mismatch' || (value.expected !== undefined && value.observed !== undefined),
     'expected and observed when the reason is config_mismatch',
   ),
+)
+
+/**
+ * A provider compacted a peer's context on its own or on a person's say-so (§8).
+ *
+ * Recorded because a compaction is money: the conversation is re-sent to a
+ * summarizer, and the peer comes back with less of what it knew. It is not a
+ * failure — the session carries on — so it is its own event rather than a
+ * `peer.failed`, and it is written for compactions that happened *between*
+ * turns, which is where they mostly happen.
+ */
+export const peerCompacted = event(
+  'peer.compacted',
+  object({
+    peerId: peerId(),
+    trigger: oneOf(compactionTriggers),
+    /** Context tokens the provider compacted: the number that sizes the bill. */
+    preTokens: count(),
+    /** What the context held afterwards; absent when the provider did not say. */
+    postTokens: optional(count()),
+    /**
+     * The context window this peer was configured with, next to the tokens it
+     * actually compacted at (§8). The pair is the point: a compaction at 40K
+     * under a limit of 200K says the configured limit is wrong for the model, and
+     * no purge ratio will ever fire in time on a number that size. Absent when
+     * the provider does not report usage, because then there is no limit to
+     * compare against.
+     */
+    contextLimit: optional(count()),
+    /**
+     * What the re-send cost at the model's configured price, when one is
+     * configured. Absent means "not priced here", never "free" (§11).
+     */
+    estimatedCostUsd: optional(number({ min: 0 })),
+  }),
 )
 
 /**

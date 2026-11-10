@@ -706,6 +706,13 @@ const raiseNotification = (
   key: NotificationKey,
   notificationClass: Notification['class'],
   ts: string,
+  /**
+   * What the banner should say, when the projection knows more than the key does.
+   * A key carries a subject and a kind; a compaction carries numbers, and a
+   * banner that says "compacted" without them is the shrug this event exists to
+   * replace (§6.1, §8). Left out, the `notify` routine renders from the key.
+   */
+  detail?: { readonly title?: string; readonly body?: string },
 ): void => {
   const current = notificationByKey(db, key)
   if (current === undefined) {
@@ -718,6 +725,8 @@ const raiseNotification = (
         deliveryFailed: false,
         occurrences: 1,
         createdAt: ts,
+        ...(detail?.title === undefined ? {} : { title: detail.title }),
+        ...(detail?.body === undefined ? {} : { body: detail.body }),
       }),
     )
     return
@@ -730,6 +739,41 @@ const raiseNotification = (
       occurrences: current.occurrences + 1,
     }),
   )
+}
+
+/** Thousands separators, for a number a person reads on a lock screen. */
+const tokenText = (tokens: number): string => tokens.toLocaleString('en-US')
+
+/**
+ * What a compaction banner says (§6.1, §8).
+ *
+ * The comparison is the point. A compaction at a number well under the window
+ * the peer was *configured* with means the provider gave up long before the
+ * fleet's ratio could fire, and the fix is the profile's `contextLimit`, not a
+ * tighter purge — so the banner says which of the two it is, using the pair the
+ * event carries. With no configured limit to compare against it says only what
+ * it knows, rather than guessing at a verdict.
+ */
+const compactionDetail = (
+  peerId: string,
+  model: string | undefined,
+  trigger: string,
+  preTokens: number,
+  contextLimit: number | undefined,
+): { readonly title: string; readonly body: string } => {
+  const who = model === undefined ? String(peerId) : `${String(peerId)} (${model})`
+  const compacted = `compacted ${tokenText(preTokens)} tokens (${trigger})`
+  const title = `Compaction: ${String(peerId)}`
+  if (contextLimit === undefined) {
+    return { title, body: `${who} — ${compacted}. The provider reported no context limit, so there is nothing to compare it against.` }
+  }
+  return {
+    title,
+    body:
+      preTokens < contextLimit
+        ? `${who} — ${compacted} under a configured limit of ${tokenText(contextLimit)}. The configured limit is too high for this model: the provider compacted well before the purge could fire.`
+        : `${who} — ${compacted} against a configured limit of ${tokenText(contextLimit)}. The limit fits this model; the purge simply did not get there first.`,
+  }
 }
 
 const resolveNotification = (db: Sqlite, key: NotificationKey, ts: string): void => {
@@ -939,6 +983,32 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       )
       // §6.1 `failure`: a crash, a session that will not resume, a config mismatch.
       raiseNotification(db, notificationKeyOf('failure', peerId, reason), 'failure', ts)
+      return
+    }
+    case 'peer.compacted': {
+      const { peerId, trigger, preTokens, contextLimit } = event.data
+      db.run(
+        `INSERT OR REPLACE INTO peer_compactions (seq, peer_id, trigger, pre_tokens, context_limit, ts)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        event.seq,
+        peerId,
+        trigger,
+        preTokens,
+        contextLimit ?? null,
+        ts,
+      )
+      // §6.1 `failure`: a compaction is not a routine step. It rewrites the peer's
+      // context and bills for re-reading it, and the whole point of the alert is
+      // that nobody would otherwise notice. Keyed by the event, not the peer, so
+      // two compactions are two notifications rather than one that deduped away.
+      const model = db.get<{ model: string }>('SELECT model FROM peers WHERE peer_id = ?', peerId)?.model
+      raiseNotification(
+        db,
+        notificationKeyOf('failure', peerId, 'compacted', String(event.seq)),
+        'failure',
+        ts,
+        compactionDetail(peerId, model, trigger, preTokens, contextLimit),
+      )
       return
     }
     case 'session.started': {
@@ -1870,6 +1940,42 @@ export const readers = (db: Sqlite): ReadModel => {
         const cases = rows<EvalCase>(PROJECTION_SCHEMAS.evalCase, 'SELECT data FROM eval_cases WHERE run_id = ? ORDER BY case_id', runId)
         return { run, cases }
       },
+    },
+    compactions: {
+      // Grouped in SQL rather than by the caller: `fleet ls` wants a count per
+      // peer and a fleet-wide total, and the log holds every compaction, not
+      // just the latest (§8).
+      all: async () =>
+        db
+          .all<{
+            peer_id: string
+            count: number
+            last_at: string
+            last_trigger: string
+            last_pre_tokens: number
+          }>(
+            `SELECT peer_id,
+                    COUNT(*)                                       AS count,
+                    MAX(ts)                                        AS last_at,
+                    (SELECT last_q.trigger FROM peer_compactions last_q
+                      WHERE last_q.peer_id = grouped.peer_id
+                      ORDER BY last_q.ts DESC, last_q.seq DESC LIMIT 1)    AS last_trigger,
+                    (SELECT last_q.pre_tokens FROM peer_compactions last_q
+                      WHERE last_q.peer_id = grouped.peer_id
+                      ORDER BY last_q.ts DESC, last_q.seq DESC LIMIT 1)    AS last_pre_tokens
+               FROM peer_compactions grouped
+              GROUP BY peer_id
+              ORDER BY peer_id`,
+          )
+          .map((row) =>
+            parse(PROJECTION_SCHEMAS.peerCompactions, {
+              peerId: row.peer_id,
+              count: Number(row.count),
+              lastAt: row.last_at,
+              lastTrigger: row.last_trigger,
+              lastPreTokens: Number(row.last_pre_tokens),
+            }),
+          ),
     },
   }
 }

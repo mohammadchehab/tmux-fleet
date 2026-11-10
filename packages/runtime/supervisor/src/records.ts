@@ -25,8 +25,10 @@ export type PurgeRecord = Extract<
   { type: 'purge.started' | 'purge.saved' | 'purge.degraded' | 'purge.completed' }
 >
 
-/** Everything one session's stream produces: its states, its end, and its purges. */
-export type SessionRecord = PurgeRecord | Extract<AppendEvent, { type: 'peer.state_changed' | 'session.ended' }>
+/** Everything one session's stream produces: its states, its compactions, its end, and its purges. */
+export type SessionRecord =
+  | PurgeRecord
+  | Extract<AppendEvent, { type: 'peer.state_changed' | 'peer.compacted' | 'session.ended' }>
 
 /**
  * The provider hands back a bare `string`; the store's events carry a

@@ -11,7 +11,7 @@
 
 import type { Infer, Schema } from '@fleet/foundation-core'
 import { brief, contract, contractVersionRef, work } from './work.ts'
-import { peer, session } from './peers.ts'
+import { peer, peerCompactions, session } from './peers.ts'
 import { build, holder, pullRequest, worktree } from './delivery.ts'
 import { message } from './mailbox.ts'
 import { decision, finding, notification, routine, tokenReport } from './ops.ts'
@@ -19,6 +19,7 @@ import { evalCase, evalRun } from './evals.ts'
 
 export const PROJECTION_SCHEMAS = {
   peer: peer(),
+  peerCompactions: peerCompactions(),
   session: session(),
   work: work(),
   contract: contract(),

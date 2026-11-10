@@ -31,6 +31,16 @@ export interface PurgeLimits {
    * role's largest handoff needs.
    */
   readonly contextRatio: number
+  /**
+   * Purge when the context reaches this fraction of the count at which the
+   * provider would compact on its own — the point the peer must be handed off
+   * *before*, because a compaction is money spent and context lost (§8).
+   *
+   * Below 1 for the same reason `contextRatio` is: the handoff turn needs room
+   * to run, and the trigger is evaluated at a turn boundary, so the turn that
+   * takes the ratio from 0.89 to 1.0 has to be one the peer can still finish.
+   */
+  readonly autoCompactRatio: number
   /** For a provider with no token usage: purge after this many turns in one session. */
   readonly maxTurns: number
   /** …or after this long, even if it has been idle. */
@@ -38,18 +48,26 @@ export interface PurgeLimits {
 }
 
 /**
- * The defaults a profile that says nothing gets. Generous enough not to purge a
- * healthy session, tight enough that a long-running one hands off well before
- * the model's window is the reason it fails.
+ * The defaults a profile that says nothing gets. Tight enough that a long
+ * session hands off well before the model's window is the reason it fails, and
+ * loose enough that a productive peer is not interrupted by the fleet's own
+ * bookkeeping.
+ *
+ * `contextRatio` is 0.6 rather than 0.8 because it is the cost lever, not a
+ * safety margin: every turn re-reads the whole context, so the bill scales with
+ * turns × context size, and the last 20% of a window is where a session is
+ * expensive and least likely to gain anything. The remaining headroom is still
+ * ample for the handoff turn, which `autoCompactRatio` guards separately.
  */
 export const defaultPurgeLimits: PurgeLimits = Object.freeze({
-  contextRatio: 0.8,
+  contextRatio: 0.6,
+  autoCompactRatio: 0.9,
   maxTurns: 40,
   maxSessionMillis: 3 * 60 * 60 * 1000,
 })
 
 /** Why a purge fired, in the order they are checked. */
-export const purgeTriggers = ['context', 'turns', 'wall_clock'] as const
+export const purgeTriggers = ['auto_compact', 'context', 'turns', 'wall_clock'] as const
 export type PurgeTrigger = (typeof purgeTriggers)[number]
 
 /** Everything the decision reads, and nothing it has to fetch. */
@@ -78,6 +96,12 @@ export const checkPurgeLimits = (limits: PurgeLimits): PurgeLimits => {
       details: { contextRatio: ratio },
     })
   }
+  const autoCompact = limits.autoCompactRatio
+  if (!Number.isFinite(autoCompact) || autoCompact <= 0 || autoCompact > 1) {
+    throw fleetError('invalid_input', 'purge limits: autoCompactRatio must be in (0, 1]', {
+      details: { autoCompactRatio: autoCompact },
+    })
+  }
   if (!Number.isInteger(limits.maxTurns) || limits.maxTurns < 1) {
     throw fleetError('invalid_input', 'purge limits: maxTurns must be a positive integer', {
       details: { maxTurns: limits.maxTurns },
@@ -94,15 +118,27 @@ export const checkPurgeLimits = (limits: PurgeLimits): PurgeLimits => {
 /**
  * The trigger, or `undefined` to keep working.
  *
- * Context is checked first because it is the only signal that measures what the
- * purge is for; turn count and wall clock are fallbacks for a provider that
- * cannot report it, and for a session that somehow stays small while running
- * for hours (a loop, not progress).
+ * The provider's own compaction point is checked first, because it is the one
+ * signal that says what will happen to this session if nothing happens now: past
+ * it the provider summarizes the context away, spending the money and losing
+ * what the peer knew, and no other trigger in this list can pre-empt that. It is
+ * also the only check whose threshold is read from the session rather than from
+ * config, because it can sit far below the configured window (a 1M model under a
+ * 200K compaction policy), and a ratio against the window would never fire.
+ *
+ * Context is checked next because it measures what the purge is for; turn count
+ * and wall clock are fallbacks for a provider that cannot report it, and for a
+ * session that somehow stays small while running for hours (a loop, not
+ * progress).
  */
 export const purgeTrigger = (observation: PurgeObservation): PurgeTrigger | undefined => {
   const { usage, limits } = observation
-  if (observation.usageTokens && usage.contextLimit > 0) {
-    if (usage.contextTokens / usage.contextLimit >= limits.contextRatio) return 'context'
+  if (observation.usageTokens) {
+    const compactAt = usage.autoCompactAt
+    if (compactAt !== undefined && compactAt > 0 && usage.contextTokens >= compactAt * limits.autoCompactRatio) {
+      return 'auto_compact'
+    }
+    if (usage.contextLimit > 0 && usage.contextTokens / usage.contextLimit >= limits.contextRatio) return 'context'
   }
   if (observation.turns >= limits.maxTurns) return 'turns'
   if (observation.sessionMillis >= limits.maxSessionMillis) return 'wall_clock'

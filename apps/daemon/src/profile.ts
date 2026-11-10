@@ -17,6 +17,7 @@ import {
   array,
   boolean,
   fleetError,
+  number,
   objectAs,
   oneOf,
   optional,
@@ -37,6 +38,7 @@ import {
   type ProfileProvider,
   type WorkState,
 } from '@fleet/foundation-contracts'
+import { checkPurgeLimits, defaultPurgeLimits, type PurgeLimits } from '@fleet/runtime-supervisor'
 import {
   jiraSearchFlavors,
   type JiraSearchFlavor,
@@ -69,6 +71,18 @@ export interface PeerProfile {
   readonly permissionMode?: PermissionModeName
   /** Where the peer's worktrees are made (§9). Defaults to the profile's first repo. */
   readonly repo?: string
+  /**
+   * What this model costs to read a token, so a compaction can be reported with
+   * a number instead of a shrug (§8). Absent, a compaction is still recorded and
+   * flagged — the cost is simply left out, because a vendor's price list is not
+   * the fleet's to invent and an estimate of zero would read as free.
+   */
+  readonly pricing?: PeerPricing
+}
+
+/** A price, in the unit a vendor publishes it: US dollars per million input tokens. */
+export interface PeerPricing {
+  readonly inputUsdPerMillion: number
 }
 
 /** What the PR gate and the tracker integration point at (§10). */
@@ -273,12 +287,34 @@ export interface Profile {
   readonly limits?: {
     /** How many sessions may be live at once (§6's `keep-busy` and self-purge). */
     readonly maxSessions?: number
+    /**
+     * §8: when a session is handed off. Absent fields take the supervisor's
+     * defaults (`defaultPurgeLimits`), and the whole block is validated at load,
+     * so a ratio of 1.5 is a startup error rather than a fleet that never purges.
+     *
+     * This exists because the live path had no way to say it: the daemon shipped
+     * its own frozen copy of the thresholds, so tuning a purge meant editing and
+     * rebuilding the daemon rather than the profile the rest of the fleet is
+     * already configured from.
+     */
+    readonly purge?: ProfilePurgeLimits
   }
   /** How often the scheduler timer fires. Defaults to 5 s, under the shortest routine period (§6). */
   readonly tickIntervalMs?: number
   /** §10: the user's choice, so the daemon never deletes a branch on its own initiative. */
   readonly deleteMergedBranches?: boolean
 }
+
+/**
+ * A price above zero. Zero is refused because it is almost certainly a typo and
+ * it would report every compaction as costing nothing. A fraction is allowed:
+ * vendors publish per-million prices like 0.27.
+ */
+const pricePerMillion = (): Schema<number> =>
+  refine(number({ min: 0 }), (value) => value > 0, 'expected a price above zero')
+
+const peerPricing = (): Schema<PeerPricing> =>
+  objectAs<PeerPricing>()({ inputUsdPerMillion: pricePerMillion() })
 
 const peerProfile = (): Schema<PeerProfile> =>
   objectAs<PeerProfile>()({
@@ -288,6 +324,7 @@ const peerProfile = (): Schema<PeerProfile> =>
     model: text(80),
     permissionMode: optional(oneOf(permissionModes)),
     repo: optional(text(200)),
+    pricing: optional(peerPricing()),
   })
 
 /**
@@ -380,8 +417,54 @@ const forgeBlock = (): Schema<ForgeProfile> =>
     ),
   })
 
-const limitsBlock = (): Schema<{ readonly maxSessions?: number }> =>
-  objectAs<{ readonly maxSessions?: number }>()({ maxSessions: optional(positiveInt()) })
+/**
+ * `limits.purge`, as a profile writes it. Minutes rather than milliseconds
+ * because a profile is read by people, and every key is optional so a profile
+ * can tune one threshold without restating the others.
+ */
+export interface ProfilePurgeLimits {
+  /** Purge at this fraction of the configured context window (§8). */
+  readonly contextRatio?: number
+  /** …or after this many completed turns, for a provider that cannot report context. */
+  readonly maxTurns?: number
+  /** …or after this long, even if the session has been idle. */
+  readonly maxSessionMinutes?: number
+}
+
+const purgeLimitsBlock = (): Schema<ProfilePurgeLimits> =>
+  objectAs<ProfilePurgeLimits>()({
+    // The range is `checkPurgeLimits`' business, not the schema's: one validator
+    // for the thresholds, whether they arrived from a file or from a default.
+    contextRatio: optional(number({ min: 0 })),
+    maxTurns: optional(positiveInt()),
+    maxSessionMinutes: optional(positiveInt()),
+  })
+
+const limitsBlock = (): Schema<{ readonly maxSessions?: number; readonly purge?: ProfilePurgeLimits }> =>
+  objectAs<{ readonly maxSessions?: number; readonly purge?: ProfilePurgeLimits }>()({
+    maxSessions: optional(positiveInt()),
+    purge: optional(purgeLimitsBlock()),
+  })
+
+/**
+ * The purge thresholds this profile asks for, over the supervisor's defaults and
+ * validated (§8). Every caller that starts a session goes through here, so there
+ * is one answer to "when does this fleet hand off" and a typo in it is refused
+ * at load rather than discovered by a fleet that never purged.
+ *
+ * @throws FleetError('invalid_input') when a threshold is out of range.
+ */
+export const purgeLimitsOf = (profile: Pick<Profile, 'limits'>): PurgeLimits => {
+  const asked = profile.limits?.purge
+  return checkPurgeLimits({
+    ...defaultPurgeLimits,
+    ...(asked?.contextRatio === undefined ? {} : { contextRatio: asked.contextRatio }),
+    ...(asked?.maxTurns === undefined ? {} : { maxTurns: asked.maxTurns }),
+    ...(asked?.maxSessionMinutes === undefined
+      ? {}
+      : { maxSessionMillis: asked.maxSessionMinutes * 60_000 }),
+  })
+}
 
 /** An empty list would install the routine and then scan nothing, which reads as coverage it does not have. */
 const securityBlock = (): Schema<{ readonly scanners: readonly ProfileScanner[] }> =>
@@ -497,7 +580,13 @@ export const profileSchema = (): Schema<Profile> =>
  * Decode a parsed YAML value. Strict: an unknown key is refused here, because a
  * profile is hand-written and a typo in it is silent otherwise.
  */
-export const decodeProfile = (value: unknown): Profile => parseStrict(profileSchema(), value)
+export const decodeProfile = (value: unknown): Profile => {
+  const profile = parseStrict(profileSchema(), value)
+  // Decoded here rather than at the first session: a purge threshold out of
+  // range is a profile mistake, and the profile is what this function is for.
+  purgeLimitsOf(profile)
+  return profile
+}
 
 /**
  * Read and decode the profile file. The name check is two-way on purpose: a file

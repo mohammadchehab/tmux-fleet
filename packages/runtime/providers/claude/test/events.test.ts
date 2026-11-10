@@ -35,7 +35,7 @@ const everyEvent: readonly AdapterEvent[] = [
   { type: 'session.ended', reason: 'stopped' },
   { type: 'session.ended', reason: 'exit', code: 0 },
   { type: 'error', message: 'boom', retryable: false },
-  { type: 'compaction', turnId: turn, contextTokensBefore: 15492, contextTokensAfter: 4476 },
+  { type: 'compaction', turnId: turn, trigger: 'auto', contextTokensBefore: 15492, contextTokensAfter: 4476 },
 ]
 
 test('every event events() hands over validates as a ProviderEvent', () => {

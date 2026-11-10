@@ -4,7 +4,7 @@
  * session ref.
  */
 
-import { boolean, count, object, objectAs, optional, string, type Schema } from '@fleet/foundation-core'
+import { boolean, count, object, objectAs, oneOf, optional, string, type Schema } from '@fleet/foundation-core'
 import {
   peerId,
   peerState,
@@ -13,10 +13,10 @@ import {
   timestamp,
   worktreeId,
 } from '@fleet/foundation-core'
-import { permissionMode, providerId } from '../provider.ts'
+import { compactionTriggers, permissionMode, providerId } from '../provider.ts'
 import type { PeerState } from '@fleet/foundation-core'
 import type { PeerId, SessionId, ProviderSessionRef, WorktreeId } from '@fleet/foundation-core'
-import type { PermissionMode } from '../provider.ts'
+import type { CompactionTrigger, PermissionMode } from '../provider.ts'
 
 export interface Peer {
   readonly peerId: PeerId
@@ -47,6 +47,29 @@ export const peer = (): Schema<Peer> =>
     state: peerState(),
     registeredAt: timestamp(),
     updatedAt: timestamp(),
+  })
+
+/**
+ * One peer's compactions, as `ls` shows them (§8): how often this peer has lost
+ * its context, when it last did, and what the last one dropped. A peer whose
+ * count is climbing is a peer whose sessions are too long or whose purge
+ * threshold is too generous — which is the point of showing it.
+ */
+export interface PeerCompactions {
+  readonly peerId: PeerId
+  readonly count: number
+  readonly lastAt: string
+  readonly lastTrigger: CompactionTrigger
+  readonly lastPreTokens: number
+}
+
+export const peerCompactions = (): Schema<PeerCompactions> =>
+  objectAs<PeerCompactions>()({
+    peerId: peerId(),
+    count: count(),
+    lastAt: timestamp(),
+    lastTrigger: oneOf(compactionTriggers),
+    lastPreTokens: count(),
   })
 
 export interface Session {

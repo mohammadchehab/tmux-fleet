@@ -295,6 +295,16 @@ export interface Usage {
   readonly contextLimit: number
   /** Present only when `capabilities.usageCost` is true; null-equivalent otherwise (§4, §11). */
   readonly costUsd?: number
+  /**
+   * The token count at which the provider compacts on its own, when it will and
+   * says so (§8). A second, different question from `contextLimit`: the limit is
+   * what the model can hold (configured, because a vendor's SDK guesses), while
+   * this is when *the running process* gives up and summarizes — which can be
+   * well below the window (a 1M-window model with a 200K compaction policy), and
+   * is the number a purge has to beat. Absent when the provider does not compact
+   * or does not say.
+   */
+  readonly autoCompactAt?: number
 }
 
 export const usage = (): Schema<Usage> =>
@@ -302,11 +312,21 @@ export const usage = (): Schema<Usage> =>
     contextTokens: count(),
     contextLimit: positiveInt(),
     costUsd: optional(number({ min: 0 })),
+    autoCompactAt: optional(positiveInt()),
   })
 
 /** Why a turn ended. Only `failed` may raise a `peer.failed` (§6.1); an interrupt notifies nobody. */
 export const turnEndReasons = ['completed', 'interrupted', 'failed'] as const
 export type TurnEndReason = (typeof turnEndReasons)[number]
+
+/**
+ * What asked for a compaction (§8). `auto` is the provider's own threshold and
+ * `manual` is a person typing `/compact`; `unknown` is a provider whose stream
+ * says it compacted but not why, and is kept separate rather than folded into
+ * `auto`, because the two mean different things to whoever reads the bill.
+ */
+export const compactionTriggers = ['auto', 'manual', 'unknown'] as const
+export type CompactionTrigger = (typeof compactionTriggers)[number]
 
 /**
  * Why a provider's session stream ended. The adapter synthesises
@@ -387,10 +407,19 @@ export type ProviderEvent =
     }
   | { readonly type: 'error'; readonly message: string; readonly retryable: boolean }
   | {
-      readonly type: 'compaction'
-      readonly turnId: TurnId
+      type: 'compaction'
+      /**
+       * The turn it happened in, when one was open. A compaction is *not* an
+       * intra-turn event: an auto-compaction can fire between turns, and a
+       * person's `/compact` always does — and that is the compaction that costs
+       * a peer its context without anybody noticing (§8).
+       */
+      readonly turnId?: TurnId
+      /** What asked for it: the provider's own threshold, a person, or a provider that does not say. */
+      readonly trigger: CompactionTrigger
       readonly contextTokensBefore: number
-      readonly contextTokensAfter: number
+      /** What the window held afterwards; absent when the provider did not report it. */
+      readonly contextTokensAfter?: number
     }
 
 const isoInstant = (): Schema<string> =>
@@ -449,9 +478,10 @@ export const providerEvent = (): Schema<ProviderEvent> =>
     object({ type: literal('error'), message: text(), retryable: boolean() }),
     object({
       type: literal('compaction'),
-      turnId: turnId(),
+      turnId: optional(turnId()),
+      trigger: oneOf(compactionTriggers),
       contextTokensBefore: count(),
-      contextTokensAfter: count(),
+      contextTokensAfter: optional(count()),
     }),
   ])
 

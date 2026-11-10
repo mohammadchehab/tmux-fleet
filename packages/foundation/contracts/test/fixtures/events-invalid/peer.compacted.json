@@ -1,0 +1,20 @@
+{
+  "input": {
+    "seq": 4,
+    "ts": "2026-11-10T09:41:00.000Z",
+    "type": "peer.compacted",
+    "subject": "engineer-1",
+    "actor": "peer:engineer-1",
+    "causedBy": [
+      3
+    ],
+    "data": {
+      "peerId": "engineer-1",
+      "trigger": "not-a-valid-value",
+      "preTokens": 184320,
+      "postTokens": 9120,
+      "estimatedCostUsd": 0.5532
+    }
+  },
+  "path": "data.trigger"
+}

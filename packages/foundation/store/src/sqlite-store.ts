@@ -201,10 +201,12 @@ class SqliteEventStore implements EventStore {
       'SELECT COUNT(*) AS events, MAX(seq) AS seq FROM events',
     )
     const anomalies = this.#db.get<{ n: number }>('SELECT COUNT(*) AS n FROM projection_anomalies')
+    const compactions = this.#db.get<{ n: number }>('SELECT COUNT(*) AS n FROM peer_compactions')
     return {
       latestSeq: Number(log?.seq ?? 0),
       events: Number(log?.events ?? 0),
       anomalies: Number(anomalies?.n ?? 0),
+      compactions: Number(compactions?.n ?? 0),
     }
   }
 
