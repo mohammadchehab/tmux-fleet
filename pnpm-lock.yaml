@@ -26,6 +26,12 @@ importers:
       '@fleet/foundation-store':
         specifier: workspace:*
         version: link:../../packages/foundation/store
+      '@fleet/notify-core':
+        specifier: workspace:*
+        version: link:../../packages/notify/core
+      '@fleet/notify-macos':
+        specifier: workspace:*
+        version: link:../../packages/notify/channels/macos
       '@fleet/orchestration-gate':
         specifier: workspace:*
         version: link:../../packages/orchestration/gate

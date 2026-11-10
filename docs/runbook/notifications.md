@@ -18,7 +18,12 @@ notify:
 ```
 
 `none` keeps the `notifications` ledger — `fleet ls` and `fleet decide` still show everything — and sends nothing. The
-ledger is the source of truth either way: a missed banner loses nothing.
+ledger is the source of truth either way: a missed banner loses nothing. A profile with no `notify` block at all is the
+same as `none`: the daemon installs no `notify` routine, so a heartbeat costs nothing. `macos` on a host that is not a
+Mac is logged once at start-up and treated as `none` rather than turned into a `notify.failed` on every tick.
+
+The routine runs on a 5-minute heartbeat and is woken by `decision.requested`, `peer.failed`, `ci.failed_final`,
+`provider.errored` and `standup.rendered` (`packages/orchestration/routines/src/config.ts`).
 
 The macOS channel wants `terminal-notifier` (`brew install terminal-notifier`). Without it, banners still arrive
 through `osascript display notification`, but they cannot be clicked and cannot be taken down early — see below.
@@ -59,3 +64,5 @@ to dedupe against. A run of `notify.failed` for one key means the channel is bro
 | `packages/notify/core/src/deliver.ts` | the plan → `notify.sent` / `notify.failed` / `notify.withdrawn`, one atomic batch |
 | `packages/notify/core/src/notifier.ts` | the `Notifier` port a channel implements |
 | `packages/notify/channels/macos/src/macos.ts` | `terminal-notifier` or `osascript`, behind an injected `execFile` |
+| `apps/daemon/src/notify.ts` | the `notify` routine body the daemon registers, and the channel a profile picks |
+| `apps/daemon/src/compose.ts` | where the factory is handed to the scheduler, and nowhere else (§1.1) |

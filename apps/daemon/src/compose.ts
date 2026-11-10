@@ -26,15 +26,17 @@ import { join } from 'node:path'
 import { systemClock, type Clock } from '@fleet/foundation-core'
 import type { ProjectManager, ProviderRegistry, PullRequests } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
+import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
 import { createProjectManager } from '@fleet/orchestration-pm'
-import { createScheduler, type Scheduler } from '@fleet/orchestration-routines'
+import { createScheduler, installedFactories, type Scheduler } from '@fleet/orchestration-routines'
 import { createMailbox } from '@fleet/runtime-mailbox'
 import { ClaudeProvider } from '@fleet/runtime-provider-claude'
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createExecutorRouter, type KindExecutor } from './executor.ts'
+import { createNotifyFactory, notifierFor } from './notify.ts'
 import { persistentDirs, profilePaths, type PathRoots } from './paths.ts'
 import { loadProfile, type Profile } from './profile.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
@@ -63,6 +65,13 @@ export interface ComposeDeps {
   readonly providers?: ReadonlyMap<string, Provider>
   /** Extra executors — the judge, the notifier — one per kind (§5.2). */
   readonly executors?: (wiring: Wiring & { readonly supervisor: Supervisor }) => readonly KindExecutor[]
+  /**
+   * The channel notifications ring on (§6.1). Defaults to the profile's
+   * `notify.channel`: `macos` builds the desktop channel, `none` — or no
+   * `notify` block at all — installs no `notify` routine. A test passes its own
+   * so a run cannot put a banner on someone's screen.
+   */
+  readonly notifier?: Notifier
 }
 
 export interface Composed {
@@ -70,6 +79,12 @@ export interface Composed {
   readonly server: DaemonServer
   readonly store: EventStore
   readonly supervisor: Supervisor
+  /**
+   * Exposed because the daemon reaches it through `DaemonDeps` and a test that
+   * composes a real fleet has no other handle on the routines: `fleet ls` shows
+   * what ran, not what is installed.
+   */
+  readonly scheduler: Scheduler
 }
 
 /**
@@ -135,6 +150,20 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   ]
   const executor = createExecutorRouter({ executors })
 
+  // §6.1: the profile names the channel, and a profile that names none gets no
+  // `notify` routine rather than a silent one — the ledger still records every
+  // notification, so turning banners on later re-plays them. Built in its own
+  // const (and merged into the installed set) because `notify` is the one body
+  // that is not a PM tick: the daemon registers it and nothing else knows it.
+  const notifier = deps.notifier ?? notifierFor(profile)
+  const factories =
+    notifier === undefined
+      ? undefined
+      : {
+          ...installedFactories,
+          notify: createNotifyFactory({ store: { append: (batch) => store.append(batch) }, notifier }),
+        }
+
   const scheduler: Scheduler = createScheduler({
     store: { append: (batch) => store.append(batch) },
     read: store.reader(),
@@ -142,6 +171,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     executor,
     config: profile.routines,
     clock,
+    ...(factories === undefined ? {} : { factories }),
     ...(profile.tickIntervalMs === undefined ? {} : { tickIntervalMs: profile.tickIntervalMs }),
   })
 
@@ -163,7 +193,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     },
   })
 
-  return { daemon, server, store, supervisor }
+  return { daemon, server, store, supervisor, scheduler }
 }
 
 /** The log path a supervisor writes to; exported so the log line and §2's layout cannot drift apart. */

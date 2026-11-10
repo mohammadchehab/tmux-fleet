@@ -26,6 +26,7 @@ import { profilePaths, type ProfilePaths } from '../../../apps/daemon/src/paths.
 import { stateFilePathOf } from '../../../apps/daemon/src/sessions.ts'
 import type { RpcMethod, RpcResponse } from '../../../apps/daemon/src/rpc.ts'
 import { rpcCall } from '../../../apps/daemon/src/server.ts'
+import type { Notifier } from '../../../packages/notify/core/src/index.ts'
 import { createScriptedProvider, type ScriptedOptions, type ScriptedProvider } from './scripted-provider.ts'
 
 /** §6's routines, all off; a lifecycle test asserts about turns, not timers. */
@@ -61,6 +62,10 @@ export interface SandboxOptions {
   readonly peers?: readonly SandboxPeer[]
   readonly repos?: readonly string[]
   readonly scripted?: ScriptedOptions
+  /** §6.1's `notify.channel`, when a test wants the `notify` routine switched on at all. */
+  readonly notify?: 'macos' | 'none'
+  /** The channel to deliver through, so a test never puts a banner on a real screen. */
+  readonly notifier?: Notifier
 }
 
 /** An event as these tests read it: only the three fields any assertion here needs. */
@@ -89,13 +94,18 @@ export interface Sandbox {
   stop(): Promise<void>
 }
 
-const profileYaml = (name: string, peers: readonly SandboxPeer[], repos: readonly string[]): string => {
+const profileYaml = (name: string, peers: readonly SandboxPeer[], repos: readonly string[], notify?: 'macos' | 'none'): string => {
   const lines = [`profile: ${name}`, 'repos:', ...repos.map((repo) => `  - ${repo}`), 'peers:']
   for (const peer of peers) {
     lines.push(`  - id: ${peer.id}`, `    role: ${peer.role}`, `    provider: ${peer.provider ?? 'claude'}`, `    model: ${peer.model ?? 'test-small'}`)
   }
+  if (notify !== undefined) lines.push('notify:', `  channel: ${notify}`)
   lines.push('tickIntervalMs: 50', 'routines:', '  routines:')
   for (const [kind, settings] of Object.entries(allRoutinesOff.routines)) {
+    // `notify` is the one routine a test may want switched on; without a
+    // `notify.channel` the daemon installs no body for it, so it stays off with
+    // the rest.
+    if (kind === 'notify' && notify === 'macos') continue
     lines.push(`    ${kind}: { enabled: ${String(settings.enabled)} }`)
   }
   return `${lines.join('\n')}\n`
@@ -111,7 +121,7 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
   const paths = profilePaths(PROFILE_NAME, { home, configHome })
 
   await mkdir(join(configHome, 'fleet', 'profiles'), { recursive: true })
-  await writeFile(paths.profileFile, profileYaml(PROFILE_NAME, peers, repos), 'utf8')
+  await writeFile(paths.profileFile, profileYaml(PROFILE_NAME, peers, repos, options.notify), 'utf8')
 
   const scripted = createScriptedProvider({
     ...options.scripted,
@@ -122,6 +132,7 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
     profileName: PROFILE_NAME,
     roots: { home, configHome },
     providers: new Map([['claude', scripted.provider]]),
+    ...(options.notifier === undefined ? {} : { notifier: options.notifier }),
   })
 
   const raw = (method: RpcMethod, params?: unknown): Promise<RpcResponse> =>
