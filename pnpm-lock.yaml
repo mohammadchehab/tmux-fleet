@@ -241,6 +241,18 @@ importers:
         specifier: workspace:*
         version: link:../../foundation/core
 
+  packages/security/scanners:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../foundation/core
+      '@fleet/security-findings':
+        specifier: workspace:*
+        version: link:../findings
+
 packages:
 
   '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.322':

@@ -1,0 +1,18 @@
+{
+  "name": "@fleet/security-scanners",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Scanner adapters (architecture §6.2): semgrep, gitleaks, osv-scanner and trivy, each a `Scanner` from @fleet/security-findings, each injecting its process and parsing its own JSON.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*",
+    "@fleet/security-findings": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
