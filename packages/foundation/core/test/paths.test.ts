@@ -38,6 +38,22 @@ describe('the path layout', () => {
     ])
   })
 
+  it('does not read `$XDG_CONFIG_HOME` when the caller named a home', () => {
+    // The trap this asserts away: a suite that passes `{home}` and lets the
+    // variable through writes its profiles into the runner's real config, and
+    // passes on a laptop that never set it.
+    const before = process.env['XDG_CONFIG_HOME']
+    process.env['XDG_CONFIG_HOME'] = '/elsewhere'
+    try {
+      assert.equal(profilePaths('engineer', { home: '/home/u' }).profileFile, '/home/u/.config/fleet/profiles/engineer.yaml')
+      // …and no roots at all is still the environment's to say.
+      assert.equal(profilePaths('engineer').profileFile, '/elsewhere/fleet/profiles/engineer.yaml')
+    } finally {
+      if (before === undefined) delete process.env['XDG_CONFIG_HOME']
+      else process.env['XDG_CONFIG_HOME'] = before
+    }
+  })
+
   it('refuses a name that would become a path', () => {
     for (const bad of ['../etc', 'Engineer', 'en gineer', '', '9lives', 'a/b']) {
       assert.throws(() => parseProfileName(bad), /is not a valid name/)
