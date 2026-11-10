@@ -39,7 +39,26 @@ const flag = (name) => {
   return at === -1 ? undefined : args[at + 1]
 }
 
-const prompt = args[args.length - 1] ?? ''
+// The real CLI's argument parser, as far as this adapter meets it: an argument that starts
+// with `-` before a `--` is an option, and one it does not know is an error. So a prompt
+// like "- list item" only reaches the model when the adapter put `--` in front of it.
+const WITH_VALUE = new Set(['--output-format', '--mode', '--model', '--resume'])
+const FLAGS = new Set(['-p', '--yolo', '--force'])
+const positional = []
+for (let at = 0; at < args.length; at += 1) {
+  const arg = args[at]
+  if (arg === '--') {
+    positional.push(...args.slice(at + 1))
+    break
+  }
+  if (WITH_VALUE.has(arg)) at += 1
+  else if (FLAGS.has(arg)) continue
+  else if (arg.startsWith('-') && arg.length > 1) {
+    process.stderr.write(`error: unknown option '${arg}'\n`)
+    process.exit(1)
+  } else positional.push(arg)
+}
+const prompt = positional[0] ?? ''
 const model = flag('--model')
 const sessionId = 'chat-session-1'
 

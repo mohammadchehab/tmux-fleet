@@ -245,6 +245,10 @@ export class CursorSession {
       this.#model,
       '--resume',
       this.chatId,
+      // End of options: a turn is a person's or a peer's words, and one that opens with a
+      // dash (a bullet, a rule, a pasted flag) would otherwise be read as an option and
+      // fail the turn, or — for `--yolo` — switch one on. cursor-agent honours `--`.
+      '--',
       turn.text,
     ]
     let child: TurnProcess

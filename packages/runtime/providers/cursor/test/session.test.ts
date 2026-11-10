@@ -117,8 +117,9 @@ test('start() creates a chat and delivers the brief as its opening turn', async 
     '--resume',
   ])
   assert.equal(opening?.[8], handle.sessionRef, 'the turn continues the chat the handle names')
-  assert.match(String(opening?.[9]), /You are the engineer peer on the peer-1 account\./)
-  assert.match(String(opening?.[9]), /You are running read-only, in plan mode/, 'the peer is told what it can do')
+  assert.equal(opening?.[9], '--', 'the prompt follows the end of options, so its own words are never read as flags')
+  assert.match(String(opening?.[10]), /You are the engineer peer on the peer-1 account\./)
+  assert.match(String(opening?.[10]), /You are running read-only, in plan mode/, 'the peer is told what it can do')
   await provider.stop(handle)
 })
 
@@ -289,8 +290,8 @@ test('resume() continues the chat it is handed rather than creating one', async 
     0,
     'resuming a chat must not create another one',
   )
-  assert.equal(calls().at(-1)?.at(-3), '--resume')
-  assert.equal(calls().at(-1)?.at(-2), ref)
+  assert.equal(calls().at(-1)?.at(-4), '--resume')
+  assert.equal(calls().at(-1)?.at(-3), ref)
   await provider.stop(resumed)
 })
 
@@ -391,4 +392,20 @@ test('a cursor brief with no standards carries no session-policy section', async
   await watch(provider, handle).until(ended(handle.briefTurnId))
 
   assert.doesNotMatch(calls()[1]?.at(-1) ?? '', /Session policy/)
+})
+
+test('a turn whose text starts with a dash is a prompt, not an option (TASK-93)', async () => {
+  const { provider, spec, calls } = harness()
+  const handle = await provider.start(spec())
+  const seen = watch(provider, handle)
+  await seen.until(ended(handle.briefTurnId))
+
+  // A bullet, a rule, a quoted flag: all of them are what a Jira body or a peer's note can open with.
+  for (const text of ['- list item', '--- ', '-p', '--yolo', '--force']) {
+    const turnId = await provider.send(handle, turn(text))
+    const done = await seen.until(ended(turnId))
+    assert.equal(done.type === 'turn.ended' && done.reason, 'completed', `"${text}" is delivered as text`)
+    assert.deepEqual(calls().at(-1)?.slice(-2), ['--', text], 'after `--`, verbatim: it can no longer be a flag')
+  }
+  await provider.stop(handle)
 })
