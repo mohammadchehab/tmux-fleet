@@ -1,0 +1,19 @@
+{
+  "seq": 35,
+  "ts": "2026-11-10T09:39:00.000Z",
+  "type": "tracker.synced",
+  "subject": "tracker-sync",
+  "actor": "scheduler",
+  "causedBy": [
+    34
+  ],
+  "data": {
+    "system": "backlog",
+    "query": "To Do,In Progress",
+    "pulled": 3,
+    "proposed": 1,
+    "transitioned": 2,
+    "linked": 1,
+    "failed": 0
+  }
+}

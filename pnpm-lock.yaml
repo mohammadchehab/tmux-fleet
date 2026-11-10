@@ -46,6 +46,9 @@ importers:
       '@fleet/integrations-gitlab':
         specifier: workspace:*
         version: link:../../packages/integrations/gitlab
+      '@fleet/integrations-trackers-backlog':
+        specifier: workspace:*
+        version: link:../../packages/integrations/trackers/backlog
       '@fleet/notify-core':
         specifier: workspace:*
         version: link:../../packages/notify/core
@@ -166,6 +169,15 @@ importers:
       '@fleet/foundation-core':
         specifier: workspace:*
         version: link:../../foundation/core
+
+  packages/integrations/trackers/backlog:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../../foundation/core
 
   packages/notify/channels/macos:
     dependencies:

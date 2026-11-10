@@ -44,10 +44,12 @@ import type {
   ProviderRegistry,
   PullRequests,
   RoutineKind,
+  Tracker,
 } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import { createGitHubPullRequests } from '@fleet/integrations-github'
 import { createGitLabPullRequests } from '@fleet/integrations-gitlab'
+import { createBacklogTracker } from '@fleet/integrations-trackers-backlog'
 import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
 import type { JudgeService } from '@fleet/orchestration-judge'
@@ -70,6 +72,7 @@ import { loadProfile, type Profile } from './profile.ts'
 import { createSecurityScanFactory } from './security.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
 import { createSupervisor, type Supervisor } from './sessions.ts'
+import { createTrackerSyncFactory } from './tracker-sync.ts'
 import { createWakingSink, deliverOnSessionStart } from './wake.ts'
 import { syncWork } from './work-sync.ts'
 
@@ -140,6 +143,13 @@ export interface ComposeDeps {
    * adapter; a test passes a fake, so a suite never fetches a remote.
    */
   readonly branchHead?: BranchHead
+  /**
+   * The board `tracker-sync` reads and writes (§3). Defaults to the adapter the
+   * profile's `trackers.system` names — `@fleet/integrations-trackers-backlog`
+   * over its CLI; a test passes a fake, so a suite never initialises a project
+   * or touches a board.
+   */
+  readonly tracker?: Tracker
 }
 
 export interface Composed {
@@ -329,6 +339,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // must not look like it is doing it.
   const notifier = deps.notifier ?? notifierFor(profile)
   const scanners = profile.security?.scanners
+  const trackers = profile.trackers
   const overrides: Partial<Record<RoutineKind, RoutineFactory>> = {
     // §6's `pr-babysit` is always on — it is the fleet's only poller of its own PRs,
     // and without it a row never leaves `checks: pending`. It needs the forge's port,
@@ -346,6 +357,25 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     ...(notifier === undefined
       ? {}
       : { notify: createNotifyFactory({ store: { append: (batch) => store.append(batch) }, notifier }) }),
+    // §3: a profile with no `trackers` block gets no `tracker-sync` routine rather
+    // than one that polls nothing. Unlike `notify` and `security-scan` this body
+    // gets the *waking* sink: `work.proposed` is what dispatch needs to hear, and
+    // neither type it appends is one its own trigger names (§6).
+    ...(trackers === undefined
+      ? {}
+      : {
+          'tracker-sync': createTrackerSyncFactory({
+            tracker: deps.tracker ?? createBacklogTracker({
+              path: trackers.path,
+              ...(trackers.statuses === undefined ? {} : { statuses: trackers.statuses }),
+              ...(trackers.urlBase === undefined ? {} : { urlBase: trackers.urlBase }),
+            }),
+            store: { append: wake.append },
+            system: trackers.system,
+            query: trackers.query,
+            ...(trackers.role === undefined ? {} : { role: trackers.role }),
+          }),
+        }),
     ...(scanners === undefined
       ? {}
       : {

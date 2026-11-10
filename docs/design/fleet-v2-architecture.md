@@ -70,7 +70,8 @@ tmux-fleet/
 │  └─ integrations/
 │     ├─ github/                  # `gh`/git adapters behind the contracts' ports: PRs, checks, retarget (§10)
 │     ├─ gitlab/                  # the same port over `glab`, for a self-hosted GitLab: MRs, pipelines, approvals (§10)
-│     └─ trackers/                # Backlog.md, Jira sinks and sources (§3)
+│     └─ trackers/
+│        └─ backlog/              # the `Tracker` port over the `backlog` CLI; Jira is a sibling later (§3)
 ├─ apps/
 │  ├─ daemon/                     # `fleetd`: the only place the groups are wired together; store owner; local API on a Unix socket (§2)
 │  ├─ clients/
@@ -222,7 +223,7 @@ Core entities (projections), all keyed by **stable ids**, never by tmux names or
 | :- | :- |
 | `Peer` | `peerId` (stable, `engineer-1`), `role`, `providerId`, `model`, `permissionMode`, `worktreeId?`, `currentSessionId`, `briefVersion` |
 | `Session` | `sessionId`, `peerId`, `providerSessionRef`, `startedAt`, `endedAt?`, `endReason`. A peer has many sessions over time; the peer never changes |
-| `Work` | `workId`, `title`, `state` (§5.1), `assignee?`, `contractId?`, `dependsOn[]`, `prs[]`, `external` (Jira/Backlog key) |
+| `Work` | `workId`, `title`, `state` (§5.1), `assignee?`, `contractId?`, `dependsOn[]`, `prs[]`, `external` (tracker system, key and url, §3) |
 | `Contract` | `contractId`, `version`, `content hash`, `path in repo`. The shared interface/layout a set of Work items builds on (§12) |
 | `Brief` | `briefId`, `workId`, `peerId`, `version`, `contractVersions[]`, `text`. Immutable; superseded, not edited |
 | `Message` | `msgId`, `to peerId`, `from`, `kind` (`brief | answer | nudge | info`), `briefVersion`, `ack` |
@@ -234,6 +235,24 @@ Core entities (projections), all keyed by **stable ids**, never by tmux names or
 
 The board (Backlog.md) and Jira become **sinks and sources via adapters** (`Work.external`), not the state of the
 fleet. A card is created from `Work`, and a Jira change enters as an event.
+
+The seam is one port in `foundation/contracts`, so a new tracker is an adapter and not a new routine:
+
+```ts
+interface Tracker {
+  pull(query: string): Promise<readonly ExternalItem[]>          // {system, key, title, body?, status, url?, updatedAt?}
+  get(key: string): Promise<ExternalItem | undefined>            // undefined = no such card; a broken read throws
+  transition(key: string, to: WorkState): Promise<void>          // through the profile's WorkState → status map
+  link(key: string, prUrl: string): Promise<void>                // append, never overwrite; idempotent per URL
+}
+```
+
+`tracker-sync` (§6) is the only caller. A heartbeat pulls the profile's query and turns each key no `Work` names yet
+into `work.proposed` with `external` set; a work event moves that one card, and `work.review_requested` also links the
+PR. A state the profile does not map is **not** sent — a board is a peer, not a mirror, so the fleet never invents a
+column. A pull that fails throws (`routine.failed`); a single card the board refuses is counted in `tracker.synced`
+and in `actionsFailed`. The ticket is read with `get` at propose time, so the `Work` and its brief carry the ticket as
+it was then; a card edited afterwards is not re-read, because no `work.*` event updates a title or a body.
 
 ## 4. Provider interface (the SDK)
 
@@ -376,6 +395,7 @@ which owns them:
 | `reconcile` | startup + 10 min | provider `status` vs registry; restart dead sessions, fix drift |
 | `security-scan` | PR assigned to security-architect, nightly | §6.2: runs scanners, raises typed findings |
 | `notify` | events + 5 min | §6.1: the notification projection, delivered through `Notifier` |
+| `tracker-sync` | 5 min heartbeat + `work.started`/`review_requested`/`merged` | §3: a heartbeat pulls the profile's query and proposes a Work per unseen card; a work event moves that card and links the PR |
 
 A routine declares `{id, trigger, run(ctx)}`; its runs are events (`routine.started/finished/failed`), so a
 silent routine is visible. Per-profile enable/disable lives in the profile; the defaults are all on. Peers never

@@ -1704,6 +1704,10 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     case 'index.ready':
     case 'index.failed':
     case 'scan.skipped':
+    // `tracker.synced` is the board's answer to one sync (§3). Nothing in the
+    // fleet is derived from it — the Work rows come from `work.*` — so it is an
+    // audit trail, read from `events` when someone asks what the board said.
+    case 'tracker.synced':
       return
   }
 

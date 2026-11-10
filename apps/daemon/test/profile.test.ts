@@ -83,8 +83,51 @@ describe('decoding a profile', () => {
     assert.throws(() => decodeProfile(minimal({ security: { scanners: [] } })), /at least one scanner/)
   })
 
-  it('reads the DeepInfra block: the ids this fleet may run, and the endpoint it runs them on', () => {
+  it('reads §3’s tracker block, and installs nothing when there is no block', () => {
     const profile = decodeProfile(
+      minimal({
+        trackers: {
+          system: 'backlog',
+          query: 'To Do,In Progress',
+          statuses: { in_progress: 'In Progress', in_review: 'In Review' },
+          path: './board',
+          urlBase: 'https://github.com/acme/widgets/blob/main',
+          role: 'engineer',
+        },
+      }),
+    )
+    assert.deepEqual(profile.trackers, {
+      system: 'backlog',
+      query: 'To Do,In Progress',
+      statuses: { in_progress: 'In Progress', in_review: 'In Review' },
+      path: './board',
+      urlBase: 'https://github.com/acme/widgets/blob/main',
+      role: 'engineer',
+    })
+    // No block is the old behaviour: a fleet that never asked for a board has none.
+    assert.equal(decodeProfile(minimal()).trackers, undefined)
+  })
+
+  it('refuses a tracker it cannot build, and a block with no query', () => {
+    assert.throws(() => decodeProfile(minimal({ trackers: { system: 'jira', query: 'open', path: '.' } })), /jira/)
+    assert.throws(() => decodeProfile(minimal({ trackers: { system: 'backlog', path: '.' } })), /query/)
+    assert.throws(() => decodeProfile(minimal({ trackers: { system: 'backlog', query: 'open' } })), /path/)
+  })
+
+  it('refuses a misspelt state in the status map, which would be a transition nobody sees', () => {
+    const trackers = { system: 'backlog', query: 'To Do', statuses: { in_progres: 'Doing' }, path: '.' }
+    assert.throws(() => decodeProfile(minimal({ trackers })), /in_progres/)
+  })
+
+  it('refuses an empty status name, and keeps a state the profile leaves out unmapped', () => {
+    const empty = { system: 'backlog', query: 'To Do', statuses: { merged: '  ' }, path: '.' }
+    assert.throws(() => decodeProfile(minimal({ trackers: empty })), /merged/)
+
+    const partial = { system: 'backlog', query: 'To Do', statuses: { in_progress: 'Doing' }, path: '.' }
+    assert.deepEqual(decodeProfile(minimal({ trackers: partial })).trackers?.statuses, { in_progress: 'Doing' })
+  })
+
+  it('reads the DeepInfra block: the ids this fleet may run, and the endpoint it runs them on', () => {    const profile = decodeProfile(
       minimal({
         providers: {
           deepinfra: { allowedModels: ['deepseek-ai/DeepSeek-V4.1-Flash-1017'], baseUrl: 'https://deepinfra.staging/anthropic' },

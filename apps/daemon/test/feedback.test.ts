@@ -89,6 +89,11 @@ const bodyEmits: Readonly<Partial<Record<RoutineKind, BodyEmissions>>> = {
     types: ['pr.opened', 'pr.checks_changed', 'pr.review_changed', 'pr.merged'],
     wakes: false,
   },
+  // §3's board sync: a heartbeat proposes the cards no Work names yet, and a
+  // work event moves the one card it is about. It wakes on those three work
+  // types but never appends one — `work.proposed` is not in its trigger list,
+  // so the waking sink it is handed by `compose.ts` cannot re-enter it.
+  'tracker-sync': { types: ['work.proposed', 'tracker.synced'], wakes: true },
 }
 
 /** The types a routine's trigger is woken by; a schedule, a heartbeat or a start wakes nothing by type. */
@@ -119,7 +124,7 @@ test('no routine is woken by an event its own body appends (§6)', () => {
  * body is added to this list in the same change that adds its row.
  */
 test('every routine body this build ships has an emission set (§6)', () => {
-  const bodies = [...Object.keys(installedFactories), 'notify', 'security-scan', 'pr-babysit'].sort()
+  const bodies = [...Object.keys(installedFactories), 'notify', 'security-scan', 'pr-babysit', 'tracker-sync'].sort()
   assert.deepEqual(
     Object.keys(bodyEmits).sort(),
     bodies,
