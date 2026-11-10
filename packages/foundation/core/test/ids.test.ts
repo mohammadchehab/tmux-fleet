@@ -41,6 +41,13 @@ describe('ids', () => {
     assert.throws(() => parse(repo(), '/tmux-fleet'), /Repo/)
   })
 
+  test('a dot segment is refused, because a forge would read it as traversal', () => {
+    assert.throws(() => parse(repo(), 'backbase/../tmux-fleet'), /Repo/)
+    assert.throws(() => parse(repo(), './tmux-fleet'), /Repo/)
+    // A name that merely *starts* with a dot is a name: `.github/workflows` is a real repo.
+    assert.equal(parse(repo(), '.github/workflows'), '.github/workflows')
+  })
+
   test('a notification key carries its class', () => {
     const key = decisionNotificationKey(newDecisionId())
     assert.equal(parse(notificationKey(), key), key)

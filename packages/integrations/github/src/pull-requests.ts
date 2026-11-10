@@ -70,6 +70,30 @@ const isMissing = (result: GhResult): boolean =>
  */
 const isHeadMoved = (result: GhResult): boolean => /head branch was (?:modified|updated)/i.test(result.stderr)
 
+/**
+ * `gh -R` reads three path segments as `HOST/OWNER/REPO`, not as an owner with a
+ * slash in it. So a nested `Repo` must never reach it: that would let a string —
+ * including one a stranger wrote in a PR body's `Fleet-Stack-Parent` footer —
+ * decide which host `gh` talks to and which host's token it presents. GitHub has
+ * no subgroups, so a nested repo is not a repo there, and this adapter says so
+ * before spawning anything rather than letting `gh` interpret it as a URL.
+ *
+ * The widened `Repo` in `@fleet/foundation-core` is for a forge that nests; it is
+ * not a claim that every forge does.
+ */
+const githubRepo = (repo: Repo): string => {
+  const value = String(repo)
+  const segments = value.split('/').length
+  if (segments !== 2) {
+    throw fleetError(
+      'invalid_input',
+      `${value} is not a GitHub repository: \`gh -R\` reads ${String(segments)} segments as HOST/OWNER/REPO, so a nested path would pick the host`,
+      { details: { repo: value, segments } },
+    )
+  }
+  return value
+}
+
 export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPullRequests => {
   const gh = options.gh ?? createGh()
   const limit = options.limit ?? DEFAULT_LIMIT
@@ -78,7 +102,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
     'pr',
     'list',
     '-R',
-    String(repo),
+    githubRepo(repo),
     '--state',
     state,
     '--limit',
@@ -94,10 +118,10 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
   }
 
   const readOne = async (repo: Repo, number: number, fields = FIELDS): Promise<unknown> =>
-    gh.json(['pr', 'view', String(number), '-R', String(repo), '--json', fields])
+    gh.json(['pr', 'view', String(number), '-R', githubRepo(repo), '--json', fields])
 
   const get = async (repo: Repo, number: number): Promise<PullRequest | undefined> => {
-    const result = await gh.run(['pr', 'view', String(number), '-R', String(repo), '--json', FIELDS])
+    const result = await gh.run(['pr', 'view', String(number), '-R', githubRepo(repo), '--json', FIELDS])
     if (result.code !== 0) {
       // "No such PR" is an answer the gate reports as `missing`; anything else is a failed read and throws.
       if (isMissing(result)) return undefined
@@ -115,7 +139,9 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
   }
 
   return {
-    list: (repo, listOptions) => readAll(listArgs(repo, listOptions?.state ?? 'open'), repo),
+    // `async` so the `-R` guard's refusal is a rejection, not a throw out of the argument list: a caller that
+    // holds a promise (`.catch`, `Promise.all`) must see it, and every other method here already behaves that way.
+    list: async (repo, listOptions) => readAll(listArgs(repo, listOptions?.state ?? 'open'), repo),
 
     get,
 
@@ -124,7 +150,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
       const trimmed = searchText.trim().replace(/\s+/g, ' ')
       if (trimmed === '') return []
       return readAll(
-        ['pr', 'list', '-R', String(repo), '--state', 'open', '--search', trimmed, '--limit', String(limit), '--json', FIELDS],
+        ['pr', 'list', '-R', githubRepo(repo), '--state', 'open', '--search', trimmed, '--limit', String(limit), '--json', FIELDS],
         repo,
       )
     },
@@ -134,7 +160,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
         'pr',
         'create',
         '-R',
-        String(input.repo),
+        githubRepo(input.repo),
         '--base',
         input.base,
         '--head',
@@ -164,7 +190,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
     },
 
     async retarget(repo, number, base) {
-      const result = await gh.run(['pr', 'edit', String(number), '-R', String(repo), '--base', base])
+      const result = await gh.run(['pr', 'edit', String(number), '-R', githubRepo(repo), '--base', base])
       if (result.code !== 0) {
         throw fleetError('external_failed', `gh pr edit ${String(number)} exited ${result.code}: ${result.stderr.trim() || 'no output'}`, {
           details: { repo: String(repo), number, base },
@@ -189,7 +215,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
         'merge',
         String(number),
         '-R',
-        String(repo),
+        githubRepo(repo),
         flag,
         // §10's pin, enforced by GitHub rather than by us: if the head moved between the caller's read and this
         // call, `gh` refuses the merge instead of merging a commit nobody checked.

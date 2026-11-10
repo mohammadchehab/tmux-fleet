@@ -66,11 +66,22 @@ const PEER_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 // At least two segments, and any number after that: `owner/name` for GitHub, `group/sub/name` for a nested GitLab
 // project. One segment is not a repo anywhere — it is a local directory name — so it stays refused.
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/
+
+/**
+ * No segment may be `.` or `..`. Both match the pattern above — they are made of
+ * the same characters — and every forge would read them as path traversal: a name
+ * that means "the parent of the thing you are talking about" is not a project,
+ * and a string that resolves elsewhere is exactly what an untrusted footer would
+ * reach for.
+ */
+const hasNoDotSegments = (value: string): boolean =>
+  !value.split('/').some((segment) => segment === '.' || segment === '..')
 const SHA_PATTERN = /^[0-9a-f]{7,40}$/
 const NOTIFICATION_KEY_PATTERN = /^(?:decision|failure|standup):[A-Za-z0-9._:-]{1,120}$/
 const PROVIDER_SESSION_REF_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/
 
-export const repo = (): Schema<Repo> => branded(string({ pattern: REPO_PATTERN, maxLength: 200 }), 'Repo')
+export const repo = (): Schema<Repo> =>
+  branded(string({ pattern: REPO_PATTERN, maxLength: 200 }), 'Repo', hasNoDotSegments)
 export const sha = (): Schema<Sha> => branded(string({ pattern: SHA_PATTERN }), 'Sha')
 export const peerId = (): Schema<PeerId> => branded(string({ pattern: PEER_PATTERN, maxLength: 40 }), 'PeerId')
 export const providerSessionRef = (): Schema<ProviderSessionRef> =>
