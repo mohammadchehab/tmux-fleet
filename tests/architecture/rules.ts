@@ -57,7 +57,7 @@ export const PACKAGE_ORDER: Readonly<Record<string, readonly string[]>> = {
     'supervisor',
     'mailbox',
   ],
-  orchestration: ['pm', 'routines', 'briefs', 'gate', 'ledger', 'judge'],
+  orchestration: ['coordination', 'pm', 'routines', 'briefs', 'gate', 'ledger', 'judge'],
   workspace: ['worktree', 'codegraph'],
   security: ['findings', 'scanners'],
   notify: ['core', 'channels/macos'],

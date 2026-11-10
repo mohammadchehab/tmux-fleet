@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/orchestration-coordination",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared fleet coordination routines (architecture §2, §6, §9): polling and publishing pace, capacity, and heartbeat to the fleet-coord repository.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
