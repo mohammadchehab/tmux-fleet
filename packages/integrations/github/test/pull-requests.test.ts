@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { parse, repo } from '@fleet/foundation-core'
+import { parse, repo, type Sha } from '@fleet/foundation-core'
 import { createGh, type GhRunner } from '../src/gh.ts'
 import { createGitHubPullRequests } from '../src/pull-requests.ts'
 
@@ -207,32 +207,59 @@ describe('retarget and dependents: the stack (§10)', () => {
 })
 
 describe('merge', () => {
-  it('asks for the method it was given, and reports the merge commit when gh has one', async () => {
+  const head = 'abc1234' as Sha
+
+  it('pins the head sha on gh’s side too, and reports the merge commit when gh has one', async () => {
     const fake = fakeGh((args) =>
       args[1] === 'merge' ? {} : json({ number: 7, mergeCommit: { oid: 'def5678' }, headRefName: 'feat', baseRefName: 'main', headRefOid: 'abc1234', createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-02T00:00:00.000Z', statusCheckRollup: [], latestReviews: [] }),
     )
-    const merged = await createGitHubPullRequests({ gh: fake.gh }).merge(where, 7, { method: 'squash', deleteBranch: false })
+    const merged = await createGitHubPullRequests({ gh: fake.gh }).merge(where, 7, {
+      method: 'squash',
+      deleteBranch: false,
+      headSha: head,
+    })
 
-    assert.deepEqual(fake.calls[0], ['pr', 'merge', '7', '-R', 'mohammadchehab/tmux-fleet', '--squash'])
+    // §10's pin as a flag: a head that moved makes `gh` refuse, rather than merging a commit nobody checked.
+    assert.deepEqual(fake.calls[0], [
+      'pr',
+      'merge',
+      '7',
+      '-R',
+      'mohammadchehab/tmux-fleet',
+      '--squash',
+      '--match-head-commit',
+      'abc1234',
+    ])
     assert.deepEqual(merged, { mergeSha: 'def5678' })
   })
 
   it('deletes the branch only when asked — §10 is the caller that decides', async () => {
     const fake = fakeGh(() => json({ mergeCommit: null }))
-    await createGitHubPullRequests({ gh: fake.gh }).merge(where, 7, { method: 'merge', deleteBranch: true })
-    assert.deepEqual(fake.calls[0]?.slice(-2), ['--merge', '--delete-branch'])
+    await createGitHubPullRequests({ gh: fake.gh }).merge(where, 7, { method: 'merge', deleteBranch: true, headSha: head })
+    assert.deepEqual(fake.calls[0]?.slice(-3), ['--match-head-commit', 'abc1234', '--delete-branch'])
   })
 
   it('is a merge even when the merge commit cannot be read afterwards', async () => {
     const fake = fakeGh((args) => (args[1] === 'merge' ? {} : { code: 1, stderr: 'rate limited' }))
-    assert.deepEqual(await createGitHubPullRequests({ gh: fake.gh }).merge(where, 7, { method: 'rebase', deleteBranch: false }), {})
+    assert.deepEqual(
+      await createGitHubPullRequests({ gh: fake.gh }).merge(where, 7, { method: 'rebase', deleteBranch: false, headSha: head }),
+      {},
+    )
   })
 
   it('throws when gh refuses the merge, so the gate records a failure and not a merge', async () => {
     const fake = fakeGh(() => ({ code: 1, stderr: 'base branch was modified' }))
     await assert.rejects(
-      createGitHubPullRequests({ gh: fake.gh }).merge(where, 7, { method: 'squash', deleteBranch: false }),
+      createGitHubPullRequests({ gh: fake.gh }).merge(where, 7, { method: 'squash', deleteBranch: false, headSha: head }),
       { code: 'external_failed', message: /gh pr merge 7 exited 1: base branch was modified/ },
+    )
+  })
+
+  it('reports a refusal because the head moved as a typed `head_moved`, not a failed call', async () => {
+    const fake = fakeGh(() => ({ code: 1, stderr: 'Head branch was modified. Review and try the merge again.' }))
+    await assert.rejects(
+      createGitHubPullRequests({ gh: fake.gh }).merge(where, 7, { method: 'squash', deleteBranch: false, headSha: head }),
+      { code: 'head_moved', message: /moved off abc1234 before the merge; nothing was merged/ },
     )
   })
 })

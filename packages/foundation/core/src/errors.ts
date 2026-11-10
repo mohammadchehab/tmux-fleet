@@ -23,6 +23,13 @@ export const fleetErrorCodes = [
   'config_mismatch',
   /** An external call (gh, git, a scanner) failed or timed out. */
   'external_failed',
+  /**
+   * A merge was refused because the head is no longer the sha it was pinned to
+   * (§10). Distinct from `external_failed` on purpose: the call worked, and the
+   * answer is a fact about the PR — the PM's action was decided on inputs that
+   * have since moved — so it is not something a blind retry should paper over.
+   */
+  'head_moved',
   /** The operation did not finish in time. */
   'timeout',
   /** A bug: the code reached a state it does not model. */
