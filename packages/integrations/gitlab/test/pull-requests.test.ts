@@ -357,3 +357,48 @@ describe('merge', () => {
     )
   })
 })
+
+describe('branches and deleteBranch: §10 keeps the delete, the gate does not (§6)', () => {
+  const head = 'abc1234' as Sha
+
+  it('lists the branches with the commit each points at', async () => {
+    const fake = fakeGlab(() => json([{ name: 'feat', commit: { id: 'abc1234' } }, { name: 'fleet/work-1', commit: { id: 'def5678' } }]))
+    const branches = await createGitLabPullRequests({ glab: fake.glab }).branches(where)
+
+    assert.deepEqual(branches, [
+      { name: 'feat', sha: 'abc1234' },
+      { name: 'fleet/work-1', sha: 'def5678' },
+    ])
+    assert.deepEqual(fake.calls[0], ['api', `${project}/repository/branches?per_page=100`])
+  })
+
+  it('reads the branch, then deletes it', async () => {
+    const fake = fakeGlab((args) => (args.includes('DELETE') ? {} : json({ name: 'feat', commit: { id: 'abc1234' } })))
+    await createGitLabPullRequests({ glab: fake.glab }).deleteBranch(where, 'feat', head)
+
+    assert.deepEqual(fake.calls[0], ['api', `${project}/repository/branches/feat`])
+    assert.deepEqual(fake.calls[1], ['api', `${project}/repository/branches/feat`, '-X', 'DELETE'])
+  })
+
+  it('encodes a branch name with a slash, so `fleet/work-1` is one path segment', async () => {
+    const fake = fakeGlab(() => json({ commit: { id: 'abc1234' } }))
+    await createGitLabPullRequests({ glab: fake.glab }).deleteBranch(where, 'fleet/work-1', head)
+    assert.deepEqual(fake.calls[0], ['api', `${project}/repository/branches/fleet%2Fwork-1`])
+  })
+
+  it('refuses with `head_moved` when the branch moved, and deletes nothing', async () => {
+    const fake = fakeGlab(() => json({ commit: { id: 'def5678' } }))
+    await assert.rejects(createGitLabPullRequests({ glab: fake.glab }).deleteBranch(where, 'feat', head), {
+      code: 'head_moved',
+      message: /points at def5678, not abc1234; nothing was deleted/,
+    })
+    assert.equal(fake.calls.length, 1)
+  })
+
+  it('reports a branch that is already gone as `not_found`', async () => {
+    const fake = fakeGlab(() => ({ code: 1, stderr: '404 Branch Not Found' }))
+    await assert.rejects(createGitLabPullRequests({ glab: fake.glab }).deleteBranch(where, 'feat', head), {
+      code: 'not_found',
+    })
+  })
+})

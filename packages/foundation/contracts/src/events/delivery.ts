@@ -115,6 +115,26 @@ export const ciFailedFinal = event(
   }),
 )
 
+/** What asked for a branch deletion: the merge event, or the routine's sweep. */
+export const branchDeletionTriggers = ['work.merged', 'sweep'] as const
+export type BranchDeletionTrigger = (typeof branchDeletionTriggers)[number]
+
+/**
+ * A merged PR's head branch was deleted from the remote (§10, §6's `branch-cleanup`).
+ * The event is the record the branch can be restored from: `sha` is the commit the
+ * branch pointed at when it went, which is the merged head, so `git push <repo>
+ * <sha>:refs/heads/<branch>` puts it back.
+ */
+export const branchDeleted = event(
+  'branch.deleted',
+  object({
+    repo: repo(),
+    branch: branchName(),
+    sha: sha(),
+    by: oneOf(branchDeletionTriggers),
+  }),
+)
+
 // --------------------------------------------------------------------- builds
 
 /** Hosts a build can run on; heavy tasks route to the remote host by profile (§11). */

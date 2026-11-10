@@ -34,6 +34,8 @@ import { fleetError, type Repo, type Sha } from '@fleet/foundation-core'
 import type { PullRequest, PullRequests, ReviewState } from '@fleet/foundation-contracts'
 import { createGlab, type Glab, type GlabResult } from './glab.ts'
 import {
+  branchListFrom,
+  branchShaFrom,
   createdFrom,
   gradedChecksFrom,
   headShaFrom,
@@ -285,6 +287,54 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
         .then(mergeShaFrom)
         .catch(() => undefined)
       return sha === undefined ? {} : { mergeSha: sha }
+    },
+
+    /**
+     * Every repository branch. GitLab pages at `per_page` with no `--paginate` on
+     * `glab api`, so the page size is the limit — the same ceiling, and the same
+     * caveat, as `list`: a repo with more branches than that reports the first page.
+     */
+    async branches(repo) {
+      const raw = await api(`${projectPath(repo)}/repository/branches?per_page=${String(MAX_PER_PAGE)}`)
+      return branchListFrom(raw)
+    },
+
+    /**
+     * Delete, pinned to `expectedSha`, with the same read-check-delete sequence the
+     * GitHub adapter uses and the same honest caveat: GitLab's delete endpoint takes
+     * no conditional header, so the window between the calls is narrowed by the
+     * comparison and closed only by the caller's reason — a merge whose head sha the
+     * log recorded.
+     */
+    async deleteBranch(repo, branch, expectedSha) {
+      const path = `${projectPath(repo)}/repository/branches/${encodeURIComponent(branch)}`
+      const result = await glab.run(['api', path])
+      if (result.code !== 0) {
+        if (isMissing(result)) {
+          throw fleetError('not_found', `${String(repo)} has no branch ${branch}`, {
+            details: { repo: String(repo), branch },
+          })
+        }
+        throw fleetError('external_failed', `glab api ${path} exited ${String(result.code)}: ${result.stderr.trim() || 'no output'}`, {
+          details: { repo: String(repo), branch, exitCode: result.code },
+        })
+      }
+      const current = branchShaFrom(result.stdout)
+      if (current !== String(expectedSha)) {
+        throw fleetError(
+          'head_moved',
+          `${String(repo)}'s ${branch} points at ${current ?? 'no sha'}, not ${String(expectedSha)}; nothing was deleted`,
+          { details: { repo: String(repo), branch, expectedSha: String(expectedSha) } },
+        )
+      }
+      const deleted = await glab.run(['api', path, '-X', 'DELETE'])
+      if (deleted.code !== 0) {
+        throw fleetError(
+          'external_failed',
+          `glab api ${path} -X DELETE exited ${String(deleted.code)}: ${deleted.stderr.trim() || 'no output'}`,
+          { details: { repo: String(repo), branch, exitCode: deleted.code } },
+        )
+      }
     },
   }
 }

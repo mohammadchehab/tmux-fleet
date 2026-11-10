@@ -75,6 +75,34 @@ export interface PullRequests {
     number: number,
     options: { readonly method: 'merge' | 'squash' | 'rebase'; readonly deleteBranch: boolean; readonly headSha: Sha },
   ): Promise<{ readonly mergeSha?: Sha }>
+
+  /**
+   * Remote branches and the commits they point at, as the forge reports them. §6's
+   * `branch-cleanup` sweep needs the list before it can tell a branch it may delete
+   * from one that has commits the merge never saw, and nothing in the log says what
+   * a remote currently holds.
+   */
+  branches(repo: Repo): Promise<readonly Branch[]>
+
+  /**
+   * Delete a remote branch, pinned to the sha the caller decided on — the same rule
+   * as `merge`, for the same reason. The forge is asked what the branch points at
+   * now; that head must equal `expectedSha` or nothing is deleted and the call throws
+   * a `FleetError` with code `head_moved`. A branch that is already gone is
+   * `not_found`, not a silent success: the caller recorded an intent, and the log
+   * should say the branch was not there.
+   *
+   * Deleting is a separate act from merging on purpose (§10): a merge that deletes
+   * cannot be retried without it, and a dependent that appears between the two is a
+   * branch someone still sits on.
+   */
+  deleteBranch(repo: Repo, branch: string, expectedSha: Sha): Promise<void>
+}
+
+/** A remote branch: its name and the commit it points at. */
+export interface Branch {
+  readonly name: string
+  readonly sha: Sha
 }
 
 /**
@@ -130,6 +158,24 @@ export interface BranchHead {
    * one lie a security scan must not tell.
    */
   head(cwd: string, branch: string): Promise<Sha | undefined>
+}
+
+/**
+ * §9's worktree manager, as much of it as `branch-cleanup` needs: removing the
+ * checkout of a Work that has merged. Implemented by `@fleet/workspace-worktree`
+ * over `git` and injected by `apps/daemon`.
+ *
+ * It is a port rather than a call the routine makes for itself because §9 makes
+ * the manager the only thing that deletes a worktree; a second `git worktree
+ * remove` in `orchestration` would be a second answer to "may this go".
+ */
+export interface Worktrees {
+  /**
+   * Remove the checkout at `path`, and nothing else: a path git does not know, or
+   * one holding changes, throws instead of being forced. §9's rule — nothing is
+   * deleted with local-only work — is enforced by git as well as by the caller.
+   */
+  remove(path: string): Promise<void>
 }
 
 /**

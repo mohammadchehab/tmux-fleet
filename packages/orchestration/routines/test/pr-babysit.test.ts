@@ -151,6 +151,8 @@ const fakeGithub = (
     retarget: verboten('retarget') as never,
     dependents: verboten('dependents') as never,
     merge: verboten('merge') as never,
+    branches: verboten('branches') as never,
+    deleteBranch: verboten('deleteBranch') as never,
   }
 }
 

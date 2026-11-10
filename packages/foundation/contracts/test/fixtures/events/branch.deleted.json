@@ -1,0 +1,16 @@
+{
+  "seq": 31,
+  "ts": "2026-11-10T09:31:00.000Z",
+  "type": "branch.deleted",
+  "subject": "backbase/me-services-fleet:fleet/work-42",
+  "actor": "scheduler",
+  "causedBy": [
+    24
+  ],
+  "data": {
+    "repo": "backbase/me-services-fleet",
+    "branch": "fleet/work-42",
+    "sha": "9c1d2e3f405162738495a6b7c8d9e0f1023a4b5c",
+    "by": "work.merged"
+  }
+}

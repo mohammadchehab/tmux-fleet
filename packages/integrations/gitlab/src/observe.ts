@@ -40,7 +40,7 @@ import {
   type Schema,
   type Sha,
 } from '@fleet/foundation-core'
-import type { ChecksState, PullRequest, ReviewState } from '@fleet/foundation-contracts'
+import type { Branch, ChecksState, PullRequest, ReviewState } from '@fleet/foundation-contracts'
 
 /** One checks observation. `headSha` is the commit the pipeline ran on — the whole point of §10's pin. */
 export interface GradedChecks {
@@ -272,4 +272,42 @@ export const mergeShaFrom = (raw: unknown): Sha | undefined => {
   if (candidate === undefined) return undefined
   const parsed = safeParse(shaShape(), candidate)
   return parsed.ok ? parsed.value : undefined
+}
+
+// ------------------------------------------------------------------ branches
+
+/**
+ * The head sha `glab api …/repository/branches/<branch>` reports, or `undefined`
+ * when the output is not a branch. It is compared rather than returned as a `Sha`
+ * because the caller asks whether it equals a sha it already holds (§10's pin).
+ */
+export const branchShaFrom = (stdout: string): string | undefined => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout) as unknown
+  } catch {
+    return undefined
+  }
+  return text(record(record(parsed)?.['commit'])?.['id'])
+}
+
+/**
+ * `glab api …/repository/branches` as the port's `Branch[]`. A row without a name
+ * or an unusable `commit.id` is a response this package does not model, not a
+ * branch to skip: a sweep that skipped one would leave it forever.
+ */
+export const branchListFrom = (raw: unknown): readonly Branch[] => {
+  if (!Array.isArray(raw)) {
+    throw fleetError('external_failed', 'glab api branches printed something that is not a list')
+  }
+  const branches: Branch[] = []
+  for (const row of list(raw)) {
+    const name = text(row['name'])
+    if (name === undefined || name === '') {
+      throw fleetError('external_failed', 'glab reported a branch with no name')
+    }
+    const sha = record(row['commit'])?.['id']
+    branches.push({ name, sha: shape(shaShape(), sha, 'branch head') })
+  }
+  return branches
 }

@@ -45,6 +45,7 @@ import type {
   PullRequests,
   RoutineKind,
   Tracker,
+  Worktrees,
 } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import { createGitHubPullRequests } from '@fleet/integrations-github'
@@ -61,7 +62,8 @@ import { ClaudeProvider, createStructuredCompletion } from '@fleet/runtime-provi
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
 import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
-import { createBranchHead } from '@fleet/workspace-worktree'
+import { createBranchHead, createWorktrees } from '@fleet/workspace-worktree'
+import { createBranchCleanupFactory } from './branch-cleanup.ts'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createProviderEnv } from './deepinfra-env.ts'
 import { createExecutorRouter, type KindExecutor } from './executor.ts'
@@ -144,6 +146,12 @@ export interface ComposeDeps {
    * adapter; a test passes a fake, so a suite never fetches a remote.
    */
   readonly branchHead?: BranchHead
+  /**
+   * How §9's manager removes a checkout of a Work that has merged (§10's
+   * `branch-cleanup`). Defaults to a `git` adapter; a test passes a fake, so a
+   * suite never removes a directory on the machine it runs on.
+   */
+  readonly worktrees?: Worktrees
   /**
    * The board `tracker-sync` reads and writes (§3). Defaults to the adapter the
    * profile's `trackers.system` names — `@fleet/integrations-trackers-backlog`
@@ -375,6 +383,17 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
       // routing them through the waking sink would run this routine inside itself.
       store: { append: (batch) => store.append(batch) },
       mailbox,
+      repos: profile.repos.map((name) => parse(repo(), name)),
+    }),
+    // §10's `branch-cleanup` is always on, like `pr-babysit`: without it nothing
+    // ever deletes a branch (§10's `--delete-branch` was taken off the merge in
+    // #102), and a fleet leaves one branch per PR behind. It needs the port, a
+    // sink, the Mailbox and §9's manager, so it is registered here.
+    'branch-cleanup': createBranchCleanupFactory({
+      pullRequests,
+      store: { append: (batch) => store.append(batch) },
+      mailbox,
+      worktrees: deps.worktrees ?? createWorktrees(),
       repos: profile.repos.map((name) => parse(repo(), name)),
     }),
     ...(notifier === undefined

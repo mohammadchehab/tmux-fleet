@@ -28,6 +28,7 @@ import {
   type ReadModel,
   type Routine,
   type Work,
+  type Worktree,
 } from '@fleet/foundation-contracts'
 import type { EventSink, Timers } from '../../src/scheduler.ts'
 
@@ -104,9 +105,11 @@ export interface FakeRows {
   readonly work: readonly Work[]
   /** The `PR` projection, which is what `pr-babysit` compares an observation against (§10). */
   readonly pullRequests: readonly PullRequest[]
+  /** The checkouts `branch-cleanup` may remove, and the three facts that say whether it may (§9). */
+  readonly worktrees: readonly Worktree[]
 }
 
-const EMPTY: FakeRows = { peers: [], routines: [], notifications: [], work: [], pullRequests: [] }
+const EMPTY: FakeRows = { peers: [], routines: [], notifications: [], work: [], pullRequests: [], worktrees: [] }
 
 export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
   const current: FakeRows = { ...EMPTY, ...rows }
@@ -133,7 +136,7 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
     findings: { all: async () => [] },
     messages: { all: async () => [], forPeer: async () => [] },
     pullRequests: { all: async () => current.pullRequests },
-    worktrees: { all: async () => [] },
+    worktrees: { all: async () => current.worktrees },
     routines: { all: async () => current.routines },
     put: (next) => {
       Object.assign(current, next)
