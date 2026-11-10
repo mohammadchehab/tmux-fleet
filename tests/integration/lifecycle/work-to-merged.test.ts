@@ -44,6 +44,18 @@ const NOW = '2026-11-10T09:00:00.000Z' as Timestamp
 /** Three valid ids; §5.1's `WorkId` is opaque, so a made-up `w-1` would not append. */
 const works: readonly WorkId[] = ['wrk_0000000000000001', 'wrk_0000000000000002', 'wrk_0000000000000003'] as WorkId[]
 
+/**
+ * The seeded Work at `index`, or a failed test. The literal above has three, so a
+ * miss is a bug in this file rather than a case a test is expected to meet — and
+ * the message says which index, instead of handing a test `undefined` (#78's
+ * `headOf`/`only` idiom, so `noUncheckedIndexedAccess` needs no `!`).
+ */
+const workAt = (index: number): WorkId => {
+  const workId = works[index]
+  assert.ok(workId !== undefined, `no seeded Work at index ${String(index)}`)
+  return workId
+}
+
 const workFloor = (workId: WorkId, number: number): readonly AppendEvent[] => [
   {
     ts: NOW,
@@ -188,7 +200,7 @@ test('§10: a red head is never merged, and its Work stays short of `merged`', a
   t.after(() => sandbox.stop())
   await sandbox.call('up')
 
-  const workId = works[0]
+  const workId = workAt(0)
   await sandbox.composed.append(workFloor(workId, 1))
 
   forge.open({ repo, number: 1, workId })
