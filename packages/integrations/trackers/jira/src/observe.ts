@@ -110,6 +110,24 @@ export const issuesFrom = (raw: unknown, what: string): readonly unknown[] => {
 export const nextTokenFrom = (raw: unknown): string | undefined =>
   stringOrUndefined(asObject(raw, 'search page')['nextPageToken'])
 
+/**
+ * The `body` of every comment on an issue, in the order the page listed them —
+ * each still ADF, because `adfToText` is what knows how to read one back.
+ *
+ * A page with no `comments` array is refused rather than read as "no comments":
+ * `comment` asks this question to decide whether to append, and a malformed read
+ * answering "nothing there" would post a duplicate of a note already on the
+ * ticket.
+ */
+export const commentsFrom = (raw: unknown): readonly unknown[] => {
+  const page = asObject(raw, 'comment page')
+  const comments = page['comments']
+  if (!Array.isArray(comments)) {
+    throw fleetError('external_failed', 'jira comment page printed no `comments` array')
+  }
+  return comments.map((comment) => (typeof comment === 'object' && comment !== null ? (comment as Record<string, unknown>)['body'] : undefined))
+}
+
 /** Whether the enhanced endpoint said this was the last page. */
 export const isLastPage = (raw: unknown): boolean => asObject(raw, 'search page')['isLast'] === true
 

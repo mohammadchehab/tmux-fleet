@@ -301,6 +301,34 @@ describe('link: the PR URL is appended to the notes, once', () => {
   })
 })
 
+describe('comment: a note is appended to the notes, once', () => {
+  it('appends the note verbatim when the card does not carry it', async () => {
+    const { run, calls } = runnerOf(ok(card()), ok(''))
+
+    await trackerOf(run).comment('TASK-1', 'plan: reading the gitlab adapter')
+
+    assert.deepEqual(calls.map((call) => call.args), [
+      ['task', 'view', 'TASK-1', '--json'],
+      ['task', 'edit', 'TASK-1', '--append-notes', 'plan: reading the gitlab adapter', '--plain'],
+    ])
+  })
+
+  it('is idempotent: a card that already carries the note is not edited again', async () => {
+    const { run, calls } = runnerOf(ok(card({ implementationNotes: 'Notes a human wrote.\nimplement: fix written' })))
+
+    await trackerOf(run).comment('TASK-1', 'implement: fix written')
+
+    assert.deepEqual(calls.map((call) => call.args), [['task', 'view', 'TASK-1', '--json']])
+  })
+
+  it('throws rather than inventing a card when the ticket is gone', async () => {
+    const { run, calls } = runnerOf(failed(1, 'Task TASK-99 not found.'))
+
+    await assert.rejects(() => trackerOf(run).comment('TASK-99', 'plan: anything'), /has no card TASK-99/)
+    assert.equal(calls.length, 1, 'a missing card is not a reason to create one')
+  })
+})
+
 describe('urlOfPath: a card path becomes something a human can open', () => {
   it('is the path as the CLI reports it when the profile gives no base', () => {
     assert.equal(urlOfPath('backlog/tasks/task-1 - Add pagination.md', undefined), 'backlog/tasks/task-1 - Add pagination.md')

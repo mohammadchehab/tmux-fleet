@@ -46,6 +46,7 @@ interface FakeTracker extends Tracker {
   readonly got: string[]
   readonly transitions: { key: string; to: string }[]
   readonly links: { key: string; url: string }[]
+  readonly comments: { key: string; body: string }[]
   /** Make `pull` throw, for a board the daemon could not reach. */
   failPull(): void
   /** Make the next write for one key throw, so a single card is refused. */
@@ -66,6 +67,7 @@ const fakeTracker = (items: readonly ExternalItem[] = []): FakeTracker => {
   const got: string[] = []
   const transitions: { key: string; to: string }[] = []
   const links: { key: string; url: string }[] = []
+  const comments: { key: string; body: string }[] = []
   const refused = new Set<string>()
   let pullFails = false
 
@@ -76,6 +78,7 @@ const fakeTracker = (items: readonly ExternalItem[] = []): FakeTracker => {
     got,
     transitions,
     links,
+    comments,
     failPull: () => {
       pullFails = true
     },
@@ -96,6 +99,10 @@ const fakeTracker = (items: readonly ExternalItem[] = []): FakeTracker => {
     link: async (key, url) => {
       if (refused.has(key)) throw new Error(`${key} is locked`)
       links.push({ key, url })
+    },
+    comment: async (key, body) => {
+      if (refused.has(key)) throw new Error(`${key} is locked`)
+      comments.push({ key, body })
     },
   }
 }

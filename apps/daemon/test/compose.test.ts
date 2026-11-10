@@ -147,6 +147,7 @@ ${trackers ?? ''}`,
     get: async () => assert.fail('a composed fleet must not read a card before it is started'),
     transition: async () => assert.fail('a composed fleet must not move a card before it is started'),
     link: async () => assert.fail('a composed fleet must not link a PR before it is started'),
+    comment: async () => assert.fail('a composed fleet must not comment on a card before it is started'),
   })
 
   const clean = async (home: string, composed: Awaited<ReturnType<typeof compose>>): Promise<void> => {

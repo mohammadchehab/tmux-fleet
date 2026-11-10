@@ -326,3 +326,46 @@ describe('link', () => {
     assert.match(error.message, /jira has no issue FLEET-404/)
   })
 })
+
+describe('comment', () => {
+  const commentPage = (bodies: readonly string[]): unknown => ({
+    comments: bodies.map((text) => ({ body: { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] } })),
+  })
+
+  it('posts the note as ADF, one paragraph per line', async () => {
+    const fake = fakeFetch((call) => (call.method === 'GET' ? { body: commentPage([]) } : { status: 201, body: { id: 88 } }))
+
+    await createJiraTracker({ baseUrl: BASE, auth: cloud, fetch: fake.fetch, clock }).comment('FLEET-1', 'implement: the fix is pushed')
+
+    const post = fake.calls.find((call) => call.method === 'POST') as Call
+    assert.equal(urlOf(post).pathname, '/rest/api/3/issue/FLEET-1/comment')
+    assert.deepEqual(post.body, {
+      body: { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'implement: the fix is pushed' }] }] },
+    })
+  })
+
+  it('is idempotent: a note the issue already carries is not posted twice', async () => {
+    const fake = fakeFetch(() => ({ body: commentPage(['plan: read the adapter']) }))
+
+    await createJiraTracker({ baseUrl: BASE, auth: cloud, fetch: fake.fetch, clock }).comment('FLEET-1', 'plan: read the adapter')
+
+    assert.equal(fake.calls.filter((call) => call.method === 'POST').length, 0, 'the note is already there')
+  })
+
+  it('posts a note the issue does not carry, even when the issue carries others', async () => {
+    const fake = fakeFetch((call) => (call.method === 'GET' ? { body: commentPage(['plan: read the adapter']) } : { status: 201, body: {} }))
+
+    await createJiraTracker({ baseUrl: BASE, auth: cloud, fetch: fake.fetch, clock }).comment('FLEET-1', 'mr: https://github.com/acme/fleet/pull/7')
+
+    assert.equal(fake.calls.filter((call) => call.method === 'POST').length, 1)
+  })
+
+  it('refuses to comment on an issue that is not there', async () => {
+    const fake = fakeFetch((call) => (call.method === 'GET' ? { status: 404, body: {} } : {}))
+    const error = await threw(() =>
+      createJiraTracker({ baseUrl: BASE, auth: cloud, fetch: fake.fetch, clock }).comment('FLEET-404', 'plan: anything'),
+    )
+
+    assert.equal(error.code, 'external_failed')
+  })
+})

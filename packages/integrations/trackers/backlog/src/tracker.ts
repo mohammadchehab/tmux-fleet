@@ -166,5 +166,16 @@ export const createBacklogTracker = (options: BacklogTrackerOptions): Tracker =>
       // Appended, never set: the notes are the humans' too (§3 keeps the board a peer, not a mirror).
       await edit(['task', 'edit', key, '--append-notes', note, '--plain'], `task edit ${key} --append-notes`)
     },
+
+    async comment(key, body) {
+      // The read is what makes this idempotent, and it is the same read `link`
+      // already pays for: a note the card carries is not appended again.
+      const task = await view(key)
+      if (task === undefined) {
+        throw fleetError('external_failed', `cannot comment on ${key}: ${BACKLOG_SYSTEM} has no card ${key}`, { details: { key } })
+      }
+      if (notesFrom(task).includes(body)) return
+      await edit(['task', 'edit', key, '--append-notes', body, '--plain'], `task edit ${key} --append-notes`)
+    },
   }
 }
