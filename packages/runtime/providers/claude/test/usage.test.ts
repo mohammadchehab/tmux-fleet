@@ -116,3 +116,24 @@ test('a result with no modelUsage falls back to the main loop, and one with neit
   assert.equal(zeroed.spend, undefined, 'a startup error measured nothing; a zeroed row would read as a free turn')
   assert.deepEqual(zeroed.totals, noSpend)
 })
+
+test('a boundary without modelUsage reports its own turn and leaves the cumulative baseline alone (TASK-3)', () => {
+  const first = spendFrom(result({ 'claude-sonnet-5-5': { inputTokens: 10_000, outputTokens: 2_000, cacheReadInputTokens: 30_000, costUSD: 0.9 } }), noSpend)
+
+  // `result.usage` is this turn's counters, not a running total: measured
+  // against the cumulative baseline it would clamp to zero.
+  const fallback = spendFrom(
+    { type: 'result', subtype: 'error_during_execution', usage: { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 400 } },
+    first.totals,
+  )
+  assert.deepEqual(fallback.spend, { inputTokens: 12, outputTokens: 3, cachedTokens: 400 })
+  assert.deepEqual(fallback.totals, first.totals, 'a per-turn reading must not replace the cumulative baseline')
+
+  // The next boundary that does carry modelUsage is one turn on from `first`,
+  // not a rebase from zero that bills the whole session cost as one turn.
+  const next = spendFrom(result({ 'claude-sonnet-5-5': { inputTokens: 10_500, outputTokens: 2_100, cacheReadInputTokens: 31_000, costUSD: 0.95 } }), fallback.totals)
+  assert.equal(next.spend?.inputTokens, 500)
+  assert.equal(next.spend?.outputTokens, 100)
+  assert.equal(next.spend?.cachedTokens, 1_000)
+  assert.ok(Math.abs((next.spend?.costUsd ?? 0) - 0.05) < 1e-9, `the cost is the turn's, not the session's: ${next.spend?.costUsd}`)
+})
