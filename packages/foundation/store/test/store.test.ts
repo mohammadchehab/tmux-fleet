@@ -173,3 +173,48 @@ test('a closed store cannot be read from', async () => {
   await store.close()
   await assert.rejects(async () => store.read(1))
 })
+
+test('read, iterate and rebuild skip unknown event types rather than throwing', async () => {
+  const path = tempStorePath()
+  const store = await open({ path })
+  await store.append(threeEvents())
+  await store.close()
+
+  // Manually insert an event with an unknown type (simulating rollback to older build)
+  const db = new DatabaseSync(path)
+  db.prepare(
+    `INSERT INTO events (seq, ts, type, subject, actor, caused_by, data)
+    VALUES (4, :ts, :type, :subject, :actor, NULL, :data)`,
+  ).run({
+    ts: '2026-11-10T00:00:00.000Z',
+    type: 'future.event',
+    subject: 'test-subject',
+    actor: 'pm',
+    data: JSON.stringify({ kind: 'unknown' }),
+  })
+  db.close()
+
+  // Now try to read/iterate/rebuild - should not throw but should skip the unknown event
+  const reader = await open({ path, readOnly: true })
+
+  const events = await reader.read(1)
+  assert.equal(events.length, 3, 'read skips unknown event type and returns only known events')
+  assert.equal(events.every((e) => e.seq <= 3), true, 'read does not include unknown event')
+
+  const iterated: number[] = []
+  for await (const event of reader.iterate(1)) {
+    iterated.push(event.seq)
+  }
+  assert.equal(iterated.length, 3, 'iterate skips unknown event type')
+  assert.deepEqual(iterated, [1, 2, 3], 'iterate does not include unknown event')
+
+  await reader.close()
+
+  // rebuild should also skip and not throw
+  const rebuilder = await open({ path })
+  await assert.doesNotReject(() => rebuilder.rebuild(), 'rebuild does not throw on unknown event type')
+
+  const rebuilt = await rebuilder.read(1)
+  assert.equal(rebuilt.length, 3, 'after rebuild, unknown event is still skipped')
+  await rebuilder.close()
+})
