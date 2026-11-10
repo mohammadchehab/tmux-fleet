@@ -1,0 +1,4 @@
+
+--- probe: switch / deepinfra ---
+elapsed_ms 5540
+PROBE_RESULT {"probe":"switch","provider":"deepinfra","evidence":{"turns":[{"at":3116,"assistant_model":"deepseek-ai/DeepSeek-V4.1-Flash-1017"},{"at":3146,"assistant_model":"deepseek-ai/DeepSeek-V4.1-Flash-1017"},{"at":5132,"assistant_model":"deepseek-ai/DeepSeek-V4.1-Flash-1017"},{"at":5235,"assistant_model":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}],"switched_to":"deepseek-ai/DeepSeek-V4.1-Flash-1017","setModel":"ok","modelUsage_after_switch":["deepseek-ai/DeepSeek-V4.1-Flash-1017"]}}

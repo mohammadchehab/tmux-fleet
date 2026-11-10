@@ -1,0 +1,4 @@
+
+--- probe: compaction / deepinfra ---
+elapsed_ms 11303
+PROBE_RESULT {"probe":"compaction","provider":"deepinfra","evidence":{"how_forced":"stream-json user message \"/compact\" (auto-compaction differs only in compact_metadata.trigger)","compaction_events":[{"at":10001,"compact":{"trigger":"manual","pre_tokens":7718,"post_tokens":3636,"cumulative_dropped_tokens":4082,"duration_ms":8141}}],"status_messages":["compacting",null],"message_sequence":["system/init","assistant","result/success","system/status","system/status","system/init","system/compact_boundary","user","user","result/success","system/init","assistant","result/success"],"results":[{"text":"Hello there, how are you?","is_error":false},{"text":"","is_error":false},{"text":"AFTER_COMPACT","is_error":false}]}}

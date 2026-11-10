@@ -1,0 +1,4 @@
+
+--- probe: model / deepinfra ---
+elapsed_ms 2154
+PROBE_RESULT {"probe":"model","provider":"deepinfra","evidence":{"init":{"model":"deepseek-ai/DeepSeek-V4.1-Flash-1017","permissionMode":"bypassPermissions","session_id":"183a4d33-ce70-4e81-9b31-5ea2623c3021","apiKeySource":"none"},"assistant_models":["deepseek-ai/DeepSeek-V4.1-Flash-1017"],"result_modelUsage":{"deepseek-ai/DeepSeek-V4.1-Flash-1017":{"inputTokens":115,"outputTokens":15,"cacheReadInputTokens":8320,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.002424,"contextWindow":200000,"maxOutputTokens":32000,"thinkingTokens":0,"cacheCreationEphemeral5mInputTokens":0,"cacheCreationEphemeral1hInputTokens":0,"canonicalModel":"deepseek-ai/deepseek-v4.1-flash-1017","provider":"firstParty","costBasis":"unknown"}},"session_id":"183a4d33-ce70-4e81-9b31-5ea2623c3021","env_model_requested":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}}
