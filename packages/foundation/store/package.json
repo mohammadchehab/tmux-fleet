@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The append-only event store: its interface and schema DDL. No implementation in phase 0 (architecture §3, §5.4, §15).",
+  "description": "The append-only event store on node:sqlite: strict append, the projections runner that fills every read model, and replay-deterministic rebuild (architecture §3, §5.4, §6, §15).",
   "exports": {
     ".": "./src/index.ts"
   },

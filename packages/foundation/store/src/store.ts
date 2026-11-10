@@ -3,7 +3,8 @@
  * database per profile; everything the code reads is a projection of it, so a
  * rebuild is always possible and a replay reproduces every decision.
  *
- * Phase 0 defines this; phase 1 implements it over `node:sqlite`.
+ * This is the contract every caller is written against (`EventSink` for the
+ * writes, `ReadModel` for the reads); `sqlite-store.ts` is its implementation.
  */
 
 import { fleetError, type Clock, type Seq } from '@fleet/foundation-core'

@@ -1,8 +1,8 @@
 /**
- * The DDL is executed, not eyeballed (architecture §3, §11, §15 phase 0). This
- * is the only place a phase-0 test touches `node:sqlite`: it proves the schema
- * is valid SQLite, that the constraints the design leans on are real, and that
- * applying the migration twice is a no-op. The store implementation is phase 1.
+ * The DDL is executed, not eyeballed (architecture §3, §11, §15). It proves the
+ * schema is valid SQLite, that the constraints the design leans on are real, and
+ * that applying the migration twice is a no-op. The store and the projections
+ * that run on this schema are `sqlite-store.ts` and `projections.ts`.
  */
 
 import assert from 'node:assert/strict'
