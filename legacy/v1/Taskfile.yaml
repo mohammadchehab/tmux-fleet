@@ -1,0 +1,69 @@
+version: '3'
+
+# Every task runs one script in dev-tasks/scripts/<group>/<script>.sh.
+tasks:
+  default:
+    desc: List the tasks
+    silent: true
+    cmds:
+      - task --list
+
+  install:claude:
+    desc: Symlink every skills/<name> into ~/.claude/skills (real folders are left alone and reported)
+    cmds:
+      - dev-tasks/scripts/install/link.sh "${CLAUDE_SKILLS:-$HOME/.claude/skills}"
+
+  install:cursor:
+    desc: Symlink every skills/<name> into ~/.cursor/skills (a Cursor chat loads the fleet skill and reads roles/<role>.md)
+    cmds:
+      - dev-tasks/scripts/install/link.sh "${CURSOR_SKILLS:-$HOME/.cursor/skills}"
+
+  install:backlog:
+    desc: Install the board CLI (Backlog.md, npm -g) at the version the fleet pins in skills/fleet/scripts/lib/backlog.sh
+    cmds:
+      - dev-tasks/scripts/install/backlog.sh
+
+  install:bin:
+    desc: Put the fleet command on PATH (a symlink ~/.local/bin/fleet -> bin/fleet, or FLEET_BIN); see `fleet help`
+    cmds:
+      - dev-tasks/scripts/install/bin.sh
+
+  install:
+    desc: Run install:claude, install:cursor, install:backlog and install:bin
+    cmds:
+      - task: install:claude
+      - task: install:cursor
+      - task: install:backlog
+      - task: install:bin
+
+  uninstall:
+    desc: Remove the fleet's symlinks from ~/.claude/skills and ~/.cursor/skills, and the fleet command from ~/.local/bin
+    cmds:
+      - dev-tasks/scripts/install/uninstall.sh
+
+  update:
+    desc: Fast-forward main in this checkout (main only, clean tree), link any new skills and install the pinned board CLI
+    cmds:
+      - dev-tasks/scripts/install/update.sh
+
+  profile:init:
+    desc: Create ~/.config/fleet/profiles/<NAME>.env for a repo (task profile:init NAME=<name> REPO=<path> [SQUAD=<squad>]); never overwrites
+    cmds:
+      - dev-tasks/scripts/profile/init.sh "{{.NAME}}" "{{.REPO}}" {{.SQUAD}}
+
+  lint:
+    desc: shellcheck every script, check skill frontmatter (name equals folder name), that profiles repeat no AGENTS.md fact
+    cmds:
+      - dev-tasks/scripts/lint/shell.sh
+      - dev-tasks/scripts/lint/skills.sh
+      - dev-tasks/scripts/lint/profile.sh
+
+  test:
+    desc: Smoke-test the scripts with a fake tmux and a fake backlog CLI (no real tmux, claude, backlog or network)
+    cmds:
+      - dev-tasks/scripts/test/smoke.sh
+
+  clean:
+    desc: List stale fleet worktrees (fleet wt prune) and tmux sessions; "-- --force" removes worktrees, "-- --force --sessions" also kills sessions
+    cmds:
+      - dev-tasks/scripts/clean/clean.sh {{.CLI_ARGS}}
