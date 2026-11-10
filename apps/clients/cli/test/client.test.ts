@@ -145,25 +145,6 @@ describe('callDaemon', () => {
     }
   })
 
-  it('calls drift from the contract a bug in the daemon, and names the field', async () => {
-    // The daemon this CLI is built against returns §3 projections; today's
-    // `apps/daemon/src/rpc.ts` still returns its own flattened rows.
-    const flattened = { status, peers: [{ id: 'engineer-1', role: 'engineer' }], routines: [], decisions: [] }
-    const daemon = await serve(() => ok(flattened))
-    try {
-      const error = await callDaemon({ socketPath: daemon.socketPath }, 'ls', {}).then(
-        () => undefined,
-        (thrown: unknown) => thrown,
-      )
-      assert.equal(code(error), 'internal')
-      assert.match((error as Error).message, /does not match the daemon API contract/)
-      assert.match((error as Error).message, /peers\[0\]\.id: unknown field/)
-      assert.match((error as Error).message, /peers\[0\]\.peerId: missing required field/)
-    } finally {
-      await daemon.close()
-    }
-  })
-
   it('reports an answer that is not JSON as a broken daemon, not as a user error', async () => {
     const daemon = await serve(() => ({ line: 'fleetd says hello\n' }))
     try {

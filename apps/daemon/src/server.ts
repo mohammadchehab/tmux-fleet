@@ -12,7 +12,8 @@ import { createServer, type Server, type Socket } from 'node:net'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { fleetError, type FleetError } from '@fleet/foundation-core'
-import { encodeLine, handleLine, type DaemonApi, type RpcResponse } from './rpc.ts'
+import type { DaemonApi, DaemonResponse } from '@fleet/foundation-contracts'
+import { encodeLine, handleLine } from './rpc.ts'
 
 export interface ServerDeps {
   readonly api: DaemonApi
@@ -21,7 +22,7 @@ export interface ServerDeps {
   /** What the daemon's `down` does once the last response has been written. */
   readonly onDown?: () => void
   /** Every request that failed, so the daemon can log it; the socket already answered the client. */
-  readonly onError?: (line: string, response: RpcResponse) => void
+  readonly onError?: (line: string, response: DaemonResponse) => void
 }
 
 export interface DaemonServer {
@@ -120,9 +121,9 @@ export const createDaemonServer = async (deps: ServerDeps): Promise<DaemonServer
  * The client half, for the tests and for `fleet up`'s readiness check: one line
  * out, one line back, on a fresh connection.
  */
-export const rpcCall = async (socketPath: string, request: unknown): Promise<RpcResponse> => {
+export const rpcCall = async (socketPath: string, request: unknown): Promise<DaemonResponse> => {
   const { connect } = await import('node:net')
-  return new Promise<RpcResponse>((resolve, reject) => {
+  return new Promise<DaemonResponse>((resolve, reject) => {
     const socket = connect(socketPath)
     let buffer = ''
     const fail = (error: FleetError): void => {
@@ -138,7 +139,7 @@ export const rpcCall = async (socketPath: string, request: unknown): Promise<Rpc
       const line = buffer.slice(0, newline)
       socket.end()
       try {
-        resolve(JSON.parse(line) as RpcResponse)
+        resolve(JSON.parse(line) as DaemonResponse)
       } catch (cause) {
         reject(fleetError('internal', `fleetd answered something that is not JSON: ${(cause as Error).message}`))
       }

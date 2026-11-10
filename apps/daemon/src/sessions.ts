@@ -22,6 +22,7 @@ import {
   systemClock,
   type Clock,
   type FleetError,
+  type ProfilePaths,
   type PeerId,
   type Result,
   type SessionId,
@@ -47,7 +48,6 @@ import {
 } from '@fleet/runtime-supervisor'
 
 import type { PeerProfile, Profile } from './profile.ts'
-import type { ProfilePaths } from './paths.ts'
 
 /**
  * §8's purge thresholds. A profile names the ones it cares about; the rest come

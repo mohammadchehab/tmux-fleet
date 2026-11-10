@@ -4,13 +4,19 @@
  * Two properties matter more than any single method: a client that sends
  * nonsense gets a typed error rather than taking the daemon down, and a
  * response carries back the `id` it was asked with so a client can match them.
+ *
+ * The wire itself — the method set, the params, the envelopes — is asserted in
+ * `packages/foundation/contracts/test/daemon-rpc.test.ts`, against the file both
+ * apps build from. What is left here is the daemon's own half: the decode, the
+ * dispatch, and `encodeLine` framing what `handleLine` answered.
  */
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import type { DecisionId, PeerId } from '@fleet/foundation-core'
-import { decodeRequest, dispatch, encodeLine, handleLine, type DaemonApi } from '../src/rpc.ts'
+import type { MessageId, PeerId } from '@fleet/foundation-core'
+import type { DaemonApi, Decision } from '@fleet/foundation-contracts'
+import { decodeRequest, dispatch, encodeLine, handleLine } from '../src/rpc.ts'
 
 const status = {
   profile: 'test',
@@ -35,11 +41,11 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
     },
     async ls() {
       calls.push('ls')
-      return { status, peers: [], routines: [] }
+      return { status, peers: [], routines: [], decisions: [] }
     },
     async send(input) {
       calls.push(`send:${String(input.to)}:${input.kind}:${String(input.briefVersion)}`)
-      return { msgId: 'msg_0000000000000001' }
+      return { msgId: 'msg_0000000000000001' as MessageId }
     },
     async peek(input) {
       calls.push(`peek:${String(input.peer)}`)
@@ -51,27 +57,21 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
     },
     async decide(input) {
       calls.push(`decide:${String(input.id)}:${input.decision}`)
-      return {
-        id: input.id as DecisionId,
+      const answered: Decision = {
+        decisionId: input.id,
         kind: 'merge_pr',
         state: 'answered',
         question: 'merge?',
         options: ['yes', 'no'],
+        option: input.decision,
+        inputsHash: 'hash-0001',
         requestedAt: '2026-11-10T10:00:00.000Z',
+        answeredAt: '2026-11-10T10:01:00.000Z',
       }
+      return answered
     },
   }
 }
-
-test('a request decodes, dispatches and round-trips through one line', async () => {
-  const subject = api()
-  const response = await handleLine(subject, '{"id":"a1","method":"up"}')
-
-  assert.deepEqual(response, { id: 'a1', ok: true, result: status })
-  assert.deepEqual(subject.calls, ['up'])
-  assert.equal(encodeLine(response).endsWith('\n'), true)
-  assert.deepEqual(JSON.parse(encodeLine(response)), response, 'the wire format is JSON lines')
-})
 
 test('send passes its params through, decoded', async () => {
   const subject = api()
@@ -103,6 +103,13 @@ test('a bad peer id names the field, not just "params is invalid"', async () => 
     () => dispatch(api(), { method: 'send', params: { to: 'Engineer 1', kind: 'info', body: 'x' } }),
     /to/,
   )
+})
+
+test('a line is one JSON object and one newline, which is what the server writes', () => {
+  const line = encodeLine({ id: 'a1', ok: true, result: status })
+  assert.equal(line.endsWith('\n'), true)
+  assert.equal(line.indexOf('\n'), line.length - 1, 'the newline is the frame, and there is only one')
+  assert.deepEqual(JSON.parse(line), { id: 'a1', ok: true, result: status })
 })
 
 test('an unknown method is refused', () => {

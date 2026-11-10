@@ -21,18 +21,27 @@
  * directly would be a second PM.
  */
 
-import { fleetError, peerActor, systemClock, toFleetError, type Actor, type Clock, type PeerId, type Seq } from '@fleet/foundation-core'
+import {
+  fleetError,
+  peerActor,
+  systemClock,
+  toFleetError,
+  type Actor,
+  type Clock,
+  type PeerId,
+  type ProfilePaths,
+  type Seq,
+} from '@fleet/foundation-core'
 import type {
   AppendEvent,
+  DaemonApi,
+  DaemonStatus,
   Decision,
   EventSink,
   Mailbox,
-  Message,
 } from '@fleet/foundation-contracts'
 import type { EventStore } from '@fleet/foundation-store'
-import type { PeerRow, DaemonApi, DaemonStatus, PeekedMessage, RoutineRow, DecisionRow } from './rpc.ts'
 import type { Profile, PeerProfile } from './profile.ts'
-import type { ProfilePaths } from './paths.ts'
 import type { Scheduler } from '@fleet/orchestration-routines'
 import type { Supervisor } from './sessions.ts'
 
@@ -117,11 +126,6 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     })())
   }
 
-  const pendingCount = async (peer: PeerId): Promise<number> => {
-    const result = await deps.mailbox.pending(peer)
-    return result.length
-  }
-
   /**
    * Hand a peer's box to its session, right after a message joined it (§7).
    *
@@ -151,43 +155,6 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     }
   }
 
-  const peerRows = async (): Promise<readonly PeerRow[]> => {
-    const peers = await read.peers.all()
-    const declared = new Map(deps.profile.peers.map((peer) => [peer.id, peer]))
-    const rows: PeerRow[] = []
-    for (const peer of peers) {
-      // A peer the profile dropped still shows: it has history, and hiding it
-      // would make `fleet ls` disagree with the store.
-      rows.push({
-        id: peer.peerId,
-        role: peer.role,
-        provider: peer.providerId,
-        state: peer.state,
-        pending: await pendingCount(peer.peerId),
-        ...(peer.currentSessionId === undefined ? {} : { sessionId: peer.currentSessionId }),
-      })
-    }
-    // A peer the profile declares but `up` has not registered yet (it failed
-    // mid-start) is shown as undeclared rather than silently missing.
-    for (const peer of declared.values()) {
-      if (rows.some((row) => row.id === peer.id)) continue
-      rows.push({ id: peer.id, role: peer.role, provider: peer.provider, state: 'offline', pending: 0 })
-    }
-    return rows
-  }
-
-  const routineRows = async (): Promise<readonly RoutineRow[]> => {
-    const routines = await read.routines.all()
-    return routines.map((routine) => ({
-      id: routine.routineId,
-      kind: routine.kind,
-      state: routine.state,
-      runs: routine.runs,
-      failures: routine.failures,
-      ...(routine.lastRunAt === undefined ? {} : { lastRunAt: routine.lastRunAt }),
-    }))
-  }
-
   return {
     get status() {
       return status
@@ -204,7 +171,15 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     },
 
     async ls() {
-      return { status, peers: await peerRows(), routines: await routineRows() }
+      // Everything here is a projection: `fleet ls` shows what the store knows,
+      // not a shape this file invented, so a row that gained a field in §3 is a
+      // row that gained a field in the CLI (§2).
+      return {
+        status,
+        peers: await read.peers.all(),
+        routines: await read.routines.all(),
+        decisions: await read.decisions.open(),
+      }
     },
 
     async send(input) {
@@ -241,12 +216,13 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     async peek(input) {
       // `pending` is the unacked box: what the peer still has to act on, oldest
       // first, which is what `fleet peek` is for (§7). An `ack`ed message is
-      // history and reads from the projection instead.
+      // history and reads from the projection instead. Both are `Message` — the
+      // same row the CLI renders — so nothing is reshaped on the way out.
       const pending = await deps.mailbox.pending(input.peer)
       const rows = input.limit === undefined ? pending : pending.slice(-input.limit)
-      if (rows.length > 0) return { messages: rows.map(peeked) }
+      if (rows.length > 0) return { messages: rows }
       const all = await read.messages.forPeer(input.peer)
-      return { messages: (input.limit === undefined ? all : all.slice(-input.limit)).map(peeked) }
+      return { messages: input.limit === undefined ? all : all.slice(-input.limit) }
     },
 
     async decide(input) {
@@ -258,7 +234,10 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
         throw fleetError('conflict', `decision ${input.id} is ${decision.state}, not open`)
       }
       await append([answeredEvent(input.id, decision, input.decision, input.note, clock.now())])
-      return decisionRow(decision)
+      // The event is written by this call, the row it produces by the
+      // projection: answering with the row as it now stands is what makes the
+      // reply say `answered` (§6.1) instead of the question's last state.
+      return (await read.decisions.get(input.id)) ?? decision
     },
 
     async usage(input) {
@@ -280,25 +259,6 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     },
   }
 }
-
-const peeked = (message: Message): PeekedMessage => ({
-  msgId: message.msgId,
-  from: message.from,
-  to: message.to,
-  kind: message.kind,
-  body: message.body,
-  state: message.state,
-  sentAt: message.sentAt,
-})
-
-const decisionRow = (decision: Decision): DecisionRow => ({
-  id: decision.decisionId,
-  kind: decision.kind,
-  state: decision.state,
-  question: decision.question,
-  options: decision.options,
-  requestedAt: decision.requestedAt,
-})
 
 /**
  * The profile declares the peer, so the registration is the user's event: no

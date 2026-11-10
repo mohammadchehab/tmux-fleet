@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 
+import type { LsResult } from '../../../packages/foundation/contracts/src/index.ts'
 import { createSandbox, until } from '../support/sandbox.ts'
 
 const peer = { id: 'engineer-1', role: 'engineer', model: 'test-small' }
@@ -71,8 +72,8 @@ test('§15: a peer at its limit purges, saves its state file and resumes on a fr
   assert.match(stateMarkdown, /engineer-1/)
 
   // `ls` shows the peer on the fresh session, not the one that was purged.
-  const ls = await sandbox.call<{ peers: readonly { id: string; sessionId?: string }[] }>('ls')
-  assert.equal(ls.peers.find((row) => row.id === 'engineer-1')?.sessionId, fresh.handle.sessionId)
+  const ls = await sandbox.call<LsResult>('ls')
+  assert.equal(ls.peers.find((row) => row.peerId === 'engineer-1')?.currentSessionId, fresh.handle.sessionId)
 })
 
 test('§15: a peer that writes no state file degrades instead of losing the session', async (t) => {

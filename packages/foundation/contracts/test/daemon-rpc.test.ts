@@ -24,6 +24,7 @@ import {
   daemonParamsFor,
   daemonRequest,
   daemonResponse,
+  daemonResultFor,
   daemonStatus,
   type DaemonMethod,
 } from '../src/index.ts'
@@ -127,6 +128,14 @@ test('an ok response may carry any result, including none', () => {
 
 test('a response without `ok` is neither half', () => {
   assert.throws(() => parseStrict(daemonResponse(), { result: { stopped: true } }), SchemaError)
+})
+
+test('a result is the method\'s own, so an ok payload is not silently another method\'s', () => {
+  // The table is exhaustive by type; this is the runtime half — `ls` does not
+  // accept `up`'s answer, so a client that mixed two methods up is told.
+  const asStatusOnly = { profile: 'p', pid: 1, startedAt: '2026-11-10T10:00:00.000Z', socketPath: '/s', storePath: '/t' }
+  assert.equal(decodeStrict(daemonResultFor('ls'), asStatusOnly).ok, false)
+  assert.equal(decodeStrict(daemonResultFor('up'), asStatusOnly).ok, true)
 })
 
 test('the status is what `up` and `ls` both report', () => {
