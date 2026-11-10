@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/orchestration-judge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Judge (architecture §5.3): five closed question kinds, typed answers, every call logged and replayable.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
