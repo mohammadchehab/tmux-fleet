@@ -11,7 +11,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -85,6 +85,93 @@ describe('the store lock', () => {
           new RegExp(`already has a fleetd, pid ${String(process.pid)}`).test((thrown as Error).message),
       )
       await lock.release()
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a lock whose pid is a live fleetd, even with no socket answering yet', async () => {
+    const home = await withHome()
+    try {
+      const path = join(home, 'daemon', 'fleetd.lock')
+      await mkdir(join(home, 'daemon'), { recursive: true })
+      // A fleetd that has taken the lock but has not opened its socket yet: the
+      // window the socket cannot answer for, and the one the command line can.
+      await writeFile(path, `${String(process.ppid)}\n`, 'utf8')
+      await assert.rejects(
+        () => acquireFleetLock(path, { commandOf: () => `node /opt/fleet/bin/fleetd locked` }),
+        (thrown: unknown) => code(thrown) === 'conflict' && /already has a fleetd/.test((thrown as Error).message),
+      )
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses while a live holder cannot be identified at all', async () => {
+    const home = await withHome()
+    try {
+      const path = join(home, 'daemon', 'fleetd.lock')
+      await mkdir(join(home, 'daemon'), { recursive: true })
+      await writeFile(path, `${String(process.ppid)}\n`, 'utf8')
+      // `ps` refused, another user's process on a locked-down host: the one case
+      // where refusing is the safe answer, because taking over would put two
+      // writers on the store if the holder did turn out to be a fleetd.
+      await assert.rejects(
+        () => acquireFleetLock(path, { commandOf: () => undefined }),
+        (thrown: unknown) => code(thrown) === 'conflict' && /cannot be identified/.test((thrown as Error).message),
+      )
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('takes over a lock whose pid was recycled onto an unrelated live process', async () => {
+    const home = await withHome()
+    try {
+      const path = join(home, 'daemon', 'fleetd.lock')
+      await mkdir(join(home, 'daemon'), { recursive: true })
+      // A live pid that is demonstrably not a fleetd: after a reboot the number
+      // in the file can be anybody's, and refusing then is a fleet that cannot
+      // start until someone deletes the lock by hand.
+      const stranger = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' })
+      try {
+        assert.ok(stranger.pid !== undefined)
+        await writeFile(path, `${String(stranger.pid)}\n`, 'utf8')
+        const lock = await acquireFleetLock(path, { commandOf: () => `${process.execPath} -e setTimeout(() => {}, 60_000)` })
+        assert.equal((await readFile(path, 'utf8')).trim(), String(process.pid))
+        await lock.release()
+      } finally {
+        stranger.kill()
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('takes over a lock naming a live process, reading the command line with `ps`', async (t) => {
+    // Nothing injected: a real `ps` read of a real live process that is not
+    // fleetd. Skipped, not failed, on a host whose `ps` will not describe a
+    // process — the case the injected tests above already cover, and one where
+    // the lock deliberately refuses rather than guessing.
+    const probe = spawnSync('ps', ['-p', String(process.pid), '-o', 'command='], { encoding: 'utf8' })
+    if (probe.status !== 0 || probe.stdout.trim() === '') {
+      t.skip('`ps` cannot describe a process here')
+      return
+    }
+    const home = await withHome()
+    try {
+      const path = join(home, 'daemon', 'fleetd.lock')
+      await mkdir(join(home, 'daemon'), { recursive: true })
+      const stranger = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' })
+      try {
+        assert.ok(stranger.pid !== undefined)
+        await writeFile(path, `${String(stranger.pid)}\n`, 'utf8')
+        const lock = await acquireFleetLock(path)
+        assert.equal((await readFile(path, 'utf8')).trim(), String(process.pid))
+        await lock.release()
+      } finally {
+        stranger.kill()
+      }
     } finally {
       await rm(home, { recursive: true, force: true })
     }
