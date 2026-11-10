@@ -19,6 +19,12 @@
  * 3. **The endpoint.** The SDK cannot report it (`provider: 'firstParty'` even
  *    here), so the spec must say it and `model()` reports what the spec said.
  *
+ * And one thing the CLI gets wrong in the other direction: it validates nothing.
+ * The spike watched `anthropic/claude-sonnet-5-5` arrive at DeepInfra's dashboard
+ * because the CLI passed the id straight through, so the adapter is the only
+ * place a wrong model can still be caught — hence the id checks and the pinned
+ * aliases below.
+ *
  * The env is part of `SessionSpec` and belongs to that one process, which is
  * what removes v1's shared-tmux env drift (§4, §13, §14.1). `deepInfraEnv()`
  * builds the fragment; the key is passed in, never read from disk here and
@@ -30,7 +36,7 @@ import {
   ClaudeProvider,
   type ClaudeProviderConfig,
 } from '@fleet/runtime-provider-claude'
-import { fleetError, toFleetError, type PeerState, type TurnId } from '@fleet/foundation-core'
+import { fleetError, toFleetError, type FleetError, type PeerState, type TurnId } from '@fleet/foundation-core'
 import type {
   ApprovalDecision,
   Provider,
@@ -70,11 +76,49 @@ export const deepInfraCapabilities: ProviderCapabilities = Object.freeze({
   usageCost: false,
 })
 
+/**
+ * The env keys the Agent SDK resolves a model from.
+ *
+ * `ANTHROPIC_MODEL` is the model a turn asks for. The other four are the aliases
+ * the CLI substitutes when something asks for a family rather than an id — a
+ * `/model` switch, a background summarisation, the small-fast path — and each
+ * falls back to a built-in **Claude** id when it is unset. Setting only
+ * `ANTHROPIC_MODEL` therefore leaves four ways for a DeepInfra session to reach
+ * Anthropic with a DeepInfra token; all five are pinned to the spec's model
+ * instead, so no alias can resolve to anything this provider does not serve.
+ */
+export const DEEP_INFRA_MODEL_ENV_KEYS = [
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+] as const
+
+/**
+ * Every model key, pointing at `model`. The one place the key list is written
+ * down: `deepInfraEnv()` uses it, and `start`/`resume` re-apply it to whatever
+ * env the spec arrived with, so a hand-built env is pinned too.
+ */
+export const pinModelEnv = (model: string): Readonly<Record<string, string>> =>
+  Object.freeze(Object.fromEntries(DEEP_INFRA_MODEL_ENV_KEYS.map((key) => [key, model])))
+
+/** A Claude id — the CLI's own models, which DeepInfra does not serve. */
+const CLAUDE_MODEL_ID = /^(?:claude-|anthropic\/)/
+
 export interface DeepInfraProviderConfig extends Omit<ClaudeProviderConfig, 'id' | 'capabilities' | 'limits'> {
   /** The endpoint, when the fleet runs a proxy or a staging host rather than the public one. */
   readonly baseUrl?: string
   /** Extra models and their real windows; merged over `DEEP_INFRA_CONTEXT_LIMITS`. */
   readonly contextLimits?: Readonly<Record<string, number>>
+  /**
+   * The DeepInfra ids this profile may run, when it pins a set. Absent means any
+   * model with a configured window; present means exactly those, so a typo, a
+   * model the profile was never measured for, or a stray Claude id is refused
+   * instead of billed. An allowed model still needs a `contextLimits` entry — the
+   * allowlist says what may run, not how much context it has.
+   */
+  readonly allowedModels?: readonly string[]
   /**
    * Overrides for `deepInfraCapabilities`, narrowing only. A narrowed capability
    * makes the matching method reject `unsupported` (see `ClaudeProvider`); a
@@ -83,16 +127,32 @@ export interface DeepInfraProviderConfig extends Omit<ClaudeProviderConfig, 'id'
   readonly capabilities?: Partial<ProviderCapabilities>
 }
 
+export interface DeepInfraEnvConfig {
+  /**
+   * The model this session runs, pinned into every alias key. Required: an env
+   * without it leaves four aliases pointing at Claude ids, which is the drift
+   * this whole file exists to stop.
+   */
+  readonly model: string
+  /** The endpoint, when the fleet runs a proxy or a staging host rather than the public one. */
+  readonly baseUrl?: string
+}
+
 /**
  * The env fragment a DeepInfra session needs, and the only sanctioned way to
- * build one: the endpoint, the token, and nothing else.
+ * build one: the endpoint, the token, and the model pinned into every key the
+ * SDK resolves a model from.
+ *
+ * The provider pins the env again at spawn, so this is not the guarantee — it is
+ * the copy that lands in the recorded spec, where `recordedModel()` reads
+ * `ANTHROPIC_MODEL` to attest what actually ran.
  *
  * @throws FleetError('invalid_input') on an empty token — a missing key must
  * fail before a process spawns, not as an authentication error mid-turn.
  */
 export const deepInfraEnv = (
   authToken: string,
-  config: Pick<DeepInfraProviderConfig, 'baseUrl'> = {},
+  config: DeepInfraEnvConfig,
 ): Readonly<Record<string, string>> => {
   if (typeof authToken !== 'string' || authToken.trim().length === 0) {
     throw fleetError('invalid_input', 'a DeepInfra session needs a non-empty ANTHROPIC_AUTH_TOKEN')
@@ -100,6 +160,7 @@ export const deepInfraEnv = (
   return Object.freeze({
     ANTHROPIC_BASE_URL: config.baseUrl ?? DEEP_INFRA_BASE_URL,
     ANTHROPIC_AUTH_TOKEN: authToken,
+    ...pinModelEnv(config.model),
   })
 }
 
@@ -149,12 +210,14 @@ export class DeepInfraProvider implements Provider {
   readonly #inner: ClaudeProvider
   readonly #limits: Readonly<Record<string, number>>
   readonly #baseUrl: string
+  readonly #allowed: readonly string[] | undefined
 
   constructor(config: DeepInfraProviderConfig = {}) {
-    const { baseUrl, contextLimits, capabilities, ...sessionConfig } = config
+    const { baseUrl, contextLimits, allowedModels, capabilities, ...sessionConfig } = config
     this.capabilities = narrowCapabilities(deepInfraCapabilities, capabilities)
     this.#baseUrl = baseUrl ?? DEEP_INFRA_BASE_URL
     this.#limits = Object.freeze({ ...DEEP_INFRA_CONTEXT_LIMITS, ...contextLimits })
+    this.#allowed = allowedModels === undefined ? undefined : Object.freeze([...allowedModels])
     // No `fallback`: an unlisted model has no measured window, so it is refused
     // below instead of being handed one. Passing 1 makes `contextLimitFor` throw
     // rather than invent a number — the provider never reaches that, but the
@@ -177,18 +240,16 @@ export class DeepInfraProvider implements Provider {
    * self-purges early (§8, §13).
    */
   async start(spec: SessionSpec): Promise<SessionHandle> {
-    this.#check(spec)
     try {
-      return await this.#inner.start(spec)
+      return await this.#inner.start(this.#pinned(spec))
     } catch (thrown) {
       throw toFleetError(thrown, 'provider_failed')
     }
   }
 
   async resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle> {
-    this.#check(spec)
     try {
-      return await this.#inner.resume(ref, spec)
+      return await this.#inner.resume(ref, this.#pinned(spec))
     } catch (thrown) {
       throw toFleetError(thrown, 'provider_failed')
     }
@@ -236,6 +297,10 @@ export class DeepInfraProvider implements Provider {
   }
 
   async setModel(handle: SessionHandle, model: string): Promise<void> {
+    // The same id checks as a start, for the same reason: a switch is the other
+    // way a live session can be pointed at a model this endpoint does not serve.
+    const refused = this.#refuseModel(model, 'setModel')
+    if (refused !== undefined) throw refused
     // A switch to a model with no configured window would leave `usage()`
     // unable to report a limit, which is the one number §8 acts on.
     if (this.#limits[model] === undefined) {
@@ -246,8 +311,56 @@ export class DeepInfraProvider implements Provider {
     return this.#inner.setModel(handle, model)
   }
 
+  /**
+   * Check the spec, then return it with every model key pinned to `spec.model`.
+   *
+   * Pinning here and not only in `deepInfraEnv()` is what makes the guarantee
+   * hold: a spec built by hand — by a test, a replay, or a caller that never used
+   * the builder — is pinned the same way, and a key that named something else is
+   * overwritten rather than trusted. The spec's `model` is the one authority.
+   */
+  #pinned(spec: SessionSpec): SessionSpec {
+    this.#check(spec)
+    return { ...spec, env: Object.freeze({ ...spec.env, ...pinModelEnv(spec.model) }) }
+  }
+
+  /**
+   * Why `model` cannot run here, if it cannot.
+   *
+   * A Claude id is a `config_mismatch` rather than `invalid_input` because the id
+   * is perfectly well formed — it just names a vendor this endpoint is not. That
+   * is the same argument the base-URL check in `#check()` makes, and the same
+   * thing the spike caught on DeepInfra's dashboard.
+   */
+  #refuseModel(model: string, where: string): FleetError | undefined {
+    if (CLAUDE_MODEL_ID.test(model)) {
+      return fleetError(
+        'config_mismatch',
+        `${where}: ${model} is a Claude model and this session runs on DeepInfra; nothing was spawned`,
+        {
+          details: {
+            providerId: this.id,
+            model,
+            expected: 'a DeepInfra model id',
+            known: Object.keys(this.#limits),
+          },
+        },
+      )
+    }
+    if (this.#allowed !== undefined && !this.#allowed.includes(model)) {
+      return fleetError(
+        'config_mismatch',
+        `${where}: ${model} is not on this profile's DeepInfra allowlist; nothing was spawned`,
+        { details: { providerId: this.id, model, allowed: this.#allowed } },
+      )
+    }
+    return undefined
+  }
+
   /** Refuse a spec before anything spawns; the first thing wrong is the one reported. */
   #check(spec: SessionSpec): void {
+    const refused = this.#refuseModel(spec.model, `peer ${spec.peerId}`)
+    if (refused !== undefined) throw refused
     if (this.#limits[spec.model] === undefined) {
       throw fleetError('invalid_input', `no context limit configured for DeepInfra model ${spec.model}`, {
         details: { model: spec.model, known: Object.keys(this.#limits) },
