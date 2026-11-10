@@ -21,10 +21,17 @@ export interface EvalBuildIdentity {
   readonly suite: string
   readonly provider: string
   readonly model: string
+  /**
+   * Whether the run writes a baseline. It is part of the identity because it is
+   * a different run: a plain one that already exists must not stand in for it, or
+   * `--save-baseline` is deduped away and no baseline is ever written (TASK-35).
+   */
+  readonly saveBaseline?: boolean
 }
 
 /**
- * The `task` an eval run is filed under: `evals:<suite>:<provider>:<model>`.
+ * The `task` an eval run is filed under: `evals:<suite>:<provider>:<model>`, with
+ * `:baseline` after it for a run that saves one.
  *
  * §11 keys the ledger on `(repo, sha, task)`, so `task` is the only place a caller can
  * say "which build". §17 asks for one more thing than §11's triple: an eval run is
@@ -39,7 +46,7 @@ export interface EvalBuildIdentity {
  * silently truncated, because the ledger's whole job is that two different runs never
  * share a key.
  */
-export const evalBuildTask = ({ suite, provider, model }: EvalBuildIdentity): string => {
+export const evalBuildTask = ({ suite, provider, model, saveBaseline }: EvalBuildIdentity): string => {
   const parts = { suite, provider, model }
   for (const [name, value] of Object.entries(parts)) {
     if (typeof value !== 'string' || value.length === 0) {
@@ -51,7 +58,7 @@ export const evalBuildTask = ({ suite, provider, model }: EvalBuildIdentity): st
       })
     }
   }
-  return `evals:${suite}:${provider}:${model}`
+  return saveBaseline === true ? `evals:${suite}:${provider}:${model}:baseline` : `evals:${suite}:${provider}:${model}`
 }
 
 /**

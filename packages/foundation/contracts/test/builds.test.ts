@@ -22,6 +22,15 @@ describe('evalBuildTask', () => {
     )
   })
 
+  it('files a baseline run apart from a plain one, under the same class (TASK-35)', () => {
+    const identity = { suite: 'judge', provider: 'claude', model: 'opus' }
+    const plain = evalBuildTask(identity)
+    const baseline = evalBuildTask({ ...identity, saveBaseline: true })
+    assert.notEqual(baseline, plain)
+    assert.equal(evalBuildTask({ ...identity, saveBaseline: false }), plain, 'false is the plain run')
+    assert.equal(taskClass(baseline), EVAL_TASK_CLASS)
+  })
+
   it('admits the task under the class the ledger routes on', () => {
     const task = evalBuildTask({ suite: 'judge', provider: 'deepinfra', model: 'qwen3' })
     assert.equal(taskClass(task), EVAL_TASK_CLASS)
