@@ -254,32 +254,49 @@ const stateFrom = (value: unknown): PullRequestState | undefined => {
   return pullRequestStates.find((state) => state === named)
 }
 
+/** What the caller fetched from the merge request's own endpoints, beyond the row GitLab lists. */
+export interface MergeRequestEvidence {
+  /** The merge request's own `/pipelines` endpoint. */
+  readonly pipelines?: unknown
+  /** The merge request's own `/approvals` endpoint — the only place GitLab reports `approved`. */
+  readonly approvals?: unknown
+}
+
+/**
+ * GitLab's `iid` is the per-project number a human sees; `id` is the global one, and
+ * the port speaks in the first. `undefined` when the row has no usable one.
+ */
+export const iidOf = (raw: unknown): number | undefined => {
+  const iid = record(raw)?.['iid']
+  return typeof iid === 'number' && Number.isInteger(iid) && iid >= 1 ? iid : undefined
+}
+
 /**
  * One GitLab merge request as the contract's `PullRequest`.
  *
- * `pipelines` is passed in rather than read off the row: `get` fetches them from
- * the merge request's own pipelines endpoint, and a list row carries at most the
- * embedded `head_pipeline`. When the caller has neither, the row's own
- * `head_pipeline` is what there is, and its absence is `pending` (rule 1).
+ * `pipelines` and `approvals` are passed in rather than read off the row: both are
+ * endpoints of their own in GitLab, and a merge request's own JSON carries neither.
+ * `checksFrom` falls back to the row's embedded `head_pipeline` (rule 1), and the
+ * review falls back to whatever approvals a caller put on the row; when there is
+ * none, `pending` — "not fetched" is never "approved" (§10).
  *
  * `state` travels too, and it is the one field here the log cannot hold: §3 has no
  * `pr.closed`, so this is where "still open" comes from (§9).
  */
-export const pullRequestFrom = (raw: unknown, on: Repo, pipelines?: unknown): ForgePullRequest => {
+export const pullRequestFrom = (raw: unknown, on: Repo, evidence: MergeRequestEvidence = {}): ForgePullRequest => {
   const row = record(raw)
   if (row === undefined) throw fleetError('external_failed', 'glab reported a merge request that is not an object')
 
-  // GitLab's `iid` is the per-project number a human sees; `id` is the global one, and the port speaks in the first.
-  const number = row['iid']
-  if (typeof number !== 'number' || !Number.isInteger(number) || number < 1) {
-    throw fleetError('external_failed', 'glab reported a merge request with no iid', { details: { iid: number } })
+  const number = iidOf(raw)
+  if (number === undefined) {
+    throw fleetError('external_failed', 'glab reported a merge request with no iid', { details: { iid: row['iid'] } })
   }
 
   const base = needText(row, 'target_branch')
   const head = needText(row, 'source_branch')
   const headSha = shape(shaShape(), row['sha'], 'sha')
-  const checks = checksFrom(pipelines ?? row['head_pipeline'], { sha: headSha, ref: head })
-  const review = reviewFrom(row['approvals'] ?? row['approved_by'])
+  const checks = checksFrom(evidence.pipelines ?? row['head_pipeline'], { sha: headSha, ref: head })
+  const review = reviewFrom(evidence.approvals ?? row['approvals'] ?? row['approved_by'])
   const merged = row['state'] === 'merged' || (row['merged_at'] !== null && row['merged_at'] !== undefined)
   const state = stateFrom(row['state'])
   const createdAt = shape(timestamp(), row['created_at'], 'created_at')
@@ -322,6 +339,17 @@ export const headShaFrom = (raw: unknown): Sha => {
   const row = record(raw)
   if (row === undefined) throw fleetError('external_failed', 'glab reported a merge request that is not an object')
   return shape(shaShape(), row['sha'], 'sha')
+}
+
+/**
+ * The branch a merge request comes from. `dependents` wants only this, which is why
+ * it reads the merge request itself instead of `get` — pipelines and approvals are
+ * evidence no stack decision looks at.
+ */
+export const sourceBranchFrom = (raw: unknown): string => {
+  const row = record(raw)
+  if (row === undefined) throw fleetError('external_failed', 'glab reported a merge request that is not an object')
+  return needText(row, 'source_branch')
 }
 
 /**

@@ -58,11 +58,43 @@ describe('list and searchIntent', () => {
     const fake = fakeGlab(() => json([mrJson(), mrJson({ iid: 8, target_branch: 'feat', source_branch: 'feat-2' })]))
     const prs = await createGitLabPullRequests({ glab: fake.glab }).list(where)
 
-    assert.equal(fake.calls.length, 1)
     assert.deepEqual(fake.calls[0], ['api', `${project}/merge_requests?state=opened&per_page=100`])
     assert.deepEqual(
       prs.map((pr) => pr.number),
       [7, 8],
+    )
+  })
+
+  it('gives every row the review its own approvals endpoint reports', async () => {
+    // GitLab keeps approvals off the merge request itself, so a list row read as
+    // `pending` would be the adapter's guess, not GitLab's answer — and a row the
+    // projection records as pending is a PR the gate then refuses to merge (§10).
+    const fake = fakeGlab((args) => {
+      if (args[1] === `${project}/merge_requests/7/approvals`) {
+        return json({ approved: true, approved_by: [{ user: { username: 'reviewer-1' } }] })
+      }
+      if (args[1] === `${project}/merge_requests/8/approvals`) return json({ approved: false })
+      return json([mrJson(), mrJson({ iid: 8, target_branch: 'feat', source_branch: 'feat-2' })])
+    })
+    const prs = await createGitLabPullRequests({ glab: fake.glab }).list(where)
+
+    assert.deepEqual(
+      prs.map((pr) => pr.review),
+      ['approved', 'pending'],
+    )
+  })
+
+  it('reads pending for the row whose approvals read failed, and the rest of the page as GitLab answered', async () => {
+    const fake = fakeGlab((args) => {
+      if (args[1] === `${project}/merge_requests/7/approvals`) return { code: 1, stderr: 'boom' }
+      if (args[1] === `${project}/merge_requests/8/approvals`) return json({ approved: true })
+      return json([mrJson(), mrJson({ iid: 8, target_branch: 'feat', source_branch: 'feat-2' })])
+    })
+    const prs = await createGitLabPullRequests({ glab: fake.glab }).list(where)
+
+    assert.deepEqual(
+      prs.map((pr) => pr.review),
+      ['pending', 'approved'],
     )
   })
 
@@ -145,6 +177,32 @@ describe('get: a missing merge request is an answer, a failed call is not', () =
     assert.equal(pr?.state, 'open', 'GitLab says `opened`; the contract says `open`')
   })
 
+  it('reads the approvals too, so an approved merge request reads approved', async () => {
+    const fake = fakeGlab((args) => {
+      if (args[1]?.endsWith('/pipelines') === true) return json([pipeline(1, 'success')])
+      if (args[1]?.endsWith('/approvals') === true) {
+        return json({ approved: true, approved_by: [{ user: { username: 'reviewer-1' } }] })
+      }
+      return json(mrJson())
+    })
+    const pr = await createGitLabPullRequests({ glab: fake.glab }).get(where, 7)
+
+    assert.equal(pr?.review, 'approved')
+    assert.deepEqual(fake.calls.map((call) => call[1]).sort(), [
+      `${project}/merge_requests/7`,
+      `${project}/merge_requests/7/approvals`,
+      `${project}/merge_requests/7/pipelines`,
+    ])
+  })
+
+  it('reads pending when GitLab has not approved it, and does not invent a reviewer', async () => {
+    const fake = fakeGlab((args) =>
+      args[1]?.endsWith('/approvals') === true ? json({ approved: false, approved_by: [] }) : json(mrJson()),
+    )
+    const pr = await createGitLabPullRequests({ glab: fake.glab }).get(where, 7)
+    assert.equal(pr?.review, 'pending')
+  })
+
   it('is undefined when GitLab says the merge request is not there', async () => {
     const fake = fakeGlab(() => ({ code: 1, stderr: 'glab: 404 Not Found' }))
     assert.equal(await createGitLabPullRequests({ glab: fake.glab }).get(where, 7), undefined)
@@ -167,6 +225,17 @@ describe('get: a missing merge request is an answer, a failed call is not', () =
     const fake = fakeGlab((args) => (args[1]?.endsWith('/pipelines') === true ? { code: 1, stderr: 'boom' } : json(mrJson())))
     const pr = await createGitLabPullRequests({ glab: fake.glab }).get(where, 7)
     assert.equal(pr?.checks, 'pending')
+  })
+
+  it('still answers when the approvals read fails: the review is pending, and the checks it did read stand', async () => {
+    const fake = fakeGlab((args) => {
+      if (args[1]?.endsWith('/approvals') === true) return { code: 1, stderr: 'boom' }
+      if (args[1]?.endsWith('/pipelines') === true) return json([pipeline(1, 'success')])
+      return json(mrJson())
+    })
+    const pr = await createGitLabPullRequests({ glab: fake.glab }).get(where, 7)
+    assert.equal(pr?.review, 'pending')
+    assert.equal(pr?.checks, 'passing')
   })
 })
 
@@ -258,9 +327,10 @@ describe('retarget and dependents: the stack (§10)', () => {
 
     const dependents = await createGitLabPullRequests({ glab: fake.glab }).dependents(where, 7)
     assert.deepEqual(dependents, [{ repo: where, number: 8 }])
-    // The parent, its pipelines, then the filtered list: the branch is what defines the stack.
-    assert.equal(fake.calls.length, 3)
-    assert.ok(fake.calls[2]?.[1]?.includes('target_branch=feat'))
+    // The parent, then the filtered list: the branch is what defines the stack, and a
+    // stack decision reads nothing else — no pipelines, no approvals.
+    assert.equal(fake.calls.length, 2)
+    assert.ok(fake.calls[1]?.[1]?.includes('target_branch=feat'))
   })
 
   it('has no dependents when there is no parent to read', async () => {

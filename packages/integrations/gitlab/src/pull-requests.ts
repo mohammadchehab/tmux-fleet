@@ -39,10 +39,13 @@ import {
   createdFrom,
   gradedChecksFrom,
   headShaFrom,
+  iidOf,
   mergeShaFrom,
   pullRequestFrom,
   reviewFrom,
+  sourceBranchFrom,
   type GradedChecks,
+  type MergeRequestEvidence,
   type ReviewObservation,
 } from './observe.ts'
 
@@ -53,6 +56,9 @@ import {
  */
 const DEFAULT_LIMIT = 100
 const MAX_PER_PAGE = 100
+
+/** How many merge requests a `list` asks approvals for at once. Each one is a `glab` process. */
+const APPROVALS_AT_ONCE = 8
 
 /** The port's own merge options, so a widening that adds `auto` cannot drift from the contract. */
 type PortMergeOptions = Parameters<PullRequests['merge']>[2]
@@ -123,10 +129,41 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
   const listPath = (repo: Repo, state: 'open' | 'closed' | 'all', extra: readonly string[] = []): string =>
     [`${projectPath(repo)}/merge_requests?state=${stateName(state)}&per_page=${String(limit)}`, ...extra].join('&')
 
-  const readAll = async (path: string, repo: Repo): Promise<readonly ForgePullRequest[]> => {
+  /** One page of raw rows. A page says nothing about the merge requests beyond what GitLab lists. */
+  const readRows = async (path: string): Promise<readonly unknown[]> => {
     const raw = await api(path)
     if (!Array.isArray(raw)) throw fleetError('external_failed', 'glab api printed something that is not a list')
-    return raw.map((row) => pullRequestFrom(row, repo))
+    return raw
+  }
+
+  const readAll = async (path: string, repo: Repo): Promise<readonly ForgePullRequest[]> =>
+    (await readRows(path)).map((row) => pullRequestFrom(row, repo))
+
+  /** The approvals GitLab holds for a merge request's `iid` — the only place it reports `approved`. */
+  const approvalsOf = (repo: Repo, number: number): Promise<unknown> =>
+    api(`${projectPath(repo)}/merge_requests/${String(number)}/approvals`)
+
+  /**
+   * `list`'s approvals, one per row, a few at a time. A page is up to `limit` merge
+   * requests and each costs a `glab` process, so the reads are chunked rather than
+   * fanned out at once; and a row whose read fails is `pending` (the conservative
+   * answer) instead of failing the page, the same trade `get` makes for pipelines.
+   */
+  const reviewsOf = async (repo: Repo, rows: readonly unknown[]): Promise<MergeRequestEvidence[]> => {
+    const found: MergeRequestEvidence[] = []
+    for (let start = 0; start < rows.length; start += APPROVALS_AT_ONCE) {
+      const chunk = rows.slice(start, start + APPROVALS_AT_ONCE)
+      found.push(
+        ...(await Promise.all(
+          chunk.map(async (row) => {
+            // No `iid`, no approvals to ask for: `pullRequestFrom` reports that row as unusable on its own.
+            const number = iidOf(row)
+            return number === undefined ? {} : { approvals: await approvalsOf(repo, number).catch(() => undefined) }
+          }),
+        )),
+      )
+    }
+    return found
   }
 
   /** The raw merge request, or `undefined` when GitLab says it is not there. */
@@ -155,9 +192,14 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
   const get = async (repo: Repo, number: number): Promise<ForgePullRequest | undefined> => {
     const raw = await readRaw(repo, number)
     if (raw === undefined) return undefined
-    // `get` is the read the gate decides on, so it pays for the real pipeline list rather than trusting a summary.
-    const pipelines = await pipelinesOf(repo, number).catch(() => undefined)
-    return pullRequestFrom(raw, repo, pipelines)
+    // `get` is the read the gate decides on, so it pays for the real pipeline list and the real approvals
+    // rather than trusting a summary — neither is a field of the merge request. A failed sub-read is
+    // `pending` for its own field and leaves the other alone: the gate refuses a pending, it never merges one.
+    const [pipelines, approvals] = await Promise.all([
+      pipelinesOf(repo, number).catch(() => undefined),
+      approvalsOf(repo, number).catch(() => undefined),
+    ])
+    return pullRequestFrom(raw, repo, { pipelines, approvals })
   }
 
   /** `merge`'s post-refusal question: what sha is the merge request at now? */
@@ -167,7 +209,16 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
   }
 
   return {
-    list: async (repo, listOptions) => readAll(listPath(repo, listOptions?.state ?? 'open'), repo),
+    /**
+     * The page, with each row's review read from its own approvals endpoint. `pr-babysit` records
+     * these rows as observations (§6), so a row that was not asked is a PR the log holds as `pending`
+     * for as long as the list is its only read — which is exactly what `work-sync`'s `green` refuses.
+     */
+    list: async (repo, listOptions) => {
+      const rows = await readRows(listPath(repo, listOptions?.state ?? 'open'))
+      const evidence = await reviewsOf(repo, rows)
+      return rows.map((row, at) => pullRequestFrom(row, repo, evidence[at] ?? {}))
+    },
 
     get,
 
@@ -230,14 +281,17 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
 
     /** Every open merge request targeting this one's source branch — the stack that sits on top of it (§10). */
     async dependents(repo, number) {
-      const parent = await get(repo, number)
-      if (parent === undefined) return []
+      // Only the parent's source branch is wanted here, so this stops at the merge request itself:
+      // `get` would pay for pipelines and approvals that no stack decision looks at.
+      const raw = await readRaw(repo, number)
+      if (raw === undefined) return []
+      const head = sourceBranchFrom(raw)
       const open = await readAll(
-        `${projectPath(repo)}/merge_requests?state=opened&per_page=${String(limit)}&target_branch=${encodeURIComponent(parent.head)}`,
+        `${projectPath(repo)}/merge_requests?state=opened&per_page=${String(limit)}&target_branch=${encodeURIComponent(head)}`,
         repo,
       )
       return open
-        .filter((pr) => pr.number !== number && pr.base === parent.head && !pr.merged)
+        .filter((pr) => pr.number !== number && pr.base === head && !pr.merged)
         .map((pr) => ({ repo: pr.repo, number: pr.number }))
     },
 
