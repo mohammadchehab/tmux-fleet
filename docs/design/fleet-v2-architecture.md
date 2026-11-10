@@ -688,14 +688,23 @@ It is never edited; a change is a new Brief and `brief.superseded` on the old on
 - **Events first, then the send.** A failed send leaves a published brief and an assigned Work, which is true; the
   retry is safe because a brief that is already the Work's current one is treated as done and the send is skipped when
   the same brief is already in the peer's mailbox.
-- **A standing brief** (the peer's rules, not a Work's): `peer.standards_set {peerId, version, briefId, digest, sources}`.
-  A peer never reads the repo's `AGENTS.md`/`CLAUDE.md` or its skills on its own (the claude provider runs with
-  `settingSources: []`), so the daemon reads them — from the default branch's commit, not a working tree a peer can
-  edit — and hands them over in `systemPromptAppend`. The event is written **only when the digest of what was read
-  differs** from the peer's last, before the session that carries it starts; its `version` goes up on the same
-  per-peer counter a Work's brief moves, and the projection sets `peer.briefVersion` from it. Filesystem reads are not
-  deterministic and the event is what makes them so: `sources` records what was read (size, truncation, commit).
-  `brief.published` stays Work-scoped.
+- **A standing brief** (the peer's rules, not a Work's): `peer.standards_set {peerId, version, briefId, digest, sources,
+  skipped}`. A peer never reads the repo's `AGENTS.md`/`CLAUDE.md` or finds a skill on its own (the claude provider runs
+  with `settingSources: []`, and turning `user` settings on leaks hooks and env), so the daemon builds the text and hands
+  it over in `systemPromptAppend`, which works for every provider, `cursor` included. In precedence order: the profile's
+  `standards.nonNegotiables`, the role's `standards.skills` documents (inlined, not named: cursor has no skill tool),
+  then the repo's `AGENTS.md` and `CLAUDE.md`. The repo's files are read from the **default branch's commit** (the sha is
+  recorded), never a working tree a peer can edit; the profile's are read from disk, relative to the profile's own
+  directory. A profile-declared document that cannot be read, or is over the 16k-char document cap, **refuses the
+  peer** (never cut: a cut removes its last rules); `AGENTS.md`/`CLAUDE.md` over it are cut with a marker, and the whole
+  is capped at 40k chars because it rides in every turn. A repo file not on the default branch is `skipped` and
+  recorded, so the board can say "no repo standards loaded".
+  The event is written **only when `digest` (the brief text and the standards) differs** from the peer's last, **before**
+  the session that carries it starts; its `version` goes up on the same per-peer counter a Work's brief moves (the PM's
+  `assign` goes above it), and the projection sets `peer.briefVersion`. Filesystem reads are not deterministic and the
+  event is what makes them so; the bytes sit in `artifacts/standards/<digest>.md`, a cache, never the truth. Standards
+  are read when a session starts and kept for it (§8 restarts a purge on the same brief), so an edit reaches a peer at
+  its next start. `brief.published` stays Work-scoped.
 - **The store follows `brief.published`:** the peer's `briefVersion` (for the Mailbox's stale check, §7) and the
   Work's current `briefId`/`briefVersion` (for the `stale` rule), without moving the Work's state.
 - Contract gating stays the PM's (`needs_contract`): the executor does not re-derive it; a `ContractReader` port is

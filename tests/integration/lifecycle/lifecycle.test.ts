@@ -98,6 +98,32 @@ test('§15: a fleet comes up from a profile, and every peer is a real session', 
   assert.equal(registered.length, 3, 'exactly one peer.registered per peer')
 })
 
+test('§12.1: a peer with no repo standards to read is started anyway, and the log says what it did not get', async (t) => {
+  const sandbox = await createSandbox()
+  t.after(() => sandbox.stop())
+  await sandbox.call('up')
+
+  // The sandbox's peers work in directories that are not repositories, so there is
+  // no default branch to read `AGENTS.md` or `CLAUDE.md` from. That is recorded, not
+  // hidden, so `fleet ls` and the board can say "no repo standards loaded".
+  const set = (await sandbox.events()).filter((event) => event.type === 'peer.standards_set')
+  assert.deepEqual(set.map((event) => event.subject).sort(), ['architect', 'engineer-1', 'engineer-2'])
+  for (const event of set) {
+    assert.deepEqual(event.data.sources, [])
+    assert.deepEqual(
+      (event.data.skipped as readonly { name: string }[]).map((skipped) => skipped.name),
+      ['AGENTS.md', 'CLAUDE.md'],
+    )
+    assert.equal(event.data.version, 1)
+  }
+
+  // The session is on the brief the event names, and carries no standards text it does not have.
+  for (const session of sandbox.scripted.sessions) {
+    assert.equal(session.spec.brief.version, 1)
+    assert.equal(session.spec.systemPromptAppend, undefined)
+  }
+})
+
 test('§15: a peer killed mid-turn is recovered on a fresh session', async (t) => {
   const sandbox = await createSandbox({ scripted: { holdWork: true } })
   t.after(() => sandbox.stop())

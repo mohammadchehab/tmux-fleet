@@ -45,6 +45,7 @@ import type {
   PullRequests,
   RoutineKind,
   Tracker,
+  RepoFiles,
   Worktrees,
   WorktreeProvisioner,
 } from '@fleet/foundation-contracts'
@@ -66,7 +67,7 @@ import { createCursorProvider } from '@fleet/runtime-provider-cursor'
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
 import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
-import { createBranchHead, createWorktreeProvisioner, createWorktrees } from '@fleet/workspace-worktree'
+import { createBranchHead, createRepoFiles, createWorktreeProvisioner, createWorktrees } from '@fleet/workspace-worktree'
 import { createBranchCleanupFactory } from '../routines/branch-cleanup.ts'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createDaemonBuilds } from './builds.ts'
@@ -81,6 +82,7 @@ import { loadProfile, type Profile, type TrackerProfile } from '../config/profil
 import { createSecurityScanFactory } from '../routines/security.ts'
 import { createDaemonServer, type DaemonServer } from '../api/server.ts'
 import { createSupervisor, type Supervisor } from '../execution/sessions.ts'
+import { createStandingBriefs } from '../execution/standards.ts'
 import { createTrackerSyncFactory } from '../routines/tracker-sync.ts'
 import { createWorktreeGcFactory } from '../routines/worktree-gc.ts'
 import { createWakingSink, deliverOnSessionStart } from '../execution/wake.ts'
@@ -161,6 +163,8 @@ export interface ComposeDeps {
   readonly worktrees?: Worktrees
   /** §9's creator; absent, the real `git`. A test supplies one so no repository is touched. */
   readonly worktreeProvisioner?: WorktreeProvisioner
+  /** §12.1: where a peer's repo standards are read from; absent, the default branch via the real `git`. */
+  readonly repoFiles?: RepoFiles
   /**
    * The board `tracker-sync` reads and writes (§3). Defaults to the adapter the
    * profile's `trackers.system` names — `@fleet/integrations-trackers-backlog`
@@ -372,7 +376,21 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // it is built first and the Mailbox reaches peers through it (§7). It appends
   // through the waking sink, because `session.started` is the event that wakes
   // the delivery of whatever is waiting for that peer.
-  const supervisor = createSupervisor({ profile, paths, read: store.reader(), worktrees: deps.worktreeProvisioner ?? createWorktreeProvisioner(), store: wake, providers, clock, providerEnv })
+  const supervisor = createSupervisor({
+    profile,
+    paths,
+    read: store.reader(),
+    worktrees: deps.worktreeProvisioner ?? createWorktreeProvisioner(),
+    standing: createStandingBriefs({
+      profile,
+      paths,
+      repoFiles: deps.repoFiles ?? createRepoFiles(),
+      events: store,
+      read: store.reader(),
+      append: wake.append,
+      clock,
+    }),
+    store: wake, providers, clock, providerEnv })
 
   const mailbox = createMailbox({
     store: { append: wake.append, messages: store.reader().messages },

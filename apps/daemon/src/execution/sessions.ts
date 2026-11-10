@@ -51,6 +51,7 @@ import {
 } from '@fleet/runtime-supervisor'
 
 import { purgeLimitsOf, type PeerProfile, type Profile } from '../config/profile.ts'
+import { roleStatement, type StandingBriefs } from './standards.ts'
 
 /** What the pump needs that only the composition root can supply. */
 export interface SupervisorDeps {
@@ -67,6 +68,12 @@ export interface SupervisorDeps {
    * shared-checkout guard is only what is left for a fleet that wires none.
    */
   readonly worktrees?: WorktreeProvisioner
+  /**
+   * §12.1: the standards a peer works under, as a versioned brief and the text for
+   * `systemPromptAppend`. Absent, or when a peer has none, the peer starts on the
+   * plain role brief.
+   */
+  readonly standing?: StandingBriefs
   /** The append-only sink, waking as it goes (§5.2): this is where `session.started` comes from. */
   readonly store: EventSink
   /** Concrete providers, by the profile's `provider` name. Built in `compose.ts`, never here. */
@@ -94,6 +101,8 @@ export interface SupervisorDeps {
 
 /** One peer's running session, and the handle the Mailbox sends through. */
 interface Running {
+  /** The brief this session carries; a purge restart reuses it (§8), so it is what `briefs.current` reports. */
+  readonly brief: BriefHandoff
   readonly handle: SessionHandle
   readonly session: PeerSession
   readonly peer: PeerProfile
@@ -156,7 +165,7 @@ export const roleBrief = (peer: PeerProfile, id = newBriefId()): BriefHandoff =>
   briefId: id,
   version: 1,
   contractVersions: [],
-  text: `You are ${String(peer.id)}, the ${peer.role}. Follow the fleet's protocol: work in your own worktree, open PRs, and report through the mailbox.`,
+  text: roleStatement(peer),
 })
 
 /** A peer that is not in plan mode can change files (§13); `default` is the omitted mode. */
@@ -273,15 +282,20 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       })
     }
 
-    const brief = briefFor(peer)
+    const cwd = await workdirFor(peer)
+    // Before the session exists, so a standards event (§12.1) is in the log
+    // before the session that carries it, and a refusal stops the peer here.
+    const standing = await deps.standing?.for(peer, cwd)
+    const brief = standing?.brief ?? briefFor(peer)
     const spec: SessionSpec = {
       peerId: peer.id,
       role: peer.role,
-      cwd: await workdirFor(peer),
+      cwd,
       model: peer.model,
       permissionMode: peer.permissionMode ?? 'default',
       env: await envFor(peer, deps),
       brief,
+      ...(standing?.systemPromptAppend === undefined ? {} : { systemPromptAppend: standing.systemPromptAppend }),
     }
     const handle = await provider.start(spec)
 
@@ -355,7 +369,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
           }),
     })
 
-    const running: Running = { handle, session, peer }
+    const running: Running = { brief, handle, session, peer }
     sessions.set(peer.id, running)
     pumps.set(
       peer.id,
@@ -370,7 +384,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     briefs: {
       async current(peerId) {
         const running = sessions.get(peerId)
-        return running === undefined ? undefined : briefFor(running.peer).version
+        return running?.brief.version
       },
     },
 

@@ -99,6 +99,20 @@ export const defaultSessionConfig: ClaudeSessionConfig = {
 }
 
 /**
+ * The system prompt a session asks the SDK for: Claude Code's own, plus whatever
+ * the spec appends. That is where a peer's standards ride (§12.1) — with
+ * `settingSources: []` it reads no `AGENTS.md` or `CLAUDE.md` itself, so this is
+ * the only way its repo's rules reach it.
+ */
+export const systemPromptOf = (
+  spec: Pick<SessionSpec, 'systemPromptAppend'>,
+): { readonly type: 'preset'; readonly preset: 'claude_code'; readonly append?: string } => ({
+  type: 'preset',
+  preset: 'claude_code',
+  ...(spec.systemPromptAppend === undefined ? {} : { append: spec.systemPromptAppend }),
+})
+
+/**
  * What to add to a model mismatch, when the id asked for is one this repo does
  * not know.
  *
@@ -400,11 +414,7 @@ export class ClaudeSession {
       model: spec.model,
       permissionMode: spec.permissionMode,
       settingSources: [...this.#config.settingSources],
-      systemPrompt: {
-        type: 'preset',
-        preset: 'claude_code',
-        ...(spec.systemPromptAppend === undefined ? {} : { append: spec.systemPromptAppend }),
-      },
+      systemPrompt: systemPromptOf(spec),
       canUseTool: (toolName, input, canUseOptions) =>
         this.#canUseTool(toolName, input, canUseOptions as CanUseOptions),
       // Without this the SDK refuses a spec that asks for bypassPermissions.

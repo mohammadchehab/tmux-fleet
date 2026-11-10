@@ -76,6 +76,9 @@ importers:
       '@fleet/notify-macos':
         specifier: workspace:*
         version: link:../../packages/notify/channels/macos
+      '@fleet/orchestration-briefs':
+        specifier: workspace:*
+        version: link:../../packages/orchestration/briefs
       '@fleet/orchestration-gate':
         specifier: workspace:*
         version: link:../../packages/orchestration/gate

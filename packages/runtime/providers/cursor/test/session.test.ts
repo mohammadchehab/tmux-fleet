@@ -337,3 +337,25 @@ test('a cursor key arrives only when the spec carries it, never by inheritance',
   assert.ok(seen.slice(0, 2).every((keys) => !keys.includes('CURSOR_API_KEY')), 'ambient key withheld')
   assert.ok(seen.slice(2).every((keys) => keys.includes('CURSOR_API_KEY')), 'the spec’s key arrives')
 })
+
+test('the standards in systemPromptAppend reach the cursor brief as session policy, after the brief itself (§12.1)', async () => {
+  const { provider, spec, calls } = harness()
+  const standards = 'Standards you work under\n\n<document name="AGENTS.md">\nNever push to main; open a PR.\n</document>'
+  const handle = await provider.start(spec({ systemPromptAppend: standards }))
+  await watch(provider, handle).until(ended(handle.briefTurnId))
+
+  // The opening turn is the last argument of the second call; `create-chat` is the first.
+  const opening = calls()[1]?.at(-1) ?? ''
+  const at = (needle: string): number => opening.indexOf(needle)
+  assert.ok(at('Build the thing.') > -1 && at('Build the thing.') < at('Session policy, which applies to everything you do:'))
+  assert.ok(at('Session policy, which applies to everything you do:') < at('<document name="AGENTS.md">'))
+  assert.ok(opening.includes('Never push to main; open a PR.'))
+})
+
+test('a cursor brief with no standards carries no session-policy section', async () => {
+  const { provider, spec, calls } = harness()
+  const handle = await provider.start(spec())
+  await watch(provider, handle).until(ended(handle.briefTurnId))
+
+  assert.doesNotMatch(calls()[1]?.at(-1) ?? '', /Session policy/)
+})

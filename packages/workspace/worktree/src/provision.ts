@@ -30,6 +30,7 @@ import { dirname } from 'node:path'
 
 import type { WorktreeProvisioner } from '@fleet/foundation-contracts'
 import { execFileGit, type GitResult, type GitRunner } from './git.ts'
+import { remoteDefault } from './refs.ts'
 
 const TOPIC = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
@@ -41,12 +42,7 @@ const EXCLUDE_LINE = '/.claude/worktrees/'
 const trimSlash = (path: string): string => path.replace(/\/+$/, '')
 
 export const createWorktreeProvisioner = (runner: GitRunner = execFileGit): WorktreeProvisioner => {
-  const defaultBase = async (repo: string): Promise<string> => {
-    const head = await runner(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repo)
-    if (head.code === 0 && head.stdout.trim() !== '') return head.stdout.trim()
-    const main = await runner(['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main'], repo)
-    return main.code === 0 ? 'origin/main' : 'HEAD'
-  }
+  const defaultBase = async (repo: string): Promise<string> => (await remoteDefault(runner, repo)) ?? 'HEAD'
 
   /** Keep `<repo>/.claude/worktrees/` out of the shared checkout's `git status`. */
   const keepIgnored = async (repo: string, path: string): Promise<void> => {
