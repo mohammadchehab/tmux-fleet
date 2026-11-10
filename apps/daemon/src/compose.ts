@@ -25,7 +25,7 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { systemClock, type Clock } from '@fleet/foundation-core'
-import type { ProjectManager, ProviderRegistry, PullRequests } from '@fleet/foundation-contracts'
+import type { EventSink, ProjectManager, ProviderRegistry, PullRequests } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
@@ -45,10 +45,17 @@ import { persistentDirs, profilePaths, type PathRoots } from './paths.ts'
 import { loadProfile, type Profile } from './profile.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
 import { createSupervisor, type Supervisor } from './sessions.ts'
+import { createWakingSink } from './wake.ts'
 
 export interface Wiring {
   readonly profile: Profile
   readonly store: EventStore
+  /**
+   * The store's append, waking as it goes (§5.2). An executor built from this
+   * wiring writes through `append`, not `store.append`: the second one is the
+   * log, the first is the log plus the routines it wakes.
+   */
+  readonly append: EventSink['append']
   readonly providers: ReadonlyMap<string, Provider>
   readonly clock: Clock
   /** The PM that decides (§5.2); injected until `orchestration/pm` lands. */
@@ -131,17 +138,50 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
 
   const providers = deps.providers ?? buildProviders(profile)
   const pm = deps.pm ?? createProjectManager()
-  const wiring: Wiring = { profile, store, providers, clock, pm }
+
+  // §5.2: an append is the fleet's clock, so every committed batch wakes what
+  // listens for it. The sink wraps the store rather than living inside it: the
+  // store is a log and knows nothing about routines.
+  let scheduler: Scheduler | undefined
+  const wake = createWakingSink({
+    append: (batch) => store.append(batch),
+    read: (from, limit) => store.read(from, limit),
+    scheduler: () => scheduler,
+    onError: (error, event) => {
+      // After the commit, so this is a report and not a reply to anyone: the
+      // caller's write stands, and a routine that did not run is in the log here.
+      console.error(`fleetd: wake failed on ${event.type} #${String(event.seq)}: ${String(error)}`)
+    },
+  })
+
+  const wiring: Wiring = { profile, store, append: wake.append, providers, clock, pm }
 
   // The supervisor is the only thing that may hold a provider instance (§2), so
-  // it is built first and the Mailbox reaches peers through it (§7).
-  const supervisor = createSupervisor({ profile, paths, store, providers, clock })
+  // it is built first and the Mailbox reaches peers through it (§7). It appends
+  // through the waking sink, because `session.started` is the event that wakes
+  // the delivery of whatever is waiting for that peer.
+  const supervisor = createSupervisor({ profile, paths, store: wake, providers, clock })
 
   const mailbox = createMailbox({
-    store: { append: (batch) => store.append(batch), messages: store.reader().messages },
+    store: { append: wake.append, messages: store.reader().messages },
     sessions: supervisor,
     briefs: supervisor.briefs,
     clock,
+  })
+
+  // §7: a peer that reaches running gets what is waiting for it. `send` appends and
+  // returns (§7's `send` does not deliver), so this is what makes a message sent to
+  // a peer that was not up reach it when it comes up — including on resume, which
+  // arrives as `session.started` again. Delivering a message sent to an *already*
+  // running peer is `send`→`deliver`'s job, not this hook's; both land in the same
+  // box, which is serialized per peer and skips a message already handed to the
+  // same session, so the two paths cannot deliver one message twice.
+  wake.listen(async (event) => {
+    if (event.type !== 'session.started') return
+    const delivered = await mailbox.deliver(event.data.peerId)
+    // A delivery that failed is reported through the same `onError` above; throwing
+    // here keeps one error path instead of two.
+    if (!delivered.ok) throw delivered.error
   })
 
   // §10: the gate is the only executor that merges, and it needs the GitHub port.
@@ -152,7 +192,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
       ? undefined
       : createGate({
           pullRequests: deps.pullRequests,
-          store: { append: (batch) => store.append(batch) },
+          store: { append: wake.append },
           clock,
           ...(profile.deleteMergedBranches === undefined
             ? {}
@@ -180,7 +220,10 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     })
   executors.push(
     ...createDaemonExecutors({
-      store: { append: (batch) => store.append(batch) },
+      // An action is an append like any other, so it wakes like any other (§5.2).
+      // A routine acting from its own wake is safe: the scheduler skips a run of a
+      // routine that is already in flight (§6).
+      store: { append: wake.append },
       read: store.reader(),
       mailbox,
       judge,
@@ -204,7 +247,11 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
           notify: createNotifyFactory({ store: { append: (batch) => store.append(batch) }, notifier }),
         }
 
-  const scheduler: Scheduler = createScheduler({
+  // The scheduler appends through the *raw* store on purpose: its own routine
+  // events (`routine.started`, `routine.finished`) are the outcome of a wake, and
+  // waking on them would run a routine inside a routine. Everything outside it —
+  // the supervisor, the Mailbox, the executors, `up` — appends through `wake`.
+  scheduler = createScheduler({
     store: { append: (batch) => store.append(batch) },
     read: store.reader(),
     pm,
@@ -215,7 +262,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     ...(profile.tickIntervalMs === undefined ? {} : { tickIntervalMs: profile.tickIntervalMs }),
   })
 
-  const daemon = createDaemon({ profile, paths, store, supervisor, mailbox, scheduler, clock })
+  const daemon = createDaemon({ profile, paths, store, append: wake.append, supervisor, mailbox, scheduler, clock })
   const server = await createDaemonServer({
     api: daemon,
     socketPath: paths.socketPath,

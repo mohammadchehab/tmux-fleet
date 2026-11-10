@@ -40,6 +40,12 @@ export interface DaemonDeps {
   readonly profile: Profile
   readonly paths: ProfilePaths
   readonly store: EventStore
+  /**
+   * How the daemon writes (§5.2). `compose.ts` passes the waking sink, so a
+   * `peer.registered` from `up` wakes the routines like any other append; the
+   * default is the plain store, for a test that does not care about waking.
+   */
+  readonly append?: EventSink['append']
   readonly supervisor: Supervisor
   /** Built by `main.ts` from the store, the supervisor and the router (§7). */
   readonly mailbox: Mailbox
@@ -61,7 +67,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
   const clock = deps.clock ?? systemClock
   const store = deps.store
   const read = store.reader()
-  const append: EventSink['append'] = (batch: readonly AppendEvent[]) => store.append(batch)
+  const append: EventSink['append'] = deps.append ?? ((batch: readonly AppendEvent[]) => store.append(batch))
   const status: DaemonStatus = {
     profile: deps.profile.profile,
     pid: deps.pid ?? process.pid,
