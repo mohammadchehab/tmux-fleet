@@ -47,7 +47,10 @@ export interface DaemonBuildsOptions {
 
 export const createDaemonBuilds = (options: DaemonBuildsOptions): BuildLedger => {
   const builds = options.profile.builds
-  const injected = options.process === undefined ? {} : { process: options.process }
+  const injected = {
+    ...(options.process === undefined ? {} : { process: options.process }),
+    ...(builds?.timeoutMinutes === undefined ? {} : { timeoutMs: builds.timeoutMinutes * 60_000 }),
+  }
   const local = createLocalRunner(injected)
   const remote =
     builds?.remote === undefined

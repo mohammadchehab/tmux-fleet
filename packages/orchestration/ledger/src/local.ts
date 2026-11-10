@@ -8,11 +8,13 @@
  */
 
 import type { BuildRunner } from './runner.ts'
-import { spawnToLog, statusOf } from './runner.ts'
+import { DEFAULT_BUILD_TIMEOUT_MS, spawnToLog, statusOf } from './runner.ts'
 
 export interface LocalRunnerOptions {
   /** Injected so a test asserts the argv and the log path without spawning anything. */
   readonly process?: typeof spawnToLog
+  /** Kill a build that runs longer than this. Defaults to `DEFAULT_BUILD_TIMEOUT_MS`. */
+  readonly timeoutMs?: number
 }
 
 export const createLocalRunner = (options: LocalRunnerOptions = {}): BuildRunner => {
@@ -27,6 +29,7 @@ export const createLocalRunner = (options: LocalRunnerOptions = {}): BuildRunner
         cwd: build.command.cwd,
         logPath: build.logPath,
         stdoutPath: build.stdoutPath,
+        timeoutMs: options.timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS,
       })
       return { status: statusOf(outcome.code), durationMs: outcome.durationMs, exitCode: outcome.code }
     },

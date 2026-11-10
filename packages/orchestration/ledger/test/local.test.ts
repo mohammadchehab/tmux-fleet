@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { createLocalRunner } from '../src/local.ts'
+import { DEFAULT_BUILD_TIMEOUT_MS } from '../src/runner.ts'
 import type { BuildRun, ProcessInvocation, ProcessOutcome } from '../src/runner.ts'
 import { repo, sha } from './support/fakes.ts'
 
@@ -49,6 +50,8 @@ describe('createLocalRunner', () => {
         cwd: '/src/tmux-fleet',
         logPath: '/logs/sha-test.log',
         stdoutPath: '/logs/sha-test.out',
+        // A build that never ends holds its key for every later request (TASK-67).
+        timeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
       },
     ])
     assert.deepEqual(outcome, { status: 'succeeded', durationMs: 12, exitCode: 0 })
