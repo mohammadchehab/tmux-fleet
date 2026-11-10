@@ -411,6 +411,7 @@ test('an event about an entity the log never opened is recorded, not silently dr
     event('work.started', absent, { workId: absent, peerId: 'engineer-1', sessionId: 'ses_1a2b3c4d5e6f7081' }),
   ])
 
+  assert.equal((await store.health()).anomalies, 1, 'the count `fleet status` reads is the row above')
   const recorded = [
     {
       event_seq: 1,
@@ -428,5 +429,6 @@ test('an event about an entity the log never opened is recorded, not silently dr
   // the same one, or `append` and `rebuild` would disagree about how sick the log is (§5.4).
   await store.rebuild()
   assert.deepEqual(await anomalies(path), recorded)
+  assert.equal((await store.health()).anomalies, 1, 'a replay lands on the same count, not zero and not two')
   await store.close()
 })

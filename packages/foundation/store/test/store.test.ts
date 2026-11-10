@@ -33,6 +33,23 @@ test('append assigns consecutive seqs, in the order given, and moves the head', 
   await store.close()
 })
 
+test('health reports the log it holds, and works on the read-only handle', async () => {
+  const path = tempStorePath()
+  const store = await open({ path })
+  assert.deepEqual(
+    await store.health(),
+    { latestSeq: 0, events: 0, anomalies: 0 },
+    'an empty store is healthy and at seq 0, like `latestSeq`',
+  )
+  await store.append(threeEvents())
+  await store.close()
+
+  // `fleet status` opens the live daemon's store read-only; a health read has to work there
+  const reader = await open({ path, readOnly: true })
+  assert.deepEqual(await reader.health(), { latestSeq: 3, events: 3, anomalies: 0 })
+  await reader.close()
+})
+
 test('a refused batch writes nothing at all', async () => {
   const store = await open()
   await store.append([appendable('peer.registered.json')])
