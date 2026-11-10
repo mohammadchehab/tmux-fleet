@@ -43,6 +43,7 @@ import type {
   Usage,
 } from '@fleet/runtime-provider-sdk'
 
+import { buildChildEnv } from '@fleet/runtime-provider-sdk'
 import { CursorSession, defaultCursorExecutable } from './session.ts'
 import { contextLimitFor } from './usage.ts'
 
@@ -259,7 +260,9 @@ export class CursorProvider implements Provider {
   #createChat(spec: SessionSpec): ProviderSessionRef {
     const result = spawnSync(this.#executable, [...this.#executableArgs, 'create-chat'], {
       cwd: spec.cwd,
-      env: { ...process.env, ...spec.env },
+      // The allowlist, not `process.env`: this process is `cursor-agent`, which runs
+      // shell tools, and fleetd's own environment may hold keys the peer never asked for.
+      env: { ...buildChildEnv(spec).env },
       encoding: 'utf8',
       timeout: 60_000,
     })

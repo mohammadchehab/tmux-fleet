@@ -280,4 +280,34 @@ test('the spawned cursor-agent runs in spec.cwd, so it reads that checkout’s o
   // create-chat and the opening turn are both spawned: neither may start anywhere else.
   const where = readFileSync(cwdLog, 'utf8').split('\n').filter((line) => line !== '')
   assert.deepEqual(where.map((dir) => realpathSync(dir)), [checkout, checkout])
+
+test('fleetd’s own environment never reaches the cursor child: only the allowlist and the spec’s env do', async () => {
+  const { provider, spec } = harness()
+  const log = join(mkdtempSync(join(tmpdir(), 'fleet-cursor-env-')), 'env.jsonl')
+  const leaked = {
+    FLEET_TEST_AWS_SECRET_ACCESS_KEY: 'aws-secret',
+    FLEET_TEST_GITHUB_TOKEN: 'ghp_secret',
+    ANTHROPIC_API_KEY: 'sk-ant-secret',
+    DEEPINFRA_API_KEY: 'di-secret',
+  }
+  const before = Object.fromEntries(Object.keys(leaked).map((key) => [key, process.env[key]]))
+  Object.assign(process.env, leaked)
+  try {
+    const handle = await provider.start(spec({ env: { FAKE_CURSOR_ENV_LOG: log, FAKE_CURSOR_LOG: join(tmpdir(), 'fleet-cursor-unused.jsonl'), FLEET_PEER: 'peer-1' } }))
+    await watch(provider, handle).until(ended(handle.briefTurnId))
+  } finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+
+  // create-chat and the turn are two processes; neither may see a secret.
+  const seen = readFileSync(log, 'utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as string[])
+  assert.equal(seen.length, 2)
+  for (const keys of seen) {
+    for (const key of Object.keys(leaked)) assert.ok(!keys.includes(key), `${key} reached the cursor child`)
+    assert.ok(keys.includes('PATH'), 'the child is still a working process')
+    assert.ok(keys.includes('FLEET_PEER'), 'what the spec asked for arrives')
+  }
 })
