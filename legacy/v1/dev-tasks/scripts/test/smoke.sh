@@ -9,7 +9,12 @@ set -euo pipefail
 source "$(dirname "$0")/../lib/env.sh"
 cd "$ROOT"
 fail=0; pass=0
-check() { if "$@" >/dev/null 2>&1; then pass=$((pass+1)); else echo "FAIL: $*"; fail=$((fail+1)); fi; }
+# check: run one assertion quietly; on failure print the last lines of what it said, so CI (where nobody can rerun it)
+# shows the cause instead of only the name. A sub-suite's own "n passed, m failed" line lands here too.
+check() {
+  local out; if out=$("$@" 2>&1); then pass=$((pass+1)); return; fi
+  echo "FAIL: $*"; printf '%s\n' "${out:-<no output>}" | tail -20 | sed 's/^/    /'; fail=$((fail+1))
+}
 # ino_of: the inode number of a path, on BSD (macOS) and GNU (Linux) both. `stat -f %i` alone is wrong on Linux, where
 # -f means "the filesystem" and %i its type, so the check below would compare two filesystem types and pass.
 ino_of() { stat -c %i "$1" 2>/dev/null || stat -f %i "$1"; }

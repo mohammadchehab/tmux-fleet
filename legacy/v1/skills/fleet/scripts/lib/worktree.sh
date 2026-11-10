@@ -117,7 +117,9 @@ fleet_wt_targets() {
   fi
   if [ -z "${FLEET_PROFILE:-}" ] && [ -n "$FLEET_HOME" ]; then echo "(fleet repo)|$FLEET_HOME|$HOME/.fleet-state|${FLEET_WT_IDLE_DAYS:-7}"; fi
 }
-_wt_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# GNU first, BSD second: `stat -f` is the format flag on macOS but "the filesystem" on Linux, where it succeeds and
+# prints a block report, so a BSD-first order never reaches the -c fallback there and every mtime becomes garbage.
+_wt_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 # fleet_wt_panes: "<profile>|<peer>|<pane cwd>" for every fleet peer pane on this tmux server (sessions tagged @fleet-role)
 fleet_wt_panes() {
   local s tag role cwd base
