@@ -45,6 +45,7 @@ import {
   type Timestamp,
   type TurnId,
 } from '@fleet/foundation-core'
+import { providerModels } from '@fleet/foundation-contracts'
 import type {
   ApprovalDecision,
   ProviderEvent,
@@ -87,6 +88,21 @@ export const defaultSessionConfig: ClaudeSessionConfig = {
   initTimeoutMs: 60_000,
   clock: systemClock,
 }
+
+/**
+ * What to add to a model mismatch, when the id asked for is one this repo does
+ * not know.
+ *
+ * The usual cause is a name typed from memory — `sonnet` is how people say it,
+ * not an id the CLI accepts — and the launch is the only moment the real ids
+ * are worth printing: the session has not started, so the person is still
+ * looking at their profile. A known id gets no hint, because a mismatch then is
+ * a different problem and the list would be noise.
+ */
+export const modelHint = (expected: string): string =>
+  providerModels.claude.includes(expected)
+    ? ''
+    : `; the claude ids this repo knows are ${providerModels.claude.join(', ')}`
 
 /** A session as its provider sees it: identity is a snapshot, state is live. */
 export class ClaudeSession {
@@ -503,9 +519,14 @@ export class ClaudeSession {
    * The endpoint and model the session was asked for, against what it reported.
    * At launch this rejects (§13); after launch — a model switch that did not take
    * — it is an event, because `start()` has already handed the session back.
+   *
+   * A model mismatch names the ids this repo knows, because the usual cause is a
+   * name typed from memory: `sonnet` is not an id, and the error is the only
+   * place the real ones appear before a session starts.
    */
   #mismatch(what: 'model' | 'endpoint', expected: string, observed: string): FleetError {
-    return fleetError('config_mismatch', `asked for ${what} ${expected}, the session is running ${observed}`, {
+    const hint = what === 'model' ? modelHint(expected) : ''
+    return fleetError('config_mismatch', `asked for ${what} ${expected}, the session is running ${observed}${hint}`, {
       details: { sessionId: this.sessionId, peerId: this.peerId, what, expected, observed },
     })
   }

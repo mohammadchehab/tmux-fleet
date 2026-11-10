@@ -40,6 +40,7 @@ const usage = (): string =>
   [
     'fleet - talk to a running fleetd. The CLI holds no state; everything it shows comes from the daemon.',
     '',
+    '  fleet init <profile>                write a starter profile, once; it never overwrites',
     '  fleet up [profile]                  start the fleet, or reattach to the one already running',
     '  fleet down                          stop it',
     '  fleet ls                            peers, routines and the decisions waiting on you',
@@ -73,6 +74,7 @@ export interface HowToTalk {
 
 export type Command =
   | { readonly kind: 'help' }
+  | { readonly kind: 'init'; readonly profile: string }
   | { readonly kind: 'up' }
   | { readonly kind: 'down' }
   | { readonly kind: 'ls' }
@@ -198,6 +200,12 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
   switch (name) {
     case 'help':
       return { command: { kind: 'help' }, how: how() }
+    case 'init': {
+      arity('init', rest, '<profile>', (count) => count === 1)
+      const profileName = rest[0]
+      if (profileName === undefined) throw usageError('usage: fleet init <profile>')
+      return { command: { kind: 'init', profile: profileName }, how: how() }
+    }
     case 'up': {
       arity('up', rest, '[profile]', (count) => count <= 1)
       return { command: { kind: 'up' }, how: how(rest[0]) }
@@ -287,6 +295,12 @@ export interface RunDeps {
    * one, and the command says so instead of pretending the suite is missing.
    */
   readonly runEvals?: (options: EvalsRunOptions) => Promise<EvalsProcessResult>
+  /**
+   * `fleet init`: write the starter profile and say where it went. Absent means
+   * this build cannot write one, and the command says so rather than the person
+   * finding an empty file later.
+   */
+  readonly initProfile?: (profile: string) => Promise<{ readonly profileFile: string }>
   readonly out?: (text: string) => void
   readonly err?: (text: string) => void
   readonly env?: Readonly<Record<string, string | undefined>>
@@ -358,8 +372,15 @@ const appendEvalEvents = async (call: DaemonCaller, events: EvalsEvents): Promis
   await call('events.append', { events: [...events.scored.map(cited), cited(events.finished)] })
 }
 
+/**
+ * The commands that talk to a daemon. `init` is not among them: it writes the
+ * file every other command needs, so `run` answers it before a socket is
+ * resolved, and the type says so rather than leaving a case that never fires.
+ */
+type DaemonCommand = Exclude<Command, { readonly kind: 'init' }>
+
 const execute = async (
-  command: Command,
+  command: DaemonCommand,
   call: DaemonCaller,
   deps: RunDeps,
   profile: string | undefined,
@@ -509,6 +530,19 @@ export const run = async (argv: readonly string[], deps: RunDeps): Promise<numbe
     const parsed = parseArgv(argv)
     if (parsed.command.kind === 'help') {
       out(usage())
+      return 0
+    }
+    // `init` writes the file the other commands read, so it resolves no socket:
+    // a person typing `fleet init me` is by definition a fleet with nothing to
+    // talk to yet, and asking them for a socket first would be the papercut this
+    // command exists to remove.
+    if (parsed.command.kind === 'init') {
+      const write = deps.initProfile
+      if (write === undefined) {
+        throw fleetError('external_failed', "this build of the CLI cannot write a profile; run it from a fleet checkout")
+      }
+      const written = await write(parsed.command.profile)
+      out(`wrote ${written.profileFile}\nedit it, then: fleet up ${parsed.command.profile}`)
       return 0
     }
     const choice = socketPathOf({

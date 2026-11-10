@@ -28,6 +28,24 @@ import {
 } from '@fleet/foundation-core'
 import type { PeerState } from '@fleet/foundation-core'
 
+/** The providers a profile can name today (§4). A profile names one per peer. */
+export const profileProviders = ['claude', 'deepinfra'] as const
+export type ProfileProvider = (typeof profileProviders)[number]
+
+/**
+ * The model ids each provider is known to serve — a hint, never a gate.
+ *
+ * Nothing validates a profile's `model` against this: DeepInfra and proxied
+ * endpoints serve ids this repo has never heard of, and a new model needs no
+ * fleet commit to be usable. The list is what a mismatch error quotes back and
+ * what `fleet init` writes into a starter profile, so a person who typed a
+ * model name from memory sees the one they meant (§13).
+ */
+export const providerModels: Readonly<Record<ProfileProvider, readonly string[]>> = {
+  claude: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001', 'claude-fable-5-1'],
+  deepinfra: ['anthropic/claude-sonnet-5-5'],
+}
+
 /** The permission modes a session can come up in. A provider declares a subset (§4). */
 export const permissionModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const
 export type PermissionMode = (typeof permissionModes)[number]
