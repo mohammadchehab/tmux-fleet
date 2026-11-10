@@ -458,10 +458,12 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
       // is what stops the next tick from being due; the backoff is what spaces
       // the retries *beyond* the window once the failures pile up. The backoff is
       // never shorter than the window, so the later of the two wins.
-      const recurring = routine.triggers.find(isRecurring)
-      if (recurring === undefined) continue
-      const due = isDue(recurring, windowOf(routine.id, now))
-      if (due && retryDue(routine, now)) records.push(await run(routine, recurring.kind))
+      //
+      // The trigger that fires is the first *due* recurring one, not the first
+      // recurring one: a routine with a schedule and a heartbeat must run when
+      // only the later of them is due, and say which one it was.
+      const due = routine.triggers.find((trigger) => isRecurring(trigger) && isDue(trigger, windowOf(routine.id, now)))
+      if (due !== undefined && retryDue(routine, now)) records.push(await run(routine, due.kind))
     }
     return records
   }
