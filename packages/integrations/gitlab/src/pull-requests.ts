@@ -85,7 +85,18 @@ export interface GitLabOptions {
   readonly limit?: number
 }
 
-/** GitLab's REST path for a repo. `owner/name` is one path segment, so the slash is encoded. */
+/**
+ * GitLab's REST path for a repo. The whole namespace is one path segment, so its slashes
+ * are encoded — and it may nest, because a GitLab subgroup is a repo here.
+ *
+ * No segment count here, and the asymmetry with GitHub's `githubRepo` is deliberate:
+ * `gh -R` reads three segments as HOST/OWNER/REPO, so a nested path reaching it lets a
+ * footer a stranger wrote pick the host. This adapter has no such flag — the repo is one
+ * encoded segment of `projects/:id`, and the instance is pinned before the call by
+ * `GITLAB_HOST` from the profile's `forge.host`. A `Fleet-Stack-Parent` footer can
+ * therefore only name another project on the same host, which is the cross-repo stack
+ * feature; counting segments here would refuse subgroups without closing a hole.
+ */
 const projectPath = (repo: Repo): string => `projects/${encodeURIComponent(String(repo))}`
 
 /** `open` is GitLab's `opened`; the other two are spelled the same on both forges. */
