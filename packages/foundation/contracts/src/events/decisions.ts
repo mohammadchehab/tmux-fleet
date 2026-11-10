@@ -8,9 +8,8 @@
 import { array, count, event, object, oneOf, optional, string, text } from '@fleet/foundation-core'
 import { decisionId, peerId, workId } from '@fleet/foundation-core'
 
-/** The closed list of typed questions; an LLM is consulted only through one (§5.3). */
-export const questionKinds = ['same_feature', 'route_question', 'thin_card', 'review_verdict', 'escalate'] as const
-export type QuestionKind = (typeof questionKinds)[number]
+// The closed list of typed questions lives in `judge.ts`, with their inputs and
+// answers; a decision names the kind it was made for but does not define it.
 
 /** How a decision is answered: a rule, a Judge, or the user through the inbox (§6.1). */
 export const decisionSources = ['rule', 'judge', 'user'] as const

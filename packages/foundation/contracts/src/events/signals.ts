@@ -105,7 +105,7 @@ export const findingVerdicts = ['confirmed', 'dismissed'] as const
 export type FindingVerdict = (typeof findingVerdicts)[number]
 
 export const findingVerdicted = event(
-  'finding.verdict',
+  'finding.verdict_given',
   object({
     findingId: findingId(),
     verdict: oneOf(findingVerdicts),
@@ -129,7 +129,7 @@ export const findingRouted = event(
 
 /** Per-turn usage, from the provider's `usage()`, feeding the `token-report` (§6.2). */
 export const turnUsage = event(
-  'turn.usage',
+  'turn.usage_recorded',
   object({
     peerId: peerId(),
     sessionId: optional(sessionId()),

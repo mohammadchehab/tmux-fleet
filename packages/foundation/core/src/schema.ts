@@ -5,14 +5,19 @@
  * store and a provider exchange is checked against the same declaration the
  * TypeScript compiler uses.
  *
- * Design notes:
- * - `decode` never throws. It collects `Issue`s and returns a best-effort
- *   value; the value is only meaningful when no issue was appended. Every
- *   public entry point (`parse`, `safeParse`) enforces that for you.
- * - Decoders ignore object keys that are not in the shape (forward
- *   compatibility: an event written by a newer fleet must still be readable),
- *   and the decoded object is rebuilt from the shape alone. A fixture with a
- *   misspelled key therefore loses that key and fails its round-trip test.
+ * Decoding has two modes:
+ *
+ * - **tolerant** (`parse`, `decode`) is for *reading*. Object keys that are not
+ *   in the shape are ignored, so an event written by a newer fleet is still
+ *   readable by an older one and a rollback does not lose the log.
+ * - **strict** (`parseStrict`, `decodeStrict`) is for *writing*. An unknown key
+ *   is an error, because at a producer boundary an unknown key is a misspelt
+ *   optional field, and tolerating it loses data silently. `Store.append` and
+ *   every other write boundary use this one.
+ *
+ * `decode` never throws in either mode: it collects `Issue`s and returns a
+ * best-effort value that is only meaningful when no issue was appended. The
+ * public entry points enforce that for you.
  */
 
 import { err, ok, type Result } from './result.ts'
@@ -32,7 +37,15 @@ export class SchemaError extends RangeError {
   }
 }
 
-export type Decoder<T> = (value: unknown, path: string, issues: Issue[]) => T
+/** Whether unknown object keys are refused. See the file's design note. */
+export interface Mode {
+  readonly strict: boolean
+}
+
+export const tolerant: Mode = { strict: false }
+export const strict: Mode = { strict: true }
+
+export type Decoder<T> = (value: unknown, path: string, issues: Issue[], mode: Mode) => T
 
 declare const schemaType: unique symbol
 
@@ -64,18 +77,86 @@ const expected = <T>(issues: Issue[], path: string, tag: string, value: unknown)
   return value as T
 }
 
-export const parse = <T>(schema: Schema<T>, value: unknown): T => {
+const decodeWith = <T>(schema: Schema<T>, value: unknown, mode: Mode): Result<T, SchemaError> => {
   const issues: Issue[] = []
-  const decoded = schema.decode(value, '', issues)
-  if (issues.length > 0) throw new SchemaError(issues)
-  return decoded
-}
-
-export const safeParse = <T>(schema: Schema<T>, value: unknown): Result<T, SchemaError> => {
-  const issues: Issue[] = []
-  const decoded = schema.decode(value, '', issues)
+  const decoded = schema.decode(value, '', issues, mode)
   return issues.length > 0 ? err(new SchemaError(issues)) : ok(decoded)
 }
+
+/** Tolerant: unknown keys are ignored. For reading. */
+export const decode = <T>(schema: Schema<T>, value: unknown): Result<T, SchemaError> =>
+  decodeWith(schema, value, tolerant)
+
+/** Strict: an unknown key is an issue. For a write boundary. */
+export const decodeStrict = <T>(schema: Schema<T>, value: unknown): Result<T, SchemaError> =>
+  decodeWith(schema, value, strict)
+
+/** Tolerant: unknown keys are ignored. For reading. */
+export const parse = <T>(schema: Schema<T>, value: unknown): T => {
+  const result = decode(schema, value)
+  if (!result.ok) throw result.error
+  return result.value
+}
+
+/** Strict: an unknown key is a `SchemaError`. For a write boundary. */
+export const parseStrict = <T>(schema: Schema<T>, value: unknown): T => {
+  const result = decodeStrict(schema, value)
+  if (!result.ok) throw result.error
+  return result.value
+}
+
+export const safeParse = <T>(schema: Schema<T>, value: unknown): Result<T, SchemaError> => decode(schema, value)
+
+export const safeParseStrict = <T>(schema: Schema<T>, value: unknown): Result<T, SchemaError> =>
+  decodeStrict(schema, value)
+
+// --------------------------------------------------------- compile-time checks
+
+/**
+ * `Equal` that ignores `readonly`, and flattens the intersections `InferShape`
+ * produces. Two spellings of one shape compare equal; two different shapes do
+ * not, and an extra optional field is a difference (unlike plain assignability).
+ */
+export type Normalize<T> = T extends readonly (infer U)[]
+  ? Normalize<U>[]
+  : T extends object
+    ? { -readonly [K in keyof T]: Normalize<T[K]> }
+    : T
+
+export type Equal<A, B> =
+  (<T>() => T extends Normalize<A> ? 1 : 2) extends <T>() => T extends Normalize<B> ? 1 : 2 ? true : false
+
+declare const drift: unique symbol
+
+/** What a mismatched `objectAs` argument compiles to; names both sides. */
+export type Drift<Got, Want> = { readonly [drift]: { readonly got: Got; readonly want: Want } }
+
+/**
+ * `object()` with the interface it must match named: the argument is rejected
+ * unless `InferShape<S>` equals `Iface` exactly. This replaces `as Schema<X>`,
+ * which silences precisely the drift worth catching — a schema that gained a
+ * field, lost one, or changed a type without the interface moving.
+ *
+ *     export const turn = (): Schema<Turn> => objectAs<Turn>()({ text: text(), kind: oneOf(turnKinds) })
+ */
+export const objectAs =
+  <Iface>() =>
+  <S extends Shape>(
+    shape: S & (Equal<InferShape<S>, Iface> extends true ? unknown : Drift<InferShape<S>, Iface>),
+  ): Schema<Iface> =>
+    object(shape) as unknown as Schema<Iface>
+
+/**
+ * A union of object schemas with its type named, on the same terms as
+ * `objectAs`: the argument is rejected unless the union infers to exactly
+ * `Iface`.
+ */
+export const unionAs =
+  <Iface>() =>
+  <const Options extends readonly Schema<unknown>[]>(
+    options: Options & (Equal<Infer<Options[number]>, Iface> extends true ? unknown : Drift<Infer<Options[number]>, Iface>),
+  ): Schema<Iface> =>
+    union(options) as unknown as Schema<Iface>
 
 // ---------------------------------------------------------------- primitives
 
@@ -154,31 +235,32 @@ export interface OptionalSchema<T> extends Schema<T | undefined> {
 export const optional = <T>(schema: Schema<T>): OptionalSchema<T> => ({
   tag: `${schema.tag}?`,
   optional: true,
-  decode: (value, path, issues) => (value === undefined ? undefined : schema.decode(value, path, issues)),
+  decode: (value, path, issues, mode) => (value === undefined ? undefined : schema.decode(value, path, issues, mode)),
 })
 
 export const nullable = <T>(schema: Schema<T>): Schema<T | null> =>
-  make(`${schema.tag}|null`, (value, path, issues) =>
-    value === null ? null : schema.decode(value, path, issues),
+  make(`${schema.tag}|null`, (value, path, issues, mode) =>
+    value === null ? null : schema.decode(value, path, issues, mode),
   )
 
 export const array = <T>(item: Schema<T>, options: { maxItems?: number } = {}): Schema<readonly T[]> =>
-  make(`${item.tag}[]`, (value, path, issues) => {
+  make(`${item.tag}[]`, (value, path, issues, mode) => {
     if (!Array.isArray(value)) return expected(issues, path, `${item.tag}[]`, value)
     if (options.maxItems !== undefined && value.length > options.maxItems) {
       issues.push({ path, message: `expected at most ${options.maxItems} items, got ${value.length}` })
     }
-    return value.map((entry, index) => item.decode(entry, `${path}[${index}]`, issues))
+    return value.map((entry, index) => item.decode(entry, `${path}[${index}]`, issues, mode))
   })
 
+/** An open map: every key is data, so strict mode has nothing to refuse. */
 export const record = <T>(valueSchema: Schema<T>): Schema<Readonly<Record<string, T>>> =>
-  make(`record<${valueSchema.tag}>`, (value, path, issues) => {
+  make(`record<${valueSchema.tag}>`, (value, path, issues, mode) => {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       return expected(issues, path, `record<${valueSchema.tag}>`, value)
     }
     const out: Record<string, T> = {}
     for (const [key, entry] of Object.entries(value)) {
-      out[key] = valueSchema.decode(entry, path === '' ? key : `${path}.${key}`, issues)
+      out[key] = valueSchema.decode(entry, path === '' ? key : `${path}.${key}`, issues, mode)
     }
     return out
   })
@@ -186,11 +268,11 @@ export const record = <T>(valueSchema: Schema<T>): Schema<Readonly<Record<string
 export const union = <const Options extends readonly Schema<unknown>[]>(
   options: Options,
 ): Schema<Infer<Options[number]>> =>
-  make(options.map((o) => o.tag).join('|'), (value, path, issues) => {
+  make(options.map((o) => o.tag).join('|'), (value, path, issues, mode) => {
     let best: Issue[] | undefined
     for (const option of options) {
       const attempt: Issue[] = []
-      const decoded = option.decode(value, path, attempt)
+      const decoded = option.decode(value, path, attempt, mode)
       if (attempt.length === 0) return decoded as Infer<Options[number]>
       if (best === undefined || attempt.length < best.length) best = attempt
     }
@@ -203,17 +285,24 @@ export const union = <const Options extends readonly Schema<unknown>[]>(
 export const oneOf = <const Values extends readonly string[]>(values: Values): Schema<Values[number]> =>
   union(values.map((value) => literal(value)) as unknown as readonly Schema<Values[number]>[])
 
+/** A refined schema, keeping the schema it wraps so tooling can walk through it. */
+export interface RefinedSchema<T> extends Schema<T> {
+  readonly inner: Schema<T>
+}
+
 export const refine = <T>(
   schema: Schema<T>,
   predicate: (value: T) => boolean,
   message: string,
-): Schema<T> =>
-  make(`${schema.tag}(${message})`, (value, path, issues) => {
+): RefinedSchema<T> => ({
+  ...make(`${schema.tag}(${message})`, (value, path, issues, mode) => {
     const before = issues.length
-    const decoded = schema.decode(value, path, issues)
+    const decoded = schema.decode(value, path, issues, mode)
     if (issues.length === before && !predicate(decoded)) issues.push({ path, message })
     return decoded
-  })
+  }),
+  inner: schema,
+})
 
 /**
  * A named string type (an id, a repo, a sha). Its failures read as the name,
@@ -225,9 +314,9 @@ export const branded = <T>(
   name: string,
   predicate?: (value: string) => boolean,
 ): Schema<T> =>
-  make(name, (value, path, issues) => {
+  make(name, (value, path, issues, mode) => {
     const before = issues.length
-    const decoded = schema.decode(value, path, issues)
+    const decoded = schema.decode(value, path, issues, mode)
     const innerFailed = issues.length > before
     if (innerFailed) issues.length = before
     if (innerFailed || (predicate !== undefined && !predicate(decoded))) {
@@ -256,39 +345,57 @@ export type InferShape<S extends Shape> = {
 const isOptional = (schema: Schema<unknown>): schema is OptionalSchema<unknown> =>
   (schema as { optional?: boolean }).optional === true
 
+/** An object schema that keeps its shape, so tooling can walk it. */
+export interface ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
+  readonly shape: S
+}
+
 /**
- * An object schema. Unknown keys are ignored (see the file's design note);
- * every key in the shape is decoded, and optional keys that were absent stay
- * absent so a round-trip reproduces the input exactly.
+ * An object schema. Unknown keys are ignored in tolerant mode and reported in
+ * strict mode (see the file's design note); every key in the shape is decoded,
+ * and optional keys that were absent stay absent so a round-trip reproduces the
+ * input exactly.
  */
-export const object = <S extends Shape>(shape: S): Schema<InferShape<S>> =>
-  make(
-    `{${Object.entries(shape)
-      .map(([key, schema]) => `${key}: ${schema.tag}`)
-      .join(', ')}}`,
-    (value, path, issues) => {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        return expected(issues, path, 'object', value)
-      }
-      const input = value as Record<string, unknown>
-      const out: Record<string, unknown> = {}
-      for (const [key, schema] of Object.entries(shape)) {
-        const present = Object.hasOwn(input, key)
-        const childPath = path === '' ? key : `${path}.${key}`
-        if (!present) {
-          if (!isOptional(schema)) {
-            issues.push({ path: childPath, message: 'missing required field' })
-          }
-          continue
+export const object = <S extends Shape>(shape: S): ObjectSchema<S> => {
+  const schema: ObjectSchema<S> = {
+    ...make<InferShape<S>>(
+      `{${Object.entries(shape)
+        .map(([key, entry]) => `${key}: ${entry.tag}`)
+        .join(', ')}}`,
+      (value, path, issues, mode) => {
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+          return expected(issues, path, 'object', value)
         }
-        const decoded = schema.decode(input[key], childPath, issues)
-        // Optional-and-undefined must not appear in the output: JSON has no
-        // undefined, and round-tripping a fixture must be byte-identical.
-        if (decoded !== undefined) out[key] = decoded
-      }
-      return out as InferShape<S>
-    },
-  )
+        const input = value as Record<string, unknown>
+        const out: Record<string, unknown> = {}
+        if (mode.strict) {
+          for (const key of Object.keys(input)) {
+            if (!Object.hasOwn(shape, key)) {
+              issues.push({ path: path === '' ? key : `${path}.${key}`, message: 'unknown field' })
+            }
+          }
+        }
+        for (const [key, entry] of Object.entries(shape)) {
+          const present = Object.hasOwn(input, key)
+          const childPath = path === '' ? key : `${path}.${key}`
+          if (!present) {
+            if (!isOptional(entry)) {
+              issues.push({ path: childPath, message: 'missing required field' })
+            }
+            continue
+          }
+          const decoded = entry.decode(input[key], childPath, issues, mode)
+          // Optional-and-undefined must not appear in the output: JSON has no
+          // undefined, and round-tripping a fixture must be byte-identical.
+          if (decoded !== undefined) out[key] = decoded
+        }
+        return out as InferShape<S>
+      },
+    ),
+    shape,
+  }
+  return schema
+}
 
 /**
  * An object of any shape, kept as-is (an env map, provider meta). Values must

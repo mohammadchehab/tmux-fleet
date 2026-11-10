@@ -6,10 +6,31 @@
  * Phase 0 defines this; phase 1 implements it over `node:sqlite`.
  */
 
-import type { Clock, Seq } from '@fleet/foundation-core'
-import type { AppendEvent, FleetEvent, ReadModel } from '@fleet/foundation-contracts'
+import { fleetError, type Clock, type Seq } from '@fleet/foundation-core'
+import { appendIssues, type AppendEvent, type FleetEvent, type ReadModel } from '@fleet/foundation-contracts'
 
 export type { AppendEvent }
+
+/**
+ * The write boundary (§3, §5.4). `append` is the only way into the store, so it
+ * is the one place that must not be forgiving: an event is decoded strictly and
+ * an unknown key is refused. A reader tolerates unknown keys so a newer writer
+ * does not break it; a writer that misspells `judgeModel` must be told, because
+ * the key would otherwise be dropped and lost silently.
+ *
+ * Throws `FleetError('invalid_input')` listing every issue in the batch.
+ */
+export const assertAppendable = (batch: readonly AppendEvent[]): void => {
+  const issues = batch.flatMap((event, index) =>
+    appendIssues(event).map((issue) => `[${index}] ${String(event.type)} ${issue.path}: ${issue.message}`),
+  )
+  if (issues.length === 0) return
+  throw fleetError(
+    'invalid_input',
+    `append is strict and refused ${issues.length} issue(s): ${issues.join('; ')}`,
+    { details: { issues } },
+  )
+}
 
 /** How a store is opened. `path` is `~/.fleet/<profile>/store/store.sqlite` (§1.1). */
 export interface StoreOptions {
@@ -21,9 +42,10 @@ export interface StoreOptions {
 }
 
 /**
- * Appending is the only write. A batch is atomic and ordered: either the whole
- * batch gets consecutive seqs or none of it does, and projections are updated
- * in the same transaction.
+ * Appending is the only write. A batch is validated strictly first
+ * (`assertAppendable`), then atomic and ordered: either the whole batch gets
+ * consecutive seqs or none of it does, and projections are updated in the same
+ * transaction.
  */
 export interface EventStore {
   /** Apply any migrations the database has not seen; idempotent. */

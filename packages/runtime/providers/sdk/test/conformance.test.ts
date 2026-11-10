@@ -7,19 +7,30 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { TurnId } from '@fleet/foundation-core'
-import type { ProviderCapabilities, ProviderSessionRef } from '@fleet/foundation-contracts'
+import { fleetError, type TurnId } from '@fleet/foundation-core'
+import type { ProviderCapabilities, ProviderSessionRef, SessionSpec } from '@fleet/foundation-contracts'
 import type { SessionHandle } from '../src/index.ts'
-import { capabilityChecks, type Provider } from '../src/index.ts'
+import { capabilityChecks, resumeChecks, type Provider } from '../src/index.ts'
 
-const handle = (): SessionHandle => ({
+const handle = (providerId = 'stub'): SessionHandle => ({
   sessionId: 'ses_1a2b3c4d5e6f7081',
   sessionRef: 'sess_9f8e7d6c5b4a39281706' as ProviderSessionRef,
   peerId: 'engineer-1',
-  providerId: 'stub',
+  providerId,
   model: 'stub-model',
   permissionMode: 'default',
 })
+
+const spec = (): SessionSpec =>
+  ({
+    peerId: 'engineer-1',
+    role: 'engineer-1',
+    cwd: '/tmp/fleet',
+    model: 'stub-model',
+    permissionMode: 'default',
+    env: {},
+    brief: {},
+  }) as unknown as SessionSpec
 
 const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider => ({
   id,
@@ -31,7 +42,7 @@ const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider
     permissionModes: ['default'],
     ...capabilities,
   },
-  start: async () => handle(),
+  start: async () => handle(id),
   send: async () => 'trn_8192a3b4c5d6e7f8' as TurnId,
   interrupt: async () => {},
   stop: async () => {},
@@ -41,7 +52,11 @@ const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider
   events: async function* () {
     return
   },
-  resume: async () => handle(),
+  // Honest by default: resume only succeeds when the provider declared it can.
+  resume: async () => {
+    if (capabilities.resume === false) throw fleetError('unsupported', 'stub cannot resume')
+    return handle(id)
+  },
 })
 
 const failures = async (provider: Provider): Promise<string[]> => {
@@ -83,4 +98,52 @@ test('a repeated permission mode is caught', async () => {
   const caught = await failures(stub('dup-modes', { permissionModes: ['default', 'default'] }))
   assert.equal(caught.length, 1)
   assert.match(caught[0] ?? '', /repeats a mode/)
+})
+
+/** Resume is a promise only a call can break, so these checks need a session. */
+const resumeFailures = async (provider: Provider): Promise<string[]> => {
+  const started = await provider.start(spec())
+  const results = await Promise.all(
+    resumeChecks().map(async (check) => ({ check, failure: await check.run({ provider, handle: started, spec: spec() }) })),
+  )
+  return results.filter((r) => r.failure !== null).map((r) => `${r.check.name}: ${r.failure}`)
+}
+
+test('a provider that can resume passes the resume check', async () => {
+  assert.deepEqual(await resumeFailures(stub('claude-code', { resume: true })), [])
+})
+
+test('a provider that declares no resume and rejects unsupported passes', async () => {
+  assert.deepEqual(await resumeFailures(stub('plain-cli', { resume: false })), [])
+})
+
+test('a provider that resumes although it declared it cannot is caught', async () => {
+  const liar = { ...stub('liar', { resume: false }), resume: async () => handle('liar') }
+  const caught = await resumeFailures(liar)
+  assert.equal(caught.length, 1)
+  assert.match(caught[0] ?? '', /returned a session although capabilities\.resume is false/)
+})
+
+test('a provider that refuses a resume it declared is caught', async () => {
+  const broken = {
+    ...stub('broken', { resume: true }),
+    resume: async () => {
+      throw fleetError('provider_failed', 'the vendor lost the session')
+    },
+  }
+  const caught = await resumeFailures(broken)
+  assert.equal(caught.length, 1)
+  assert.match(caught[0] ?? '', /although capabilities\.resume is true/)
+})
+
+test('a provider that refuses with the wrong code is caught', async () => {
+  const sloppy = {
+    ...stub('sloppy', { resume: false }),
+    resume: async () => {
+      throw fleetError('provider_failed', 'not implemented')
+    },
+  }
+  const caught = await resumeFailures(sloppy)
+  assert.equal(caught.length, 1)
+  assert.match(caught[0] ?? '', /must reject FleetError\('unsupported'\)/)
 })

@@ -1,0 +1,17 @@
+{
+  "input": {
+    "seq": 9,
+    "ts": "2026-11-10T09:09:00.000Z",
+    "type": "work.ready",
+    "subject": "wrk_7f3a91c2d84b0e56",
+    "actor": "pm",
+    "causedBy": [
+      8
+    ],
+    "data": {
+      "workId": 42,
+      "reason": "contract v2 published, dependency merged"
+    }
+  },
+  "path": "data.workId"
+}

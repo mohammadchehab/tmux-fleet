@@ -5,7 +5,7 @@
  * fixture exists for each entry.
  */
 
-import { union, type DistributiveOmit, type Infer, type Schema } from '@fleet/foundation-core'
+import { decodeStrict, object, unionAs, type DistributiveOmit, type Infer, type Issue, type Schema } from '@fleet/foundation-core'
 import { peerFailed, peerRegistered, peerStateChanged, providerError, sessionEnded, sessionStarted } from './peer.ts'
 import {
   workAssigned,
@@ -49,6 +49,7 @@ import {
   worktreeRemoved,
 } from './ops.ts'
 import { decisionAnswered, decisionRequested } from './decisions.ts'
+import { judgeAnswered, judgeRequested } from './judge.ts'
 import {
   findingRaised,
   findingRouted,
@@ -65,11 +66,11 @@ import {
 export const EVENT_SCHEMAS = {
   // peers and sessions (§3, §4, §7)
   'peer.registered': peerRegistered,
-  'peer.state': peerStateChanged,
+  'peer.state_changed': peerStateChanged,
   'peer.failed': peerFailed,
   'session.started': sessionStarted,
   'session.ended': sessionEnded,
-  'provider.error': providerError,
+  'provider.errored': providerError,
 
   // work (§5.1, §5.2)
   'work.proposed': workProposed,
@@ -89,8 +90,8 @@ export const EVENT_SCHEMAS = {
   'brief.published': briefPublished,
   'brief.superseded': briefSuperseded,
   'pr.opened': prOpened,
-  'pr.checks': prChecks,
-  'pr.review': prReview,
+  'pr.checks_changed': prChecks,
+  'pr.review_changed': prReview,
   'pr.merged': prMerged,
   'pr.retargeted': prRetargeted,
   'ci.failed_final': ciFailedFinal,
@@ -117,9 +118,11 @@ export const EVENT_SCHEMAS = {
   'index.ready': indexReady,
   'index.failed': indexFailed,
 
-  // decisions (§5.3, §5.4)
+  // decisions and Judge questions (§5.3, §5.4)
   'decision.requested': decisionRequested,
   'decision.answered': decisionAnswered,
+  'judge.requested': judgeRequested,
+  'judge.answered': judgeAnswered,
 
   // signals (§6, §6.1, §6.2)
   'notify.sent': notifySent,
@@ -129,9 +132,9 @@ export const EVENT_SCHEMAS = {
   'scan.skipped': scanSkipped,
   'finding.raised': findingRaised,
   'finding.seen': findingSeen,
-  'finding.verdict': findingVerdicted,
+  'finding.verdict_given': findingVerdicted,
   'finding.routed': findingRouted,
-  'turn.usage': turnUsage,
+  'turn.usage_recorded': turnUsage,
 } as const
 
 export type FleetEventType = keyof typeof EVENT_SCHEMAS
@@ -153,6 +156,24 @@ export const eventSchemaFor = (type: string): Schema<FleetEvent> | undefined =>
 
 /** The union schema; what the store parses an event row with. */
 export const fleetEvent = (): Schema<FleetEvent> =>
-  union(Object.values(EVENT_SCHEMAS) as readonly Schema<unknown>[]) as Schema<FleetEvent>
+  unionAs<FleetEvent>()(Object.values(EVENT_SCHEMAS))
+
+/**
+ * The append boundary (§3, §5.4): a producer's `AppendEvent` decoded strictly,
+ * which is the envelope without `seq` because the store has not assigned it
+ * yet. Reads use `fleetEvent()`, which tolerates unknown keys so a newer writer
+ * does not break an older reader; a write does not, because a misspelt optional
+ * field would be dropped and lost rather than reported.
+ *
+ * Returns the issues instead of throwing, so a batch can report every problem.
+ */
+export const appendIssues = (event: AppendEvent): readonly Issue[] => {
+  if (!Object.hasOwn(EVENT_SCHEMAS, event.type)) {
+    return [{ path: 'type', message: `unknown event type "${String(event.type)}"` }]
+  }
+  const { seq: _seq, ...shape } = EVENT_SCHEMAS[event.type as FleetEventType].shape
+  const result = decodeStrict(object(shape) as Schema<unknown>, event)
+  return result.ok ? [] : result.error.issues
+}
 
 export const eventTypes = Object.keys(EVENT_SCHEMAS) as readonly FleetEventType[]

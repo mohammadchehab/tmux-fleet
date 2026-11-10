@@ -1,0 +1,18 @@
+{
+  "input": {
+    "seq": 14,
+    "ts": "2026-11-10T09:14:00.000Z",
+    "type": "work.merged",
+    "subject": "wrk_7f3a91c2d84b0e56",
+    "actor": "pm",
+    "causedBy": [
+      13
+    ],
+    "data": {
+      "workId": "wrk_7f3a91c2d84b0e56",
+      "headSha": "9c1d2e3f405162738495a6b7c8d9e0f1023a4b5c",
+      "mergeSha": "d36a8b0c1d2e3f405162738495a6b7c8d9e0f102"
+    }
+  },
+  "path": "data.pr"
+}

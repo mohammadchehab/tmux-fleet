@@ -6,7 +6,20 @@
  * registry of `type` → `data` schema.
  */
 
-import { array, literal, number, object, oneOf, optional, refine, type Infer, type Schema, string } from './schema.ts'
+import {
+  array,
+  branded,
+  literal,
+  number,
+  object,
+  oneOf,
+  optional,
+  refine,
+  type Infer,
+  type Schema,
+  type Shape,
+  string,
+} from './schema.ts'
 
 /** Position in the store's total order. Assigned by `append`, never by a caller. */
 export type Seq = number
@@ -26,16 +39,16 @@ export const timestamp = (): Schema<Timestamp> =>
 export type Actor = 'pm' | 'scheduler' | 'user' | `peer:${string}` | `judge:${string}`
 
 export const actor = (): Schema<Actor> =>
-  refine(
+  branded<Actor>(
     string({ pattern: /^(?:pm|scheduler|user|peer:[a-z0-9-]+|judge:[A-Za-z0-9._:/-]+)$/ }),
+    'an actor (pm | scheduler | user | peer:<id> | judge:<model>)',
     (value) => {
       if (!value.startsWith('peer:')) return true
       // A peer actor must name a real peer id shape, not a session ref (§7).
       const name = value.slice('peer:'.length)
       return name.length <= 40 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(name)
     },
-    'an actor (pm | scheduler | user | peer:<id> | judge:<model>)',
-  ) as Schema<Actor>
+  )
 
 export interface EventEnvelope<T> {
   /** Assigned by the store on append. */
@@ -73,16 +86,26 @@ export const envelope = <D extends Schema<unknown>>(
     actor: actor(),
     causedBy: optional(array(seq())),
     data,
-  }) as Schema<EventEnvelope<Infer<D>>>
+    // A generic constructor, not a contract declaration: `D` is still open, so
+    // there is nothing here for a compile-time equality check to compare
+    // against. Every concrete event in the registry is checked instead.
+  }) as unknown as Schema<EventEnvelope<Infer<D>>>
 
 /**
  * An event schema for one concrete `type`. The registry is a map of these, and
  * `Infer` on the union of them is the fleet's discriminated event union.
+ *
+ * `shape` is exposed so the store's append boundary can re-decode the same
+ * envelope without `seq`, which the store has not assigned yet (§3).
  */
+export interface EventSchema<T extends string, D> extends Schema<EventEnvelope<D> & { readonly type: T }> {
+  readonly shape: Shape
+}
+
 export const event = <const T extends string, D extends Schema<unknown>>(
   type: T,
   data: D,
-): Schema<EventEnvelope<Infer<D>> & { readonly type: T }> =>
+): EventSchema<T, Infer<D>> =>
   object({
     seq: seq(),
     ts: timestamp(),
@@ -91,7 +114,7 @@ export const event = <const T extends string, D extends Schema<unknown>>(
     actor: actor(),
     causedBy: optional(array(seq())),
     data,
-  }) as unknown as Schema<EventEnvelope<Infer<D>> & { readonly type: T }>
+  }) as unknown as EventSchema<T, Infer<D>>
 
 /**
  * The list of actors a peer's own events may carry. The supervisor is the only

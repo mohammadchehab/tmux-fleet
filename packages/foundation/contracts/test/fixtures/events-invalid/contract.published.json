@@ -1,0 +1,20 @@
+{
+  "input": {
+    "seq": 18,
+    "ts": "2026-11-10T09:18:00.000Z",
+    "type": "contract.published",
+    "subject": "con_2b3c4d5e6f708192",
+    "actor": "pm",
+    "causedBy": [
+      14
+    ],
+    "data": {
+      "contractId": "con_2b3c4d5e6f708192",
+      "version": "not-a-number",
+      "path": "docs/fleet-v2-architecture.md",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "workId": "wrk_7f3a91c2d84b0e56"
+    }
+  },
+  "path": "data.version"
+}

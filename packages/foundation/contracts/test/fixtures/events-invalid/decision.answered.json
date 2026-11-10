@@ -1,0 +1,22 @@
+{
+  "input": {
+    "seq": 46,
+    "ts": "2026-11-10T09:46:00.000Z",
+    "type": "decision.answered",
+    "subject": "dec_6f708192a3b4c5d6",
+    "actor": "judge:claude-sonnet-5-5",
+    "causedBy": [
+      45
+    ],
+    "data": {
+      "decisionId": 42,
+      "source": "judge",
+      "option": "yes",
+      "text": "Both change the gate merge order for stacked PRs; one work item.",
+      "judgeModel": "claude-sonnet-5-5",
+      "durationMs": 812,
+      "answeredBy": "pm"
+    }
+  },
+  "path": "data.decisionId"
+}

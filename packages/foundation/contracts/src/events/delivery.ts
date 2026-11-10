@@ -72,7 +72,7 @@ export const prOpened = event(
 )
 
 export const prChecks = event(
-  'pr.checks',
+  'pr.checks_changed',
   object({
     pr: pullRequestRef(),
     headSha: sha(),
@@ -83,7 +83,7 @@ export const prChecks = event(
 )
 
 export const prReview = event(
-  'pr.review',
+  'pr.review_changed',
   object({
     pr: pullRequestRef(),
     headSha: sha(),

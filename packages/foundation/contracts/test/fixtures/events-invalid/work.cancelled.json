@@ -1,0 +1,17 @@
+{
+  "input": {
+    "seq": 17,
+    "ts": "2026-11-10T09:17:00.000Z",
+    "type": "work.cancelled",
+    "subject": "wrk_8a4b02d3e95c1f67",
+    "actor": "user",
+    "causedBy": [
+      16
+    ],
+    "data": {
+      "workId": 42,
+      "reason": "superseded by FLEET-14"
+    }
+  },
+  "path": "data.workId"
+}

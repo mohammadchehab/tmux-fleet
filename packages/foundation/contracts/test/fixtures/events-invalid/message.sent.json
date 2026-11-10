@@ -1,0 +1,21 @@
+{
+  "input": {
+    "seq": 29,
+    "ts": "2026-11-10T09:29:00.000Z",
+    "type": "message.sent",
+    "subject": "engineer-1",
+    "actor": "pm",
+    "causedBy": [
+      26
+    ],
+    "data": {
+      "msgId": "msg_4d5e6f708192a3b4",
+      "to": "engineer-1",
+      "from": "pm",
+      "kind": "nudge",
+      "briefVersion": "not-a-number",
+      "body": "CI is red on integration/postgres; the failing check is in the log you already have."
+    }
+  },
+  "path": "data.briefVersion"
+}

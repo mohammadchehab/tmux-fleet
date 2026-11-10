@@ -4,7 +4,7 @@
  * session ref.
  */
 
-import { boolean, count, object, optional, string, type Schema } from '@fleet/foundation-core'
+import { boolean, count, object, objectAs, optional, string, type Schema } from '@fleet/foundation-core'
 import {
   peerId,
   peerState,
@@ -35,7 +35,7 @@ export interface Peer {
 }
 
 export const peer = (): Schema<Peer> =>
-  object({
+  objectAs<Peer>()({
     peerId: peerId(),
     role: string({ minLength: 1, maxLength: 80 }),
     providerId: providerId(),
@@ -47,7 +47,7 @@ export const peer = (): Schema<Peer> =>
     state: peerState(),
     registeredAt: timestamp(),
     updatedAt: timestamp(),
-  }) as Schema<Peer>
+  })
 
 export interface Session {
   readonly sessionId: SessionId
@@ -63,7 +63,7 @@ export interface Session {
 }
 
 export const session = (): Schema<Session> =>
-  object({
+  objectAs<Session>()({
     sessionId: sessionId(),
     peerId: peerId(),
     providerId: providerId(),
@@ -74,4 +74,4 @@ export const session = (): Schema<Session> =>
     startedAt: timestamp(),
     endedAt: optional(timestamp()),
     endReason: optional(string({ minLength: 1, maxLength: 40 })),
-  }) as Schema<Session>
+  })

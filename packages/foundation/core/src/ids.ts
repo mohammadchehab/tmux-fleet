@@ -41,6 +41,8 @@ export type MessageId = Brand<string, 'MessageId'>
 export type WorktreeId = Brand<string, 'WorktreeId'>
 /** One PM branch, with its typed question and answer (§5.4). */
 export type DecisionId = Brand<string, 'DecisionId'>
+/** One typed question put to a Judge; its answer is recorded under the same id (§5.3). */
+export type QuestionId = Brand<string, 'QuestionId'>
 /** A registered routine (§6). */
 export type RoutineId = Brand<string, 'RoutineId'>
 /** One send to a provider session. */
@@ -83,6 +85,7 @@ export const briefId = (): Schema<BriefId> => opaque('BriefId', 'brf')
 export const messageId = (): Schema<MessageId> => opaque('MessageId', 'msg')
 export const worktreeId = (): Schema<WorktreeId> => opaque('WorktreeId', 'wtr')
 export const decisionId = (): Schema<DecisionId> => opaque('DecisionId', 'dec')
+export const questionId = (): Schema<QuestionId> => opaque('QuestionId', 'qst')
 export const routineId = (): Schema<RoutineId> => opaque('RoutineId', 'rtn')
 export const turnId = (): Schema<TurnId> => opaque('TurnId', 'trn')
 export const findingId = (): Schema<FindingId> => opaque('FindingId', 'fnd')
@@ -97,6 +100,7 @@ export const newBriefId = (): BriefId => mint('brf') as BriefId
 export const newMessageId = (): MessageId => mint('msg') as MessageId
 export const newWorktreeId = (): WorktreeId => mint('wtr') as WorktreeId
 export const newDecisionId = (): DecisionId => mint('dec') as DecisionId
+export const newQuestionId = (): QuestionId => mint('qst') as QuestionId
 export const newRoutineId = (): RoutineId => mint('rtn') as RoutineId
 export const newTurnId = (): TurnId => mint('trn') as TurnId
 export const newFindingId = (): FindingId => mint('fnd') as FindingId

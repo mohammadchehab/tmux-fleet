@@ -4,7 +4,7 @@
  * cited an older brief.
  */
 
-import { object, oneOf, optional, positiveInt, text, timestamp, type Schema } from '@fleet/foundation-core'
+import { object, objectAs, oneOf, optional, positiveInt, text, timestamp, type Schema } from '@fleet/foundation-core'
 import { actor, messageId, peerId, type Actor, type MessageId, type PeerId } from '@fleet/foundation-core'
 import { turnKinds, type TurnKind } from '../provider.ts'
 import { messageAckStates, type MessageAckState } from '../events/messages.ts'
@@ -25,7 +25,7 @@ export interface Message {
 }
 
 export const message = (): Schema<Message> =>
-  object({
+  objectAs<Message>()({
     msgId: messageId(),
     to: peerId(),
     from: actor(),
@@ -37,4 +37,4 @@ export const message = (): Schema<Message> =>
     deliveredAt: optional(timestamp()),
     ackedAt: optional(timestamp()),
     currentBriefVersion: optional(positiveInt()),
-  }) as Schema<Message>
+  })

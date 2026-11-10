@@ -1,0 +1,17 @@
+{
+  "input": {
+    "seq": 31,
+    "ts": "2026-11-10T09:31:00.000Z",
+    "type": "message.acked",
+    "subject": "engineer-1",
+    "actor": "peer:engineer-1",
+    "causedBy": [
+      30
+    ],
+    "data": {
+      "msgId": 42,
+      "to": "engineer-1"
+    }
+  },
+  "path": "data.msgId"
+}

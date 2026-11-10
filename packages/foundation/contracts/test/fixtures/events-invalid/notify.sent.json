@@ -1,0 +1,20 @@
+{
+  "input": {
+    "seq": 47,
+    "ts": "2026-11-10T09:47:00.000Z",
+    "type": "notify.sent",
+    "subject": "decision:dec_6f708192a3b4c5d6",
+    "actor": "scheduler",
+    "causedBy": [
+      45
+    ],
+    "data": {
+      "key": "decision:dec_6f708192a3b4c5d6",
+      "class": "decision",
+      "channel": "macos",
+      "title": 42,
+      "body": "Is \"retarget stacked PRs\" the same feature as FLEET-14?"
+    }
+  },
+  "path": "data.title"
+}

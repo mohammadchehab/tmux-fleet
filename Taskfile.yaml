@@ -28,9 +28,15 @@ tasks:
     cmds:
       - dev-tasks/scripts/install/bin.sh
 
-  install:
-    desc: Run install:claude, install:cursor, install:backlog and install:bin
+  install:node:
+    desc: Install the TypeScript packages' dev dependencies (pnpm) and link @fleet/* to the sibling packages
     cmds:
+      - pnpm install --frozen-lockfile
+
+  install:
+    desc: Run install:node, install:claude, install:cursor, install:backlog and install:bin
+    cmds:
+      - task: install:node
       - task: install:claude
       - task: install:cursor
       - task: install:backlog
@@ -58,10 +64,22 @@ tasks:
       - dev-tasks/scripts/lint/skills.sh
       - dev-tasks/scripts/lint/profile.sh
 
+  typecheck:
+    desc: Typecheck every TypeScript package (strict, no emit, erasable syntax only) — the gate `node --experimental-strip-types` cannot give
+    cmds:
+      - pnpm typecheck
+
+  test:node:
+    desc: Run the TypeScript packages' tests with the built-in runner (no network, no tmux)
+    cmds:
+      - pnpm test
+
   test:
-    desc: Smoke-test the scripts with a fake tmux and a fake backlog CLI (no real tmux, claude, backlog or network)
+    desc: Smoke-test the scripts with a fake tmux and a fake backlog CLI, then test and typecheck the TypeScript packages
     cmds:
       - dev-tasks/scripts/test/smoke.sh
+      - task: test:node
+      - task: typecheck
 
   clean:
     desc: List stale fleet worktrees (fleet wt prune) and tmux sessions; "-- --force" removes worktrees, "-- --force --sessions" also kills sessions

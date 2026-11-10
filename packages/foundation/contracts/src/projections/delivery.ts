@@ -4,18 +4,7 @@
  * demand; a build is unique on `(repo, sha, task)`.
  */
 
-import {
-  array,
-  boolean,
-  count,
-  object,
-  oneOf,
-  optional,
-  positiveInt,
-  string,
-  timestamp,
-  type Schema,
-} from '@fleet/foundation-core'
+import { array, boolean, count, object, objectAs, oneOf, optional, positiveInt, string, timestamp, type Schema } from '@fleet/foundation-core'
 import { peerId, sha, worktreeId } from '@fleet/foundation-core'
 import { repo } from '@fleet/foundation-core'
 import { branchName } from '../shapes.ts'
@@ -34,7 +23,7 @@ export interface Holder {
 }
 
 export const holder = (): Schema<Holder> =>
-  object({ pid: positiveInt(), command: optional(string({ maxLength: 200 })) }) as Schema<Holder>
+  objectAs<Holder>()({ pid: positiveInt(), command: optional(string({ maxLength: 200 })) })
 
 export interface Worktree {
   readonly worktreeId: WorktreeId
@@ -53,7 +42,7 @@ export interface Worktree {
 }
 
 export const worktree = (): Schema<Worktree> =>
-  object({
+  objectAs<Worktree>()({
     worktreeId: worktreeId(),
     repo: repo(),
     branch: branchName(),
@@ -65,7 +54,7 @@ export const worktree = (): Schema<Worktree> =>
     holders: array(holder()),
     createdAt: timestamp(),
     updatedAt: timestamp(),
-  }) as Schema<Worktree>
+  })
 
 export interface PullRequest {
   readonly repo: Repo
@@ -86,7 +75,7 @@ export interface PullRequest {
 }
 
 export const pullRequest = (): Schema<PullRequest> =>
-  object({
+  objectAs<PullRequest>()({
     repo: repo(),
     number: positiveInt(),
     base: branchName(),
@@ -100,7 +89,7 @@ export const pullRequest = (): Schema<PullRequest> =>
     merged: boolean(),
     createdAt: timestamp(),
     updatedAt: timestamp(),
-  }) as Schema<PullRequest>
+  })
 
 export interface Build {
   readonly buildId: string
@@ -116,7 +105,7 @@ export interface Build {
 }
 
 export const build = (): Schema<Build> =>
-  object({
+  objectAs<Build>()({
     buildId: string({ minLength: 1, maxLength: 80 }),
     repo: repo(),
     sha: sha(),
@@ -127,7 +116,7 @@ export const build = (): Schema<Build> =>
     durationMs: optional(count()),
     startedAt: timestamp(),
     finishedAt: optional(timestamp()),
-  }) as Schema<Build>
+  })
 
 /** The uniqueness key the ledger enforces (§11). */
 export const buildKey = (repoName: string, shaValue: string, task: string): string =>
