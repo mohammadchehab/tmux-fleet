@@ -73,6 +73,18 @@ describe('list and searchIntent', () => {
     )
   })
 
+  it('passes a nested namespace through untouched: `Repo` widened, this adapter did not', async () => {
+    // GitHub has no subgroups, so a nested repo is a repo that does not exist there — and `gh`, not this
+    // package, is what says so. The adapter must not take the path apart on the way (it never did).
+    const fake = fakeGh(() => json([]))
+    const nested = parse(repo(), 'backbase/fleet/services')
+    await createGitHubPullRequests({ gh: fake.gh }).list(nested)
+    assert.equal(
+      readable(fake.calls[0] ?? []),
+      'pr list -R backbase/fleet/services --state open --limit 200 --json <fields>',
+    )
+  })
+
   it('passes the state through, and the search text to gh’s own search', async () => {
     const fake = fakeGh(() => json([]))
     const port = createGitHubPullRequests({ gh: fake.gh, limit: 5 })

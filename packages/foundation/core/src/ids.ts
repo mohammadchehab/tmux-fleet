@@ -13,7 +13,13 @@ declare const brand: unique symbol
 /** A string that carries its entity kind in the type system only. */
 export type Brand<T, B extends string> = T & { readonly [brand]: B }
 
-/** A git repository, `owner/name` as `gh` and git spell it. */
+/**
+ * A git repository: `owner/name` as GitHub spells it, and `group/subgroup/name`
+ * as GitLab nests a project. The type is the *string*, not a parsed pair, so a
+ * forge that has one segment per side and one that has three are the same shape
+ * to every caller — a port hands the whole thing to `gh`/`glab` and neither is
+ * asked to take it apart.
+ */
 export type Repo = Brand<string, 'Repo'>
 
 /** A commit sha, abbreviated or full. */
@@ -57,7 +63,9 @@ export type BuildId = Brand<string, 'BuildId'>
 export type EvalRunId = Brand<string, 'EvalRunId'>
 
 const PEER_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
-const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+// At least two segments, and any number after that: `owner/name` for GitHub, `group/sub/name` for a nested GitLab
+// project. One segment is not a repo anywhere — it is a local directory name — so it stays refused.
+const REPO_PATTERN = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/
 const SHA_PATTERN = /^[0-9a-f]{7,40}$/
 const NOTIFICATION_KEY_PATTERN = /^(?:decision|failure|standup):[A-Za-z0-9._:-]{1,120}$/
 const PROVIDER_SESSION_REF_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/
