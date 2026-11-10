@@ -58,6 +58,14 @@ tmux-fleet/
 │  │  ├─ core/                    # notification projection, dedupe/rate-limit rules, decision inbox, `Notifier` interface (§6.1)
 │  │  └─ channels/
 │  │     └─ macos/                # terminal-notifier / osascript notifier; phone and Slack are siblings later (§6.1)
+│  ├─ evals/                      # dev tooling: evaluation of the non-deterministic parts (§17); never imported by runtime code
+│  │  ├─ adapter/                 # turns promptfoo results into `eval.run_finished` / `eval.case_scored` events (§17)
+│  │  └─ suites/
+│  │     ├─ judge/                # custom promptfoo provider calling the real Judge path, scorers, case loader (§17)
+│  │     ├─ briefs/               # roles and briefs: scripted scenario to typed artifacts (§17)
+│  │     ├─ purge-resume/         # StateFile fidelity after a purge (§17)
+│  │     ├─ security-triage/      # findings to verdicts (§17)
+│  │     └─ model-choice/         # the same cases across providers/models, a comparison not a gate (§17)
 │  └─ integrations/
 │     ├─ github/                  # `gh`/git adapters behind the contracts' ports: PRs, checks, retarget (§10)
 │     └─ trackers/                # Backlog.md, Jira sinks and sources (§3)
@@ -85,6 +93,10 @@ tmux-fleet/
 │  ├─ architecture/               # the import-direction test over the workspace graph (below)
 │  ├─ conformance/
 │  │  └─ providers/               # one suite every provider package must pass (§4)
+│  ├─ evals/
+│  │  ├─ cases/                   # `<suite>/<id>.json`: input, expected or rubric, source (§17)
+│  │  ├─ baselines/               # committed `<suite>.json`; improving one is a deliberate commit (§17)
+│  │  └─ promptfoo/               # one promptfoo config per suite (§17)
 │  ├─ integration/
 │  │  ├─ lifecycle/               # fleetd + a fake provider: start, kill, resume, identity (§7)
 │  │  ├─ self-purge/              # purge and resume at a limit (§8)
@@ -121,6 +133,7 @@ apps/clients, apps/hooks  ->  the daemon API / foundation types only
   `notify/core`; `supervisor` and `mailbox` import `providers/sdk`. `pm` imports `foundation/core` and
   `foundation/contracts` only (pure: state in, actions out, §5). A provider never imports `store`; `supervisor`
   adapts its events into the store.
+- **`evals` is a leaf consumer, like an app:** it may import any group (its suites call the real Judge and Provider path), nothing imports `evals`, and `promptfoo`/`openevals` appear only in `packages/evals/*` dev dependencies; `tests/architecture` enforces both (§17).
 - `apps/*` never import each other. `apps/clients/*` talk to the daemon over the socket, which keeps tmux and the CLI
   a view, not the control plane.
 - `tests/architecture` fails the build if an import violates any rule above.
@@ -164,6 +177,7 @@ the user's profile; the *live* peers (ids, sessions, briefs) exist only in the s
 | 1 vertical slice | `foundation/store` (working), `runtime/providers/{claude,deepinfra}`, `runtime/{supervisor,mailbox}`, `orchestration/{pm,routines,gate}`, `notify/{core,channels/macos}`, `integrations/github`, `apps/daemon`, `apps/clients/cli`, `apps/hooks/usage-report`, `config/{definitions,policies}`, `tests/{integration/{lifecycle,self-purge,delivery},fixtures}` |
 | 2 hygiene | `workspace/{worktree,codegraph}`, `orchestration/{briefs,ledger}`, `security/{scanners,findings}`, `apps/hooks/tool-guard`, `tests/integration/security`, stack retarget in `gate`, `fleet replay` |
 | 3 providers and sinks | `runtime/providers/{opencode,cursor}`, `integrations/trackers`, `apps/clients/view`, `fleet migrate`; `legacy/` deleted |
+| 2 evals (with 2 hygiene) | `packages/evals/{adapter,suites/judge}`, `tests/evals/{cases/judge,baselines,promptfoo}`; the eval event contracts can land in phase 1 (§17) |
 | 4 hand-off | docs only: `docs/ideas` with measured lessons |
 
 The security routine can start earlier than phase 2 on the interim fleet; phase 1's exit test does not depend on it.
@@ -656,3 +670,61 @@ board on the daemon API; cut over from v1, delete the bash.
 - **Judge on a cheap model** can be wrong; the closed question list and `escalate` bound the damage, and the log
   makes it reviewable.
 - **Scope.** This is a rewrite. The mitigation is phase 1's single provider and its hard exit test.
+
+## 17. Evals
+
+Deterministic parts (`decide()`, routines, the gate) are covered by replay and integration tests. Evals cover what is
+not deterministic. **Decided (Mohammad, 2026-11-10):** use existing tooling, not a hand-rolled harness. The
+no-runtime-dependency rule (§1.1) applies to runtime code only; evals are dev tooling. Eval data stays local; no
+hosted platform (no LangSmith, no Braintrust).
+
+**Tools.** `promptfoo`, run locally, as a dev dependency of `packages/evals` only. Each suite has a custom JS provider
+that calls the **real** Judge and Provider path, so an eval measures what production runs. Typed answers use
+promptfoo's exact-match and JS assertions; free-text outputs use its `llm-rubric` with a **pinned grader model that is
+never the model under test**. `openevals` / `agentevals` (MIT TS libraries, used locally with no hosted service) may
+score purge-resume and the role suites where a trajectory or a structured comparison fits better. Nothing in `runtime`,
+`orchestration`, or any other group imports these.
+
+**Suites.**
+
+| suite | input to the real path | scored by |
+| :- | :- | :- |
+| `judge` | the five `QuestionKind` inputs (§5.3) | exact match on typed fields (verdict, route target, kind) and a schema-validity rate: a malformed answer is a failure |
+| `briefs` | role file + brief + a scripted scenario | JS assertions on the typed artifacts a peer must produce (a `StateFile`, a question, a PR plan), then `llm-rubric` for text quality |
+| `purge-resume` | role + brief + `StateFile` only | five fixed questions (goal, done, next, open questions, constraints) answered by a fresh session, scored by rubric |
+| `security-triage` | labelled findings (known-true, known-false) | exact match on `confirmed|dismissed`, plus rubric on the stated reason |
+| `model-choice` | the same cases of the other suites | a comparison across providers/models (pass rate, tokens, cost, latency); never a gate |
+
+**Cases** are data: `tests/evals/cases/<suite>/<id>.json` = `{id, suite, input, expected | rubric, source}`. Sources, by
+value: (1) **real v1 incidents** rewritten as cases, which are the first regression set: the stacked-merge branch loss
+(#102), a peer acting on a stale brief, a duplicate feature, a message to a dead session, a wrong-model env leak;
+(2) recorded event logs and provider streams (`tests/fixtures/event-logs`, `provider-streams`) cut at the decision
+point; (3) labelled scanner output; (4) **override capture**: `fleet evals capture <decisionId>` turns any production
+`Decision` a human overrode into a candidate case.
+
+**Scoring rules.** Each case runs N=3 times (the model is not deterministic) and the report shows pass rate with the
+case count, never a percentage on fewer than 20 cases. Grader: temperature 0, pinned, sees only `{rubric, output}`; every
+rubric item is yes/no so scores are countable; 10% of graded cases are spot-checked by a human whenever a baseline
+changes. Always recorded: tokens in/out, cost (only when `capabilities.usageCost`, else n/a), latency, retries.
+
+**How it runs.** `fleet evals run <suite> [--provider X --model Y]`. Heavy runs go to hetzner through the build ledger
+(§11), unique on `(repo, sha, suite, provider, model)` so an identical run never repeats. Triggers: on demand; nightly
+on `main`; and **required on any PR that touches** `config/definitions/roles`, the Judge prompts or question schemas,
+model or limits config, or the `StateFile` schema (path-based, the same mechanism as the security-scan routine, §6.2).
+**Gate:** no suite regresses beyond its tolerance against its committed baseline in `tests/evals/baselines/<suite>.json`;
+raising a baseline is a deliberate commit with the run attached.
+
+**Results are events.** A thin adapter in `packages/evals/adapter` reads promptfoo's JSON output and appends
+`eval.run_started`/`eval.run_finished {suite, sha, provider, model, cases, passed, tokens, costUsd?}` and
+`eval.case_scored {caseId, runId, pass, score, detail}`. Projections `eval_runs` and `eval_cases` serve the standup and
+`fleet evals compare <runA> <runB>`; a nightly drop below tolerance raises a failure notification (§6.1).
+
+**Phase and first slice.** Phase 2 (after the supervisor and Judge are real); the eval event contracts can land in
+phase 1. Smallest first slice: the `judge` suite only: the promptfoo config, the custom provider, the adapter, about ten
+v1-incident cases mapped to `same_feature`, `route_question` and `escalate`, run against claude and deepinfra, one
+committed baseline, one `eval.run_finished` event, no LLM grader yet. It proves the loop (case, real path, score, event,
+compare) before graders and the other suites are added.
+
+**Open point to settle in the first slice:** promptfoo loads custom providers as JS; whether it loads our `.ts`
+providers directly under Node's type stripping, or needs a plain `.js`/`.mjs` shim, is verified first. If a shim is
+needed it is one file per suite and the logic stays in TypeScript.
