@@ -1494,9 +1494,27 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     // `judge.requested`/`judge.answered` are the typed question log (§5.3);
     // `purge.*`, `index.*` and `scan.skipped` describe a process, not a row the
     // PM or the board reads. They stay in `events` and are read from there.
-    default:
+    //
+    // Named one by one, never caught by a `default`: a new type in the registry
+    // then has to be *decided* here — projected above, or recorded-only in this
+    // list — because the `satisfies` below makes forgetting it a typecheck error.
+    case 'judge.requested':
+    case 'judge.answered':
+    case 'purge.started':
+    case 'purge.saved':
+    case 'purge.degraded':
+    case 'purge.completed':
+    case 'index.ready':
+    case 'index.failed':
+    case 'scan.skipped':
       return
   }
+
+  // TypeScript narrows `event` to `never` here only when every type in the registry is
+  // handled above, so this line is the exhaustiveness check: a new event type fails it
+  // rather than silently projecting nothing.
+  const unprojected: never = event
+  return unprojected
 }
 
 // ------------------------------------------------------------------- the reader
