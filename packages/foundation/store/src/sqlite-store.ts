@@ -64,11 +64,35 @@ class SqliteEventStore implements EventStore {
   readonly #db: Sqlite
   readonly #clock: Clock
   readonly #readOnly: boolean
+  readonly #strictProjection: boolean
 
-  constructor(db: Sqlite, clock: Clock, readOnly: boolean) {
+  constructor(db: Sqlite, clock: Clock, readOnly: boolean, strictProjection: boolean) {
     this.#db = db
     this.#clock = clock
     this.#readOnly = readOnly
+    this.#strictProjection = strictProjection
+  }
+
+  /**
+   * `strictProjection` (§3): a miss the projections just recorded is a bug in the log
+   * being applied, not a fact about it. Thrown from inside the transaction, so a strict
+   * store rolls back the event that caused the miss along with everything after it —
+   * a test that named an entity it never opened gets no half-applied log to read.
+   */
+  #assertProjectionsClean(fromSeq: number): void {
+    if (!this.#strictProjection) return
+    const misses = this.#db.all<{ event_seq: number; projection: string; detail: string }>(
+      'SELECT event_seq, projection, detail FROM projection_anomalies WHERE event_seq >= ? ORDER BY event_seq, projection',
+      fromSeq,
+    )
+    if (misses.length === 0) return
+    throw fleetError(
+      'store_failed',
+      `strictProjection: ${misses.length} projection miss(es): ${misses
+        .map((miss) => `#${miss.event_seq} ${miss.projection}: ${miss.detail}`)
+        .join('; ')}`,
+      { details: { misses } },
+    )
   }
 
   #assertWritable(operation: string): void {
@@ -121,8 +145,8 @@ class SqliteEventStore implements EventStore {
     assertAppendable(batch)
     if (batch.length === 0) return []
     try {
-      return this.#db.transaction(() =>
-        batch.map((event) => {
+      return this.#db.transaction(() => {
+        const seqs = batch.map((event) => {
           // The producer stamps `ts`; the injected clock is the fallback, which is
           // what makes a replay test deterministic (§5.4).
           const ts: Timestamp = typeof event.ts === 'string' && event.ts.length > 0 ? event.ts : this.#clock.now()
@@ -139,8 +163,10 @@ class SqliteEventStore implements EventStore {
           // see again on replay — exactly the same shape, from the same reducer.
           applyEvent(this.#db, parse(fleetEvent(), { ...event, seq: lastInsertRowid, ts }))
           return lastInsertRowid
-        }),
-      )
+        })
+        this.#assertProjectionsClean(seqs[0])
+        return seqs
+      })
     } catch (thrown) {
       throw toFleetError(thrown, 'store_failed')
     }
@@ -196,6 +222,8 @@ class SqliteEventStore implements EventStore {
         for (const row of this.#db.iterate<EventRow>(`${SELECT_EVENTS} ORDER BY seq`)) {
           applyEvent(this.#db, toEvent(row))
         }
+        // A replay has to agree with the append that wrote the log, so the same mode applies.
+        this.#assertProjectionsClean(1)
       })
     } catch (thrown) {
       throw toFleetError(thrown, 'store_failed')
@@ -221,7 +249,7 @@ class SqliteEventStore implements EventStore {
 export const openSqliteStore = async (options: StoreOptions): Promise<EventStore> => {
   const readOnly = options.readOnly === true
   const db = new Sqlite(options.path, { readOnly })
-  const store = new SqliteEventStore(db, options.clock ?? systemClock, readOnly)
+  const store = new SqliteEventStore(db, options.clock ?? systemClock, readOnly, options.strictProjection === true)
   try {
     // A writable handle brings its own schema up to date: `migrate` is
     // idempotent, and a reader never needs to write to open a store.

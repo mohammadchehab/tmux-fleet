@@ -40,6 +40,13 @@ export interface StoreOptions {
   readonly clock?: Clock
   /** A read-only handle for `fleet replay` and `fleet ls` against a live daemon. */
   readonly readOnly?: boolean
+  /**
+   * A projection miss throws instead of becoming a row (§3). For tests: a hand-written
+   * log is meant to be complete, so a projection that has to skip an event is a bug in
+   * the test — and the throw names the event, on the batch that caused it, instead of
+   * leaving an anomaly row nobody thinks to look at.
+   */
+  readonly strictProjection?: boolean
 }
 
 /**

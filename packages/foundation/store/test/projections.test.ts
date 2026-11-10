@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
-import type { PeerId, WorkId } from '@fleet/foundation-core'
+import { FleetError, type PeerId, type WorkId } from '@fleet/foundation-core'
 import type { AppendEvent } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore } from '../src/index.ts'
 import { appendable, fixedClock, fixtureLog, tempStorePath } from './fixtures.ts'
@@ -430,5 +430,30 @@ test('an event about an entity the log never opened is recorded, not silently dr
   await store.rebuild()
   assert.deepEqual(await anomalies(path), recorded)
   assert.equal((await store.health()).anomalies, 1, 'a replay lands on the same count, not zero and not two')
+  await store.close()
+})
+
+test('`strictProjection` turns a miss into a throw, and keeps none of the batch', async () => {
+  const store = await openSqliteStore({ path: tempStorePath(), clock: fixedClock, strictProjection: true })
+  const absent = 'wrk_eeeeeeeeeeeeeeee' as WorkId
+  const miss = event('work.started', absent, { workId: absent, peerId: 'engineer-1', sessionId: 'ses_1a2b3c4d5e6f7081' })
+
+  await assert.rejects(
+    () => store.append([appendable('peer.registered.json'), miss]),
+    (thrown: unknown) =>
+      thrown instanceof FleetError &&
+      thrown.code === 'store_failed' &&
+      /strictProjection: 1 projection miss/.test(thrown.message) &&
+      thrown.message.includes(`no work row for ${absent}`),
+    'the message names the miss, so a test does not have to go and read the table to find it',
+  )
+
+  assert.deepEqual(await store.health(), { latestSeq: 0, events: 0, anomalies: 0 }, 'the whole batch rolled back')
+  assert.equal(await store.reader().peers.get('engineer-1' as PeerId), undefined, 'including the event that did project')
+
+  // Strict about misses, not about logs: an event every projection can follow still lands.
+  await store.append([appendable('peer.registered.json')])
+  await store.rebuild()
+  assert.deepEqual(await store.health(), { latestSeq: 1, events: 1, anomalies: 0 })
   await store.close()
 })
