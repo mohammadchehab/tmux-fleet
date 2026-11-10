@@ -329,7 +329,11 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   await store.migrate()
 
   const providers = deps.providers ?? buildProviders(profile)
-  const pm = deps.pm ?? createProjectManager()
+  // §6.1's spend cap is a PM rule, so the profile's budget is policy the PM holds rather than something a rule
+  // reaches for: no `budget` block means no cap, and the rule then never asks about money.
+  const pm =
+    deps.pm ??
+    createProjectManager(profile.budget === undefined ? {} : { budgetUsd: profile.budget.usd })
 
   // §5.2: an append is the fleet's clock, so every committed batch wakes what
   // listens for it. The sink wraps the store rather than living inside it: the

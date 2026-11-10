@@ -149,6 +149,7 @@ const snapshotOf = async (store: EventStore) => {
     findings: await reader.findings.all(),
     notifications: await reader.notifications.all(),
     judge: await reader.judge.all(),
+    tokens: await reader.tokens.all(),
   }
 }
 

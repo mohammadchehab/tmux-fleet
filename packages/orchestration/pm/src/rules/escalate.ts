@@ -24,7 +24,12 @@ import { byOrder, isLivePeer, prKey, refOf, workOrder } from '../state.ts'
 import { approvalDecisionId, approvalInputsHash, prsInOrder } from './gate.ts'
 import { draft, type Draft, type Rule, type RuleContext } from './context.ts'
 
-export const requestDecisions: Rule = (ctx) => [...judgeEscalations(ctx), ...approvalGaps(ctx), ...unheldRoles(ctx)]
+export const requestDecisions: Rule = (ctx) => [
+  ...judgeEscalations(ctx),
+  ...approvalGaps(ctx),
+  ...unheldRoles(ctx),
+  ...spendCap(ctx),
+]
 
 /** §5.3: a Judge answer that escalated becomes the user's decision, carrying the question the Judge formed. */
 const judgeEscalations = (ctx: RuleContext): readonly Draft[] => {
@@ -114,4 +119,65 @@ const unheldRoles = (ctx: RuleContext): readonly Draft[] => {
     )
   }
   return drafts
+}
+
+/**
+ * §6.1's soft spend cap: the one question about money, and the only rule that reads §6.2's ledger.
+ *
+ * The key is the budget itself, not a period: an answer to "you have spent $X of $Y" is "continue", which the open
+ * (then answered) row makes stick for that $Y — and a new $Y is a new question, because raising the cap is exactly
+ * the user saying "more". Nothing here resets a period, because the ledger it reads does not either.
+ */
+export const budgetDecisionId = (budgetUsd: number): DecisionId =>
+  deriveId('dec', { kind: 'budget', budgetUsd }) as DecisionId
+
+/** What the fleet has spent, and whether that is the whole bill (§6.2: a provider that reports no price leaves 0). */
+interface Spend {
+  readonly usd: number
+  /** Peers that ran turns but reported no cost, so `usd` is a floor rather than a total. */
+  readonly unpriced: number
+}
+
+const fleetSpend = (ctx: RuleContext): Spend => {
+  let usd = 0
+  let unpriced = 0
+  for (const row of ctx.state.tokens) {
+    // A rollup row (no `workId`) is a peer's whole bill; a per-Work row is its breakdown, and adding it would bill
+    // the same turn twice.
+    if (row.workId !== undefined) continue
+    usd += row.costUsd
+    if (row.turns > 0 && row.costUsd === 0) unpriced++
+  }
+  return { usd, unpriced }
+}
+
+const spendCap = (ctx: RuleContext): readonly Draft[] => {
+  const budgetUsd = ctx.options.budgetUsd
+  if (budgetUsd === undefined) return []
+
+  const { usd, unpriced } = fleetSpend(ctx)
+  if (usd < budgetUsd) return []
+
+  const decisionId = budgetDecisionId(budgetUsd)
+  if (ctx.index.decision(decisionId) !== undefined) return []
+
+  const money = (value: number): string => `$${value.toFixed(2)}`
+  // "at least" is not hedging: a peer that reports turns and no price (§6.2) spent money this number does not count.
+  const spent = unpriced === 0 ? money(usd) : `at least ${money(usd)}`
+  const unpricedNote =
+    unpriced === 0 ? '' : ` (${String(unpriced)} ${unpriced === 1 ? 'peer reports' : 'peers report'} turns with no price)`
+
+  return [
+    draft(`decision:${decisionId}`, {
+      kind: 'request_decision',
+      causedBy: ctx.causedBy,
+      decisionId,
+      decisionKind: 'budget',
+      question:
+        `The fleet has spent ${spent} of its ${money(budgetUsd)} budget${unpricedNote}. ` +
+        `Keep going, or raise the cap?`,
+      options: ['continue', 'raise budget'],
+      inputsHash: shortHash({ kind: 'budget', budgetUsd, usd, unpriced }),
+    }),
+  ]
 }

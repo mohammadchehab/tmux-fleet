@@ -429,6 +429,12 @@ export interface Profile {
   /** §6.1: where a notification goes. `none` keeps the ledger and sends nothing. */
   readonly notify?: { readonly channel: 'macos' | 'none' }
   /**
+   * §6.1: the soft spend cap, in USD. Absent means the fleet never asks about money — a default cap would put a
+   * question in every profile's inbox, so it has to be written down. The question is raised once per value (see
+   * `budgetDecisionId`), so raising it here is also how the user says "carry on".
+   */
+  readonly budget?: { readonly usd: number }
+  /**
    * §6.2: the scanners to run. The block's presence is what installs the
    * `security-scan` routine — a profile without it scans nothing, and scans
    * nothing silently, which is the honest default for a tool that spawns three
@@ -555,6 +561,12 @@ const routinesBlock = (): Schema<RoutinesConfig> => ({
 
 const notifyBlock = (): Schema<{ readonly channel: 'macos' | 'none' }> =>
   objectAs<{ readonly channel: 'macos' | 'none' }>()({ channel: oneOf(['macos', 'none'] as const) })
+
+/** A cap of 0 would ask the moment the first turn is billed; it is a number, but not a budget. */
+const budgetBlock = (): Schema<{ readonly usd: number }> =>
+  objectAs<{ readonly usd: number }>()({
+    usd: refine(number({ min: 0 }), (value) => value > 0, 'a budget in USD above zero'),
+  })
 
 /**
  * An empty allowlist is refused for the same reason an empty scanner set is: it
@@ -806,6 +818,7 @@ export const profileSchema = (): Schema<Profile> =>
     judge: optional(judgeBlock()),
     forge: optional(forgeBlock()),
     notify: optional(notifyBlock()),
+    budget: optional(budgetBlock()),
     security: optional(securityBlock()),
     builds: optional(buildsBlock()),
     trackers: optional(trackerBlock()),

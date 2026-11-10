@@ -121,6 +121,7 @@ describe('a routine is a seam onto the PM', () => {
       'pullRequests',
       'routines',
       'sessions',
+      'tokens',
       'work',
       'worktrees',
     ])
