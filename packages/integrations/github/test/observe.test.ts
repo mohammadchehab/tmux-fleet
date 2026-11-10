@@ -119,6 +119,13 @@ describe('footersFrom: the two fields gh cannot know', () => {
     assert.deepEqual(footersFrom('Fleet-Work: not-an-id\nFleet-Stack-Parent: somewhere#zero', where), {})
     assert.deepEqual(footersFrom(undefined, where), {})
   })
+
+  it('refuses a nested footer, so a body cannot name a host through the stack pin', () => {
+    // `gh -R` reads three segments as HOST/OWNER/REPO. A stranger who can edit a PR body would otherwise choose
+    // the host the gate's next `get` talks to, so a nested footer is not a footer at all.
+    assert.deepEqual(footersFrom('Fleet-Stack-Parent: evil.example/someone/other#12', where), {})
+    assert.deepEqual(footersFrom('Fleet-Stack-Parent: ./someone#12', where), {})
+  })
 })
 
 describe('pullRequestFrom: one row as the contract’s PR', () => {

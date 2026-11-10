@@ -137,13 +137,22 @@ export const reviewFrom = (reviewDecision: unknown, latestReviews: unknown): Rev
 const WORK_FOOTER = /^Fleet-Work:[ \t]*(\S+)[ \t]*$/m
 const PARENT_FOOTER = /^Fleet-Stack-Parent:[ \t]*(\S+)[ \t]*$/m
 
-/** `owner/name#12`, or `#12` for a PR in the same repo. Anything else is not a footer this package understands. */
+/**
+ * `owner/name#12`, or `#12` for a PR in the same repo. Anything else is not a
+ * footer this package understands.
+ *
+ * The footer is text a stranger can write, so it may not name a *host*: `gh -R`
+ * reads `HOST/OWNER/REPO`, which means a three-segment footer would choose the
+ * host the gate then talks to. GitHub has no nested repos, so exactly two
+ * segments is the whole grammar — the widened `Repo` type does not widen this.
+ */
 const parseParent = (value: string, on: Repo): { readonly repo: Repo; readonly number: number } | undefined => {
   const match = /^(?:([^#\s]+))?#(\d+)$/.exec(value)
   if (match === null) return undefined
   const owner = match[1]
   const number = Number(match[2])
   if (!Number.isInteger(number) || number < 1) return undefined
+  if (owner !== undefined && owner.split('/').length !== 2) return undefined
   const where = safeParse(repoShape(), owner ?? String(on))
   return where.ok ? { repo: where.value, number } : undefined
 }
