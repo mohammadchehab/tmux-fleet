@@ -250,6 +250,23 @@ test('up starts the supervisor before the scheduler, and down stops them the oth
   assert.equal(daemon.running, false)
 })
 
+test('a second down after up stops the sessions the second up started', async () => {
+  const { daemon, supervisor, scheduler } = await harness()
+
+  await daemon.up()
+  await daemon.down()
+  await daemon.up()
+  await daemon.down()
+
+  assert.deepEqual(
+    supervisor.log,
+    ['supervisor.start', 'supervisor.stop', 'supervisor.start', 'supervisor.stop'],
+    'the second down must stop the peers the second up started, not return the first stop again',
+  )
+  assert.deepEqual(scheduler.log, ['scheduler.start', 'scheduler.stop', 'scheduler.start', 'scheduler.stop'])
+  assert.equal(daemon.running, false)
+})
+
 test('two up calls in flight start the supervisor and the scheduler once', async () => {
   const { daemon, supervisor, scheduler } = await harness()
 
