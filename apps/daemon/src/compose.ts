@@ -45,7 +45,7 @@ import { createNotifyFactory, notifierFor } from './notify.ts'
 import { loadProfile, type Profile } from './profile.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
 import { createSupervisor, type Supervisor } from './sessions.ts'
-import { createWakingSink } from './wake.ts'
+import { createWakingSink, deliverOnSessionStart } from './wake.ts'
 
 export interface Wiring {
   readonly profile: Profile
@@ -172,20 +172,11 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     clock,
   })
 
-  // §7: a peer that reaches running gets what is waiting for it. `send` appends and
-  // returns (§7's `send` does not deliver), so this is what makes a message sent to
-  // a peer that was not up reach it when it comes up — including on resume, which
-  // arrives as `session.started` again. Delivering a message sent to an *already*
-  // running peer is `send`→`deliver`'s job, not this hook's; both land in the same
-  // box, which is serialized per peer and skips a message already handed to the
-  // same session, so the two paths cannot deliver one message twice.
-  wake.listen(async (event) => {
-    if (event.type !== 'session.started') return
-    const delivered = await mailbox.deliver(event.data.peerId)
-    // A delivery that failed is reported through the same `onError` above; throwing
-    // here keeps one error path instead of two.
-    if (!delivered.ok) throw delivered.error
-  })
+  // §7: a peer that reaches running gets what is waiting for it. A message sent to a
+  // peer that was not up is `pending` in the box, and `session.started` — including
+  // the one a resume produces — is what retries it. See `deliverOnSessionStart` for
+  // why a delivery already in flight for that peer is left alone.
+  wake.listen(deliverOnSessionStart(mailbox))
 
   // §10: the gate is the only executor that merges, and it needs the GitHub port.
   // Building the port runs nothing: `gh` starts only when a merge or retarget
