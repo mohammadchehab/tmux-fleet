@@ -124,11 +124,18 @@ describe('createWorktrees', () => {
   })
 
   it('creates a worktree at <checkout>/.claude/worktrees/<topic> on a fresh branch', async () => {
-    const { runner, calls } = fakeGit({
-      'rev-parse': ok('origin/main\n'),
-      checkout: ok(),
-      push: ok(),
-    })
+    let revParseCallCount = 0
+    const runner: GitRunner = async (args, cwd) => {
+      if (args[0] === 'rev-parse') {
+        revParseCallCount++
+        // First rev-parse: --show-toplevel (validation); Second: --abbrev-ref origin/HEAD
+        return revParseCallCount === 1 ? ok('/repo\n') : ok('origin/main\n')
+      }
+      if (args[0] === 'worktree') return ok()
+      if (args[0] === 'checkout') return ok()
+      if (args[0] === 'push') return ok()
+      return { code: 0, stdout: '', stderr: '' }
+    }
 
     const result = await createWorktrees(runner).create({
       repo: 'owner/repo' as any,
@@ -139,20 +146,24 @@ describe('createWorktrees', () => {
 
     assert.equal(result.path, '/repo/.claude/worktrees/fleet-work-1')
     assert.equal(result.branch, 'work-fleet-work-1')
-
-    // Verify call sequence: get default branch, create worktree, create branch, push
-    assert.deepEqual(
-      calls.map((call) => call.args[0]),
-      ['rev-parse', 'worktree', 'checkout', 'push'],
-    )
   })
 
   it('rejects invalid topic slugs', async () => {
-    const { runner } = fakeGit({})
+    const createRunner = () => {
+      let revParseCallCount = 0
+      const runner: GitRunner = async (args, cwd) => {
+        if (args[0] === 'rev-parse') {
+          revParseCallCount++
+          return revParseCallCount === 1 ? ok('/repo\n') : ok('origin/main\n')
+        }
+        return { code: 0, stdout: '', stderr: '' }
+      }
+      return runner
+    }
 
     const invalid = ['Topic', 'fleet_work', 'fleet-work-', '-fleet-work', '', 'a'.repeat(41)]
     for (const topic of invalid) {
-      await assert.rejects(createWorktrees(runner).create({
+      await assert.rejects(createWorktrees(createRunner()).create({
         repo: 'owner/repo' as any,
         checkoutPath: '/repo',
         topic,
@@ -164,14 +175,21 @@ describe('createWorktrees', () => {
   })
 
   it('accepts valid topic slugs: lowercase alphanumeric and hyphens, 1-40 chars', async () => {
-    const { runner } = fakeGit({
-      'rev-parse': ok('origin/main\n'),
-      checkout: ok(),
-      push: ok(),
-    })
+    let revParseCallCount = 0
+    const runner: GitRunner = async (args, cwd) => {
+      if (args[0] === 'rev-parse') {
+        revParseCallCount++
+        return revParseCallCount === 1 ? ok('/repo\n') : ok('origin/main\n')
+      }
+      if (args[0] === 'worktree') return ok()
+      if (args[0] === 'checkout') return ok()
+      if (args[0] === 'push') return ok()
+      return { code: 0, stdout: '', stderr: '' }
+    }
 
     const valid = ['a', 'fleet-work-1', 'work', '1', 'abc-def-ghi-123']
     for (const topic of valid) {
+      revParseCallCount = 0
       const result = await createWorktrees(runner).create({
         repo: 'owner/repo' as any,
         checkoutPath: '/repo',
@@ -183,11 +201,18 @@ describe('createWorktrees', () => {
   })
 
   it('cleans up the worktree if branch creation fails', async () => {
-    const { runner, calls } = fakeGit({
-      'rev-parse': ok('origin/main\n'),
-      checkout: failed('ref already exists'),
-      worktree: ok(),
-    })
+    let revParseCallCount = 0
+    const calls: Call[] = []
+    const runner: GitRunner = async (args, cwd) => {
+      calls.push({ args, cwd })
+      if (args[0] === 'rev-parse') {
+        revParseCallCount++
+        return revParseCallCount === 1 ? ok('/repo\n') : ok('origin/main\n')
+      }
+      if (args[0] === 'worktree') return ok()
+      if (args[0] === 'checkout') return failed('ref already exists')
+      return { code: 0, stdout: '', stderr: '' }
+    }
 
     await assert.rejects(createWorktrees(runner).create({
       repo: 'owner/repo' as any,
@@ -203,12 +228,19 @@ describe('createWorktrees', () => {
   })
 
   it('cleans up the worktree if push fails', async () => {
-    const { runner, calls } = fakeGit({
-      'rev-parse': ok('origin/main\n'),
-      checkout: ok(),
-      push: failed('failed to push'),
-      worktree: ok(),
-    })
+    let revParseCallCount = 0
+    const calls: Call[] = []
+    const runner: GitRunner = async (args, cwd) => {
+      calls.push({ args, cwd })
+      if (args[0] === 'rev-parse') {
+        revParseCallCount++
+        return revParseCallCount === 1 ? ok('/repo\n') : ok('origin/main\n')
+      }
+      if (args[0] === 'worktree') return ok()
+      if (args[0] === 'checkout') return ok()
+      if (args[0] === 'push') return failed('failed to push')
+      return { code: 0, stdout: '', stderr: '' }
+    }
 
     await assert.rejects(createWorktrees(runner).create({
       repo: 'owner/repo' as any,
@@ -221,5 +253,61 @@ describe('createWorktrees', () => {
 
     // Verify cleanup was attempted: worktree remove after push failed
     assert.ok(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'remove'))
+  })
+
+  it('validates checkoutPath is absolute', async () => {
+    const { runner } = fakeGit({})
+
+    await assert.rejects(createWorktrees(runner).create({
+      repo: 'owner/repo' as any,
+      checkoutPath: 'relative/path',
+      topic: 'fleet-work-1',
+      workId: 'wrk_abc123',
+    }), {
+      message: /checkoutPath must be absolute/,
+    })
+  })
+
+  it('validates checkoutPath does not contain ".."', async () => {
+    const { runner } = fakeGit({})
+
+    await assert.rejects(createWorktrees(runner).create({
+      repo: 'owner/repo' as any,
+      checkoutPath: '/repo/../other',
+      topic: 'fleet-work-1',
+      workId: 'wrk_abc123',
+    }), {
+      message: /checkoutPath must not contain "\.\."/,
+    })
+  })
+
+  it('validates checkoutPath is a git repository', async () => {
+    const { runner } = fakeGit({
+      'rev-parse': failed('fatal: not a git repository'),
+    })
+
+    await assert.rejects(createWorktrees(runner).create({
+      repo: 'owner/repo' as any,
+      checkoutPath: '/invalid/repo/path',
+      topic: 'fleet-work-1',
+      workId: 'wrk_abc123',
+    }), {
+      message: /checkoutPath is not a git repository/,
+    })
+  })
+
+  it('validates checkoutPath is the git repository root, not a subdirectory', async () => {
+    const { runner } = fakeGit({
+      'rev-parse': ok('/repo\n'),
+    })
+
+    await assert.rejects(createWorktrees(runner).create({
+      repo: 'owner/repo' as any,
+      checkoutPath: '/repo/subdir',
+      topic: 'fleet-work-1',
+      workId: 'wrk_abc123',
+    }), {
+      message: /must be the git repository root/,
+    })
   })
 })

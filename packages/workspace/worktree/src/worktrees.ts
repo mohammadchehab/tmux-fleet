@@ -28,6 +28,9 @@
  * main repository's git directory, and its parent is the directory to remove from.
  */
 
+import { realpathSync } from 'node:fs'
+import { resolve as resolvePath } from 'node:path'
+
 import type { Worktrees } from '@fleet/foundation-contracts'
 import { execFileGit, type GitRunner } from './git.ts'
 
@@ -49,9 +52,49 @@ const registered = async (runner: GitRunner, root: string): Promise<readonly str
 
 const TOPIC_PATTERN = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/
 
+/** Validate checkoutPath: must be absolute, contain no `..`, and be a git repo at its root. */
+const validateCheckoutPath = async (runner: GitRunner, checkoutPath: string): Promise<void> => {
+  if (!checkoutPath.startsWith('/')) {
+    throw new Error(`checkoutPath must be absolute; got "${checkoutPath}"`)
+  }
+
+  if (checkoutPath.includes('..')) {
+    throw new Error(`checkoutPath must not contain ".."; got "${checkoutPath}"`)
+  }
+
+  // Check if path exists and is realpath'd
+  let realPath: string
+  try {
+    realPath = realpathSync(checkoutPath)
+    if (realPath !== checkoutPath) {
+      throw new Error(
+        `checkoutPath must be realpath'd (no symlinks or relative components); got "${checkoutPath}", resolved to "${realPath}"`,
+      )
+    }
+  } catch (err) {
+    // If realpathSync fails and it's not our custom error, let git validation catch it
+    if (err instanceof Error && err.message.includes('realpath')) throw err
+  }
+
+  const result = await runner(['rev-parse', '--show-toplevel'], checkoutPath)
+  if (result.code !== 0) {
+    throw new Error(`checkoutPath is not a git repository; got "${checkoutPath}"`)
+  }
+
+  const repoRoot = result.stdout.trim()
+  if (repoRoot !== checkoutPath) {
+    throw new Error(
+      `checkoutPath must be the git repository root; got "${checkoutPath}", but repository root is "${repoRoot}"`,
+    )
+  }
+}
+
 export const createWorktrees = (runner: GitRunner = execFileGit): Worktrees => ({
   async create(input) {
     const { repo, checkoutPath, topic, workId } = input
+
+    // Validate checkoutPath: absolute, realpath'd, no `..`, and is the git repo root
+    await validateCheckoutPath(runner, checkoutPath)
 
     // Validate topic: lowercase alphanumeric + hyphens, 1-40 chars
     if (!TOPIC_PATTERN.test(topic)) {
