@@ -45,6 +45,16 @@ test('a second provider on the same SDK is the same class with another id', () =
   assert.equal(deepinfra.capabilities.usageCost, false)
 })
 
+test('the window it hands a session is its configured one, and nothing for a model it does not know', () => {
+  // §6.2's Stop hook is told the limit before a session exists, so the provider
+  // answers from config. The default table is empty with a 200 000 fallback, and
+  // a model outside a configured table with no fallback is `undefined`, not a guess (§8).
+  assert.equal(provider.contextLimit?.('claude-sonnet-5-5'), 200_000)
+  const configured = new ClaudeProvider({ limits: { byModel: { 'claude-sonnet-5-5': 500_000 }, fallback: 0 } })
+  assert.equal(configured.contextLimit?.('claude-sonnet-5-5'), 500_000)
+  assert.equal(configured.contextLimit?.('claude-opus-5-5'), undefined)
+})
+
 test('the id must be provider-shaped or the registry cannot address it', () => {
   const check = capabilityChecks()[0]
   assert.ok(check !== undefined)

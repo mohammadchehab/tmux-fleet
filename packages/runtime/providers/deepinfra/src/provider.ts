@@ -275,6 +275,17 @@ export class DeepInfraProvider implements Provider {
     return this.#inner.usage(handle)
   }
 
+  /**
+   * The window for `model` from DeepInfra's own table, not a guess (§8). Read
+   * from `#limits` rather than the inner provider: the inner one is built with
+   * `fallback: 1` so that a model it does not list cannot quietly borrow 200 000,
+   * and a one-token window is not an answer to hand a Stop hook either — an
+   * unlisted model is `undefined`, and the session carries no limit.
+   */
+  contextLimit(model: string): number | undefined {
+    return this.#limits[model]
+  }
+
   async model(handle: SessionHandle): Promise<{ id: string; endpoint?: string }> {
     return this.#inner.model(handle)
   }

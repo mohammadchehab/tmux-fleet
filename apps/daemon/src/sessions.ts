@@ -99,20 +99,37 @@ export interface Supervisor extends PeerSessions {
 }
 
 /**
- * A peer's env: its identity, plus whatever its provider needs to reach its
- * endpoint. The identity is this file's business; the rest is a fragment built
- * by the composition root, because an endpoint and a key belong to a provider
- * this file must not know by name (§2).
+ * A peer's env: its identity and the fleet facts a peer process needs to talk
+ * back, plus whatever its provider needs to reach its endpoint. The fleet facts
+ * are this file's business; the rest is a fragment built by the composition
+ * root, because an endpoint and a key belong to a provider this file must not
+ * know by name (§2).
+ *
+ * Three of these are exactly what §6.2's Stop hook reads, and provisioning only
+ * `FLEET_PEER` is why it reported nothing: it skips, with a reason, unless the
+ * env also names the socket and the model's window
+ * (`apps/hooks/usage-report/src/report.ts`). `FLEET_WORK_ID` is the hook's
+ * fourth input and stays out on purpose — a session is started for a peer, and
+ * the Work a peer is on changes turn by turn (§8).
  *
  * Built at **every** start, including a resume, so a rotated key is picked up
  * without restarting the daemon.
  */
-const envFor = async (peer: PeerProfile, deps: SupervisorDeps): Promise<Readonly<Record<string, string>>> => ({
-  // The peer's own identity on the line, so a transcript says which peer wrote it.
-  FLEET_PEER: String(peer.id),
-  FLEET_ROLE: peer.role,
-  ...(deps.providerEnv === undefined ? {} : await deps.providerEnv(peer)),
-})
+const envFor = async (peer: PeerProfile, deps: SupervisorDeps): Promise<Readonly<Record<string, string>>> => {
+  const limit = deps.providers.get(peer.provider)?.contextLimit?.(peer.model)
+  return {
+    // The peer's own identity on the line, so a transcript says which peer wrote it.
+    FLEET_PEER: String(peer.id),
+    FLEET_ROLE: peer.role,
+    // §2: the daemon this peer belongs to. A peer's own `fleet send` resolves it
+    // from here before it looks at any directory it happens to stand in.
+    FLEET_SOCKET: deps.paths.socketPath,
+    // Absent when the provider knows no window for this model: the hook then
+    // skips rather than reporting against a number nobody configured (§8).
+    ...(limit === undefined ? {} : { FLEET_CONTEXT_LIMIT: String(limit) }),
+    ...(deps.providerEnv === undefined ? {} : await deps.providerEnv(peer)),
+  }
+}
 
 /**
  * The default brief: the role the profile gave the peer, said plainly. It is a
