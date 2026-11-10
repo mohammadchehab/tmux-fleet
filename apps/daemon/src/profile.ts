@@ -65,6 +65,32 @@ export interface RepoProfile {
   readonly repo: string
 }
 
+/**
+ * What a profile may say about the DeepInfra adapter (§4). The block is the
+ * fleet's own policy for that endpoint, so it is enforced in the adapter — which
+ * means `setModel` obeys it too, not only the models a peer starts on.
+ */
+export interface DeepInfraProfile {
+  /**
+   * The DeepInfra model ids this fleet may run. When present, a peer whose model
+   * is off the list is refused at `fleet up` with the adapter's `config_mismatch`
+   * rather than reaching DeepInfra and being billed for a model nobody chose.
+   * Absent, any model with a configured context window is allowed, as before.
+   */
+  readonly allowedModels?: readonly string[]
+  /**
+   * The endpoint, when this fleet runs a proxy or a staging host. Peers on
+   * DeepInfra must then be built with the same one: the adapter refuses a spec
+   * that names any other.
+   */
+  readonly baseUrl?: string
+}
+
+/** The provider blocks this build reads; a provider with no block uses its defaults. */
+export interface ProvidersProfile {
+  readonly deepinfra?: DeepInfraProfile
+}
+
 /** §6.2's tools, as a profile may name them: the four adapters this daemon ships. */
 export const profileScanners = ['semgrep', 'gitleaks', 'osv-scanner', 'trivy'] as const
 export type ProfileScanner = (typeof profileScanners)[number]
@@ -77,6 +103,12 @@ export interface Profile {
   readonly peers: readonly PeerProfile[]
   /** §6's per-routine settings, handed to `planRoutines` unchanged. */
   readonly routines?: RoutinesConfig
+  /**
+   * §4: the profile's own policy for the providers this daemon wires. Read only
+   * for a provider a peer actually names — the same rule `buildProviders` uses
+   * to decide what to construct.
+   */
+  readonly providers?: ProvidersProfile
   /** §6.1: where a notification goes. `none` keeps the ledger and sends nothing. */
   readonly notify?: { readonly channel: 'macos' | 'none' }
   /**
@@ -125,6 +157,26 @@ const routinesBlock = (): Schema<RoutinesConfig> => ({
 const notifyBlock = (): Schema<{ readonly channel: 'macos' | 'none' }> =>
   objectAs<{ readonly channel: 'macos' | 'none' }>()({ channel: oneOf(['macos', 'none'] as const) })
 
+/**
+ * An empty allowlist is refused for the same reason an empty scanner set is: it
+ * is a block that reads as configured and then permits nothing, so every peer on
+ * that provider would fail at `fleet up` with no hint that the list was the bug.
+ */
+const deepInfraBlock = (): Schema<DeepInfraProfile> =>
+  objectAs<DeepInfraProfile>()({
+    allowedModels: optional(
+      refine(
+        array(text(120), { maxItems: 50 }),
+        (models) => models.length > 0,
+        'at least one model when the list is given',
+      ),
+    ),
+    baseUrl: optional(text(300)),
+  })
+
+const providersBlock = (): Schema<ProvidersProfile> =>
+  objectAs<ProvidersProfile>()({ deepinfra: optional(deepInfraBlock()) })
+
 const limitsBlock = (): Schema<{ readonly maxSessions?: number }> =>
   objectAs<{ readonly maxSessions?: number }>()({ maxSessions: optional(positiveInt()) })
 
@@ -144,6 +196,7 @@ export const profileSchema = (): Schema<Profile> =>
     repos: array(text(200), { maxItems: 50 }),
     peers: array(peerProfile(), { maxItems: 50 }),
     routines: optional(routinesBlock()),
+    providers: optional(providersBlock()),
     notify: optional(notifyBlock()),
     security: optional(securityBlock()),
     limits: optional(limitsBlock()),

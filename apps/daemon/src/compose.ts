@@ -163,7 +163,19 @@ export const buildProviders = (profile: Profile): ReadonlyMap<string, Provider> 
   if (needed.has('deepinfra')) {
     // Same adapter, its own endpoint and limits, all from config (#26). The key
     // is read by the provider from the environment; the daemon never sees it.
-    providers.set('deepinfra', createDeepInfraProvider())
+    //
+    // The profile's `providers.deepinfra` block is handed over unchanged rather
+    // than re-checked here: the adapter is what refuses an id it cannot serve,
+    // and it refuses it on every path — a start, a resume and a `setModel` — so
+    // a policy enforced here would be one the late paths could step around.
+    const block = profile.providers?.deepinfra
+    providers.set(
+      'deepinfra',
+      createDeepInfraProvider({
+        ...(block?.baseUrl === undefined ? {} : { baseUrl: block.baseUrl }),
+        ...(block?.allowedModels === undefined ? {} : { allowedModels: block.allowedModels }),
+      }),
+    )
   }
   return providers
 }
