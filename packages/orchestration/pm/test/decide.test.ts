@@ -81,6 +81,36 @@ test('a peer takes the next ready Work for its role, with a v1 brief', () => {
   assert.match(inputsHash, /^[0-9a-f]{16}$/)
 })
 
+test('a brief goes above the version the peer already carries, or the executor refuses it as not newer (§12.1)', () => {
+  // A peer's version is one counter: a standing brief (`peer.standards_set`) or an
+  // earlier Work's brief has already moved it, and a v1 here would be refused.
+  for (const carried of [1, 4]) {
+    const request: DecideRequest = {
+      state: state({
+        peers: [peer({ peerId: 'engineer-1' as never, briefVersion: carried })],
+        work: [work({ title: 'Ship the store', role: 'engineer', body: 'Make the append-only store pass its tests.' })],
+      }),
+      tick: tick(),
+    }
+    const assign = decide(request).actions[0]
+    if (assign?.kind !== 'assign') return assert.fail('expected an assign')
+    assert.equal(assign.brief.version, carried + 1)
+  }
+})
+
+test('a re-assigned Work still goes above the peer’s version when the Work’s own is higher', () => {
+  const request: DecideRequest = {
+    state: state({
+      peers: [peer({ peerId: 'engineer-1' as never, briefVersion: 2 })],
+      work: [work({ title: 'Ship the store', role: 'engineer', body: 'x', briefVersion: 5 })],
+    }),
+    tick: tick(),
+  }
+  const assign = decide(request).actions[0]
+  if (assign?.kind !== 'assign') return assert.fail('expected an assign')
+  assert.equal(assign.brief.version, 6)
+})
+
 test('a brief names the contract version the published event carries, and no other', () => {
   // the snapshot has no Contract projection, so the version comes from the event that made the Work ready (§12)
   const contractId = contractKey()
