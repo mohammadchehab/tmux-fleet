@@ -337,7 +337,10 @@ One tick runs on any event (not a timer poll) and on a heartbeat. Each tick is a
 | gate on contract | `Work` has `dependsOn` a `Contract` not `published` | stay `needs_contract`; assign the contract Work to the architect first (§12) |
 | dedupe | before assign | search `main`, open PRs and `Work` for the same intent; if a hit, ask Judge `same_feature?` |
 | track PR | PR event | update `Work`; when checks green on head SHA and review satisfied → `mergeable` |
-| merge | `mergeable` | PR gate (§10) merges; PM never merges itself |
+| merge | `mergeable` | PR gate (§10): arms auto-merge pinned to the head sha (or merges directly, per the repo's `merge.mode`); PM never merges itself |
+| scope | before assign | a `Work`'s declared `scope` overlaps an in-flight one → do not assign; sequence it behind the other (§10.3) |
+| wire | `seam.detected` | a landed port with no caller → create the wiring `Work` for the daemon owner (§10.4) |
+| exception | `exception.raised` | a typed exception (conflict, red main, stacked base, disarmed auto-merge) → an `exception` `Work` with a brief per kind (§10.2) |
 | unblock | peer `waiting_input` | classify (typed): route to architect/user, or answer from `Decision` log |
 | idle | peer `idle` > N min, nothing assignable | mark capacity free; raise `no_work` to the user, once |
 | standup | schedule | render a report from projections; no model call |
@@ -371,7 +374,8 @@ which owns them:
 | :- | :- | :- |
 | `dispatch` | event + 60 s heartbeat | §5.2 |
 | `keep-busy` | peer idle event | the dispatch `assign` rule; if nothing is ready, creates a `sweep` Work for the architect |
-| `pr-babysit` | PR/check events + 5 min poll via `gh` | updates `PR`; retargets stacked dependents (§10); rebases/nudges on conflict |
+| `pr-babysit` | PR/check events + 5 min poll via `gh` | updates `PR` and the default branch's checks; retargets stacked dependents (§10); **detects** the §10.2 exceptions and raises them as typed events; re-arms auto-merge a push disarmed |
+| `seam-scan` | `pr.merged` on the default branch | §10.4: raises `seam.detected` for a port with no caller |
 | `standup` | cron (default 09:00 local) and on request | report from projections |
 | `worktree-gc` | daily + on `merged` | §9 |
 | `reconcile` | startup + 10 min | provider `status` vs registry; restart dead sessions, fix drift |
@@ -545,13 +549,163 @@ The Worktree manager is the only thing that creates or deletes worktrees; peers 
 
 ## 10. PR gate and stacking
 
-- The gate is code: it merges only when checks are green on the **current head SHA**, the required review is
-  present (role `pr-architect`, or the human policy in the profile when none runs), and the PR has no unmerged stack
-  parent.
+**What changed, and why.** The first fleet reviewed every PR and then merged it by hand. That queue was the
+bottleneck: finished work sat idle, went stale, was rebased and was reviewed again. The flow the build converged on is
+now the design: a required CI job is the gate, each author opens a non-draft PR and arms auto-merge, GitHub merges when
+the job is green, and a person or role only handles **exceptions**. What is slow after that is not review but
+*integration seams* (a slice tested alone and never wired in), so §10.3 and §10.4 make ownership and wiring structural
+rather than a habit of whoever is running the fleet.
+
+The rules that did not change:
+
+- The gate is code: it merges (or arms) only when the required checks are green on the **current head SHA** and the PR
+  has no unmerged stack parent. What counts as "required review" is a profile policy (§10.1).
 - **Stacks are first-class**: `PR.stackParent`. Before merging a parent, the gate retargets every dependent to the
   parent's base and **never passes `--delete-branch` while a dependent exists** (the #102 loss).
-- Merge ownership is a profile policy the gate enforces; with no reviewer role running the gate asks the user, it does
-  not stall silently.
+- Merge ownership is a profile policy the gate enforces; the gate never stalls silently, it raises a decision.
+
+### 10.1 Merge mode: arm, do not merge
+
+Per repo, in the profile (`repos.<repo>.merge`):
+
+```yaml
+merge:
+  mode: auto            # auto | direct
+  method: squash
+  requiredChecks: [checks]      # names, as branch protection lists them
+  review: none          # none | judge | pr-architect | user
+  paused: false         # set by the red-main policy (§10.5), never by hand
+```
+
+- **`auto` (default).** The PM's `merge` action no longer means "merge now". The gate executor *arms* auto-merge
+  pinned to the head sha it saw green (`enablePullRequestAutoMerge` with `expectedHeadOid`, i.e.
+  `gh pr merge --auto --squash --match-head-commit <sha>`), records `pr.auto_merge_armed {pr, headSha, method}`, and
+  GitHub merges when the required checks pass. `pr.merged` is then an *observed* event (`source: github`), not one the
+  gate wrote. If the head moves, GitHub's pin no longer matches and nothing merges; `pr-babysit` sees it (§10.2).
+- **`direct`.** The gate merges itself, as it does today (re-reading the head and checks right before the call). It is
+  for a sandbox repo, for a repo whose host cannot arm auto-merge, and for revert PRs under a pause (§10.5). It is the
+  mode the phase-1 exit test needs.
+- **Who owns branch protection.** The repo owner, not the fleet: changing a repo's protection is outward-facing and
+  needs admin rights. The fleet only **reads** it. `fleet up` runs a `merge-readiness` preflight through a
+  `RepoGuard` port (`integrations/github`): branch protection requires every name in `requiredChecks`, and
+  `allow_auto_merge` is on. A mismatch raises one decision whose body contains the exact `gh api` commands to fix it,
+  and the repo stays in `direct` (or `paused`) until the preflight passes. `fleet repo protect <repo>` runs those
+  commands for a user who has the rights; nothing runs them unasked.
+- **A repo with no CI.** "No checks reported" is never green. With `requiredChecks: []` the gate does not merge on its
+  own authority: it raises a `no_ci` decision once per repo with three options: *add CI* (the PM creates a Work to add
+  the minimal `checks` job), *review only* (the profile records `requiredChecks: []` and `review: user` or
+  `pr-architect`, and every merge then needs that review), or *hold*. The first fleet to run on a new repo is therefore
+  asked once, never surprised.
+- **Review is a policy, not a queue.** `review: none` is valid exactly when `requiredChecks` is non-empty and the repo
+  owner accepted it; `judge` asks the closed `review_verdict` question (§5.3) and treats `escalate` as an exception;
+  `pr-architect` and `user` make the PM route a review Work, which is the old behaviour and is chosen per repo.
+
+### 10.2 Exceptions, routed by type
+
+`pr-babysit` and the gate **detect** exceptions from facts and raise `exception.raised {exceptionId, kind, pr?, sha?,
+fingerprint}`. The set is closed:
+
+| kind | detected when | first owner | then |
+| :- | :- | :- | :- |
+| `merge_conflict` | the PR is not mergeable against its base | the PR's author (rebase) | architect if the author cannot, or the PR is stacked |
+| `stack_base_merged` | a PR's `stackParent` merged, or its base branch is gone | the gate (retarget to the parent's base) | architect if the retarget fails |
+| `auto_merge_disarmed` | green on the current head, `Work` is `mergeable`, GitHub shows no auto-merge request (a push cleared it, or it was disabled) | the gate (re-arm on the new head if its checks are green) | architect if re-arming is refused |
+| `checks_stale` | the head sha moved after arming and the new head has no complete required result | the author (push finished, wait for checks) | none; it clears itself when checks arrive |
+| `red_main` | the default branch's head has a failing required check | §10.5 | §10.5 |
+| `required_check_missing` | branch protection no longer lists a required name | the architect | a decision to the repo owner |
+
+Each exception becomes an `exception` **Work** through the normal `assign` rule (role `architect`, or the author's
+peer where the table says so), with a brief generated from the kind and the facts, and is deduplicated by
+`fingerprint`, so the same conflict is one item no matter how many ticks see it. Three properties keep this from
+turning back into a review queue: an exception is created only by a detector on a fact, never because a PR exists; a PR
+with none never appears in anyone's queue; and each kind has an expected duration in the profile, past which the PM
+raises a decision instead of waiting. `exception.resolved {exceptionId, how, durationMs}` closes it.
+
+### 10.3 Ownership: scope on every Work
+
+Parallel slices stay conflict-free by construction, not by luck. A `Work` declares `scope: {paths: string[]}` (globs
+or package directories) when it is created; the PM refuses to create a Work without one for a repo whose profile sets
+`requireScope: true`, and `thin_card` (§5.3) includes a missing scope.
+
+- **Before assign** the `scope` rule compares the Work's scope with every in-flight Work (`assigned` through
+  `in_review`). A non-empty intersection means the PM does not assign: it adds `dependsOn` from the later Work to the
+  earlier one (so it becomes ready when the first merges) and records `scope.overlap {workId, with, paths}`. The check
+  is by path prefix, conservative on purpose.
+- **Shared files** are listed in the profile (`sharedPaths`: the lockfile, the architecture rules, the design doc, a
+  contracts index). They are not exclusive to a Work, but at most one in-flight Work may touch each at a time, and a
+  later one waits; this is what the `pnpm-lock.yaml` conflicts were.
+- **After the fact**, `pr-babysit` compares a PR's changed files with its Work's scope and raises `scope.exceeded
+  {workId, paths}`. It is a flag on the Work and a line in the standup, not a block: a peer that must touch a file
+  outside its scope says so in its PR, and the owner of that path is told.
+- Duplicates (the #35 case) are the same mechanism one level up: `dedupe` (§5.2) plus an overlapping scope on an open
+  PR is a `same_feature?` Judge question.
+
+### 10.4 Seams as Work
+
+A port with no caller is the integration failure the fleet has actually had (`wake()` never called, an executor never
+composed, an RPC contract and its stand-in drifting apart). Two mechanisms, one static and one behavioural:
+
+1. **Static.** An architecture test (`tests/architecture`) knows the seams: every port interface in
+   `foundation/contracts` marked `@port`, every `ActionExecutor` kind in `pmActionKinds`, every method in
+   `daemonMethods`. For each it requires an implementer and a call site reachable from `apps/daemon`'s composition. A
+   known gap is not a red test: it is an entry in `config/policies/seams.yaml` (`{seam, introducedBy: <PR>, wiringWork:
+   <id>, expires}`), and an entry past `expires` fails the test.
+2. **Automatic Work.** The `seam-scan` routine (§6) runs the same scan on the default branch after each merge. A seam
+   that is new and not in `seams.yaml` raises `seam.detected {seam, package, pr}`; the PM's `wire` rule creates the
+   wiring `Work` (scope: `apps/daemon`, role: its owner, `dependsOn`: the PR) and writes the `seams.yaml` entry, so
+   nothing waits for the exit test to find it.
+
+The behavioural half is a small integration test that runs on every PR: the daemon, given a fake provider and a fake
+`PullRequests`, takes one `Work` from `ready` to a delivered brief and an armed merge. A slice that is correct alone but
+unwired fails it in the PR, not in a later slice.
+
+### 10.5 Red main
+
+Main is red when a required check fails on the default branch's head (`main.checks_changed {repo, sha, state}`,
+polled and event-driven by `pr-babysit`). The policy is mechanical:
+
+1. **Pause.** The gate sets `merge.paused` and records `merge.paused {repo, sha, reason: red_main}`. While paused it
+   arms nothing new and **disarms** every armed PR that has not merged (`disableAutoMerge`), because a PR that is
+   green against a broken base proves little. The standup and a failure notification (§6.1) say so.
+2. **Who fixes it.** The culprit is the PR whose merge commit is the first red sha (`pr.merged.mergeSha`). Its author
+   gets a fix-forward `red_main` Work first, with a deadline from the profile (default 15 minutes). If main is not
+   green by then, the architect's exception Work **reverts** the culprit: a revert PR, labelled `revert`, which the
+   gate may arm or merge *while paused* (the only kind it may; `allowWhilePaused: [revert, fix_for:<sha>]`).
+3. **Resume.** When main's head is green on every required check, `merge.resumed`, and the gate re-arms the PRs it
+   disarmed whose head is still green. The author's original change comes back as an ordinary Work.
+4. **Never merge a stale head** (the lesson of #39: a deliberate failing probe commit, meant to be reverted, was
+   squashed into main with the PR, and every later PR's required job went red until #43 removed it). "Green" means: every name in `requiredChecks` has a *completed,
+   successful* conclusion **for this exact head sha**; a missing, skipped, cancelled or earlier-sha result is not
+   green. The gate checks that when it arms, GitHub's `expectedHeadOid` pin holds it, and under `direct` the gate
+   re-reads head and checks immediately before the call (§10 rule 1). A gate probe lives on a throwaway branch and is
+   never the head of a PR that can merge; the probe label `gate-probe` makes the gate refuse to arm it.
+
+### 10.6 Metrics
+
+Whether the flow keeps working is measured from events, not felt. New events: `pr.ready {pr, workId}` (first
+non-draft), `pr.auto_merge_armed`, `pr.auto_merge_disarmed {pr, reason}`, `exception.raised`, `exception.resolved`,
+`merge.paused`, `merge.resumed`, `scope.overlap`, `scope.exceeded`, `seam.detected`. The `merge-metrics` projection
+(per repo and day) gives:
+
+- **ready → merged** latency, p50 and p90, and **armed → merged**;
+- **exceptions** raised by kind, resolved, and the time each took; and the share of PRs that merged with none;
+- **red-main minutes**, paused PRs, reverts;
+- the **seam backlog** (`seams.yaml` entries open, oldest age) and scope overlaps.
+
+The standup renders them with no model call, and the PM raises one decision (typed, once) when p90 ready → merged
+passes the profile's budget or the exception share passes its ceiling, so the flow is held to its own claim.
+
+### 10.7 What this needs, and what jumps the queue
+
+Contract additions (all additive): `PullRequests.enableAutoMerge/disableAutoMerge`, a `RepoGuard` port (read branch
+protection, `allow_auto_merge`), `Work.scope`, the events above, `PmAction` `merge` gaining `mode`. Phase 2 owns the
+rest: exceptions, scope, seam Work, red-main, metrics.
+
+Ahead of the queue, because phase-1's exit test (three Work items to `merged` with no PM peer) needs them and they are
+small: (1) the **behavioural wiring test** and the daemon-contract conformance test of §10.4, which would have caught
+`wake()`, the stand-in `rpc.ts` and the unexecuted `merge`; (2) **`merge.mode: direct`** in the profile and gate, so
+the sandbox repo (no CI) can run the test; (3) the **no-CI decision** of §10.1, so the sandbox is not silently refused.
+Everything else can wait for phase 2.
 
 ## 11. Build ledger and remote runs
 
@@ -601,6 +755,7 @@ It is never edited; a change is a new Brief and `brief.superseded` on the old on
 | worktree sprawl, orphans, stray holders, live link on a spike | §9: owner at creation, GC on merge, holder tracking, link check |
 | stacked-merge branch loss | §10: retarget before merge, no `--delete-branch` with dependents |
 | merge ownership gap | §10: gate in code, owner policy in profile, asks user if none |
+| review queue as the bottleneck; integration seams that rot | §10: required checks are the gate, auto-merge armed on the head sha, exceptions routed by type (§10.2), scope per Work (§10.3), seams become Work (§10.4) |
 | duplicate builds | §11 ledger, unique `(repo, sha, task)`; heavy on hetzner |
 | idle peers, unknown capacity | `keep-busy` on idle events; capacity is a projection |
 | duplicate features | `dedupe` rule before assign (§5.2) and in every brief |
