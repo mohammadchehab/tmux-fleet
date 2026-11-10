@@ -27,6 +27,7 @@ export {
   retargetDependents,
 } from './gate.ts'
 export { raiseCapacityGaps } from './idle.ts'
+export { markReadyWork } from './ready.ts'
 export { blockedDecisionId, unblockWaitingPeers } from './unblock.ts'
 export { supersedeStaleBriefs } from './stale.ts'
 export { renderStandupDue } from './standup.ts'
@@ -36,6 +37,7 @@ import { questionDuplicates, questionThinCards } from './dedupe.ts'
 import { requestDecisions } from './escalate.ts'
 import { mergeGreenPrs, retargetDependents } from './gate.ts'
 import { raiseCapacityGaps } from './idle.ts'
+import { markReadyWork } from './ready.ts'
 import { unblockWaitingPeers } from './unblock.ts'
 import { supersedeStaleBriefs } from './stale.ts'
 import { renderStandupDue } from './standup.ts'
@@ -48,6 +50,7 @@ export const pmRules: readonly Rule[] = [
   supersedeStaleBriefs,
   questionDuplicates,
   questionThinCards,
+  markReadyWork,
   assignReadyWork,
   requestDecisions,
   unblockWaitingPeers,

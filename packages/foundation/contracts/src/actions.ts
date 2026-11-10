@@ -53,6 +53,7 @@ export const pmActionKinds = [
   'flag_capacity',
   'raise_no_work',
   'render_standup',
+  'mark_ready',
 ] as const
 export type PmActionKind = (typeof pmActionKinds)[number]
 
@@ -135,6 +136,19 @@ export interface RequestJudgeAction extends PmActionBase {
   readonly workId?: WorkId
   /** The peer whose work raised it, when one did. */
   readonly askedFor?: PeerId
+}
+
+/**
+ * §5.1's `proposed → ready`, as the PM's decision. Nothing else may move a Work
+ * out of `proposed`: the state machine is event-driven, and this is the event's
+ * decision half, so the executor writes `work.ready` without deciding whether
+ * the card deserves it.
+ */
+export interface MarkReadyAction extends PmActionBase {
+  readonly kind: 'mark_ready'
+  readonly workId: WorkId
+  /** Why the card needs no answer; it lands on the event, so the log says what the rule saw. */
+  readonly reason?: string
 }
 
 /**
@@ -223,6 +237,7 @@ export type PmAction =
   | FlagCapacityAction
   | RaiseNoWorkAction
   | RenderStandupAction
+  | MarkReadyAction
 
 // -------------------------------------------------------------------- schemas
 
@@ -326,6 +341,14 @@ const renderStandupAction = (): Schema<RenderStandupAction> =>
     date: string({ pattern: /^\d{4}-\d{2}-\d{2}$/ }),
   })
 
+const markReadyAction = (): Schema<MarkReadyAction> =>
+  objectAs<MarkReadyAction>()({
+    kind: oneOf(['mark_ready'] as const),
+    causedBy: causedBy(),
+    workId: workId(),
+    reason: optional(text(500)),
+  })
+
 const actionSchemas: { readonly [K in PmActionKind]: () => Schema<Extract<PmAction, { readonly kind: K }>> } = {
   assign: assignAction,
   supersede_brief: supersedeBriefAction,
@@ -334,6 +357,7 @@ const actionSchemas: { readonly [K in PmActionKind]: () => Schema<Extract<PmActi
   request_decision: requestDecisionAction,
   merge: mergeAction,
   retarget: retargetAction,
+  mark_ready: markReadyAction,
   flag_capacity: flagCapacityAction,
   raise_no_work: raiseNoWorkAction,
   render_standup: renderStandupAction,
@@ -360,6 +384,7 @@ export const pmAction = (): Schema<PmAction> =>
     flagCapacityAction(),
     raiseNoWorkAction(),
     renderStandupAction(),
+    markReadyAction(),
   ])
 
 // ------------------------------------------------------------------- executor

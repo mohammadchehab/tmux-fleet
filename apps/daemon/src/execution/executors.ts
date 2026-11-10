@@ -33,6 +33,7 @@ import type {
   ExecutionReport,
   FlagCapacityAction,
   Mailbox,
+  MarkReadyAction,
   MessageAckState,
   PmAction,
   PmActionKind,
@@ -380,6 +381,52 @@ export const createStandupExecutor = (deps: StandupExecutorDeps): Executor => {
 export const createCapacityExecutor = (): Executor =>
   executor(['flag_capacity'], async (action) => done(action as FlagCapacityAction, []))
 
+// ------------------------------------------------------- §5.1 proposed → ready
+
+export interface ReadyExecutorDeps {
+  readonly store: EventSink
+  readonly read: ReadModel
+  readonly clock?: Clock
+}
+
+/**
+ * `mark_ready`: the decision half of §5.1's `proposed → ready`; this writes the event.
+ *
+ * The guard is here rather than in the rule because only the executor can read the row it is about: a tick decided
+ * from a snapshot that said `proposed`, and the store may have moved the card on since (a second dispatch, a
+ * merged PR from the tracker). Promoting it again would walk the state machine backwards, so a card that is no
+ * longer `proposed` is left alone — the transition happened, or something else happened to it, and a second write
+ * would overwrite that with a guess.
+ */
+export const createReadyExecutor = (deps: ReadyExecutorDeps): Executor => {
+  const clock = deps.clock ?? systemClock
+
+  return executor(['mark_ready'], async (action) => {
+    const ready = action as MarkReadyAction
+    let current
+    try {
+      current = await deps.read.work.get(ready.workId)
+    } catch (thrown) {
+      return failed(action, toFleetError(thrown, 'store_failed').message)
+    }
+    if (current === undefined) return failed(action, `no Work ${String(ready.workId)} to make ready`)
+    if (current.state !== 'proposed') return done(action, [])
+
+    const written = await append(deps.store, [
+      {
+        type: 'work.ready',
+        ts: clock.now(),
+        subject: ready.workId,
+        actor: 'pm',
+        causedBy: ready.causedBy,
+        data: { workId: ready.workId, ...(ready.reason === undefined ? {} : { reason: ready.reason }) },
+      } as AppendEvent,
+    ])
+    if ('error' in written) return failed(action, written.error)
+    return done(action, written.seqs)
+  })
+}
+
 // -------------------------------------------------------------- the wiring
 
 export interface DaemonExecutorDeps {
@@ -406,4 +453,8 @@ export const createDaemonExecutors = (deps: DaemonExecutorDeps): readonly KindEx
     executor: createStandupExecutor({ store: deps.store, read: deps.read, ...(deps.clock === undefined ? {} : { clock: deps.clock }) }),
   },
   { kinds: ['flag_capacity'], executor: createCapacityExecutor() },
+  {
+    kinds: ['mark_ready'],
+    executor: createReadyExecutor({ store: deps.store, read: deps.read, ...(deps.clock === undefined ? {} : { clock: deps.clock }) }),
+  },
 ]
