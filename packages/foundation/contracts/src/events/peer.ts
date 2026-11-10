@@ -164,10 +164,13 @@ export const peerFailed = event(
  * guess from a mailbox that only ever showed what was sent to it.
  *
  * Both fields are the provider's own `tool.use` event's: `tool` is the
- * adapter's name for the tool, `target` its short, already-redacted summary —
- * a file path, a description, a command — never the tool's input. A provider
- * that does not summarise (cursor) contributes the name alone, which is the
- * honest answer rather than a target this fleet inferred.
+ * adapter's name for the tool, `target` its short summary. A target is stored
+ * only when it is a **file path** — `Read`, `Edit`, `Write`, `MultiEdit`,
+ * `NotebookEdit` — and never a command, a URL, a search query or a sub-agent's
+ * brief: any of those can carry a token, and a redactor is a guess about where
+ * one sits. Every other tool, including one this fleet has never seen,
+ * contributes the name alone. A provider that does not summarise (cursor) does
+ * the same, which is the honest answer rather than a target this fleet inferred.
  */
 export const peerToolUsed = event(
   'peer.tool_used',

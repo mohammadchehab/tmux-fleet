@@ -49,7 +49,7 @@ const TARGET = 40
 const shorten = (value: string, max: number): string =>
   value.length <= max ? value : `${value.slice(0, max - 1)}…`
 
-/** The tool line: the name always, the adapter's short target if it gave one. */
+/** The tool line: the name always, its target if the tool has one that is a path. */
 const tool = (activity: PeerActivity | undefined): string => {
   if (activity?.lastTool === undefined) return 'none'
   if (activity.lastTarget === undefined) return activity.lastTool

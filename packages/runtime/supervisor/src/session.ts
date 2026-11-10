@@ -46,12 +46,22 @@ export type { SessionRecord } from './records.ts'
 
 /**
  * The event schema's own bounds (§4). A provider's `tool.use` summary is
- * already short and redacted, but its contract allows 500 characters and the
- * activity event allows 200; the cut happens here, at the writer, so the store
- * never has to refuse a record the session already thought it made.
+ * already short, but its contract allows 500 characters and the activity event
+ * allows 200; the cut happens here, at the writer, so the store never has to
+ * refuse a record the session already thought it made.
  */
 const TOOL_MAX = 64
 const TARGET_MAX = 200
+
+/**
+ * The one kind of target this fleet stores: the path an edit-family call names.
+ * The supervisor is the writer of `peer.tool_used`, so it does not take the
+ * adapter's word for what is safe — a provider that summarises more than this
+ * (a command, a URL, a brief) has it dropped here and the event keeps the tool
+ * name alone. Claude's names, the same set the claude adapter allowlists; a
+ * provider that summarises nothing, like cursor, is unaffected.
+ */
+const TARGET_TOOLS: ReadonlySet<string> = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 const bounded = (value: string, max: number): string =>
   value.length <= max ? value : `${value.slice(0, max - 1)}…`
@@ -401,6 +411,8 @@ export class PeerSession {
         // What the peer is doing, not only that it is busy (§4). Written here,
         // where the stream says it, so a replay sees the same activity the live
         // fleet showed; the projection keeps the latest and counts the edits.
+        // The target survives only for the tools whose summary is a file path.
+        const target = TARGET_TOOLS.has(event.tool) ? event.summary : undefined
         await record({
           type: 'peer.tool_used',
           ts: clock.now(),
@@ -410,7 +422,7 @@ export class PeerSession {
             peerId,
             sessionId,
             tool: bounded(event.tool, TOOL_MAX),
-            ...(event.summary === undefined ? {} : { target: bounded(event.summary, TARGET_MAX) }),
+            ...(target === undefined ? {} : { target: bounded(target, TARGET_MAX) }),
           },
         })
         break

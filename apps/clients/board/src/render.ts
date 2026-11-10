@@ -81,9 +81,10 @@ const prLabel = (pr: Work['prs'][number]): string => `${pr.repo}#${String(pr.num
 
 /**
  * The peer working this item, as far as the activity projection knows: the
- * last tool and its short target, and how many edits the Work has taken. Both
- * are values the store held — the target is already the adapter's redacted
- * summary, bounded again by the event — so neither is read from anywhere else.
+ * last tool and its target, and how many edits the Work has taken. Both are
+ * values the store held — the target is a file path, or nothing, because the
+ * writer stores one only for the tools whose target is a path — so neither is
+ * read from anywhere else.
  */
 const activityFacts = (row: PeerActivity | undefined): readonly string[] => {
   if (row === undefined) return []

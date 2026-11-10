@@ -59,7 +59,7 @@ import type {
 
 import { buildChildEnv, recordedEndpoint } from './env.ts'
 import { isContractEvent, type AdapterEvent } from './events.ts'
-import { mapMessage, questionAnswers, readQuestions, redactSecrets, redactUrlSecrets, type TurnState } from './messages.ts'
+import { mapMessage, questionAnswers, readQuestions, summariseToolUse, type TurnState } from './messages.ts'
 import { PendingRequests } from './pending.ts'
 import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy } from './policy.ts'
 import {
@@ -508,7 +508,7 @@ export class ClaudeSession {
       return Promise.resolve({ behavior: 'allow', updatedInput: input })
     }
     if (action === 'deny') {
-      const summary = summarise(input)
+      const summary = summariseToolUse(toolName, input)
       this.#emit({
         type: 'tool.denied',
         turnId,
@@ -523,7 +523,11 @@ export class ClaudeSession {
       })
     }
 
-    const summary = summarise(input)
+    // The same default-deny summary as `peer.tool_used` (§4): an approval is
+    // stored like any other event, so a command, a URL or a brief cannot ride
+    // along in it. What the call would do is the model's to explain, not the
+    // log's to keep.
+    const summary = summariseToolUse(toolName, input)
     const { open, wait } = this.#pending.askApproval(turnId, toolName, summary)
     this.#state = 'waiting_input'
     this.#emit({
@@ -664,24 +668,6 @@ const mcpServersOf = (spec: SessionSpec): NonNullable<Options['mcpServers']> => 
     }
   }
   return servers
-}
-
-/** A short, already-redacted description of a blocked tool call (§4). */
-const summarise = (input: Record<string, unknown>): string | undefined => {
-  const command = typeof input.command === 'string' ? input.command : undefined
-  const filePath = typeof input.file_path === 'string' ? input.file_path : undefined
-  const url = typeof input.url === 'string' ? input.url : undefined
-  const query = typeof input.query === 'string' ? input.query : undefined
-
-  let value = command ?? filePath ?? url ?? query
-  if (!value || value.length === 0) return undefined
-
-  // Redact sensitive data: commands may contain API keys/tokens, URLs may contain query params with secrets
-  if (command) value = redactSecrets(value)
-  else if (url && value.startsWith('http')) value = redactUrlSecrets(value)
-  else if (query) value = redactSecrets(value)
-
-  return value.length > 200 ? `${value.slice(0, 199)}…` : value
 }
 
 const answersFor = (

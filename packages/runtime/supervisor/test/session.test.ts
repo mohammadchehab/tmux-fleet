@@ -262,6 +262,50 @@ test('events become peer states, and a completed turn that is under the limit ke
   assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
 })
 
+test('a tool summary is stored only when it is a path — a command never reaches the log', async () => {
+  // The supervisor is the writer of `peer.tool_used`, so it does not take the
+  // adapter's word for what is safe: a summary the event must not carry is
+  // dropped here and the record keeps the tool's name alone (§4).
+  const r = rig()
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
+    started(),
+    { type: 'tool.use', turnId, tool: 'Read', summary: '/tmp/a.ts' },
+    { type: 'tool.use', turnId, tool: 'Bash', summary: 'curl https://x/?token=abc' },
+    { type: 'tool.use', turnId, tool: 'WebFetch', summary: 'https://example.com/?token=abc' },
+    { type: 'tool.use', turnId, tool: 'mcp__github__create_issue', summary: 'a secret-shaped target' },
+    ended(),
+    { type: 'session.ended', reason: 'exit', code: 0 },
+  )
+  await run
+
+  const targets = r.records
+    .filter((record) => record.type === 'peer.tool_used')
+    .map((record) => (record.type === 'peer.tool_used' ? [record.data.tool, record.data.target] : []))
+  assert.deepEqual(targets, [
+    ['Read', '/tmp/a.ts'],
+    ['Bash', undefined],
+    ['WebFetch', undefined],
+    ['mcp__github__create_issue', undefined],
+  ])
+})
+
 test('a completed turn is recorded with what it cost and how it explored', async () => {
   // The fleet is the measurer under fleetd (§6.2): the boundary is where the
   // provider's numbers are, and there is no Stop hook in a session it owns.
