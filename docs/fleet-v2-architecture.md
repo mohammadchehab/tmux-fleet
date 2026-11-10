@@ -241,7 +241,7 @@ interface Provider {
   usage(h: SessionHandle): Promise<{ contextTokens: number; contextLimit: number; costUsd?: number }>
   model(h: SessionHandle): Promise<{ id: string; endpoint?: string }>   // the LATEST init's model, never a UI string
   events(h: SessionHandle): AsyncIterable<ProviderEvent> // plain data only: turn.started/ended{reason}, tool.use, question.asked, approval.requested, session.ended, error, compaction
-  resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle>   // always present; rejects FleetError("unsupported") when capabilities.resume is false
+  resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle>   // always present; rejects FleetError("unsupported") when capabilities.resume is false (untested: both live providers report true)
 }
 ```
 
@@ -255,6 +255,10 @@ The shared types (`SessionSpec`, `Turn`, `ProviderEvent`, `PermissionMode`, `Pro
   promise keyed by an id it mints; `status()` is `waiting_input` while any is pending. A dead session leaves the
   promise unresolved with no SDK event, so the adapter emits `question.abandoned` and the supervisor re-delivers the
   stored answer on resume as a `nudge` turn (the promise is not durable).
+- **`session.ended` is synthesised by the adapter**, not read from a stream frame: the Claude SDK never emits it. The
+  adapter derives it from the event iterator finishing or throwing, or from the process exiting. The iterator does
+  **not** finish on interrupt, only when the input stream closes or the process ends (spike §5), so an interrupt
+  produces `turn.ended {reason: interrupted}` and no `session.ended`.
 - **`turn.ended` carries `reason: completed | interrupted | failed`** (+ `error`). Only `failed` raises a
   `peer.failed` notification (§6.1); a deliberate interrupt notifies nobody. (Claude SDK: `is_error` with
   `terminal_reason: aborted_tools` is `interrupted`, other `is_error` is `failed`.)
@@ -285,6 +289,7 @@ The shared types (`SessionSpec`, `Turn`, `ProviderEvent`, `PermissionMode`, `Pro
   - `cursor`: Cursor's headless agent with `--resume <chatId>`; if it exposes no usage, `capabilities.usageTokens =
     false` and the self-purge trigger falls back to turn count (§6).
 - A provider that cannot do something says so in `capabilities`; the supervisor adapts, it does not guess.
+- **Untested path:** the `resume()` `unsupported` branch has no evidence behind it, since claude and deepinfra both report `resume: true`. The first non-SDK provider (opencode or cursor) is where it will first be exercised; its conformance case is written then, not assumed.
 
 ## 5. The deterministic project manager
 
