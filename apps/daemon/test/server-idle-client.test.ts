@@ -73,13 +73,16 @@ describe('server.close() with idle clients', () => {
     const socketPath = join(home, 'test.sock')
     const pidPath = join(home, 'test.pid')
 
+    let server: DaemonServer | undefined
+    let responseSocket: any
+
     try {
       const api = {
         up: async () => ({ ok: true }),
         down: async () => ({ ok: true, result: { stopped: true } }),
       } as unknown as DaemonApi
 
-      const server = await createDaemonServer({
+      server = await createDaemonServer({
         api,
         socketPath,
         pidPath,
@@ -87,27 +90,27 @@ describe('server.close() with idle clients', () => {
 
       // Send a down RPC request and immediately close the server
       const responsePromise = (async () => {
-        const socket = connect(socketPath)
+        responseSocket = connect(socketPath)
         return new Promise<string>((resolve, reject) => {
-          socket.setEncoding('utf8')
+          responseSocket.setEncoding('utf8')
           let buffer = ''
-          socket.on('data', (chunk) => {
+          responseSocket.on('data', (chunk) => {
             buffer += chunk
             const newline = buffer.indexOf('\n')
             if (newline !== -1) {
               resolve(buffer.slice(0, newline))
-              socket.destroy()
+              responseSocket.destroy()
             }
           })
-          socket.on('error', reject)
-          socket.write('{"id":"down-1","method":"down"}\n')
+          responseSocket.on('error', reject)
+          responseSocket.write('{"id":"down-1","method":"down"}\n')
         })
       })()
 
       // Close the server after a short delay (but before timeout)
       // The down response should still arrive because it's active
       await new Promise((resolve) => setTimeout(resolve, 10))
-      void server.close()
+      const closePromise = server.close()
 
       const response = await Promise.race([
         responsePromise,
@@ -120,7 +123,15 @@ describe('server.close() with idle clients', () => {
       const parsed = JSON.parse(response)
       assert.equal((parsed as any).ok, true)
       assert.ok((parsed as any).result)
+
+      // Ensure close promise completes
+      await closePromise
     } finally {
+      // Ensure sockets are destroyed
+      if (responseSocket) responseSocket.destroy()
+      // Ensure server is fully closed
+      if (server) await server.close().catch(() => {})
+      // Clean up temp directory
       await rm(home, { recursive: true, force: true })
     }
   })
