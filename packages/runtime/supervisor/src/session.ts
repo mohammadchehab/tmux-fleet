@@ -340,12 +340,24 @@ export class PeerSession {
         if (this.#state !== 'idle' || this.#pending.size > 0 || this.#openTurns.size > 0) continue
 
         turns += 1
-        const usage = await provider.usage(handle)
+        const usage = await this.#usageOrUndefined(handle)
+        // No measurement, no trigger: the purge is judged against these numbers,
+        // and a boundary that cannot be measured is one that is not judged. The
+        // turn still counts above, because the counter is what the next boundary
+        // is judged against.
+        if (usage === undefined) continue
         // §6.2's measurement, at the boundary the fleet already owns: the same
         // `usage()` the purge reads, plus what the turn spent. Recorded before
         // the trigger is judged, so a turn that causes a purge has still been
         // counted — the handoff costs tokens too.
-        await this.#recordUsage(handle, event.turnId, usage)
+        //
+        // A rejected row is bookkeeping, not the session: the `try` around this
+        // loop is for the stream, and a store that refuses this one append used to
+        // end a healthy session as `crashed` and hand it to `recover` — the peer
+        // replaced because a measurement could not be filed. Nothing re-raises it:
+        // the sink that would carry the complaint is the store that just refused
+        // it, and a session is the wrong thing to sacrifice to make it visible.
+        await this.#recordUsage(handle, event.turnId, usage).catch(() => {})
         const trigger = purgeTrigger({
           usage,
           usageTokens: provider.capabilities.usageTokens,
@@ -574,6 +586,22 @@ export class PeerSession {
         },
       },
     )
+  }
+
+  /**
+   * `usage()`, or `undefined` when the provider cannot answer it right now.
+   *
+   * The measurement is read at the boundary for two things — the purge's trigger
+   * and the usage row — and a provider that fails the call costs this boundary
+   * both, not the session. A dead session is a fact about the peer; a failed
+   * measurement is a fact about a stats call, and the fleet must not confuse them.
+   */
+  async #usageOrUndefined(handle: SessionHandle): Promise<Usage | undefined> {
+    try {
+      return await this.#ports.provider.usage(handle)
+    } catch {
+      return undefined
+    }
   }
 
   /**
