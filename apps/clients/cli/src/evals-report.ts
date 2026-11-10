@@ -11,7 +11,12 @@
  * Everything else is recorded, not judged: tokens in and out, latency, retries,
  * and cost only when the provider reports it (§17). None of it is a comparison;
  * `fleet evals compare` is where two runs are put side by side.
+ *
+ * The run id is printed for that reason and no other: `compare` names its runs,
+ * so a finished run is the only place a user can read a name to type into it.
  */
+
+import type { EvalRunId } from '@fleet/foundation-core'
 
 /** Below this many cases there is no pass rate, only a count (§17). */
 export const RATE_FLOOR = 20
@@ -22,6 +27,8 @@ export const RATE_FLOOR = 20
  * decides that (§17's N=3) — the report only divides.
  */
 export interface EvalRunReport {
+  /** The id `fleet evals compare` takes; see the file comment for why it is here. */
+  readonly runId: EvalRunId
   readonly suite: string
   readonly provider: string
   readonly model: string
@@ -67,6 +74,7 @@ export const formatEvalRun = (report: EvalRunReport): string => {
 
   return [
     `${report.suite}: ${report.provider}/${report.model} at ${report.sha.slice(0, 7)}`,
+    `  run       ${report.runId}`,
     `  ${verdict}`,
     ...floor.map((line) => `  ${line}`),
     `  tokens    in ${String(report.tokens.input)} · out ${String(report.tokens.output)}`,

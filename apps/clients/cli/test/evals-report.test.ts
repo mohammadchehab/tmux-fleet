@@ -13,6 +13,7 @@ import { test } from 'node:test'
 import { formatEvalRun, passRate, RATE_FLOOR, type EvalRunReport } from '../src/evals-report.ts'
 
 const report = (over: Partial<EvalRunReport> = {}): EvalRunReport => ({
+  runId: 'evr_4c1d9a7b2e5f6038' as EvalRunReport['runId'],
   suite: 'judge',
   provider: 'deepinfra',
   model: 'some/model',
@@ -65,4 +66,10 @@ test('a run with no cases does not divide by zero', () => {
   const text = formatEvalRun(report({ cases: 0, passed: 0, latencyMs: [] }))
   assert.match(text, /0 of 0 cases passed/)
   assert.match(text, /latency {3}-/)
+})
+
+test('the run id is printed whole, because it is what `compare` takes', () => {
+  // Not elided like the sha: a truncated id is a run nobody can name, and the
+  // report is the only place a finished run's name appears.
+  assert.match(formatEvalRun(report()), /run {7}evr_4c1d9a7b2e5f6038/)
 })
