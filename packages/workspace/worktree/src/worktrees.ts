@@ -105,14 +105,34 @@ export const createWorktrees = (runner: GitRunner = execFileGit): Worktrees => (
     // The repository this checkout belongs to, asked of git rather than inferred
     // from where §9 says checkouts live.
     const common = await runner(['rev-parse', '--path-format=absolute', '--git-common-dir'], path)
-    if (common.code !== 0) {
-      throw new Error(`${path} is not a worktree git knows: ${common.stderr.trim() || 'no message'}`)
-    }
 
-    // `<repo>/.git` -> `<repo>`: the directory `worktree remove` has to run in.
-    const gitDir = common.stdout.trim()
-    if (gitDir === '') throw new Error(`git named no common directory for ${path}`)
-    const root = gitDir.endsWith('/.git') ? gitDir.slice(0, -'/.git'.length) : gitDir
+    let root: string
+    if (common.code !== 0) {
+      // If rev-parse failed with "cannot change to" (ENOENT), the worktree directory
+      // has already been deleted from the filesystem. In this case, infer the repo path
+      // from the worktree path. Since paths follow the pattern <repo>/.claude/worktrees/<topic>,
+      // we can go up two directories. If that fails, fall back to the original error.
+      if (common.stderr.includes('cannot change to')) {
+        // Path is <repo>/.claude/worktrees/<topic>, so parent is <repo>/.claude/worktrees
+        const parentDir = path.replace(/\/+$/, '').split('/').slice(0, -1).join('/')
+        // Parent of that is <repo>/.claude
+        const claudeDir = parentDir.split('/').slice(0, -1).join('/')
+        // Parent of that is <repo>
+        const inferredRoot = claudeDir.split('/').slice(0, -1).join('/')
+
+        if (!inferredRoot || inferredRoot === '') {
+          throw new Error(`${path} is not a worktree git knows: ${common.stderr.trim() || 'no message'}`)
+        }
+        root = inferredRoot
+      } else {
+        throw new Error(`${path} is not a worktree git knows: ${common.stderr.trim() || 'no message'}`)
+      }
+    } else {
+      // `<repo>/.git` -> `<repo>`: the directory `worktree remove` has to run in.
+      const gitDir = common.stdout.trim()
+      if (gitDir === '') throw new Error(`git named no common directory for ${path}`)
+      root = gitDir.endsWith('/.git') ? gitDir.slice(0, -'/.git'.length) : gitDir
+    }
 
     // Only a checkout git has registered for this repository may be removed. The
     // path came from a projection row; git's registry is what makes it a worktree
