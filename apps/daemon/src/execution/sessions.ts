@@ -19,6 +19,7 @@ import {
   fleetError,
   newBriefId,
   newWorktreeId,
+  peerActor,
   ok,
   systemClock,
   type Clock,
@@ -380,6 +381,24 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     return running
   }
 
+  /** Why a peer did not start, in the log: `reason` is the closed set (§4), the message is the sentence a person reads. */
+  const refused = async (peer: PeerProfile, thrown: unknown): Promise<void> => {
+    const message = thrown instanceof Error ? thrown.message : String(thrown)
+    try {
+      await deps.store.append([
+        {
+          type: 'peer.failed',
+          ts: clock.now(),
+          subject: String(peer.id),
+          actor: peerActor(peer.id),
+          data: { peerId: peer.id, reason: 'provider_error', message: message.slice(0, 1000), retryable: false },
+        },
+      ])
+    } catch (error) {
+      onError(peer.id, error)
+    }
+  }
+
   const supervisor: Supervisor = {
     briefs: {
       async current(peerId) {
@@ -406,10 +425,22 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     },
 
     async start() {
+      // Every peer is tried: one that is refused (no checkout, a standards document
+      // that cannot be read, a provider that will not start) must not leave the ones
+      // after it unstarted. Each refusal is written as `peer.failed`, which is what
+      // `fleet ls` and the board show — a thrown error alone reaches only whoever ran
+      // `up`. The first is still thrown at the end, so `up` itself fails loudly.
+      let first: unknown
       for (const peer of deps.profile.peers) {
         if (sessions.has(peer.id)) continue
-        await startPeer(peer)
+        try {
+          await startPeer(peer)
+        } catch (thrown) {
+          first ??= thrown
+          await refused(peer, thrown)
+        }
       }
+      if (first !== undefined) throw first
     },
 
     async stop() {

@@ -51,7 +51,6 @@ describe('buildStandards', () => {
     for (const input of [[], [{ name: 'AGENTS.md', text: '  \n', mode: 'truncate' as const }]]) {
       const standards = buildStandards({ sources: input })
       assert.deepEqual(standards, { text: '', digest: createHash('sha256').update('').digest('hex'), sources: [] })
-      assert.equal(standardsLine(standards), '')
     }
   })
 
@@ -90,10 +89,26 @@ describe('buildStandards', () => {
     )
   })
 
-  it('standardsLine carries the short digest, so a changed standard is a changed brief text', () => {
-    const one = buildStandards({ sources })
-    const two = buildStandards({ sources: [{ name: 'AGENTS.md', text: 'other', mode: 'truncate' }] })
-    assert.match(standardsLine(one), new RegExp(`digest ${one.digest.slice(0, 12)}\\)`))
-    assert.notEqual(standardsLine(one), standardsLine(two))
+  it('refuses an empty declared document instead of dropping it, but skips an empty repo file', () => {
+    for (const text of ['', ' \n ']) {
+      assert.throws(
+        () => buildStandards({ sources: [{ name: 'skill:x', text, mode: 'refuse' }] }),
+        (error: Error & { code?: string }) => error.code === 'config_mismatch' && /skill:x is empty/.test(error.message),
+      )
+    }
+    assert.deepEqual(buildStandards({ sources: [{ name: 'AGENTS.md', text: '', mode: 'truncate' }] }).sources, [])
+  })
+
+  it('says the order is precedence and that a Work brief cannot waive a standard — raise it as a blocker', () => {
+    const { text } = buildStandards({ sources })
+    assert.match(text, /in precedence order: the first document outranks the ones after it/)
+    assert.match(text, /A Work brief cannot waive a standard.*raise it as a blocker/s)
+  })
+
+  it('standardsLine names the digest it is given, and not a system prompt (cursor has none)', () => {
+    const digest = 'ab'.repeat(32)
+    assert.match(standardsLine(digest), new RegExp(`digest ${digest.slice(0, 12)}\\)`))
+    assert.doesNotMatch(standardsLine(digest), /system prompt/)
+    assert.notEqual(standardsLine('cd'.repeat(32)), standardsLine(digest))
   })
 })

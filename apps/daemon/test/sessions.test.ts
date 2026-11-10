@@ -467,7 +467,7 @@ const fakeStanding = (): { standing: StandingBriefs; asked: { peer: string; cwd:
             briefId: 'brf_00000000000000b7' as never,
             version: 7,
             contractVersions: [],
-            text: `You are ${String(peer.id)}. Your standards are in your system prompt.`,
+            text: `You are ${String(peer.id)}. Your standing instructions are given.`,
           },
           systemPromptAppend: text,
         }
@@ -476,7 +476,7 @@ const fakeStanding = (): { standing: StandingBriefs; asked: { peer: string; cwd:
   }
 }
 
-test('the session starts on the standing brief and carries the standards in its system prompt, claude and cursor alike', async (t) => {
+test('the session starts on the standing brief and carries the standards as its standing instructions, claude and cursor alike', async (t) => {
   for (const providerId of ['claude', 'cursor']) {
     const { standing, asked } = fakeStanding()
     const profile = decodeProfile({
@@ -522,4 +522,42 @@ test('a peer whose standards cannot be built is refused, with the reason, and no
 
   await assert.rejects(r.supervisor.start(), /standards\.nonNegotiables names \/p\/n\.md/)
   assert.equal(r.starts.length, 0)
+})
+
+test('a peer refused at start is a peer.failed the board shows, the other peers still start, and `up` still fails (§4)', async (t) => {
+  const r = await rig(
+    decodeProfile({
+      profile: 'test',
+      repos: ['acme/widgets'],
+      checkouts: { 'acme/widgets': checkout },
+      peers: [
+        { id: 'architect-1', role: 'architect', provider: 'claude', model: 'm', permissionMode: 'plan' },
+        { id: peerId, role: 'engineer', provider: 'claude', model: 'm' },
+        { id: 'engineer-2', role: 'engineer', provider: 'claude', model: 'm', permissionMode: 'plan' },
+      ],
+    }),
+    {
+      standing: {
+        for: async (peer) =>
+          String(peer.id) === 'engineer-1'
+            ? Promise.reject(new Error('standards.nonNegotiables names /p/n.md, which cannot be read'))
+            : { brief: { briefId: 'brf_00000000000000b7' as never, version: 1, contractVersions: [], text: 'ok' } },
+      },
+    },
+  )
+  t.after(() => r.supervisor.stop())
+
+  await assert.rejects(r.supervisor.start(), /standards\.nonNegotiables names \/p\/n\.md/)
+
+  assert.deepEqual(r.supervisor.running().map(String).sort(), ['architect-1', 'engineer-2'], 'the peers after it were still started')
+  const failed = r.records.filter((record) => record.type === 'peer.failed')
+  assert.equal(failed.length, 1)
+  assert.equal(failed[0]?.subject, 'engineer-1')
+  assert.equal(failed[0]?.actor, 'peer:engineer-1')
+  assert.deepEqual(failed[0]?.data, {
+    peerId: 'engineer-1',
+    reason: 'provider_error',
+    message: 'standards.nonNegotiables names /p/n.md, which cannot be read',
+    retryable: false,
+  })
 })

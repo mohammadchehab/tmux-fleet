@@ -86,6 +86,7 @@ export const createStandingBriefs = (deps: StandingBriefsDeps): StandingBriefs =
   const declared = async (key: string, name: string, declaredPath: string): Promise<StandardsSource> => {
     const file = isAbsolute(declaredPath) ? declaredPath : join(profileDir, declaredPath)
     try {
+      // Empty is refused by the builder, which knows the document is a declared one.
       return { name, text: await readFile(file, 'utf8'), mode: 'refuse' }
     } catch (thrown) {
       throw fleetError(
@@ -119,10 +120,10 @@ export const createStandingBriefs = (deps: StandingBriefsDeps): StandingBriefs =
       }
 
       const standards = buildStandards({ sources })
-      const line = standardsLine(standards)
-      const text = line === '' ? roleStatement(peer) : `${roleStatement(peer)}\n\n${line}`
-      // What the peer is handed, whole: a changed role is a changed brief too.
-      const digest = sha(`${text}\n\u0000\n${standards.text}`)
+      // What the peer is handed, whole: a changed role is a changed brief too. One
+      // digest, the event's, which the brief's own line shows.
+      const digest = sha(`${roleStatement(peer)}\n\u0000\n${standards.text}`)
+      const text = standards.text === '' ? roleStatement(peer) : `${roleStatement(peer)}\n\n${standardsLine(digest)}`
       const systemPromptAppend = standards.text === '' ? undefined : standards.text
 
       const peerId = String(peer.id)

@@ -97,7 +97,7 @@ test('the first start writes the standards, the brief that carries them, and an 
   assert.equal(got.brief.version, 1)
   assert.match(String(got.brief.briefId), /^brf_[0-9a-f]{16}$/)
   assert.match(got.brief.text, /^You are engineer-1, the engineer\./)
-  assert.match(got.brief.text, /Your standards are in your system prompt \(digest [0-9a-f]{12}\); follow them\.$/)
+  assert.match(got.brief.text, /Your standing instructions \(digest [0-9a-f]{12}\) were given to you with this brief; follow them\.$/)
   // Precedence: the profile's rule first, then the repo's own.
   const text = got.systemPromptAppend ?? ''
   assert.ok(text.indexOf('Never push to main.') < text.indexOf('Run pnpm test.'))
@@ -113,6 +113,8 @@ test('the first start writes the standards, the brief that carries them, and an 
   ])
   assert.deepEqual(event?.data.skipped, [])
   assert.equal(event?.data.briefId, got.brief.briefId)
+  // One digest: the brief shows the event's, so the peer, the log and the board name the same thing.
+  assert.ok(got.brief.text.includes(`digest ${String(event?.data.digest).slice(0, 12)})`))
   // The bytes are archived under the digest the event names, before the event.
   assert.match(await readFile(join(r.artifactsDir, 'standards', `${String(event?.data.digest)}.md`), 'utf8'), /Never push to main\./)
 })
@@ -192,6 +194,14 @@ test('a declared non-negotiables doc that is missing refuses the peer, naming th
     assert.match(error.message, /create it, or remove standards\.nonNegotiables from /)
     return true
   })
+  assert.deepEqual(r.appended, [])
+})
+
+test('an empty declared document refuses the peer instead of being dropped, and writes nothing', async () => {
+  const r = await rig({ nonNegotiables: 'empty.md' })
+  await writeFile(join(r.profileDir, 'empty.md'), '  \n')
+
+  await assert.rejects(r.standing.for(r.peer, '/work/widgets'), /Non-negotiables \(empty\.md\) is empty/)
   assert.deepEqual(r.appended, [])
 })
 

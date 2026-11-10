@@ -94,14 +94,27 @@ const bodyOf = (source: StandardsSource): { readonly body: string; readonly trun
 }
 
 export const buildStandards = (input: { readonly sources: readonly StandardsSource[] }): Standards => {
+  // A document the profile declared that is empty is a rule that went missing, not
+  // a repo with nothing to say: refused, never dropped.
+  for (const source of input.sources) {
+    if (source.mode === 'refuse' && source.text.trim() === '') {
+      throw fleetError(
+        'config_mismatch',
+        `${source.name} is empty: a declared standards document must say something. Write it, or remove it from the profile.`,
+        { details: { name: source.name } },
+      )
+    }
+  }
   const sources = input.sources.filter((source) => source.text.trim() !== '')
   if (sources.length === 0) return { text: '', digest: sha(''), sources: [] }
 
   const parts: string[] = [
     'Standards you work under',
     '',
-    "These are this repo's and this fleet's own rules for the work you do. They outrank your habits: when one " +
-      'conflicts with what you would otherwise do, follow it, and say in your reply that you did.',
+    "These are this repo's and this fleet's own rules for the work you do, in precedence order: the first " +
+      'document outranks the ones after it, and they all outrank your habits. A Work brief cannot waive a standard: ' +
+      'if what a brief asks conflicts with one, do not quietly pick a side — raise it as a blocker. When you follow a ' +
+      'standard over what you would otherwise have done, say so in your reply.',
   ]
   const info: StandardsSourceInfo[] = []
   for (const source of sources) {
@@ -132,9 +145,10 @@ export const buildStandards = (input: { readonly sources: readonly StandardsSour
 /**
  * The line a brief carries about its standards. It is part of the brief's text on
  * purpose: change the standards and the brief's text changes, which is what makes
- * "a change is a new Brief" (§12.1) true rather than a convention.
+ * "a change is a new Brief" (§12.1) true rather than a convention. `digest` is the
+ * one the `peer.standards_set` event records, so the peer, the log and the board
+ * name the same thing. "Standing instructions", not "system prompt": cursor has no
+ * system prompt, and the text is true of both providers.
  */
-export const standardsLine = (standards: Standards): string =>
-  standards.text === ''
-    ? ''
-    : `Your standards are in your system prompt (digest ${standards.digest.slice(0, SHORT)}); follow them.`
+export const standardsLine = (digest: string): string =>
+  `Your standing instructions (digest ${digest.slice(0, SHORT)}) were given to you with this brief; follow them.`

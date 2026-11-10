@@ -18,6 +18,15 @@ import { remoteDefault } from './refs.ts'
 
 const SHA = /^[0-9a-f]{40}$/
 
+/**
+ * The repo's git config is shared with every worktree, so a peer can write it. Two
+ * keys make a *network* command run a program of the config's choosing; they are
+ * reset on the two commands that touch the remote. `credential.helper` is left as
+ * it is on purpose: it is how a private repository authenticates, and stripping it
+ * would make this fail for exactly the repos that need it.
+ */
+const TRANSPORT = ['-c', 'core.sshCommand=ssh', '-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never'] as const
+
 export const createRepoFiles = (runner: GitRunner = execFileGit): RepoFiles => ({
   async read(cwd, path) {
     // A path is a path *in the repository*: `..` or an absolute one would ask git
@@ -37,14 +46,16 @@ export const createRepoFiles = (runner: GitRunner = execFileGit): RepoFiles => (
     // point `origin/main` at a commit of its own and so rewrite its rules. So the
     // remote is asked what the branch is, and that commit is what is read. Offline,
     // the local ref stands (stale beats none) — the one case a peer's edit of it
-    // could matter, and the recorded sha says which commit was read.
+    // could matter, and the recorded sha says which commit was read. This is a guard
+    // against drift and accident, not a sandbox: a peer runs as fleetd's own user, so
+    // what actually keeps one from rewriting its rules is its tool policy.
     const branch = base.replace(/^origin\//, '')
-    const asked = await runner(['ls-remote', '--exit-code', 'origin', `refs/heads/${branch}`], cwd)
+    const asked = await runner([...TRANSPORT, 'ls-remote', '--exit-code', 'origin', `refs/heads/${branch}`], cwd)
     const remote = asked.code === 0 ? (asked.stdout.split(/\s/)[0] ?? '') : ''
     if (SHA.test(remote) && remote !== ref) {
       const have = async (): Promise<boolean> => (await runner(['cat-file', '-e', `${remote}^{commit}`], cwd)).code === 0
       // Objects only: nothing a fetch of a branch does touches a ref a peer's rules hang on.
-      if (!(await have())) await runner(['fetch', '--quiet', '--no-write-fetch-head', 'origin', `refs/heads/${branch}`], cwd)
+      if (!(await have())) await runner([...TRANSPORT, 'fetch', '--quiet', '--no-write-fetch-head', 'origin', `refs/heads/${branch}`], cwd)
       // Not there even now: nothing trustworthy to read, so nothing is read.
       if (!(await have())) return undefined
       ref = remote
