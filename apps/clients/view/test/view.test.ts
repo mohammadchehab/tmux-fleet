@@ -12,7 +12,7 @@ import type { DaemonMethod } from '@fleet/foundation-contracts'
 
 import type { Caller } from '../src/client.ts'
 import { paneLines, peerOnce, tableOnce } from '../src/view.ts'
-import { SESSION, lsFixture, peerFixture } from './fixtures.ts'
+import { SESSION, activityFixture, lsFixture, peerFixture } from './fixtures.ts'
 
 const PEER = 'engineer-1' as PeerId
 
@@ -21,10 +21,13 @@ const PEER = 'engineer-1' as PeerId
  * also holds the view to its one-read promise: a renderer that started calling
  * something else would fail here rather than in a pane.
  */
-const caller = (peers: ReturnType<typeof lsFixture>['peers']): Caller =>
+const caller = (
+  peers: ReturnType<typeof lsFixture>['peers'],
+  activity: ReturnType<typeof lsFixture>['activity'] = [],
+): Caller =>
   (async (method: DaemonMethod) => {
     if (method !== 'ls') throw fleetError('invalid_input', `the view only reads ls, not ${method}`)
-    return lsFixture(peers)
+    return { ...lsFixture(peers), activity }
   }) as unknown as Caller
 
 describe('view: one read, two shapes', () => {
@@ -42,8 +45,23 @@ describe('view: one read, two shapes', () => {
       '  session   none',
       '  brief     v3',
       '  worktree  none',
+      '  work      none',
+      '  tool      none',
+      '  turn      no turn yet',
       '  updated   2026-11-10 12:59:55',
     ])
+  })
+
+  it('joins the peer`s own activity row into the pane, and nobody else`s', async () => {
+    const lines = await peerOnce(
+      caller(
+        [peerFixture({ peerId: PEER }), peerFixture({ peerId: 'engineer-2' })],
+        [activityFixture({ peerId: 'engineer-2', lastTool: 'Write' }), activityFixture({ peerId: PEER })],
+      ),
+      PEER,
+    )
+    assert.equal(lines.find((line) => line.trimStart().startsWith('work ')), '  work      wrk_0123456789abcdef')
+    assert.equal(lines.find((line) => line.trimStart().startsWith('tool ')), '  tool      Edit packages/foundation/store/src/peers.ts')
   })
 
   it('says a peer is unknown rather than showing another peer`s row', async () => {

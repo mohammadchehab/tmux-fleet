@@ -52,7 +52,13 @@ const page = async (options: ServeOptions): Promise<{ readonly status: number; r
     const [ls, work] = await Promise.all([options.call('ls', {}), options.call('work', {})])
     return {
       status: 200,
-      body: renderBoard({ status: ls.status, work: work.work, usage: ls.tokens, renderedAt: options.now() }),
+      body: renderBoard({
+        status: ls.status,
+        work: work.work,
+        usage: ls.tokens,
+        activity: ls.activity,
+        renderedAt: options.now(),
+      }),
     }
   } catch (thrown) {
     // Any failure here is the daemon's, not the request's: the board has no

@@ -159,6 +159,28 @@ export const peerFailed = event(
 )
 
 /**
+ * One tool call inside a peer's turn (§4). `Peer.state` says a peer is
+ * `working`; it cannot say at what, and a person watching `fleet ls` had to
+ * guess from a mailbox that only ever showed what was sent to it.
+ *
+ * Both fields are the provider's own `tool.use` event's: `tool` is the
+ * adapter's name for the tool, `target` its short, already-redacted summary —
+ * a file path, a description, a command — never the tool's input. A provider
+ * that does not summarise (cursor) contributes the name alone, which is the
+ * honest answer rather than a target this fleet inferred.
+ */
+export const peerToolUsed = event(
+  'peer.tool_used',
+  object({
+    peerId: peerId(),
+    sessionId: optional(sessionId()),
+    tool: string({ minLength: 1, maxLength: 64 }),
+    /** The adapter's short target, bounded again so one log row stays small. */
+    target: optional(string({ minLength: 1, maxLength: 200 })),
+  }),
+)
+
+/**
  * A provider compacted a peer's context on its own or on a person's say-so (§8).
  *
  * Recorded because a compaction is money: the conversation is re-sent to a

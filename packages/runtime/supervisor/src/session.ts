@@ -44,6 +44,18 @@ import { emptyToolCalls, withToolCall, type ToolCalls } from './tool-calls.ts'
 
 export type { SessionRecord } from './records.ts'
 
+/**
+ * The event schema's own bounds (§4). A provider's `tool.use` summary is
+ * already short and redacted, but its contract allows 500 characters and the
+ * activity event allows 200; the cut happens here, at the writer, so the store
+ * never has to refuse a record the session already thought it made.
+ */
+const TOOL_MAX = 64
+const TARGET_MAX = 200
+
+const bounded = (value: string, max: number): string =>
+  value.length <= max ? value : `${value.slice(0, max - 1)}…`
+
 /** What a purge needs from the live session: its handle, its brief, and a way to ask. */
 export interface PurgeInput {
   readonly handle: SessionHandle
@@ -379,6 +391,21 @@ export class PeerSession {
         // entry in `#toolCalls` that nothing clears.
         if (this.#endedTurn?.turnId === event.turnId) break
         this.#toolCalls.set(event.turnId, withToolCall(this.#toolCalls.get(event.turnId) ?? emptyToolCalls, event.tool))
+        // What the peer is doing, not only that it is busy (§4). Written here,
+        // where the stream says it, so a replay sees the same activity the live
+        // fleet showed; the projection keeps the latest and counts the edits.
+        await record({
+          type: 'peer.tool_used',
+          ts: clock.now(),
+          subject: peerId,
+          actor: peerActor(peerId),
+          data: {
+            peerId,
+            sessionId,
+            tool: bounded(event.tool, TOOL_MAX),
+            ...(event.summary === undefined ? {} : { target: bounded(event.summary, TARGET_MAX) }),
+          },
+        })
         break
       }
       case 'turn.ended':

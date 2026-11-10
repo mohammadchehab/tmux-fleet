@@ -356,6 +356,36 @@ CREATE INDEX IF NOT EXISTS peer_compactions_peer ON peer_compactions (peer_id);
 `
 
 /**
+ * What each peer is doing right now (§4), one row per peer: the last tool the
+ * provider reported and its short target, and when the peer's last turn ended.
+ * A row per peer rather than an event tail, because `fleet ls`, the view and
+ * the board all ask the same question — "what is it doing" — and answering it
+ * from the log would make the cost of drawing a screen depend on the size of
+ * the fleet's history.
+ */
+const PEER_ACTIVITY = `
+CREATE TABLE IF NOT EXISTS peer_activity (
+  peer_id      TEXT PRIMARY KEY,
+  last_tool    TEXT,
+  last_target  TEXT,
+  last_tool_at TEXT,
+  last_turn_at TEXT
+) STRICT;
+
+-- Edit/Write calls per (peer, Work): a counter, not a row per call, because the
+-- question is "how much is this peer rewriting" and a log of every touch answers
+-- a different one. Keyed by Work so a Work handed to another peer keeps its own
+-- count, and so the count survives the peer switching away and back.
+CREATE TABLE IF NOT EXISTS peer_tool_counts (
+  peer_id TEXT NOT NULL,
+  work_id TEXT NOT NULL,
+  tool    TEXT NOT NULL,
+  count   INTEGER NOT NULL,
+  PRIMARY KEY (peer_id, work_id, tool)
+) STRICT;
+`
+
+/**
  * Migrations, in order. A store records the highest applied version in
  * `store_meta` and applies everything above it; version 1 is the initial
  * schema (architecture §3).
@@ -406,6 +436,15 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 6,
     name: 'token_cost',
     statements: ['ALTER TABLE token_report ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;'],
+  },
+  {
+    // additive: activity is a projection of a new event (`peer.tool_used`), so an
+    // existing log has nothing to backfill into it. Version 7, not 6: 6 is
+    // `token_cost` above, and two migrations sharing a version means whichever
+    // the store applied first wins and the other is never applied at all.
+    version: 7,
+    name: 'peer_activity',
+    statements: [PEER_ACTIVITY],
   },
 ]
 

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import { renderPaneFailure, renderPeer, renderTable, renderUnknownPeer } from '../src/render.ts'
-import { SESSION, lsFixture, peerFixture } from './fixtures.ts'
+import { SESSION, activityFixture, lsFixture, peerFixture } from './fixtures.ts'
 
 describe('render: a peer pane', () => {
   it('leads with the identity and the state, then one labelled field per line', () => {
@@ -20,8 +20,33 @@ describe('render: a peer pane', () => {
       `  session   ${SESSION}`,
       '  brief     v3',
       '  worktree  none',
+      '  work      none',
+      '  tool      none',
+      '  turn      no turn yet',
       '  updated   2026-11-10 12:59:55',
     ])
+  })
+
+  it('says what a `working` peer is working on, from the activity row', () => {
+    const lines = renderPeer(peerFixture({ peerId: 'engineer-1' }), activityFixture())
+    assert.equal(lines[0], 'engineer-1  working')
+    assert.equal(lines.find((line) => line.trimStart().startsWith('work ')), '  work      wrk_0123456789abcdef')
+    assert.equal(lines.find((line) => line.trimStart().startsWith('tool ')), '  tool      Edit packages/foundation/store/src/peers.ts')
+    assert.equal(lines.find((line) => line.trimStart().startsWith('edits')), '  edits     14')
+    assert.equal(lines.find((line) => line.trimStart().startsWith('turn ')), '  turn      2026-11-10 12:58:01')
+  })
+
+  it('cuts a long target rather than wrapping a pane', () => {
+    const path = `packages/${'deeply-nested/'.repeat(6)}file.ts`
+    const lines = renderPeer(peerFixture({ peerId: 'engineer-1' }), activityFixture({ lastTarget: path }))
+    const toolLine = lines.find((line) => line.trimStart().startsWith('tool ')) ?? ''
+    assert.ok(toolLine.endsWith('…'), toolLine)
+    assert.ok(toolLine.length <= '  tool      '.length + 5 + 40, toolLine)
+  })
+
+  it('leaves the edits line out when there is no Work to count them against', () => {
+    const lines = renderPeer(peerFixture({ peerId: 'engineer-1' }), activityFixture({ workId: undefined, edits: 0 }))
+    assert.equal(lines.some((line) => line.trimStart().startsWith('edits')), false)
   })
 
   it('prints a peer with no session as `none`, not as an empty field', () => {

@@ -13,7 +13,7 @@
  * socket in it.
  */
 
-import type { LsResult, Peer } from '@fleet/foundation-contracts'
+import type { LsResult, Peer, PeerActivity } from '@fleet/foundation-contracts'
 
 /** Wide enough for `worktree` and `provider`, which are the longest labels. */
 const LABEL = 10
@@ -43,18 +43,40 @@ const timestamp = (value: string): string => {
   return match === null ? value : `${match[1] ?? ''} ${match[2] ?? ''}`
 }
 
+/** A pane is narrow and often read from across the room, so a target is cut, not wrapped. */
+const TARGET = 40
+
+const shorten = (value: string, max: number): string =>
+  value.length <= max ? value : `${value.slice(0, max - 1)}…`
+
+/** The tool line: the name always, the adapter's short target if it gave one. */
+const tool = (activity: PeerActivity | undefined): string => {
+  if (activity?.lastTool === undefined) return 'none'
+  if (activity.lastTarget === undefined) return activity.lastTool
+  return `${activity.lastTool} ${shorten(activity.lastTarget, TARGET)}`
+}
+
 /**
  * One peer, as the lines of its pane. The first line is the identity and the
  * state, because those are what a wall of panes is scanned for; everything else
  * is a labelled field underneath.
+ *
+ * `working` alone does not say what the peer is working on, so the activity row
+ * — when the projection has one — adds the Work, the last tool and its short
+ * target, how many edits that Work has taken, and when the last turn ended.
+ * Every line is a projection value; nothing here infers activity from the state.
  */
-export const renderPeer = (peer: Peer): readonly string[] => [
+export const renderPeer = (peer: Peer, activity?: PeerActivity): readonly string[] => [
   `${peer.peerId}  ${peer.state}`,
   field('role', peer.role),
   field('provider', `${peer.providerId}/${peer.model}`),
   field('session', peer.currentSessionId ?? 'none'),
   field('brief', `v${String(peer.briefVersion)}`),
   field('worktree', peer.worktreeId ?? 'none'),
+  field('work', activity?.workId ?? 'none'),
+  field('tool', tool(activity)),
+  ...(activity?.workId === undefined ? [] : [field('edits', String(activity.edits))]),
+  field('turn', activity?.lastTurnAt === undefined ? 'no turn yet' : timestamp(activity.lastTurnAt)),
   field('updated', timestamp(peer.updatedAt)),
 ]
 

@@ -49,6 +49,10 @@ export const PROJECTION_TABLES = [
   'peers',
   'sessions',
   'peer_failures',
+  // Activity is dropped on replay like every other projection: `peer_tool_counts`
+  // is a counter, so replaying it onto rows that survived would double every edit.
+  'peer_activity',
+  'peer_tool_counts',
   'work',
   'work_depends',
   'work_prs',
@@ -215,6 +219,32 @@ const updatePeer = (db: Sqlite, peerId: string, patch: Partial<Peer>, event: Fle
 }
 
 // --------------------------------------------------------------------- sessions
+
+/**
+ * The Work a peer is on right now: assigned to it and not finished (§5.1). The
+ * same rule the PM's state snapshot uses, and the one a replay must apply, so
+ * the Work an activity row is counted against is the Work the peer was actually
+ * on when the call was made — read in log order, never from the clock.
+ *
+ * A peer can hold more than one open Work only if the PM broke its own rule;
+ * the most recently touched one is what a reader means by "current".
+ */
+const currentWorkOf = (db: Sqlite, peerId: string): string | undefined =>
+  db.get<{ work_id: string }>(
+    `SELECT work_id FROM work
+      WHERE assignee = ? AND state NOT IN ('cleaned', 'cancelled')
+      ORDER BY updated_at DESC, work_id
+      LIMIT 1`,
+    peerId,
+  )?.work_id
+
+/**
+ * The tools whose calls mean a Work is being *reworked* rather than explored.
+ * Claude Code's names; a provider that calls its editor something else counts
+ * nothing, which is the honest answer rather than a mapping this store invented
+ * (§6.2's `countToolCall` makes the same choice).
+ */
+const editToolNames: readonly string[] = ['Edit', 'Write']
 
 const writeSession = (db: Sqlite, session: Session): void =>
   writeRow(
@@ -1019,6 +1049,43 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       raiseNotification(db, notificationKeyOf('failure', peerId, reason), 'failure', ts)
       return
     }
+    case 'peer.tool_used': {
+      const { peerId, tool, target } = event.data
+      if (peerById(db, peerId) === undefined) {
+        missing(db, event, 'peer', peerId)
+        return
+      }
+      // Last-write-wins for "what is it doing": the newest call is the answer, and
+      // the target is cleared when the newest call had none, so a provider that
+      // does not summarise does not leave the previous tool's path looking current.
+      db.run(
+        `INSERT INTO peer_activity (peer_id, last_tool, last_target, last_tool_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (peer_id) DO UPDATE SET
+           last_tool = excluded.last_tool,
+           last_target = excluded.last_target,
+           last_tool_at = excluded.last_tool_at`,
+        peerId,
+        tool,
+        target ?? null,
+        ts,
+      )
+      // Only an edit against a Work is counted, and only against the Work the peer
+      // was on at this point in the log: a call with no current Work is activity
+      // (the row above) but not rework of anything.
+      if (!editToolNames.includes(tool)) return
+      const workId = currentWorkOf(db, peerId)
+      if (workId === undefined) return
+      db.run(
+        `INSERT INTO peer_tool_counts (peer_id, work_id, tool, count)
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT (peer_id, work_id, tool) DO UPDATE SET count = peer_tool_counts.count + 1`,
+        peerId,
+        workId,
+        tool,
+      )
+      return
+    }
     case 'peer.compacted': {
       const { peerId, trigger, preTokens, contextLimit } = event.data
       db.run(
@@ -1696,6 +1763,14 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     }
     case 'turn.usage_recorded': {
       const { peerId, workId, inputTokens, outputTokens, cachedTokens, toolCalls, costUsd } = event.data
+      // The boundary is the only place a turn's end is recorded, so it is also
+      // where "when did this peer last finish a turn" is kept for `fleet ls`.
+      db.run(
+        `INSERT INTO peer_activity (peer_id, last_turn_at) VALUES (?, ?)
+         ON CONFLICT (peer_id) DO UPDATE SET last_turn_at = excluded.last_turn_at`,
+        peerId,
+        ts,
+      )
       const role = peerById(db, peerId)?.role ?? 'unknown'
       // The per-Work row, and the peer's rollup under the empty work id (§6.2).
       const rows: readonly string[] = workId === undefined ? [''] : [workId, '']
@@ -2031,6 +2106,52 @@ export const readers = (db: Sqlite): ReadModel => {
       // nothing here that grows with the log's history.
       all: async () =>
         db.all<TokenRow>('SELECT * FROM token_report ORDER BY peer_id, work_id').map((row) => tokenReportFromRow(row)),
+    },
+    activity: {
+      // One query for the whole fleet: the last tool, the current Work, and that
+      // Work's edit count, joined in SQL. A peer with neither an activity row nor
+      // a current Work is not returned — the caller has no use for a row that says
+      // nothing, the same reason compactions return only peers that compacted.
+      all: async () =>
+        db
+          .all<{
+            peer_id: string
+            work_id: string | null
+            last_tool: string | null
+            last_target: string | null
+            last_tool_at: string | null
+            last_turn_at: string | null
+            edits: number
+          }>(
+            `SELECT p.peer_id,
+                    w.work_id,
+                    a.last_tool,
+                    a.last_target,
+                    a.last_tool_at,
+                    a.last_turn_at,
+                    (SELECT COALESCE(SUM(c.count), 0) FROM peer_tool_counts c
+                      WHERE c.peer_id = p.peer_id AND c.work_id = w.work_id) AS edits
+               FROM peers p
+               LEFT JOIN peer_activity a ON a.peer_id = p.peer_id
+               LEFT JOIN work w ON w.work_id = (
+                 SELECT w2.work_id FROM work w2
+                  WHERE w2.assignee = p.peer_id AND w2.state NOT IN ('cleaned', 'cancelled')
+                  ORDER BY w2.updated_at DESC, w2.work_id
+                  LIMIT 1)
+              WHERE a.peer_id IS NOT NULL OR w.work_id IS NOT NULL
+              ORDER BY p.peer_id`,
+          )
+          .map((row) =>
+            parse(PROJECTION_SCHEMAS.peerActivity, {
+              peerId: row.peer_id,
+              ...(row.work_id === null ? {} : { workId: row.work_id }),
+              ...(row.last_tool === null ? {} : { lastTool: row.last_tool }),
+              ...(row.last_target === null ? {} : { lastTarget: row.last_target }),
+              ...(row.last_tool_at === null ? {} : { lastToolAt: row.last_tool_at }),
+              ...(row.last_turn_at === null ? {} : { lastTurnAt: row.last_turn_at }),
+              edits: row.edits,
+            }),
+          ),
     },
     compactions: {
       // Grouped in SQL rather than by the caller: `fleet ls` wants a count per

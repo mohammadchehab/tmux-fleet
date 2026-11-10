@@ -67,6 +67,18 @@ const tokens = [
   { peerId: 'engineer-1' as PeerId, role: 'engineer', workId: 'wrk_7f3a91c2d84b0e56' as WorkId, turns: 8, inputTokens: 9000, outputTokens: 2000, cachedTokens: 600, costUsd: 3.01, toolCalls: { grep: 1, glob: 0, read: 1, codegraph: 2 }, redirects: 0, updatedAt: now },
 ]
 
+const activity = [
+  {
+    peerId: 'engineer-1' as PeerId,
+    workId: 'wrk_0123456789abcdef' as WorkId,
+    lastTool: 'Edit',
+    lastTarget: 'packages/foundation/store/src/projections.ts',
+    lastToolAt: now,
+    lastTurnAt: now,
+    edits: 14,
+  },
+]
+
 const listing: LsResult = {
   status,
   peers: [peer],
@@ -74,6 +86,7 @@ const listing: LsResult = {
   decisions: [decision],
   compactions,
   tokens,
+  activity,
 }
 
 type Answer = (params: unknown) => unknown
@@ -189,13 +202,21 @@ describe('run: ls', () => {
     assert.match(text, /tokens \(\$4\.12 total\) \(2\)/)
     assert.match(text, /engineer-1 +engineer +all +12 turns +in 12000 +out 3000 +cached 900 +\$4\.12/)
     assert.match(text, /engineer-1 +engineer +wrk_7f3a91c2d84b0e56 +8 turns +in 9000 +out 2000 +cached 600 +\$3\.01/)
+    // A peer that says `working` is a peer whose reader wants to know at what:
+    // tool, target, Work and how much of that Work it has rewritten (§4).
+    assert.match(text, /activity \(1\)/)
+    assert.match(
+      text,
+      /engineer-1 {2}Edit {2}packages\/foundation\/store\/src\/projections\.ts {2}wrk_0123456789abcdef {2}edits 14 {2}\d{4}-\d\d-\d\dT/,
+    )
   })
 
   it('says so in each section that is empty rather than printing a bare heading', async () => {
-    const empty: LsResult = { status, peers: [], routines: [], decisions: [], compactions: [], tokens: [] }
+    const empty: LsResult = { status, peers: [], routines: [], decisions: [], compactions: [], tokens: [], activity: [] }
     const { deps, out } = harness({ ls: () => empty })
     assert.equal(await run(argv('ls'), deps), 0)
     assert.match(out[0] ?? '', /none registered/)
+    assert.match(out[0] ?? '', /none: no peer has a Work or has used a tool/)
     assert.match(out[0] ?? '', /none: no peer has compacted/)
     assert.match(out[0] ?? '', /nothing waiting on the user/)
   })

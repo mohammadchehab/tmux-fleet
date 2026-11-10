@@ -25,7 +25,13 @@ export const tableOnce = async (call: Caller): Promise<string> => renderTable(aw
 export const peerOnce = async (call: Caller, peer: PeerId): Promise<readonly string[]> => {
   const result = await call('ls', {})
   const found = result.peers.find((row) => row.peerId === peer)
-  return found === undefined ? renderUnknownPeer(peer) : renderPeer(found)
+  if (found === undefined) return renderUnknownPeer(peer)
+  // The activity row is a second projection of the same `ls` answer: absent is
+  // ordinary (a peer that has no Work and has used no tool) and renders as none.
+  return renderPeer(
+    found,
+    result.activity.find((row) => row.peerId === peer),
+  )
 }
 
 /**
