@@ -6,18 +6,19 @@
  * Somebody has to take the snapshot, and that somebody is the routine: it is
  * the only layer that runs on a clock and may await the store.
  *
- * Sessions have no `all()` on `ReadModel` — a session belongs to a peer (§3) —
- * so they are gathered per peer. That is one extra call per peer, which is the
- * price of a total snapshot and is bounded by the fleet's size, not the store's.
+ * Sessions belong to a peer (§3) but the snapshot needs all of them, and
+ * `ReadModel.sessions.all()` answers that in one read: gathering per peer made
+ * the snapshot's cost a function of the fleet's size, which is the one thing a
+ * heartbeat cannot afford to be.
  */
 
 import type { FleetState, ReadModel } from '@fleet/foundation-contracts'
 
 export const snapshot = async (read: ReadModel): Promise<FleetState> => {
-  const peers = await read.peers.all()
-  const [sessions, work, decisions, messages, pullRequests, worktrees, routines, findings, notifications] =
+  const [peers, sessions, work, decisions, messages, pullRequests, worktrees, routines, findings, notifications] =
     await Promise.all([
-      Promise.all(peers.map((peer) => read.sessions.forPeer(peer.peerId))),
+      read.peers.all(),
+      read.sessions.all(),
       read.work.all(),
       read.decisions.all(),
       read.messages.all(),
@@ -30,7 +31,7 @@ export const snapshot = async (read: ReadModel): Promise<FleetState> => {
 
   return {
     peers,
-    sessions: sessions.flat(),
+    sessions,
     work,
     decisions,
     messages,

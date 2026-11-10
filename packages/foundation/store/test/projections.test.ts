@@ -46,6 +46,10 @@ test('the golden corpus replays into a read model of every projection', async ()
   assert.equal(sessions[0]?.endedAt, '2026-11-10T09:05:00.000Z')
   assert.equal(sessions[0]?.endReason, 'purged')
 
+  // `all()` is the same rows the per-peer read returns, in one call: a `FleetState` needs every session (§5.2),
+  // and gathering it peer by peer made the snapshot's cost a function of the fleet's size.
+  assert.deepEqual(await reader.sessions.all(), sessions, 'every session, and the same ones `forPeer` gives')
+
   const work = await reader.work.all()
   assert.equal(work.length, 1, 'a transition for a Work no event proposed has nothing to update')
   assert.equal(work[0]?.state, 'cleaned')
@@ -293,5 +297,48 @@ test("a published brief is the version the Mailbox compares a reply against", as
   const peer = await store.reader().peers.get('engineer-1' as PeerId)
   // 0 means "no brief yet": the Mailbox reads `undefined` until one is published (§7, §12).
   assert.equal(peer?.briefVersion, 1)
+  await store.close()
+})
+
+test('sessions.all() is every session the fleet has, oldest first, in one read', async () => {
+  const store = await open()
+  await store.append([
+    appendable('peer.registered.json'),
+    appendable('session.started.json'),
+    // a second peer, so `all()` cannot be satisfied by the per-peer answer of the first
+    event('peer.registered', 'engineer-2', {
+      peerId: 'engineer-2',
+      role: 'engineer',
+      providerId: 'claude-code',
+      model: 'claude-sonnet-5-5',
+      permissionMode: 'acceptEdits',
+    }),
+    event(
+      'session.started',
+      'ses_9f8e7d6c5b4a3928',
+      {
+        sessionId: 'ses_9f8e7d6c5b4a3928',
+        peerId: 'engineer-2',
+        providerId: 'claude-code',
+        providerSessionRef: 'ref-9f8e7d6c',
+        model: 'claude-sonnet-5-5',
+        permissionMode: 'acceptEdits',
+        resumed: false,
+      },
+      '2026-11-10T11:00:00.000Z',
+    ),
+  ])
+
+  const all = await store.reader().sessions.all()
+  assert.equal(all.length, 2, 'both peers, without asking for either one')
+  assert.deepEqual(
+    all.map((session) => session.peerId),
+    ['engineer-1', 'engineer-2'],
+    'ordered by when they started, so the snapshot does not depend on how the rows were written',
+  )
+  assert.deepEqual(await store.reader().sessions.all(), [
+    ...(await store.reader().sessions.forPeer('engineer-1' as PeerId)),
+    ...(await store.reader().sessions.forPeer('engineer-2' as PeerId)),
+  ])
   await store.close()
 })
