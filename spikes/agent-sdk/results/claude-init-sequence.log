@@ -1,0 +1,16 @@
+{
+ "probe": "init-sequence",
+ "requested": "default",
+ "mid_session_switch_to": "acceptEdits",
+ "setPermissionMode": "ok",
+ "inits": [
+  {
+   "at_turn": 0,
+   "permissionMode": "default"
+  },
+  {
+   "at_turn": 1,
+   "permissionMode": "acceptEdits"
+  }
+ ]
+}

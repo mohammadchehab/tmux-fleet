@@ -27,6 +27,11 @@ Probes:
 | `compaction` | `/compact` → `compact_boundary`, status frames |
 | `resume-write` / `resume-read` | resume by id in a **second process**, context intact |
 
+Two follow-up scripts answer a narrower question — does `init.permissionMode` echo what was requested, and if not,
+do user settings cause it? (`t-mode.mjs`: a matrix of requests × settings isolation, plus a behavioural write in
+`default`; `t-mode2.mjs`: every init in order around a mid-session `setPermissionMode`). They exist because the first
+draft of the findings misread its own probe; see the correction in §5 of the doc.
+
 ## Running it
 
 ```sh
@@ -61,6 +66,7 @@ money — see gap 2 in the findings.
 | path | what |
 | :- | :- |
 | `probe.mjs` | the harness (provider-agnostic; one probe per invocation) |
+| `t-mode.mjs`, `t-mode2.mjs` | the permission-mode echo follow-ups |
 | `run.sh` | runs every probe against one provider, writes `results/` |
 | `results/` | captured output — the evidence the findings cite |
 | `results/versions.txt` | SDK / CLI / node / model ids for this run |
