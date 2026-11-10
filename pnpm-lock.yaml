@@ -56,6 +56,21 @@ importers:
         specifier: workspace:*
         version: link:../sdk
 
+  packages/runtime/providers/deepinfra:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../../foundation/core
+      '@fleet/runtime-provider-claude':
+        specifier: workspace:*
+        version: link:../claude
+      '@fleet/runtime-provider-sdk':
+        specifier: workspace:*
+        version: link:../sdk
+
   packages/runtime/providers/sdk:
     dependencies:
       '@fleet/foundation-contracts':

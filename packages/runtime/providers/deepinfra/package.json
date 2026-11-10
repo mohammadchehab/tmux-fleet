@@ -1,0 +1,19 @@
+{
+  "name": "@fleet/runtime-provider-deepinfra",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DeepInfra as a provider: the Claude Agent SDK pointed at DeepInfra's Anthropic-compatible endpoint, with the context limit taken from config because the SDK's number is a guess (§4, §8).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*",
+    "@fleet/runtime-provider-claude": "workspace:*",
+    "@fleet/runtime-provider-sdk": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
