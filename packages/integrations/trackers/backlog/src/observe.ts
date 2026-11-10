@@ -112,6 +112,15 @@ export const notesFrom = (task: Record<string, unknown>): string => {
   return typeof notes === 'string' ? notes : ''
 }
 
+/**
+ * Whether the notes already carry `note`, as whole lines. A substring match
+ * called `pull/1` recorded when `pull/12` was, and a short note recorded when a
+ * longer one began the same way, so a PR or a note was silently never written
+ * (TASK-30). `\n` bounds both ends so a multi-line note matches as a block.
+ */
+export const hasNote = (notes: string, note: string): boolean =>
+  `\n${notes.replaceAll('\r\n', '\n')}\n`.includes(`\n${note}\n`)
+
 /** The card's PR link, as this adapter writes it into the notes. */
 export const linkNote = (prUrl: string): string => `PR: ${prUrl}`
 
