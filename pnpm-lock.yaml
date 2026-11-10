@@ -29,6 +29,9 @@ importers:
       '@fleet/orchestration-gate':
         specifier: workspace:*
         version: link:../../packages/orchestration/gate
+      '@fleet/orchestration-pm':
+        specifier: workspace:*
+        version: link:../../packages/orchestration/pm
       '@fleet/orchestration-routines':
         specifier: workspace:*
         version: link:../../packages/orchestration/routines
