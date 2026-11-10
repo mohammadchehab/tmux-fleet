@@ -15,6 +15,8 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 
 import {
+  err,
+  fleetError,
   newDecisionId,
   ok,
   type DecisionId,
@@ -49,12 +51,24 @@ const profile = (): Profile => ({
   ],
 })
 
-const fakeSupervisor = (): Supervisor & { readonly log: readonly string[]; readonly sent: readonly string[] } => {
+const fakeSupervisor = (
+  options: { readonly reachable?: boolean } = {},
+): Supervisor & {
+  readonly log: readonly string[]
+  readonly sent: readonly string[]
+  /** Bring the session up (or take it away) mid-test, so "queued, then delivered on resume" is one scenario. */
+  online(value: boolean): void
+} => {
   const log: string[] = []
   const sent: string[] = []
+  let reachable = options.reachable !== false
+  let sessions = 0
   return {
     log,
     sent,
+    online(value: boolean) {
+      reachable = value
+    },
     async start() {
       log.push('supervisor.start')
     },
@@ -62,8 +76,19 @@ const fakeSupervisor = (): Supervisor & { readonly log: readonly string[]; reado
       log.push('supervisor.stop')
     },
     async acquire(peer: PeerId) {
+      // A registered peer whose session is not running: §7's "resume-then-deliver"
+      // answers this with a typed `not_found`, which the Mailbox reports as
+      // `no_session` and leaves the message pending.
+      if (!reachable) {
+        return err(
+          fleetError('not_found', `peer ${String(peer)} has no running session`, { details: { peerId: String(peer) } }),
+        )
+      }
+      // A real session id, because the Mailbox writes it into `message.delivered`
+      // and the store's append boundary checks it against the contract.
+      sessions += 1
       const lease: PeerSessionLease = {
-        sessionId: `ses_${String(peer)}` as SessionId,
+        sessionId: `ses_${String(sessions).padStart(16, '0')}` as SessionId,
         resumed: false,
         async send(turn: Turn): Promise<TurnId> {
           sent.push(turn.text)
@@ -73,8 +98,10 @@ const fakeSupervisor = (): Supervisor & { readonly log: readonly string[]; reado
       return ok(lease)
     },
     briefs: {
-      async current() {
-        return 2
+      // Only a peer the profile declares has a brief; any other id resolves to
+      // none, which is how a caller learns it named no one (§7).
+      async current(peer: PeerId) {
+        return profile().peers.some((declared) => declared.id === peer) ? 2 : undefined
       },
     },
     running() {
@@ -107,12 +134,12 @@ const fakeScheduler = (): Scheduler & { readonly log: readonly string[] } => {
   }
 }
 
-const harness = async () => {
+const harness = async (options: { readonly reachable?: boolean } = {}) => {
   const paths = pathsFor()
   for (const dir of persistentDirs(paths)) await mkdir(dir, { recursive: true })
   const store: EventStore = await openSqliteStore({ path: paths.storePath })
   await store.migrate()
-  const supervisor = fakeSupervisor()
+  const supervisor = fakeSupervisor(options)
   const scheduler = fakeScheduler()
   const mailbox = createMailbox({
     store: { append: (batch) => store.append(batch), messages: store.reader().messages },
@@ -166,7 +193,7 @@ test('ls reports the profile peers with the state the store knows', async () => 
   assert.equal((await store.latestSeq()) > 0, true)
 })
 
-test('send writes the message through the Mailbox and peek reads it back', async () => {
+test('send writes the message through the Mailbox, hands it to the peer, and peek reads it back', async () => {
   const { daemon, store, supervisor } = await harness()
   await daemon.up()
 
@@ -182,10 +209,55 @@ test('send writes the message through the Mailbox and peek reads it back', async
     'the brief version comes from the supervisor, not from the caller',
   )
 
+  // §7: the send goes through the Mailbox *and* delivers — the peer's session
+  // is handed the turn in the same call, so `fleet send` does not just queue.
+  assert.deepEqual(supervisor.sent, ['take #12'])
+  const delivered = events.find((event) => event.type === 'message.delivered')
+  assert.equal(delivered?.type === 'message.delivered' ? delivered.data.msgId : '', msgId)
+
   const { messages } = await daemon.peek({ peer: 'engineer-1' as PeerId })
   assert.equal(messages.length, 1)
   assert.equal(messages[0]?.body, 'take #12')
-  assert.equal(supervisor.sent.length, 0, 'send does not deliver; the Mailbox does (§7)')
+  await daemon.down()
+})
+
+test('a send to a registered peer with no session queues, and stays pending until one is there', async () => {
+  // The queue rule: an unanswered session is not an error the sender must fix —
+  // the message waits in the box and the Mailbox replays it on resume (§7).
+  const { daemon, store, supervisor } = await harness({ reachable: false })
+  await daemon.up()
+
+  const { msgId } = await daemon.send({ to: 'engineer-1' as PeerId, kind: 'info', body: 'take #13' })
+  assert.match(msgId, /^msg_[0-9a-f]{16}$/)
+  assert.deepEqual(supervisor.sent, [], 'there was no session to hand it to')
+
+  const events = await store.read(1)
+  assert.equal(
+    events.some((event) => event.type === 'message.delivered'),
+    false,
+    'nothing was delivered, so no delivery is recorded',
+  )
+  const pending = await daemon.peek({ peer: 'engineer-1' as PeerId })
+  assert.deepEqual(pending.messages.map((message) => message.body), ['take #13'])
+  assert.equal(pending.messages[0]?.state, 'pending')
+
+  // The session comes up, and the same message is delivered — once.
+  supervisor.online(true)
+  await daemon.send({ to: 'engineer-1' as PeerId, kind: 'info', body: 'take #14' })
+  assert.deepEqual(supervisor.sent, ['take #13', 'take #14'], 'the queued message goes first')
+  await daemon.down()
+})
+
+test('a send to a peer the fleet does not know is not_found', async () => {
+  const { daemon } = await harness()
+  await daemon.up()
+  await assert.rejects(
+    daemon.send({ to: 'ghost' as PeerId, kind: 'info', body: 'hello' }),
+    (thrown: unknown) => {
+      assert.equal((thrown as { code?: string }).code, 'not_found')
+      return true
+    },
+  )
   await daemon.down()
 })
 

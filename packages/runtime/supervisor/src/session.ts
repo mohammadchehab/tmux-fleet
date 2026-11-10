@@ -227,46 +227,55 @@ export class PeerSession {
       return waiter.promise
     }
 
-    for await (const event of provider.events(handle)) {
-      await this.#apply(handle, event, purge !== undefined)
+    let failed: unknown
+    try {
+      for await (const event of provider.events(handle)) {
+        await this.#apply(handle, event, purge !== undefined)
 
-      if (event.type === 'session.ended') break
-      if (event.type !== 'turn.ended') continue
+        if (event.type === 'session.ended') break
+        if (event.type !== 'turn.ended') continue
 
-      // A turn boundary reached *during* a purge is the peer answering the ask.
-      if (askWaiter !== undefined) {
-        const waiter = askWaiter
-        askWaiter = undefined
-        waiter.resolve()
-        continue
+        // A turn boundary reached *during* a purge is the peer answering the ask.
+        if (askWaiter !== undefined) {
+          const waiter = askWaiter
+          askWaiter = undefined
+          waiter.resolve()
+          continue
+        }
+        if (event.reason !== 'completed' || purge !== undefined) continue
+
+        // A turn boundary is a purge boundary only while the peer is idle and
+        // nothing is owed to a person. A question still open, or a turn that
+        // started before this one ended, is not one: the purge would interrupt
+        // the peer and then read the ask's own end as the peer's answer.
+        if (this.#state !== 'idle' || this.#pending.size > 0 || this.#openTurns > 0) continue
+
+        turns += 1
+        const usage = await provider.usage(handle)
+        const trigger = purgeTrigger({
+          usage,
+          usageTokens: provider.capabilities.usageTokens,
+          turns,
+          sessionMillis: clock.millis() - startedAt,
+          limits,
+        })
+        if (trigger === undefined) continue
+
+        // Not awaited: the ask it is about to make is answered by this very loop.
+        // No mail goes into the session from here until a replacement is running.
+        this.#purging = true
+        purge = this.#ports.purge({ handle, briefVersion: this.#ports.briefVersion, ask })
+        purge.catch(() => {
+          // The rejection is collected below, once the stream has ended. Attaching
+          // here only keeps Node from calling it an unhandled rejection first.
+        })
       }
-      if (event.reason !== 'completed' || purge !== undefined) continue
-
-      // A turn boundary is a purge boundary only while the peer is idle and
-      // nothing is owed to a person. A question still open, or a turn that
-      // started before this one ended, is not one: the purge would interrupt
-      // the peer and then read the ask's own end as the peer's answer.
-      if (this.#state !== 'idle' || this.#pending.size > 0 || this.#openTurns > 0) continue
-
-      turns += 1
-      const usage = await provider.usage(handle)
-      const trigger = purgeTrigger({
-        usage,
-        usageTokens: provider.capabilities.usageTokens,
-        turns,
-        sessionMillis: clock.millis() - startedAt,
-        limits,
-      })
-      if (trigger === undefined) continue
-
-      // Not awaited: the ask it is about to make is answered by this very loop.
-      // No mail goes into the session from here until a replacement is running.
-      this.#purging = true
-      purge = this.#ports.purge({ handle, briefVersion: this.#ports.briefVersion, ask })
-      purge.catch(() => {
-        // The rejection is collected below, once the stream has ended. Attaching
-        // here only keeps Node from calling it an unhandled rejection first.
-      })
+    } catch (thrown) {
+      // The stream itself failed: a provider that throws out of `events()` never
+      // gets to synthesise its own `session.ended`. Recorded anyway, because a
+      // session the store never saw end is a session a replay reads as live —
+      // and this one's handle is dead (§3, §4, §8).
+      failed = thrown
     }
 
     // A session that ends while the purge is waiting for its answer will never
@@ -276,6 +285,13 @@ export class PeerSession {
       const waiter = askWaiter
       askWaiter = undefined
       waiter.resolve()
+    }
+
+    if (failed !== undefined) {
+      // A store that cannot take this record must not swallow the failure that
+      // caused it: the caller still has to recover, or report, the dead session.
+      await this.#recordEnd(handle, 'crashed').catch(() => {})
+      throw failed
     }
 
     return purge === undefined ? undefined : await purge
@@ -323,19 +339,30 @@ export class PeerSession {
       })
     }
     if (event.type === 'session.ended') {
-      await record({
-        type: 'session.ended',
-        ts: clock.now(),
-        subject: sessionId,
-        actor: peerActor(peerId),
-        data: {
-          peerId,
-          sessionId,
-          endReason: endReasonOf(event, purging),
-          ...(event.code === undefined ? {} : { code: event.code }),
-        },
-      })
+      await this.#recordEnd(handle, endReasonOf(event, purging), event.code)
     }
+  }
+
+  /**
+   * One session's end, whichever way it ended: the provider's own `session.ended`
+   * or a stream that threw before it could send one. Both are the same event to
+   * the store, so both go through here and a reader cannot tell them apart by
+   * accident (§3, §4).
+   */
+  async #recordEnd(handle: SessionHandle, endReason: SessionEndReason, code?: number): Promise<void> {
+    const { clock, peerId, record } = this.#ports
+    await record({
+      type: 'session.ended',
+      ts: clock.now(),
+      subject: sessionIdOf(handle),
+      actor: peerActor(peerId),
+      data: {
+        peerId,
+        sessionId: sessionIdOf(handle),
+        endReason,
+        ...(code === undefined ? {} : { code }),
+      },
+    })
   }
 }
 
