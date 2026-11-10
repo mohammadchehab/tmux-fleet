@@ -86,6 +86,20 @@ const workMerged = (headSha: Sha = HEAD, seq = 7): FleetEvent =>
     data: { workId: WORK, pr: { repo: REPO, number: 12 }, headSha },
   }) as FleetEvent
 
+/**
+ * `pr.merged`, built through the registry's own schema (§3) — the wake that arrives
+ * *before* `work-sync` has turned the PR into a `work.merged`.
+ */
+const prMerged = (headSha: Sha = HEAD, seq = 8): FleetEvent =>
+  parse(eventSchemaFor('pr.merged')!, {
+    seq,
+    ts: AT,
+    type: 'pr.merged',
+    subject: `${String(REPO)}#12`,
+    actor: 'scheduler',
+    data: { pr: { repo: REPO, number: 12 }, headSha },
+  }) as FleetEvent
+
 /** The merged PR as the projection holds it (§3). */
 const mergedPr = (fields: Partial<PullRequest> = {}): PullRequest =>
   parse(pullRequestSchema(), {
@@ -394,6 +408,24 @@ describe('the worktree half of the merge (§9)', () => {
 
     assert.deepEqual(seen.worktrees.removed, [`/repo/.claude/worktrees/${BRANCH}`])
     assert.deepEqual(typesOf(seen.store), ['branch.deleted', 'worktree.removed', 'work.cleaned'])
+  })
+
+  it('removes the checkout on a `pr.merged` wake but leaves the Work’s last step to `worktree-gc`', async () => {
+    // `pr.merged` is committed before `work-sync` turns it into `work.merged`, and
+    // `wake.ts` wakes the scheduler before its listeners run — so on this wake the Work is
+    // still `mergeable`. `cleaned` is not this run's to write (§5.1 only lets a merged Work
+    // through, and the projector would refuse it on the *ordinary* path). The checkout goes
+    // with the branch; the `work.merged` wake that follows finishes the Work.
+    const seen = harness(fakeForge(), {
+      projection: [mergedPr()],
+      work: [workRow({ state: 'mergeable' })],
+      worktrees: [worktreeRow()],
+    })
+    const outcome = await seen.run(eventContext(prMerged()))
+
+    assert.deepEqual(seen.worktrees.removed, [`/repo/.claude/worktrees/${BRANCH}`])
+    assert.deepEqual(typesOf(seen.store), ['branch.deleted', 'worktree.removed'], 'no transition for a Work that has not merged')
+    assert.equal(outcome.actionsFailed, 0)
   })
 
   it('keeps a dirty checkout and tells the owner (§9)', async () => {

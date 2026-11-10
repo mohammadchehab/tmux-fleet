@@ -363,6 +363,29 @@ const removeCheckout = async (
 }
 
 /**
+ * §9's last step for a Work whose checkout is **already gone**: nothing to remove, and
+ * the transition still owed.
+ *
+ * This is not an edge case but the ordinary `work.merged` wake. `branch-cleanup` runs on
+ * the same `pr.merged` that made the merge, *before* `work-sync` has turned that PR into
+ * this `work.merged` (a committed listener runs after the scheduler's wake), so it cannot
+ * write `cleaned` there — the Work is still `mergeable`. By the time this event arrives
+ * the checkout has gone with the branch, and this is the run that owes the Work its last
+ * step. The gate is the same one `removeCheckout` uses: only a `merged` Work has a path to
+ * `cleaned`, so a Work this body did not see finish is left alone rather than invented.
+ */
+const finishWork = async (deps: WorktreeGcDeps, ts: Timestamp, workId: WorkId | undefined): Promise<Tally> => {
+  if (workId === undefined) return none
+  const work = await deps.read.work.get(workId)
+  if (work?.state !== 'merged') return none
+
+  await deps.store.append([
+    { ts, type: 'work.cleaned', subject: workId, actor: 'scheduler', data: { workId } },
+  ])
+  return { actions: 1, failed: 0 }
+}
+
+/**
  * The PR a checkout belongs to, and what became of it. `rows` is the whole `PR`
  * projection, read once by the caller; `ask` is the forge, for the one fact no
  * projection holds (§3 has no `pr.closed`).
@@ -414,7 +437,8 @@ const ownerOfWork = (
  * checkout is `repo + head` — the same pair the manager created it with (§9). A
  * PR the projection does not hold as merged names no branch this body may act on,
  * and a merged PR with no checkout left is the ordinary case after `branch-cleanup`
- * got there first: `actions: 0`, not an error.
+ * got there first: not an error, and the run that still owes the Work its `cleaned`
+ * (`finishWork`).
  */
 const onMerge = async (
   deps: WorktreeGcDeps,
@@ -447,7 +471,10 @@ const onMerge = async (
   const fates = rows.map((row) => ({ row, fate: fateOf(row, 'merged', ref, isAlive) }))
   const observations = fates.map(({ row, fate }) => ({ worktreeId: String(row.worktreeId), verdict: fate.kind }))
 
-  let tally: Tally = none
+  // No checkout left is the ordinary case after `branch-cleanup` got there first, and it
+  // is still the run that owes the Work its last step: a Work that merged with its
+  // checkout already gone would otherwise sit at `merged` with nobody left to move it.
+  let tally: Tally = rows.length === 0 ? await finishWork(deps, ts, workId) : none
   for (const { row, fate } of fates) {
     tally = plus(
       tally,

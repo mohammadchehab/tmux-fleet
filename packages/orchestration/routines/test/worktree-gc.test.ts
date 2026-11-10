@@ -623,6 +623,27 @@ describe('the merge event’s half (§6)', () => {
     assert.equal(outcome.actions, 1)
   })
 
+  it('finishes a Work whose checkout `branch-cleanup` already took', async () => {
+    // The ordinary `work.merged` wake. `branch-cleanup` ran on the `pr.merged` before it,
+    // removed the checkout with the branch, and could not write the transition because the
+    // Work was still `mergeable` then. Nothing is left to remove, and the Work is still owed
+    // its last step — without this it would sit at `merged` with nobody left to move it.
+    const seen = harness(fakeForge(), { projection: [prRow()], worktrees: [] })
+    const outcome = await seen.run(eventContext(workMerged()))
+
+    assert.deepEqual(seen.worktrees.removed, [])
+    assert.deepEqual(typesOf(seen.store), ['work.cleaned'])
+    assert.equal(outcome.actions, 1)
+  })
+
+  it('does not finish a Work the log has not merged, even with no checkout left', async () => {
+    const seen = harness(fakeForge(), { projection: [prRow()], work: [workRow({ state: 'mergeable' })], worktrees: [] })
+
+    await seen.run(eventContext(workMerged()))
+
+    assert.deepEqual(typesOf(seen.store), [])
+  })
+
   it('does nothing when the projection does not say the PR merged', async () => {
     const seen = harness(fakeForge(), { projection: [prRow({ merged: false })], worktrees: [worktreeRow()] })
     const outcome = await seen.run(eventContext(workMerged()))
