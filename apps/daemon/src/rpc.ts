@@ -85,6 +85,8 @@ export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<
       return api.eventsAppend(decode(daemonParamsFor('events.append'), params))
     case 'evals':
       return api.evals(decode(daemonParamsFor('evals'), params))
+    case 'replay':
+      return api.replay(decode(daemonParamsFor('replay'), params))
   }
 }
 

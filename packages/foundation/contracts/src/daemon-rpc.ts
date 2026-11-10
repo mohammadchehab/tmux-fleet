@@ -42,6 +42,7 @@ import {
   peerId,
   positiveInt,
   refine,
+  seq,
   sessionId,
   unknownRecord,
   workId,
@@ -57,8 +58,8 @@ import {
   type PeerId,
   type Schema,
 } from '@fleet/foundation-core'
-import { appendIssues } from './events/registry.ts'
-import type { AppendEvent } from './events/registry.ts'
+import { appendIssues, fleetEvent } from './events/registry.ts'
+import type { AppendEvent, FleetEvent } from './events/registry.ts'
 import { evalRunWithCases } from './projections/evals.ts'
 import type { EvalRunWithCases } from './projections/evals.ts'
 import { decision, routine } from './projections/ops.ts'
@@ -75,11 +76,23 @@ import type { TurnKind } from './provider.ts'
 /**
  * The closed set of things a client may ask for. `up` and `down` move the
  * daemon; `send`, `peek`, `decide` and `ls` are the fleet as the user sees it;
- * `usage` is how a peer's Stop hook reports a finished turn (§6.2). A method added here
- * without a case in `daemonParamsFor` does not compile, and without a case in
- * the daemon's dispatcher does not compile there either.
+ * `usage` is how a peer's Stop hook reports a finished turn (§6.2); `replay`
+ * re-derives the projections from the log, or hands back a window of it (§5.4).
+ * A method added here without a case in `daemonParamsFor` does not compile, and
+ * without a case in the daemon's dispatcher does not compile there either.
  */
-export const daemonMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage', 'events.append', 'evals'] as const
+export const daemonMethods = [
+  'up',
+  'down',
+  'ls',
+  'send',
+  'peek',
+  'decide',
+  'usage',
+  'events.append',
+  'evals',
+  'replay',
+] as const
 export type DaemonMethod = (typeof daemonMethods)[number]
 
 /**
@@ -312,6 +325,34 @@ export const evalsParams = (): Schema<EvalsParams> =>
     runId: evalRunId(),
   })
 
+/**
+ * `replay`: the log, replayed (§5.4). Two questions, one method, because they
+ * are the same walk over the same log:
+ *
+ * - no `from` — rebuild every projection from seq 1. This is the repair for a
+ *   projection that disagrees with the log, and it is the daemon's to do: it
+ *   holds the one writable handle (§1.1), so a client asking is asking for a
+ *   write, not reading a database it opened itself.
+ * - a `from` — hand back the events in `[from, to]` instead of writing
+ *   anything. That is the debugging half: what the log says happened in the
+ *   window around a tick.
+ *
+ * `to` without `from` names no window and is refused rather than quietly
+ * ignored, because "rebuild everything" is a bigger thing to do than the typo
+ * intended.
+ */
+export interface ReplayParams {
+  readonly from?: Seq
+  /** Inclusive; absent means "to the head". */
+  readonly to?: Seq
+}
+
+export const replayParams = (): Schema<ReplayParams> =>
+  objectAs<ReplayParams>()({
+    from: optional(seq()),
+    to: optional(seq()),
+  })
+
 /** Method → its params. The single place the two closed sets are tied together. */
 export interface DaemonParams {
   readonly up: NoParams
@@ -323,6 +364,7 @@ export interface DaemonParams {
   readonly usage: UsageParams
   readonly 'events.append': EventsAppendParams
   readonly evals: EvalsParams
+  readonly replay: ReplayParams
 }
 
 export type DaemonParamsOf<M extends DaemonMethod> = DaemonParams[M]
@@ -340,6 +382,7 @@ const paramsSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonParamsOf
   usage: usageParams,
   'events.append': eventsAppendParams,
   evals: evalsParams,
+  replay: replayParams,
 }
 
 /** The schema for one method's params; what both the daemon and the CLI validate against. */
@@ -425,6 +468,34 @@ export const eventsAppendResult = (): Schema<EventsAppendResult> =>
 /** `evals`: the run and its cases, as the two projections hold them — nothing reshaped on the way out. */
 export type EvalsResult = EvalRunWithCases
 
+/**
+ * `replay`, whichever of its two questions was asked. `mode` discriminates
+ * rather than an absent `latestSeq`, so a client cannot read a window as a
+ * rebuild whose count went missing. A rebuild answers with the log's own
+ * numbers, not with a claim about the rows: the projections were dropped and
+ * re-derived, and what a reader can check afterwards is that the log is where
+ * it was and that no projection row is left over from before.
+ */
+export interface ReplayRebuilt {
+  readonly mode: 'rebuild'
+  readonly events: number
+  readonly latestSeq: Seq
+}
+
+/** A window of the log, oldest first — the events themselves, since nothing else can supply them. */
+export interface ReplayWindow {
+  readonly mode: 'window'
+  readonly events: readonly FleetEvent[]
+}
+
+export type ReplayResult = ReplayRebuilt | ReplayWindow
+
+export const replayResult = (): Schema<ReplayResult> =>
+  unionAs<ReplayResult>()([
+    objectAs<ReplayRebuilt>()({ mode: literal('rebuild'), events: count(), latestSeq: seq() }),
+    objectAs<ReplayWindow>()({ mode: literal('window'), events: array(fleetEvent()) }),
+  ])
+
 // ------------------------------------------------------------ results table
 
 /**
@@ -444,6 +515,7 @@ export interface DaemonResults {
   readonly usage: UsageResult
   readonly 'events.append': EventsAppendResult
   readonly evals: EvalsResult
+  readonly replay: ReplayResult
 }
 
 export type DaemonResultOf<M extends DaemonMethod> = DaemonResults[M]
@@ -458,6 +530,7 @@ const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[
   usage: usageResult,
   'events.append': eventsAppendResult,
   evals: evalRunWithCases,
+  replay: replayResult,
 }
 
 /** The schema for one method's result. The exhaustive key type is what makes a new method a compile error. */
@@ -493,4 +566,10 @@ export interface DaemonApi {
   eventsAppend(params: EventsAppendParams): Promise<EventsAppendResult>
   /** One eval run with its cases (§17); `fleet evals compare` reads two of these. */
   evals(params: EvalsParams): Promise<EvalsResult>
+  /**
+   * Re-derive the projections from the log, or hand back a window of it (§5.4).
+   * The daemon's because it owns the writable handle: a rebuild from a client
+   * would be a second writer on the same store.
+   */
+  replay(params: ReplayParams): Promise<ReplayResult>
 }

@@ -380,8 +380,14 @@ instruction** (the injection rule from #12).
 
 ### 5.4 Replay and audit
 
-Every Judge call and every rule firing writes a `Decision` with `inputsHash`. `fleet replay --from <seq>` re-runs
-`decide` over the stored events and diffs the actions; rules are deterministic, so a diff means the code changed.
+Every Judge call and every rule firing writes a `Decision` with `inputsHash`. `fleet replay` drops every projection and
+derives it again from `events`, which is what makes a projection a cache and not a second source of truth; the store
+asserts the result agrees with the log, so a projection that cannot be rebuilt from events fails rather than being
+quietly rewritten. `fleet replay --from <seq> [--to <seq>]` reads that window of the log instead of writing anything —
+the debugging half, and a read, so it works against a running fleet.
+
+Re-running `decide` over a window and diffing its actions against the logged ones is the other half of the audit and is
+**not built yet**; rules are deterministic, so that diff is how a change in the code shows up as a change in behaviour.
 Judge answers are replayed from the log, not re-asked.
 
 ## 6. Routines and loops (auto-wired)

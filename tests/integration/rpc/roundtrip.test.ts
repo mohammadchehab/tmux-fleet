@@ -184,6 +184,30 @@ test('every method of the port round-trips: the CLI decodes what the daemon answ
   // CLI would print as zero cases.
   await assert.rejects(() => call('evals', { runId: 'evr_0000000000000000' as EvalRunId }), /no eval run evr_0000000000000000/)
 
+  // `replay` (§5.4): the window is the log read back, the rebuild is the same log
+  // walked into the projections again. Both go over the socket, so this is also
+  // the check that the events the daemon writes decode as `FleetEvent` in a client.
+  const window = await call('replay', { from: 1 })
+  assert.equal(window.mode, 'window')
+  if (window.mode === 'window') {
+    assert.deepEqual(window.events.map((event) => event.seq), window.events.map((_, index) => index + 1))
+    assert.ok(window.events.some((event) => event.type === 'eval.run_finished'), 'the window is the real log')
+  }
+  assert.ok(window.mode === 'window' && window.events.length > 0, 'the fleet has a log by now')
+
+  // `to` on its own names no window: the daemon refuses rather than reading it as
+  // "rebuild everything", which is the mistake that would cost someone their rows.
+  await assert.rejects(() => call('replay', { to: 5 }), /give a `from` seq/)
+
+  const rebuilt = await call('replay', {})
+  assert.equal(rebuilt.mode, 'rebuild')
+  if (rebuilt.mode === 'rebuild' && window.mode === 'window') {
+    assert.equal(rebuilt.events, window.events.length, 'the rebuild replayed the whole log')
+    assert.equal(rebuilt.latestSeq, window.events.at(-1)?.seq, 'and the log did not move')
+  }
+  // The projections were dropped and derived again: the run above still reads.
+  assert.equal((await call('evals', { runId })).run.passed, 1)
+
   // `down` answers before the socket goes away, so the CLI is not left hanging.
   assert.deepEqual(await call('down', {}), { stopped: true })
 })
