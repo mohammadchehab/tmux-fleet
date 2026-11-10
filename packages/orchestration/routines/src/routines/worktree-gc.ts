@@ -19,21 +19,31 @@
  * 2. **It is clean and pushed** (`!dirty && !unpushed`) — §9's one rule with no
  *    exception: "nothing is deleted with local-only work". A dirty or unpushed
  *    checkout is a person's afternoon, and the run tells its owner instead.
- * 3. **No live holder.** §9 records the processes whose cwd is inside a checkout
- *    so `gc` can *report* them, never kill them. A live one is somebody working, so
- *    the checkout stays and the owner is told. `Worktree.holders` is the last
- *    scan's answer, not proof of anything: between that scan and this run a peer
- *    may have exited, and a row full of `ESRCH` pids would keep a checkout forever.
- *    So liveness is re-asked at removal time, through an injected check, and a
- *    process that is gone is a leftover rather than a reason to keep.
+ * 3. **No holder, live or not.** §9 records the processes whose cwd is inside a
+ *    checkout so `gc` can *report* them, never kill them. A live one is somebody
+ *    working, so the checkout stays and the owner is told; a leftover pid is
+ *    reported as a leftover, and the checkout still stays. `Worktree.holders` is the
+ *    last scan's photograph and a process that started after it is not in the
+ *    picture at all, so the row may only ever *keep* a checkout and never release
+ *    one. Clearing the row belongs to whoever runs the scan; until it says the
+ *    checkout is empty, this body has no business guessing that it is.
+ *
+ * **Every way of not knowing is the same answer.** The other two terms are facts
+ * the projection holds, and the first one is not: §3 has no `pr.closed`, so
+ * "closed" has to be asked of the forge. This body asks about the PR itself, one
+ * PR at a time (`get`), and finishes a checkout only on an explicit `closed`.
+ * A forge call that fails, a row with no state, a PR the forge says is not there —
+ * all of them are *unknown*, and unknown keeps. The bug this replaced read the
+ * forge's open *list*, which an adapter caps: a PR that is open past the page's
+ * last row is absent from it, and absence read as "closed" deleted checkouts
+ * nobody had finished with. A page is not a set, and no list can ever prove that
+ * something is *not* on it.
  *
  * **Two ways in, one rule.** `work.merged`/`pr.merged` wakes the routine with the
  * one PR a merge is about — that names the branch, the branch names the checkout,
  * and only that checkout is considered. §6's daily 03:00 sweep considers every row
  * in the projection, which is how a checkout is collected while the daemon was
- * down for the merge, or after a PR was closed rather than merged (§3 has no
- * `pr.closed`, so "closed" is only knowable by asking the forge: a row the log
- * holds that the forge no longer lists as open is one nobody can still merge).
+ * down for the merge, or after a PR was closed rather than merged.
  *
  * The body appends through its own sink, for `pr-babysit`'s and `branch-cleanup`'s
  * reason: `worktree.removed` is the outcome of a wake, and waking on it would run
@@ -48,6 +58,7 @@ import type {
   Mailbox,
   PullRequest,
   PullRequestRef,
+  PullRequestState,
   PullRequests,
   ReadModel,
   WorkId,
@@ -77,14 +88,19 @@ export interface WorktreeGcDeps {
   /** §9's manager, and the only thing that removes a checkout. Absent leaves them all alone. */
   readonly worktrees?: Worktrees
   /**
-   * Whether a holder's pid is a process that still exists. Injected because the
-   * alternative is a test that spawns and kills real processes to prove §9's rule,
-   * and because "alive" is the one thing in this body a fake can state exactly.
+   * Whether a holder's pid is a process that still exists. It decides what the owner
+   * is *told* — someone is in there, or the scan recorded a pid that has since
+   * exited — and never what happens to the checkout: §9's rule is that a holder list
+   * keeps, so a fake's answer to this cannot release anything.
    */
   readonly isAlive?: HolderLiveness
 }
 
-/** §9 re-asks liveness at removal time; this is the seam a test answers instead. */
+/**
+ * What §9's holder report says about one pid. It is a sentence and not a gate: the
+ * checkout is kept either way, so the only thing a fake's answer here can change is
+ * what an owner reads.
+ */
 export type HolderLiveness = (pid: number) => boolean
 
 /**
@@ -133,11 +149,12 @@ const plus = (left: Tally, right: Tally): Tally => ({
 })
 
 /**
- * What the projection and the forge together say about one checkout's PR. `open`
- * and `none` are both "not yet": a PR still open is work in progress, and no PR at
- * all is a checkout nothing has said a word about — neither is a deletion.
+ * What the projection and the forge together say about one checkout's PR. `open`,
+ * `none` and `unknown` are all "not yet": a PR still open is work in progress, no PR
+ * at all is a checkout nothing has said a word about, and a question the forge did
+ * not answer is a question still open. None of the three is a deletion.
  */
-type Outcome = 'merged' | 'closed' | 'open' | 'none'
+type Outcome = 'merged' | 'closed' | 'open' | 'none' | 'unknown'
 
 /**
  * One §7 message to the Work's assignee, delivered in the same run: a message that
@@ -192,33 +209,83 @@ type Fate = Keep | Remove
  */
 type Decided =
   | { readonly finished: true; readonly outcome: 'merged' | 'closed'; readonly ref: PullRequestRef }
-  | { readonly finished: false; readonly outcome: 'open' | 'none' }
+  | { readonly finished: false; readonly outcome: 'open' | 'none' | 'unknown' }
+
+/**
+ * The forge's answer about one PR, or the fact that there was none. `state` is the
+ * forge's own word and is never inferred: an answer that is not `closed` — including
+ * a `merged` the log has not caught up with — keeps the checkout, and a merge
+ * arrives as a `work.merged` wake of its own (§6).
+ */
+type Answer = { readonly heard: true; readonly state: PullRequestState } | { readonly heard: false }
+
+/** Ask the forge about a PR: once per PR per run, and never twice. */
+type Ask = (ref: PullRequestRef) => Promise<Answer>
+
+/**
+ * The forge, asked about one PR at a time.
+ *
+ * This is the whole fix for the fail-open deletion: a bounded list can only ever
+ * prove that something *is* open, never that it is not, so the question "is this
+ * one done?" is asked of the PR rather than of a page of PRs. `get` is the port's
+ * answer to exactly this — `undefined` for "no such PR", a throw for "the call
+ * failed" — and both are `heard: false` here, because neither is `closed`.
+ *
+ * Memoized per run: the event path asks about one PR twice at most (a branch pushed
+ * twice names two), and the sweep asks once per checkout, which for two checkouts on
+ * one branch is one `gh` call rather than two.
+ */
+const askers = (deps: WorktreeGcDeps): Ask => {
+  const heard = new Map<string, Answer>()
+  return async (ref) => {
+    const key = at(ref)
+    const known = heard.get(key)
+    if (known !== undefined) return known
+
+    let answer: Answer
+    try {
+      const row = await deps.pullRequests.get(ref.repo, ref.number)
+      answer = row?.state === undefined ? { heard: false } : { heard: true, state: row.state }
+    } catch {
+      // Not rethrown, and not silence either: a whole sweep must not be lost to one
+      // PR the forge would not talk about, and the run counts the checkouts it could
+      // not decide (§6) rather than reporting a clean sweep of none.
+      answer = { heard: false }
+    }
+    heard.set(key, answer)
+    return answer
+  }
+}
 
 /**
  * §9's three terms, in the order that matters for the message an owner reads: a
  * checkout with local-only work is a person's afternoon whatever else is true
  * about it, and the sentence should be about that, not about a stale pid.
  *
- * The holder list is filtered through `isAlive` rather than trusted: §9 records a
- * scan, and a scan is a photograph. A pid that is `ESRCH` now is a leftover from a
- * process that exited — keeping the checkout for it would keep it for nothing.
+ * The holder list may only ever keep (§9): it is the last scan's photograph, so it
+ * cannot see a process that started after it, and a removal decided on a photograph
+ * is the failure the rule exists to prevent. A pid that is `ESRCH` now is a leftover
+ * rather than a reason to keep — but it is still a reason not to *delete*: the scan
+ * that clears the row is the thing that makes the checkout empty, and this body is
+ * not that.
  */
-const fateOf = (
-  row: Worktree,
-  outcome: 'merged' | 'closed',
-  ref: PullRequestRef,
-  isAlive: HolderLiveness,
-): Fate => {
+const fateOf = (row: Worktree, outcome: 'merged' | 'closed', ref: PullRequestRef, isAlive: HolderLiveness): Fate => {
   // §9, first and without exception: nothing is deleted with local-only work.
   if (row.dirty || row.unpushed) {
     const why = row.dirty ? 'has uncommitted changes' : 'has commits that were never pushed'
     return { kind: 'keep', why: `The worktree at ${row.path} ${why}; it was kept.` }
   }
 
-  const live = row.holders.filter((holder) => isAlive(holder.pid))
-  if (live.length > 0) {
-    const who = live.map((holder) => holder.command ?? String(holder.pid)).join(', ')
-    return { kind: 'keep', why: `The worktree at ${row.path} is in use (${who}); it was kept.` }
+  if (row.holders.length > 0) {
+    const live = row.holders.filter((holder) => isAlive(holder.pid))
+    const who = (live.length > 0 ? live : row.holders)
+      .map((holder) => holder.command ?? String(holder.pid))
+      .join(', ')
+    const why =
+      live.length === 0
+        ? `The worktree at ${row.path} was last seen in use (${who}) and no scan has cleared it since; it was kept.`
+        : `The worktree at ${row.path} is in use (${who}); it was kept.`
+    return { kind: 'keep', why }
   }
 
   // The closed case names only the checkout: the branch is §10's, and its Work was
@@ -272,54 +339,41 @@ const removeCheckout = async (
       data: { worktreeId: row.worktreeId, reason: fate.why },
     },
   ]
-  // §9: the Work is finished when its checkout is gone — but only a Work that
-  // merged is finished. A cancelled Work whose checkout we collect stays cancelled:
-  // `work.cleaned` is a transition, and moving a person's "drop" to "cleaned" would
-  // be this routine editing a decision it was not asked about.
+  // §9: the Work is finished when its checkout is gone — but only a Work that merged
+  // is finished. `work.cleaned` is a transition, not a notification, so it is written
+  // only when the row it moves is actually at `merged`: a cancelled Work keeps the
+  // person's "drop", a Work already cleaned needs nothing, and a Work the log does not
+  // hold has no row to move. The projector refuses the same transition for the same
+  // reason — a log is not the only writer, and the guard that matters is the one that
+  // holds for every producer.
   if (fate.merged && workId !== undefined) {
-    batch.push({
-      ts,
-      type: 'work.cleaned',
-      subject: workId,
-      actor: 'scheduler',
-      data: { workId, worktreeId: row.worktreeId },
-    })
+    const work = await deps.read.work.get(workId)
+    if (work?.state === 'merged') {
+      batch.push({
+        ts,
+        type: 'work.cleaned',
+        subject: workId,
+        actor: 'scheduler',
+        data: { workId, worktreeId: row.worktreeId },
+      })
+    }
   }
   await deps.store.append(batch)
   return { actions: 1, failed: 0 }
 }
 
-/** The open PRs of one repo, read at most once per run: the sweep asks per checkout. */
-interface OpenList {
-  (repo: Worktree['repo']): Promise<readonly PullRequest[]>
-}
-
-const openLists = (deps: WorktreeGcDeps): OpenList => {
-  const seen = new Map<string, readonly PullRequest[]>()
-  return async (repo) => {
-    const key = String(repo)
-    const known = seen.get(key)
-    if (known !== undefined) return known
-    const rows = await deps.pullRequests.list(repo, { state: 'open' })
-    seen.set(key, rows)
-    return rows
-  }
-}
-
 /**
  * The PR a checkout belongs to, and what became of it. `rows` is the whole `PR`
- * projection, read once by the caller.
+ * projection, read once by the caller; `ask` is the forge, for the one fact no
+ * projection holds (§3 has no `pr.closed`).
  *
- * "Closed" is the one fact no projection holds: §3 has no `pr.closed` event, which
- * `pr-babysit` says out loud in its own header. The only honest way to learn it is
- * to ask the forge which PRs are still open — a row the log holds that is not on
- * that list is one that closed, and `merged` on the row says which way.
+ * A merge is answered by the log alone — a `pr.merged` event is not a thing that
+ * un-happens — and everything else is answered by the forge. A branch pushed twice
+ * has several rows and the checkout goes only when **every** one of them is
+ * explicitly closed: one open PR on the branch is one reason to stay, whatever the
+ * other rows say.
  */
-const outcomeOf = async (
-  rows: readonly PullRequest[],
-  row: Worktree,
-  open: OpenList,
-): Promise<Decided> => {
+const outcomeOf = async (rows: readonly PullRequest[], row: Worktree, ask: Ask): Promise<Decided> => {
   const mine = rows.filter((pr) => pr.repo === row.repo && pr.head === row.branch)
   const merged = mine.find((pr) => pr.merged)
   if (merged !== undefined) {
@@ -327,12 +381,17 @@ const outcomeOf = async (
   }
   if (mine.length === 0) return { finished: false, outcome: 'none' }
 
-  const listed = await open(row.repo)
-  const stillOpen = mine.some((pr) => listed.some((entry) => entry.number === pr.number))
-  if (stillOpen) return { finished: false, outcome: 'open' }
+  const answers = await Promise.all(mine.map((pr) => ask({ repo: pr.repo, number: pr.number })))
+  // One PR the forge did not answer leaves the verdict unknown, and unknown keeps: it
+  // may be the closed one, and a run that cannot tell must not act as though it can.
+  if (answers.some((answer) => !answer.heard)) return { finished: false, outcome: 'unknown' }
+  // Anything the forge does not call `closed` keeps the checkout, including a `merged`
+  // the log has not recorded yet: that merge has a wake of its own, and it will arrive
+  // with the `work.merged` this body needs to move the Work too.
+  if (answers.some((answer) => answer.heard && answer.state !== 'closed')) return { finished: false, outcome: 'open' }
 
-  // Closed without merging. Several rows on one branch is a branch that was pushed
-  // twice; the first is the one whose Work the log names.
+  // Closed without merging, and every row on the branch agrees. The first is the one
+  // whose Work the log names.
   const closed = mine[0] as PullRequest
   return { finished: true, outcome: 'closed', ref: { repo: closed.repo, number: closed.number } }
 }
@@ -421,18 +480,24 @@ const sweep = async (
   const isAlive = deps.isAlive ?? stillRunning
   const rows = await deps.read.worktrees.all()
   const prs = await deps.read.pullRequests.all()
-  const open = openLists(deps)
+  const ask = askers(deps)
 
   const observations: { worktreeId: string; path: string; outcome: Outcome; verdict: string }[] = []
   let tally: Tally = none
 
   for (const row of [...rows].sort((left, right) => String(left.worktreeId).localeCompare(String(right.worktreeId)))) {
-    const decided = await outcomeOf(prs, row, open)
-    // Still open, or no PR at all: the observation says so and the sweep moves on.
-    // A checkout nobody has said is done is the one case this body must not invent
-    // a verdict for, and "not acted on" is a legitimate, visible outcome (§6).
+    const decided = await outcomeOf(prs, row, ask)
+    // Still open, no PR at all, or a question the forge did not answer: the
+    // observation says which, and the sweep moves on. A checkout nobody has said is
+    // done is the one case this body must not invent a verdict for, and "not acted
+    // on" is a legitimate, visible outcome (§6).
     if (!decided.finished) {
       observations.push({ worktreeId: String(row.worktreeId), path: row.path, outcome: decided.outcome, verdict: 'none' })
+      // The one that is *not* a quiet keep: this checkout was this tick's to decide and
+      // the run could not, which is a failure to report (§6) rather than a sweep that
+      // found nothing. Counted the way `tracker-sync` counts one card it could not
+      // read: no action taken, one action failed.
+      if (decided.outcome === 'unknown') tally = plus(tally, { actions: 0, failed: 1 })
       continue
     }
 

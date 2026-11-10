@@ -112,6 +112,20 @@ describe('get: a missing PR is an answer, a failed call is not', () => {
     assert.equal(pr?.headSha, 'abc1234')
   })
 
+  it('asks for the state, because `get` is §9’s only way to learn a PR closed', async () => {
+    // Nothing else in the log says a PR closed (§3 has no `pr.closed`). Dropping `state`
+    // from the field list would not fail a single other test: every answer would come back
+    // `unknown`, `worktree-gc` would keep every checkout forever, and the fault would look
+    // like a quiet fleet — so the ask itself is asserted, not just the mapped row.
+    const fake = fakeGh(() => json(prJson({ state: 'CLOSED' })))
+    const pr = await createGitHubPullRequests({ gh: fake.gh }).get(where, 7)
+
+    const asked = (fake.calls[0] ?? []).filter((arg) => arg.includes(','))
+    assert.equal(asked.length, 1, 'one `--json` list')
+    assert.ok((asked[0] ?? '').split(',').includes('state'), 'the state is in the ask')
+    assert.equal(pr?.state, 'closed')
+  })
+
   it('is undefined when gh says the PR is not there', async () => {
     const fake = fakeGh(() => ({ code: 1, stderr: 'no pull requests found for branch "feat"' }))
     assert.equal(await createGitHubPullRequests({ gh: fake.gh }).get(where, 7), undefined)

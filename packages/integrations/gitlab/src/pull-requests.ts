@@ -31,7 +31,7 @@
  */
 
 import { fleetError, type Repo, type Sha } from '@fleet/foundation-core'
-import type { PullRequest, PullRequests, ReviewState } from '@fleet/foundation-contracts'
+import type { ForgePullRequest, PullRequests, ReviewState } from '@fleet/foundation-contracts'
 import { createGlab, type Glab, type GlabResult } from './glab.ts'
 import {
   branchListFrom,
@@ -123,7 +123,7 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
   const listPath = (repo: Repo, state: 'open' | 'closed' | 'all', extra: readonly string[] = []): string =>
     [`${projectPath(repo)}/merge_requests?state=${stateName(state)}&per_page=${String(limit)}`, ...extra].join('&')
 
-  const readAll = async (path: string, repo: Repo): Promise<readonly PullRequest[]> => {
+  const readAll = async (path: string, repo: Repo): Promise<readonly ForgePullRequest[]> => {
     const raw = await api(path)
     if (!Array.isArray(raw)) throw fleetError('external_failed', 'glab api printed something that is not a list')
     return raw.map((row) => pullRequestFrom(row, repo))
@@ -152,7 +152,7 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
   const pipelinesOf = (repo: Repo, number: number): Promise<unknown> =>
     api(`${projectPath(repo)}/merge_requests/${String(number)}/pipelines`)
 
-  const get = async (repo: Repo, number: number): Promise<PullRequest | undefined> => {
+  const get = async (repo: Repo, number: number): Promise<ForgePullRequest | undefined> => {
     const raw = await readRaw(repo, number)
     if (raw === undefined) return undefined
     // `get` is the read the gate decides on, so it pays for the real pipeline list rather than trusting a summary.

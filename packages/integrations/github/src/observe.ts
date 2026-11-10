@@ -31,7 +31,8 @@ import {
   type Schema,
   type Sha,
 } from '@fleet/foundation-core'
-import type { Branch, ChecksState, PullRequest, ReviewState } from '@fleet/foundation-contracts'
+import { pullRequestStates } from '@fleet/foundation-contracts'
+import type { Branch, ChecksState, ForgePullRequest, PullRequest, PullRequestState, ReviewState } from '@fleet/foundation-contracts'
 
 /** One checks observation. `headSha` is the sha `gh` graded — the whole point of `matchHeadSha` (§10). */
 export interface GradedChecks {
@@ -177,11 +178,25 @@ export const footersFrom = (
 // -------------------------------------------------------------- pull request
 
 /**
+ * `gh`'s own `state` as the contract spells it: `OPEN`, `CLOSED`, `MERGED`.
+ * Anything else — a field missing from an older `gh`, a token `gh` invents later —
+ * is no answer, not a default: §9 removes checkouts on an explicit **closed**, so
+ * an unrecognised state has to stay `undefined` and read as unknown.
+ */
+const stateFrom = (value: unknown): PullRequestState | undefined => {
+  const lower = text(value)?.toLowerCase()
+  return pullRequestStates.find((state) => state === lower)
+}
+
+/**
  * One row of `gh pr view`/`gh pr list --json` as the contract's `PullRequest`.
  * `on` is the repo that was asked about, because `gh` does not repeat it in
  * every row and every row of one call belongs to it.
+ *
+ * `state` travels too, and it is the one field here that is not a projection's:
+ * the log has no `pr.closed` (§3), so this is where "still open" comes from.
  */
-export const pullRequestFrom = (raw: unknown, on: Repo): PullRequest => {
+export const pullRequestFrom = (raw: unknown, on: Repo): ForgePullRequest => {
   const row = record(raw)
   if (row === undefined) throw fleetError('external_failed', 'gh reported a pull request that is not an object')
 
@@ -196,6 +211,7 @@ export const pullRequestFrom = (raw: unknown, on: Repo): PullRequest => {
   const checks = checksFrom(row['statusCheckRollup'])
   const review = reviewFrom(row['reviewDecision'], row['latestReviews'])
   const merged = row['mergedAt'] !== null && row['mergedAt'] !== undefined
+  const state = stateFrom(row['state'])
   const createdAt = shape(timestamp(), row['createdAt'], 'createdAt')
   const updatedAt = shape(timestamp(), row['updatedAt'], 'updatedAt')
 
@@ -210,6 +226,7 @@ export const pullRequestFrom = (raw: unknown, on: Repo): PullRequest => {
     review: review.state,
     ...footersFrom(row['body'], on),
     merged,
+    ...(state === undefined ? {} : { state }),
     createdAt,
     updatedAt,
   }
