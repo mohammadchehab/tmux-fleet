@@ -157,6 +157,13 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     // reporting a fleet that is caught up when it is not.
     const caughtUp = await catchUpWork({ read, append, clock })
     running = true
+    // An `up` after a `down` is a new daemon, and a new daemon has another stop
+    // in front of it. The memo from the previous `down` describes a state that
+    // no longer exists: left in place, the next `down` would await it, resolve
+    // at once, and stop nothing — reporting a fleet that is down while its
+    // sessions keep running. Cleared where `running` is set, so a plain second
+    // `down` still joins the first stop instead of stopping twice.
+    stopping = undefined
     if (ran.length > 0) {
       // The scheduler's own events say what ran; this line is for the log a human reads.
       console.error(`fleetd: caught up ${ran.length} routine run(s) on start`)
@@ -180,6 +187,11 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     return starting
   }
 
+  /**
+   * A second `down` while the first is still stopping joins it. The slot is
+   * cleared by the `up` that follows, not by the stop settling — see the clear
+   * in `startOnce`.
+   */
   const stop = async (): Promise<void> => {
     await (stopping ??= (async () => {
       // Scheduler first: a routine that is mid-decide must not be handed a peer
