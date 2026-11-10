@@ -38,6 +38,8 @@ export interface PathRoots {
 
 export interface ProfilePaths {
   readonly profile: ProfileName
+  /** `$XDG_CONFIG_HOME`, `~/.config` by default: where profiles, and their secrets, live. */
+  readonly configHome: string
   /** `~/.config/fleet/profiles/<profile>.yaml` — the file `fleet up` reads. */
   readonly profileFile: string
   /** `~/.fleet/<profile>/`. */
@@ -84,6 +86,7 @@ export const profilePaths = (profile: ProfileName, roots: PathRoots = {}): Profi
   const daemonDir = join(stateDir, 'daemon')
   return {
     profile: name,
+    configHome,
     profileFile: join(configHome, 'fleet', 'profiles', `${name}.yaml`),
     stateDir,
     storePath: join(stateDir, 'store', 'store.sqlite'),
