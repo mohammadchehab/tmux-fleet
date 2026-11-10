@@ -179,6 +179,15 @@ importers:
         specifier: workspace:*
         version: link:../../../foundation/core
 
+  packages/integrations/trackers/jira:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../../foundation/core
+
   packages/notify/channels/macos:
     dependencies:
       '@fleet/foundation-contracts':

@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/integrations-trackers-jira",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Jira over its REST API v3 (architecture §3): the Tracker port, the two ways an install authenticates (Cloud email + API token, Server/DC PAT), the mapping from an issue to the contract's shapes, and the profile's WorkState-to-status map applied on the way out.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
