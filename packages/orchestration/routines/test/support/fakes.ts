@@ -147,6 +147,9 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
     // No compactions are seeded: no routine reads them yet, and an empty read is
     // what the daemon's `ls` would get from a fleet that has never compacted.
     compactions: { all: async () => [] },
+    // §6.2's cost report is not something a routine decides on; no test in this
+    // package reads it, so the fake answers the empty report.
+    tokens: { all: async () => [] },
     put: (next) => {
       Object.assign(current, next)
     },

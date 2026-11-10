@@ -43,7 +43,7 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
     },
     async ls() {
       calls.push('ls')
-      return { status, peers: [], routines: [], decisions: [], compactions: [] }
+      return { status, peers: [], routines: [], decisions: [], compactions: [], tokens: [] }
     },
     async send(input) {
       calls.push(`send:${String(input.to)}:${input.kind}:${String(input.briefVersion)}`)

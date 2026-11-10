@@ -12,12 +12,14 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import { renderBoard, renderUnreachable } from '../src/render.ts'
+import type { PeerId, WorkId } from '@fleet/foundation-core'
+
 import { PEER, REPO, statusFixture, workFixture } from './fixtures.ts'
 
 const AT = '2026-11-10T12:00:00.000Z'
 
-const page = (work: Parameters<typeof renderBoard>[0]['work']): string =>
-  renderBoard({ status: statusFixture(), work, renderedAt: AT })
+const page = (work: Parameters<typeof renderBoard>[0]['work'], usage: Parameters<typeof renderBoard>[0]['usage'] = []): string =>
+  renderBoard({ status: statusFixture(), work, usage, renderedAt: AT })
 
 describe('board: the rows are the projection rows', () => {
   it('groups by state in the state machine order, not by arrival', () => {
@@ -82,6 +84,50 @@ describe('board: a row says what a person needs to act on it', () => {
       workFixture({ workId: 'wrk_0000000000000001', state: 'blocked', blockedReason: 'waiting on the architect' }),
     ])
     assert.match(html, /waiting on the architect/)
+  })
+})
+
+describe('board: what a Work has cost', () => {
+  const usage = (
+    peer: string,
+    workId: string | undefined,
+    turns: number,
+    costUsd: number,
+  ): Parameters<typeof renderBoard>[0]['usage'][number] => ({
+    peerId: peer as PeerId,
+    role: 'engineer',
+    ...(workId === undefined ? {} : { workId: workId as WorkId }),
+    turns,
+    inputTokens: turns * 1_000,
+    outputTokens: turns * 100,
+    cachedTokens: 0,
+    costUsd,
+    toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+    redirects: 0,
+    updatedAt: AT,
+  })
+
+  it('adds up every peer that worked on the Work, and only those', () => {
+    const html = page(
+      [workFixture({ workId: 'wrk_0000000000000001' }), workFixture({ workId: 'wrk_0000000000000002' })],
+      [
+        usage('engineer-1', 'wrk_0000000000000001', 5, 0.42),
+        usage('engineer-2', 'wrk_0000000000000001', 3, 0.1),
+        usage('engineer-1', 'wrk_0000000000000002', 1, 0.07),
+        // The rollups are the fleet's bill; folding them into a Work would count
+        // every turn twice.
+        usage('engineer-1', undefined, 9, 0.59),
+      ],
+    )
+    assert.match(html, /8 turns · in 8000 out 800 · \$0\.52/)
+    assert.match(html, /1 turns · in 1000 out 100 · \$0\.07/)
+    assert.match(html, /<span class="meta">\$0\.59 spent<\/span>/, 'the fleet total is the rollup')
+  })
+
+  it('leaves the line off a Work nothing has been recorded against', () => {
+    const html = page([workFixture({ workId: 'wrk_0000000000000001' })], [usage('engineer-1', undefined, 9, 0.59)])
+    assert.doesNotMatch(html, /class="cost"/, '$0.00 would claim the Work was free, not that it is unmeasured')
+    assert.match(html, /\$0\.59 spent/)
   })
 })
 

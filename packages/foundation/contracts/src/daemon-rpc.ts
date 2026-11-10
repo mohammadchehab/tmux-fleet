@@ -67,8 +67,8 @@ import { appendIssues, fleetEvent } from './events/registry.ts'
 import type { AppendEvent, FleetEvent } from './events/registry.ts'
 import { evalRunWithCases } from './projections/evals.ts'
 import type { EvalRunWithCases } from './projections/evals.ts'
-import { decision, routine } from './projections/ops.ts'
-import type { Decision, Routine } from './projections/ops.ts'
+import { decision, routine, tokenReport } from './projections/ops.ts'
+import type { Decision, Routine, TokenReport } from './projections/ops.ts'
 import { message } from './projections/mailbox.ts'
 import type { Message } from './projections/mailbox.ts'
 import { peer, peerCompactions } from './projections/peers.ts'
@@ -465,6 +465,12 @@ export interface LsResult {
    * count of zero, without a row for every peer that is behaving.
    */
   readonly compactions: readonly PeerCompactions[]
+  /**
+   * §6.2's cost report, as the projection holds it: a row per peer and Work, and
+   * a rollup row per peer with no `workId`. `ls` prints both rather than summing
+   * here — a client that wanted one peer's total should not have to re-add rows.
+   */
+  readonly tokens: readonly TokenReport[]
 }
 
 export const lsResult = (): Schema<LsResult> =>
@@ -474,6 +480,7 @@ export const lsResult = (): Schema<LsResult> =>
     routines: array(routine()),
     decisions: array(decision()),
     compactions: array(peerCompactions()),
+    tokens: array(tokenReport()),
   })
 
 /** `send`: the id the Mailbox minted, so the client can find it in `peek`. */

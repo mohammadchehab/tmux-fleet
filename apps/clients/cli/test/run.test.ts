@@ -13,6 +13,7 @@ import {
   type Repo,
   type SessionId,
   type Sha,
+  type WorkId,
 } from '@fleet/foundation-core'
 import { buildStdoutPath } from '@fleet/foundation-contracts'
 import type { BuildsResult, DaemonMethod, EvalRunWithCases, LsResult } from '@fleet/foundation-contracts'
@@ -61,12 +62,18 @@ const compactions = [
   { peerId: 'engineer-1' as PeerId, count: 2, lastAt: now, lastTrigger: 'manual' as const, lastPreTokens: 90000 },
 ]
 
+const tokens = [
+  { peerId: 'engineer-1' as PeerId, role: 'engineer', turns: 12, inputTokens: 12000, outputTokens: 3000, cachedTokens: 900, costUsd: 4.12, toolCalls: { grep: 1, glob: 0, read: 2, codegraph: 3 }, redirects: 0, updatedAt: now },
+  { peerId: 'engineer-1' as PeerId, role: 'engineer', workId: 'wrk_7f3a91c2d84b0e56' as WorkId, turns: 8, inputTokens: 9000, outputTokens: 2000, cachedTokens: 600, costUsd: 3.01, toolCalls: { grep: 1, glob: 0, read: 1, codegraph: 2 }, redirects: 0, updatedAt: now },
+]
+
 const listing: LsResult = {
   status,
   peers: [peer],
   routines: [routine],
   decisions: [decision],
   compactions,
+  tokens,
 }
 
 type Answer = (params: unknown) => unknown
@@ -177,10 +184,15 @@ describe('run: ls', () => {
     // quietly compacting says so in one number rather than in rows nobody reads.
     assert.match(text, /compactions \(2 total\) \(1\)/)
     assert.match(text, /engineer-1 {2}2x {2}last manual {2}pre 90000/)
+    // Spend is shown per Work and rolled up per peer; the heading is the fleet
+    // total, taken from the rollups so no Work's cost is counted twice (§6.2).
+    assert.match(text, /tokens \(\$4\.12 total\) \(2\)/)
+    assert.match(text, /engineer-1 +engineer +all +12 turns +in 12000 +out 3000 +cached 900 +\$4\.12/)
+    assert.match(text, /engineer-1 +engineer +wrk_7f3a91c2d84b0e56 +8 turns +in 9000 +out 2000 +cached 600 +\$3\.01/)
   })
 
   it('says so in each section that is empty rather than printing a bare heading', async () => {
-    const empty: LsResult = { status, peers: [], routines: [], decisions: [], compactions: [] }
+    const empty: LsResult = { status, peers: [], routines: [], decisions: [], compactions: [], tokens: [] }
     const { deps, out } = harness({ ls: () => empty })
     assert.equal(await run(argv('ls'), deps), 0)
     assert.match(out[0] ?? '', /none registered/)

@@ -22,6 +22,7 @@ export const lsFixture = (): LsResult => ({
   routines: [],
   decisions: [],
   compactions: [],
+  tokens: [],
 })
 
 /**

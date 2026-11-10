@@ -50,7 +50,7 @@ const main = async (): Promise<number> => {
     // The same renderer the server uses, so `--once` is a test of the page.
     try {
       const [ls, work] = await Promise.all([call('ls', {}), call('work', {})])
-      write(renderBoard({ status: ls.status, work: work.work, renderedAt: now() }))
+      write(renderBoard({ status: ls.status, work: work.work, usage: ls.tokens, renderedAt: now() }))
       return 0
     } catch (thrown) {
       write(renderUnreachable(socket.socketPath, toFleetError(thrown).message, now()))

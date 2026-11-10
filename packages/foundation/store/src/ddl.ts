@@ -394,6 +394,19 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'delivered_session_id',
     statements: ['ALTER TABLE messages ADD COLUMN delivered_session_id TEXT;'],
   },
+  {
+    // additive: the token report could count tokens but not price them, so
+    // `fleet ls` had numbers and no bill (§6.2). `cost_usd` is what the turns
+    // that published a price add up to; a row written before this column existed
+    // reads 0, and so does a peer whose provider prices nothing.
+    //
+    // Added here rather than to `token_report`'s CREATE TABLE above, because a
+    // fresh store applies the migrations in order too — the column has to come
+    // from one place, not two.
+    version: 6,
+    name: 'token_cost',
+    statements: ['ALTER TABLE token_report ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;'],
+  },
 ]
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

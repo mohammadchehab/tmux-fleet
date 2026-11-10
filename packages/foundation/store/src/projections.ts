@@ -857,6 +857,7 @@ interface TokenRow {
   readonly input_tokens: number
   readonly output_tokens: number
   readonly cached_tokens: number
+  readonly cost_usd: number
   readonly grep: number
   readonly glob: number
   readonly read: number
@@ -874,6 +875,7 @@ const tokenReportFromRow = (row: TokenRow): TokenReport =>
     inputTokens: Number(row.input_tokens),
     outputTokens: Number(row.output_tokens),
     cachedTokens: Number(row.cached_tokens),
+    costUsd: Number(row.cost_usd),
     toolCalls: {
       grep: Number(row.grep),
       glob: Number(row.glob),
@@ -896,6 +898,7 @@ const writeTokenReport = (db: Sqlite, report: TokenReport): void =>
       'input_tokens',
       'output_tokens',
       'cached_tokens',
+      'cost_usd',
       'grep',
       'glob',
       'read',
@@ -911,6 +914,7 @@ const writeTokenReport = (db: Sqlite, report: TokenReport): void =>
       report.inputTokens,
       report.outputTokens,
       report.cachedTokens,
+      report.costUsd,
       report.toolCalls.grep,
       report.toolCalls.glob,
       report.toolCalls.read,
@@ -938,6 +942,7 @@ const tokenReportFor = (db: Sqlite, peerId: string, role: string, workId: string
           inputTokens: 0,
           outputTokens: 0,
           cachedTokens: 0,
+          costUsd: 0,
           toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
           redirects: 0,
           updatedAt: new Date(0).toISOString(),
@@ -1678,7 +1683,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
     case 'turn.usage_recorded': {
-      const { peerId, workId, inputTokens, outputTokens, cachedTokens, toolCalls } = event.data
+      const { peerId, workId, inputTokens, outputTokens, cachedTokens, toolCalls, costUsd } = event.data
       const role = peerById(db, peerId)?.role ?? 'unknown'
       // The per-Work row, and the peer's rollup under the empty work id (§6.2).
       const rows: readonly string[] = workId === undefined ? [''] : [workId, '']
@@ -1694,6 +1699,9 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
             inputTokens: current.inputTokens + inputTokens,
             outputTokens: current.outputTokens + outputTokens,
             cachedTokens: current.cachedTokens + cachedTokens,
+            // A turn that reported no price adds nothing: the rollup stays the
+            // sum of what was actually priced (§6.2).
+            costUsd: current.costUsd + (costUsd ?? 0),
             toolCalls: {
               grep: current.toolCalls.grep + toolCalls.grep,
               glob: current.toolCalls.glob + toolCalls.glob,
@@ -2003,6 +2011,14 @@ export const readers = (db: Sqlite): ReadModel => {
         const cases = rows<EvalCase>(PROJECTION_SCHEMAS.evalCase, 'SELECT data FROM eval_cases WHERE run_id = ? ORDER BY case_id', runId)
         return { run, cases }
       },
+    },
+    tokens: {
+      // Every row, the peer rollup (`work_id = ''`) first: §6.2's report is read
+      // whole — `fleet ls` prints both levels and the board looks a Work up — and
+      // the table is one row per peer per Work, not one per turn, so there is
+      // nothing here that grows with the log's history.
+      all: async () =>
+        db.all<TokenRow>('SELECT * FROM token_report ORDER BY peer_id, work_id').map((row) => tokenReportFromRow(row)),
     },
     compactions: {
       // Grouped in SQL rather than by the caller: `fleet ls` wants a count per

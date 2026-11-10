@@ -20,6 +20,7 @@ import type {
   PeerCompactions,
   ReplayResult,
   Routine,
+  TokenReport,
 } from '@fleet/foundation-contracts'
 import type { DownResult, LsResult, PeekResult, SendResult, UpResult } from '@fleet/foundation-contracts'
 
@@ -80,6 +81,23 @@ const compactionRow = (row: PeerCompactions): readonly string[] => [
 ]
 
 /**
+ * §6.2's cost report, one line per row: a peer's rollup (`all`) and its rows per
+ * Work. Tokens stay counts — the report measures them — and the cost is the sum
+ * of the turns that published a price, so a provider that prices nothing shows
+ * `$0.00` rather than a guess.
+ */
+const tokenRow = (row: TokenReport): readonly string[] => [
+  row.peerId,
+  row.role,
+  row.workId ?? 'all',
+  `${String(row.turns)} turns`,
+  `in ${String(row.inputTokens)}`,
+  `out ${String(row.outputTokens)}`,
+  `cached ${String(row.cachedTokens)}`,
+  `$${row.costUsd.toFixed(2)}`,
+]
+
+/**
  * A decision is three lines: the row, the closed set the answer must come
  * from, and the command that answers it — so `fleet ls` is enough to act on
  * without going back to the docs (§6.1).
@@ -103,6 +121,11 @@ export const formatLs = (result: LsResult): string => {
     index === 0 ? decisionLines(row) : ['', ...decisionLines(row)],
   )
   const total = result.compactions.reduce((sum, row) => sum + row.count, 0)
+  // The rollup rows are the fleet's bill; the per-Work rows are its breakdown and
+  // summing those too would count every turn twice.
+  const spend = result.tokens
+    .filter((row) => row.workId === undefined)
+    .reduce((sum, row) => sum + row.costUsd, 0)
   const lines = [
     `${status.profile}  pid ${String(status.pid)}  up since ${status.startedAt}`,
     `socket  ${status.socketPath}`,
@@ -120,6 +143,8 @@ export const formatLs = (result: LsResult): string => {
       columns(result.compactions.map(compactionRow)),
       'none: no peer has compacted',
     ),
+    '',
+    ...section(`tokens ($${spend.toFixed(2)} total)`, result.tokens.length, columns(result.tokens.map(tokenRow)), 'none: no turn has been recorded'),
     '',
     ...section('decisions', result.decisions.length, decisionRows, 'nothing waiting on the user'),
   ]

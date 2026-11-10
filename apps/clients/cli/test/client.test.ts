@@ -31,7 +31,7 @@ const peer = {
   updatedAt: now,
 }
 
-const listing: LsResult = { status, peers: [peer], routines: [], decisions: [], compactions: [] }
+const listing: LsResult = { status, peers: [peer], routines: [], decisions: [], compactions: [], tokens: [] }
 
 const message = {
   msgId: 'msg_0123456789abcdef',
