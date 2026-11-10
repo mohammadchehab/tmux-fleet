@@ -1,139 +1,30 @@
 /**
- * The daemon's local API (architecture §2): JSON over a Unix socket, one request
- * and one response per line, no state held by the client.
+ * The daemon's end of the socket (§2): JSON in, one typed call out, and a
+ * failure that answers the client instead of taking `fleetd` down.
  *
- * **This file is a stand-in.** `foundation/contracts/daemon-rpc.ts` is being
- * written by the CLI's author and is the authority for the wire shape; when it
- * lands, the schemas and envelope below are replaced by its exports and
- * `apps/clients/cli` needs no change, because the *methods* are already the six
- * the CLI is being built against — `up`, `down`, `ls`, `send`, `peek`, `decide`.
- * Keeping the request/response types here rather than in `contracts` is the one
- * place this app anticipates a port instead of consuming one, so it is marked
- * loudly rather than buried in a comment.
+ * Every shape on the wire is `foundation/contracts/daemon-rpc.ts` — the same
+ * file the CLI builds against — so the protocol is spelled once and there is no
+ * copy here to drift from it. What this file still owns is the daemon's own
+ * business:
  *
- * The split that matters is not the wire format but `DaemonApi`: the handler
- * narrows unknown JSON to typed arguments and nothing else. `rpc.ts` never
- * knows what a peer is; `daemon.ts` never sees a string from a socket.
+ * - **Framing.** One line is one request; `encodeLine` is what the server writes
+ *   and what a test reads, so both frame identically.
+ * - **Decoding, per method.** `daemonParamsFor` is strict, so a mistyped field
+ *   is answered as the client's fault and *named* (`params.to`), not blamed on
+ *   the daemon as `internal`.
+ * - **Dispatch.** The `switch` is exhaustive over `DaemonMethod`: a method added
+ *   to the contract without a case here does not compile.
  */
 
+import { fleetError, parseStrict, SchemaError, toFleetError, type FleetError, type Schema } from '@fleet/foundation-core'
 import {
-  count,
-  decisionId,
-  fleetError,
-  object,
-  objectAs,
-  oneOf,
-  optional,
-  parseStrict,
-  peerId,
-  SchemaError,
-  text,
-  toFleetError,
-  type FleetError,
-  type PeerId,
-  type DecisionId,
-  type Schema,
-} from '@fleet/foundation-core'
-import { turnKinds, usageParams, type TurnKind, type UsageParams } from '@fleet/foundation-contracts'
-
-/** `fleet ls`: one line per peer, plus what the scheduler is running (§2, §6). */
-export interface PeerRow {
-  readonly id: PeerId
-  readonly role: string
-  readonly provider: string
-  /** §8's state: `idle`, `working`, `waiting_on_user`, `blocked`, `failed`, `offline`. */
-  readonly state: string
-  /** Unacked messages, so `fleet ls` can show a peer that is not being reached. */
-  readonly pending: number
-  readonly sessionId?: string
-}
-
-export interface RoutineRow {
-  readonly id: string
-  readonly kind: string
-  /** §6's projection state: `idle`, `running`, `failed`, … */
-  readonly state: string
-  readonly runs: number
-  readonly failures: number
-  readonly lastRunAt?: string
-}
-
-/** What `up` reports, and what `ls` repeats so a client can show a running fleet. */
-export interface DaemonStatus {
-  readonly profile: string
-  readonly pid: number
-  readonly startedAt: string
-  readonly socketPath: string
-  readonly storePath: string
-}
-
-/** A decision as `fleet decide` sees it: the question, the closed set of answers, and where it stands. */
-export interface DecisionRow {
-  readonly id: DecisionId
-  readonly kind: string
-  readonly state: string
-  readonly question: string
-  readonly options: readonly string[]
-  readonly requestedAt: string
-}
-
-/**
- * What the RPC can do, typed. `daemon.ts` implements it; the CLI reaches it
- * through the socket. Every method is async because every one of them is a
- * store write or a provider call.
- */
-export interface DaemonApi {
-  /** Start the loops if they are not running; idempotent, because `fleet up` may be run twice (§2). */
-  up(): Promise<DaemonStatus>
-  /** Stop the loops and the server. Answers before the process exits, so the CLI is not left hanging. */
-  down(): Promise<{ readonly stopped: true }>
-  ls(): Promise<{ readonly status: DaemonStatus; readonly peers: readonly PeerRow[]; readonly routines: readonly RoutineRow[] }>
-  /** §7's only way to a peer: the Mailbox writes the event and delivers. */
-  send(input: {
-    readonly to: PeerId
-    readonly kind: TurnKind
-    readonly body: string
-    readonly briefVersion?: number
-  }): Promise<{ readonly msgId: string }>
-  /** §7: the peer's messages, oldest first — what `fleet peek` shows. */
-  peek(input: { readonly peer: PeerId; readonly limit?: number }): Promise<{ readonly messages: readonly PeekedMessage[] }>
-  /** Answer an open decision (§6.1). The decision event is written by the PM's next tick, not here. */
-  decide(input: { readonly id: DecisionId; readonly decision: string; readonly note?: string }): Promise<DecisionRow>
-  /** A peer's Stop hook reports one finished turn; recorded as `turn.usage_recorded` (§6.2). */
-  usage(input: UsageParams): Promise<{ readonly recorded: true }>
-}
-
-/** A message as a client reads it: the projection row, flattened for the wire. */
-export interface PeekedMessage {
-  readonly msgId: string
-  readonly from: string
-  readonly to: string
-  readonly kind: string
-  readonly body: string
-  readonly state: string
-  readonly sentAt: string
-}
-
-// ------------------------------------------------------------------ the wire
-
-export const rpcMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage'] as const
-export type RpcMethod = (typeof rpcMethods)[number]
-
-export interface RpcRequest {
-  /** Echoed back, so a client can match a response to its request. */
-  readonly id?: string
-  readonly method: RpcMethod
-  readonly params?: unknown
-}
-
-export type RpcResponse =
-  | { readonly id?: string; readonly ok: true; readonly result: unknown }
-  | { readonly id?: string; readonly ok: false; readonly error: { readonly code: string; readonly message: string } }
-
-export interface RpcErrorBody {
-  readonly code: string
-  readonly message: string
-}
+  daemonParamsFor,
+  daemonRequest,
+  type DaemonApi,
+  type DaemonMethod,
+  type DaemonRequest,
+  type DaemonResponse,
+} from '@fleet/foundation-contracts'
 
 /**
  * Strict decode, with a schema failure reported as the client's fault.
@@ -153,87 +44,56 @@ const decode = <T>(schema: Schema<T>, value: unknown): T => {
   }
 }
 
-const requestSchema = (): Schema<RpcRequest> =>
-  objectAs<RpcRequest>()({
-    id: optional(text(64)),
-    method: oneOf(rpcMethods),
-    params: optional(anything()),
-  })
-
-/**
- * `params` stays `unknown` here on purpose: each method decodes its own, so the
- * error names the field the client got wrong (`params.to`) rather than the
- * generic "params is invalid".
- */
-const anything = (): Schema<unknown> => ({ tag: 'unknown', decode: (value) => value })
-
 /** Decode one line into a request, or throw `invalid_input` naming what is wrong. */
-export const decodeRequest = (line: string): RpcRequest => {
+export const decodeRequest = (line: string): DaemonRequest => {
   let value: unknown
   try {
     value = JSON.parse(line)
   } catch (cause) {
     throw fleetError('invalid_input', `the request is not JSON: ${(cause as Error).message}`, { cause })
   }
-  return decode(requestSchema(), value)
+  return decode(daemonRequest(), value)
 }
 
-const sendParams = () =>
-  objectAs<{ to: PeerId; kind: TurnKind; body: string; briefVersion?: number }>()({
-    to: peerId(),
-    kind: oneOf(turnKinds),
-    body: text(100_000),
-    briefVersion: optional(count()),
-  })
-
-const peekParams = () =>
-  objectAs<{ peer: PeerId; limit?: number }>()({
-    peer: peerId(),
-    limit: optional(count()),
-  })
-
-const decideParams = () =>
-  objectAs<{ id: DecisionId; decision: string; note?: string }>()({
-    id: decisionId(),
-    decision: text(200),
-    note: optional(text(2000)),
-  })
-
-const noParams = (): Schema<Record<string, never>> => object({}) as unknown as Schema<Record<string, never>>
-
 /**
- * Turn a method + params into a call. The `switch` is exhaustive over
- * `RpcMethod`, so a method added to the union without a case fails to compile
- * rather than answering `undefined` at runtime.
+ * Turn a request into a call. Each case decodes that method's own params, so the
+ * error names the field the client got wrong rather than the generic "params is
+ * invalid"; `?? {}` is what makes an absent `params` the same request as `{}` for
+ * the four methods that take nothing.
  */
-export const dispatch = async (api: DaemonApi, request: RpcRequest): Promise<unknown> => {
+export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<unknown> => {
+  const params = request.params ?? {}
   switch (request.method) {
     case 'up':
-      decode(noParams(), request.params ?? {})
+      decode(daemonParamsFor('up'), params)
       return api.up()
     case 'down':
-      decode(noParams(), request.params ?? {})
+      decode(daemonParamsFor('down'), params)
       return api.down()
     case 'ls':
-      decode(noParams(), request.params ?? {})
+      decode(daemonParamsFor('ls'), params)
       return api.ls()
     case 'send':
-      return api.send(decode(sendParams(), request.params ?? {}))
+      return api.send(decode(daemonParamsFor('send'), params))
     case 'peek':
-      return api.peek(decode(peekParams(), request.params ?? {}))
+      return api.peek(decode(daemonParamsFor('peek'), params))
     case 'decide':
-      return api.decide(decode(decideParams(), request.params ?? {}))
+      return api.decide(decode(daemonParamsFor('decide'), params))
     case 'usage':
-      return api.usage(decode(usageParams(), request.params ?? {}))
+      return api.usage(decode(daemonParamsFor('usage'), params))
   }
 }
 
 /**
- * One line in, one line out. A failure is an `RpcResponse`, never a throw: the
+ * One line in, one line out. A failure is a `DaemonResponse`, never a throw: the
  * socket writes the response and keeps serving, because a client that sent
  * nonsense must not be able to take the daemon down with it.
+ *
+ * `id` is echoed whenever it could be read, including on a failure — a client
+ * with several requests in flight matches on it, and `daemonRequest` decoded the
+ * envelope before any params failed.
  */
-export const handleLine = async (api: DaemonApi, line: string): Promise<RpcResponse> => {
+export const handleLine = async (api: DaemonApi, line: string): Promise<DaemonResponse> => {
   let id: string | undefined
   try {
     const request = decodeRequest(line)
@@ -245,7 +105,13 @@ export const handleLine = async (api: DaemonApi, line: string): Promise<RpcRespo
   }
 }
 
-const errorBody = (error: FleetError): RpcErrorBody => ({ code: error.code, message: error.message })
+const errorBody = (error: FleetError): { readonly code: string; readonly message: string } => ({
+  code: error.code,
+  message: error.message,
+})
 
 /** `encodeLine` exists so the server and the tests frame responses identically. */
-export const encodeLine = (response: RpcResponse): string => `${JSON.stringify(response)}\n`
+export const encodeLine = (response: DaemonResponse): string => `${JSON.stringify(response)}\n`
+
+/** Re-exported so an app that already holds this file's API type needs no second import. */
+export type { DaemonApi, DaemonMethod, DaemonRequest, DaemonResponse }

@@ -20,58 +20,11 @@ import { FleetError, fleetError, isFleetErrorCode, parseStrict, SchemaError, typ
 import {
   daemonParamsFor,
   daemonResponse,
-  daemonStatus,
-  decision,
-  downResult,
-  lsResult,
-  peekResult,
-  sendResult,
-  usageResult,
+  daemonResultFor,
   type DaemonMethod,
   type DaemonParamsOf,
-  type DecisionRow,
-  type DownResult,
-  type LsResult,
-  type PeekResult,
-  type SendResult,
-  type UpResult,
-  type UsageResult,
+  type DaemonResults,
 } from '@fleet/foundation-contracts'
-
-/**
- * Method → its result type. The counterpart of the contract's `DaemonParams`,
- * for the client's side of the same table.
- */
-export interface DaemonResults {
-  readonly up: UpResult
-  readonly down: DownResult
-  readonly ls: LsResult
-  readonly send: SendResult
-  readonly peek: PeekResult
-  readonly decide: DecisionRow
-  readonly usage: UsageResult
-}
-
-export type DaemonResultOf<M extends DaemonMethod> = DaemonResults[M]
-
-/**
- * The contract exports a result schema per method but no map over the closed
- * set of methods, so every client writes this table. It belongs in
- * `daemon-rpc.ts` next to `daemonParamsFor`; until it moves, this is the one
- * copy, and the exhaustive key type means a method added to the contract fails
- * to compile here rather than answering `undefined`.
- */
-const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[M]> } = {
-  up: daemonStatus,
-  down: downResult,
-  ls: lsResult,
-  send: sendResult,
-  peek: peekResult,
-  decide: decision,
-  usage: usageResult,
-}
-
-export const daemonResultFor = <M extends DaemonMethod>(method: M): Schema<DaemonResults[M]> => resultSchemas[method]()
 
 export interface CallOptions {
   readonly socketPath: string

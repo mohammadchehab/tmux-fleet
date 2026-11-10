@@ -17,22 +17,17 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
+import type { LsResult, PeekResult } from '../../../packages/foundation/contracts/src/index.ts'
 import { createSandbox, until } from '../support/sandbox.ts'
 
-interface PeerRowLike {
-  readonly id: string
-  readonly role: string
-  readonly provider: string
-  readonly state: string
-  readonly pending: number
-  readonly sessionId?: string
-}
-
-interface LsLike {
-  readonly status: { readonly profile: string; readonly pid: number; readonly socketPath: string }
-  readonly peers: readonly PeerRowLike[]
-  readonly routines: readonly { readonly id: string; readonly kind: string; readonly state: string }[]
-}
+/**
+ * The wire shapes are the contract's, not this file's: `ls` answers with the §3
+ * projections (`Peer`, `Routine`, `Decision`) and `peek` with §7's `Message`.
+ * Importing the types rather than restating them is what makes a row that
+ * gained a field a row this test reads, instead of a shape that quietly stops
+ * describing the daemon.
+ */
+type LsLike = LsResult
 
 test('§15: a fleet comes up from a profile, and every peer is a real session', async (t) => {
   const sandbox = await createSandbox()
@@ -47,14 +42,15 @@ test('§15: a fleet comes up from a profile, and every peer is a real session', 
 
   const ls = await sandbox.call<LsLike>('ls')
   assert.deepEqual(
-    ls.peers.map((peer) => peer.id).sort(),
+    ls.peers.map((peer) => peer.peerId).sort(),
     ['architect', 'engineer-1', 'engineer-2'],
   )
   for (const peer of ls.peers) {
-    assert.equal(peer.provider, 'claude')
-    assert.equal(typeof peer.sessionId, 'string', `${peer.id} has a live session`)
-    assert.equal(peer.pending, 0)
+    assert.equal(peer.providerId, 'claude')
+    assert.equal(typeof peer.currentSessionId, 'string', `${peer.peerId} has a live session`)
   }
+  // §6.1's inbox: nothing is waiting on the user in a fleet that just came up.
+  assert.deepEqual(ls.decisions, [])
 
   // The spec is what a real provider would be handed: the peer's own directory,
   // the brief at version 1, and a permission mode that is not bypass (§13).
@@ -85,8 +81,8 @@ test('§15: a peer killed mid-turn is recovered on a fresh session', async (t) =
   await sandbox.call('up')
 
   const before = await sandbox.call<LsLike>('ls')
-  const killed = before.peers.find((peer) => peer.id === 'engineer-1')
-  const killedSessionId = killed?.sessionId
+  const killed = before.peers.find((peer) => peer.peerId === 'engineer-1')
+  const killedSessionId = killed?.currentSessionId
   assert.ok(killedSessionId, 'engineer-1 is running')
   const killedSession = sandbox.scripted.session(killedSessionId)
   assert.ok(killedSession)
@@ -113,8 +109,8 @@ test('§15: a peer killed mid-turn is recovered on a fresh session', async (t) =
   assert.equal(recovered.spec.cwd, sandbox.paths.stateDir)
 
   const after = await sandbox.call<LsLike>('ls')
-  const engineer = after.peers.find((peer) => peer.id === 'engineer-1')
-  assert.equal(engineer?.sessionId, recovered.handle.sessionId, '`ls` shows the session that is running')
+  const engineer = after.peers.find((peer) => peer.peerId === 'engineer-1')
+  assert.equal(engineer?.currentSessionId, recovered.handle.sessionId, '`ls` shows the session that is running')
   assert.deepEqual([...sandbox.composed.supervisor.running()].sort(), ['architect', 'engineer-1', 'engineer-2'])
 
   // The peer is running again, on a session whose identity is not the dead one's.
@@ -140,14 +136,15 @@ test('§15: a message sent over the socket is the message the peer would read', 
   })
   assert.match(sent.msgId, /^msg_/)
 
-  const peeked = await sandbox.call<{ messages: readonly { msgId: string; to: string; body: string; kind: string }[] }>(
-    'peek',
-    { peer: 'engineer-2' },
-  )
+  const peeked = await sandbox.call<PeekResult>('peek', { peer: 'engineer-2' })
   assert.equal(peeked.messages.length, 1)
   assert.equal(peeked.messages[0]?.msgId, sent.msgId)
   assert.equal(peeked.messages[0]?.body, 'the third work item is ready')
   assert.equal(peeked.messages[0]?.kind, 'info')
+  // §7's own row, not a flattened copy of it: the version and the ack state
+  // travel with the message, so `fleet peek` can say what the peer is on.
+  assert.equal(peeked.messages[0]?.state, 'delivered', 'the peer\'s session was handed it')
+  assert.equal(peeked.messages[0]?.briefVersion, 1)
 
   // A peer that does not exist is refused at the socket, with the daemon's own code.
   await assert.rejects(
@@ -155,9 +152,14 @@ test('§15: a message sent over the socket is the message the peer would read', 
     (error: Error & { code?: string }) => error.code === 'not_found',
   )
 
-  // `ls` counts what is unacked, so a stuck message is visible (§2).
-  const ls = await sandbox.call<LsLike>('ls')
-  assert.equal(ls.peers.find((peer) => peer.id === 'engineer-2')?.pending, 1)
+  // Nothing has acked it, so it is still the peer's to act on (§7): `peek`
+  // reads the unacked box, and the row says where it got to.
+  const unacked = await sandbox.call<PeekResult>('peek', { peer: 'engineer-2' })
+  assert.deepEqual(
+    unacked.messages.map((message) => message.state),
+    ['delivered'],
+    'delivered to the session, and not yet acked by the peer',
+  )
 })
 
 test('§15: `down` stops the loops, and the fleet is no longer reachable', async (t) => {

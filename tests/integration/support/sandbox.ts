@@ -21,10 +21,10 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import type { DaemonMethod, DaemonResponse } from '../../../packages/foundation/contracts/src/index.ts'
+import { profilePaths, type ProfilePaths } from '../../../packages/foundation/core/src/index.ts'
 import { compose, type Composed } from '../../../apps/daemon/src/compose.ts'
-import { profilePaths, type ProfilePaths } from '../../../apps/daemon/src/paths.ts'
 import { stateFilePathOf } from '../../../apps/daemon/src/sessions.ts'
-import type { RpcMethod, RpcResponse } from '../../../apps/daemon/src/rpc.ts'
 import { rpcCall } from '../../../apps/daemon/src/server.ts'
 import type { Notifier } from '../../../packages/notify/core/src/index.ts'
 import { createScriptedProvider, type ScriptedOptions, type ScriptedProvider } from './scripted-provider.ts'
@@ -87,9 +87,9 @@ export interface Sandbox {
   /** Everything the store has, oldest first — the record a test asserts against. */
   events(): Promise<readonly SandboxEvent[]>
   /** One socket round trip, unwrapped: the response as the CLI's client sees it. */
-  raw(method: RpcMethod, params?: unknown): Promise<RpcResponse>
+  raw(method: DaemonMethod, params?: unknown): Promise<DaemonResponse>
   /** One socket round trip, or a thrown `FleetError` carrying the daemon's code and message. */
-  call<T>(method: RpcMethod, params?: unknown): Promise<T>
+  call<T>(method: DaemonMethod, params?: unknown): Promise<T>
   /** Stop the loops, close the socket and the store, then delete the temp directory. */
   stop(): Promise<void>
 }
@@ -135,7 +135,7 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
     ...(options.notifier === undefined ? {} : { notifier: options.notifier }),
   })
 
-  const raw = (method: RpcMethod, params?: unknown): Promise<RpcResponse> =>
+  const raw = (method: DaemonMethod, params?: unknown): Promise<DaemonResponse> =>
     rpcCall(paths.socketPath, { id: `${method}-${String(Math.random()).slice(2, 8)}`, method, ...(params === undefined ? {} : { params }) })
 
   let stopped = false
@@ -154,7 +154,7 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
       return all as unknown as readonly SandboxEvent[]
     },
     raw,
-    async call<T>(method: RpcMethod, params?: unknown): Promise<T> {
+    async call<T>(method: DaemonMethod, params?: unknown): Promise<T> {
       const response = await raw(method, params)
       if (!response.ok) {
         const error = new Error(`${method}: ${response.error.code}: ${response.error.message}`) as Error & { code: string }

@@ -15,20 +15,12 @@
  * Flags beat the environment, because a person typing a flag means it more
  * than a variable their shell exported an hour ago.
  *
- * The one wart: the `~/.fleet/<profile>/daemon/fleetd.sock` layout is repeated
- * from `apps/daemon/src/paths.ts`, and it has to be. The CLI may not import an
- * app (§1.1), and `profilePaths` has not been promoted to `foundation`. One
- * derived path is a small thing to keep in step; the fix, when someone has the
- * afternoon, is a `profilePaths` in `foundation/core` that both read.
+ * The layout itself — `~/.fleet/<profile>/daemon/fleetd.sock` — is `profilePaths`
+ * in `@fleet/foundation-core`, which is what `fleetd` derives too. One function,
+ * so the CLI cannot look for a socket the daemon did not create (§1.1).
  */
 
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-
-import { fleetError } from '@fleet/foundation-core'
-
-/** `^[a-z][a-z0-9-]*$`, as `fleetd` accepts it: refused rather than sanitised, never rewritten into a path. */
-const PROFILE_NAME = /^[a-z][a-z0-9-]*$/
+import { fleetError, profilePaths } from '@fleet/foundation-core'
 
 export interface SocketRequest {
   /** `--socket`, verbatim. */
@@ -76,13 +68,9 @@ export const socketPathOf = (request: SocketRequest): SocketChoice => {
       'no fleet named: pass --socket <path>, or name a profile (fleet up <profile>), or set FLEET_SOCKET',
     )
   }
-  if (!PROFILE_NAME.test(profile)) {
-    throw fleetError(
-      'invalid_input',
-      `profile "${profile}" is not a valid name: it must match ${PROFILE_NAME.source} (lowercase letters, digits and dashes, starting with a letter)`,
-    )
-  }
 
-  const home = request.home ?? homedir()
-  return { socketPath: join(home, '.fleet', profile, 'daemon', 'fleetd.sock'), profile }
+  // `profilePaths` refuses a name that would become a path, and derives the
+  // same socket `fleetd` opens for it.
+  const { socketPath } = profilePaths(profile, request.home === undefined ? {} : { home: request.home })
+  return { socketPath, profile }
 }

@@ -10,12 +10,18 @@
  *   configuration.
  *
  * Every path here is derived, never guessed at a call site: a test passes its
- * own roots and gets the same layout, so nothing in the daemon reads `HOME`.
+ * own roots and gets the same layout, so nothing that reads this file touches
+ * `HOME` by accident.
+ *
+ * It lives in `foundation/core` rather than in `apps/daemon` because more than
+ * one app needs it — `fleetd` to open the store and `fleet` to find the socket
+ * to talk to it — and §1.1 forbids one app importing another. Two layouts, one
+ * per app, would be two fleets on disk.
  */
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { fleetError } from '@fleet/foundation-core'
+import { fleetError } from './errors.ts'
 
 /** The profile name: what names the YAML file and the state directory. */
 export type ProfileName = string

@@ -341,6 +341,41 @@ export interface UsageResult {
 
 export const usageResult = (): Schema<UsageResult> => objectAs<UsageResult>()({ recorded: literal(true) })
 
+// ------------------------------------------------------------ results table
+
+/**
+ * Method → its result type. The counterpart of `DaemonParams`, and the reason a
+ * client writes no table of its own: with `daemonResultFor` it can refuse an
+ * answer that is not the method's own result before rendering it, so a daemon
+ * that drifted from this file is loud in the client rather than quietly
+ * displayed as `undefined` in a table.
+ */
+export interface DaemonResults {
+  readonly up: UpResult
+  readonly down: DownResult
+  readonly ls: LsResult
+  readonly send: SendResult
+  readonly peek: PeekResult
+  readonly decide: DecisionRow
+  readonly usage: UsageResult
+}
+
+export type DaemonResultOf<M extends DaemonMethod> = DaemonResults[M]
+
+const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[M]> } = {
+  up: daemonStatus,
+  down: downResult,
+  ls: lsResult,
+  send: sendResult,
+  peek: peekResult,
+  decide: decision,
+  usage: usageResult,
+}
+
+/** The schema for one method's result. The exhaustive key type is what makes a new method a compile error. */
+export const daemonResultFor = <M extends DaemonMethod>(method: M): Schema<DaemonResults[M]> =>
+  resultSchemas[method]()
+
 // --------------------------------------------------------------------- port
 
 /**

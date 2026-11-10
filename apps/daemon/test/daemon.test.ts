@@ -19,6 +19,8 @@ import {
   fleetError,
   newDecisionId,
   ok,
+  persistentDirs,
+  profilePaths,
   type DecisionId,
   type PeerId,
   type SessionId,
@@ -31,7 +33,6 @@ import type { Scheduler } from '@fleet/orchestration-routines'
 
 import { createDaemon } from '../src/daemon.ts'
 import type { Supervisor } from '../src/sessions.ts'
-import { persistentDirs, profilePaths } from '../src/paths.ts'
 import type { Profile } from '../src/profile.ts'
 
 const roots = await mkdtemp(join(tmpdir(), 'fleet-daemon-'))
@@ -186,9 +187,10 @@ test('ls reports the profile peers with the state the store knows', async () => 
   const { status, peers } = await daemon.ls()
   assert.equal(status.pid, 99)
   assert.equal(status.profile, 'test')
-  // The projection orders by registration, which is the order `up` wrote them.
-  assert.deepEqual(peers.map((peer) => peer.id).sort(), ['architect', 'engineer-1'])
-  assert.equal(peers.find((peer) => peer.id === 'engineer-1')?.role, 'engineer')
+  // The projection orders by registration, which is the order `up` wrote them,
+  // and it is the §3 row itself — not a flattened copy of it.
+  assert.deepEqual(peers.map((peer) => peer.peerId).sort(), ['architect', 'engineer-1'])
+  assert.equal(peers.find((peer) => peer.peerId === 'engineer-1')?.role, 'engineer')
   await daemon.down()
   assert.equal((await store.latestSeq()) > 0, true)
 })
@@ -306,7 +308,7 @@ test('decide answers an open decision and refuses one that is not there', async 
   ])
 
   const row = await daemon.decide({ id: decisionId, decision: 'yes' })
-  assert.equal(row.id, decisionId)
+  assert.equal(row.decisionId, decisionId)
   assert.deepEqual(row.options, ['yes', 'no'])
 
   const answered = (await store.read(1)).filter((event) => event.type === 'decision.answered')
