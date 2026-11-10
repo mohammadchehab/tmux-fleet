@@ -406,6 +406,33 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     assert.equal(store.ofType('routine.failing').length, 1, 'the dropped escalation is owed, not announced')
   })
 
+  it('still escalates when the batch that carried the escalation was refused (TASK-2)', async () => {
+    const inner = fakeStore()
+    let refuseEscalation = false
+    const store = {
+      append: async (batch: Parameters<typeof inner.append>[0]) => {
+        if (refuseEscalation && batch.some((event) => event.type === 'routine.failing')) {
+          refuseEscalation = false
+          throw new Error('store is unavailable')
+        }
+        return inner.append(batch)
+      },
+    }
+    const { deps, state, clock } = failingHarness({ tickIntervalMs: 1_000, store })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    // The third failure is the one that escalates, and the batch carrying the
+    // banner is refused: the banner was not said, so it must not be remembered
+    // as said.
+    refuseEscalation = true
+    clock.advance(61_000)
+    await assert.rejects(scheduler.tick(), /store is unavailable/)
+    assert.equal(inner.ofType('routine.failing').length, 0)
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    assert.equal(inner.ofType('routine.failing').length, 1, 'the refused escalation is owed, not announced')
+  })
+
   it('does not ring again while the error is the same', async () => {
     const { deps, store, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
     const scheduler = createScheduler(deps)
