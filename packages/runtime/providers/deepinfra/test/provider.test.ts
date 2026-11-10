@@ -4,7 +4,9 @@
  *
  * Nothing here starts a session: a DeepInfra start needs a live key and spends
  * money, and every claim below is about what the provider decides *before* the
- * inner Claude provider is asked to do anything.
+ * inner Claude provider is asked to do anything. The one thing the provider does
+ * *to* a spec on its way through — pinning every model key — is `pinModelEnv`,
+ * so it is tested where it is pure rather than by spawning.
  */
 
 import assert from 'node:assert/strict'
@@ -16,11 +18,13 @@ import { capabilityChecks, type Provider, type SessionSpec } from '@fleet/runtim
 import {
   DEEP_INFRA_BASE_URL,
   DEEP_INFRA_CONTEXT_LIMITS,
+  DEEP_INFRA_MODEL_ENV_KEYS,
   DeepInfraProvider,
   createDeepInfraProvider,
   deepInfraCapabilities,
   deepInfraEnv,
   narrowCapabilities,
+  pinModelEnv,
 } from '../src/index.ts'
 
 const provider = new DeepInfraProvider()
@@ -32,7 +36,7 @@ const spec = (overrides: Partial<SessionSpec> = {}): SessionSpec => ({
   cwd: '/tmp',
   model: MODEL,
   permissionMode: 'default',
-  env: deepInfraEnv('not-a-real-key'),
+  env: deepInfraEnv('not-a-real-key', { model: MODEL }),
   brief: { briefId: newBriefId(), version: 1, contractVersions: [], text: 'do the thing' },
   ...overrides,
 })
@@ -99,10 +103,84 @@ test('the context limit is the vendor’s window, not the 200 000 the SDK guesse
   assert.equal(DEEP_INFRA_CONTEXT_LIMITS[MODEL], 1_048_576)
 })
 
-test('deepInfraEnv builds the endpoint and the token, and refuses an empty token', () => {
-  assert.deepEqual(deepInfraEnv('k'), { ANTHROPIC_BASE_URL: DEEP_INFRA_BASE_URL, ANTHROPIC_AUTH_TOKEN: 'k' })
-  assert.throws(() => deepInfraEnv('   '), (thrown: unknown) => code(thrown) === 'invalid_input')
-  assert.throws(() => deepInfraEnv(''), (thrown: unknown) => code(thrown) === 'invalid_input')
+test('deepInfraEnv builds the endpoint, the token and the model, and refuses an empty token', () => {
+  assert.deepEqual(deepInfraEnv('k', { model: MODEL }), {
+    ANTHROPIC_BASE_URL: DEEP_INFRA_BASE_URL,
+    ANTHROPIC_AUTH_TOKEN: 'k',
+    ...pinModelEnv(MODEL),
+  })
+  assert.throws(() => deepInfraEnv('   ', { model: MODEL }), (thrown: unknown) => code(thrown) === 'invalid_input')
+  assert.throws(() => deepInfraEnv('', { model: MODEL }), (thrown: unknown) => code(thrown) === 'invalid_input')
+})
+
+test('every key the SDK resolves a model from is pinned, so no alias falls through to Claude', () => {
+  // The spike watched `anthropic/claude-sonnet-5-5` reach DeepInfra: the CLI
+  // validates nothing. The aliases are the quiet half of that problem — an
+  // unset ANTHROPIC_SMALL_FAST_MODEL is a Claude id by default, so a background
+  // summarisation would leave for Anthropic and the stream would never say so.
+  const pinned = pinModelEnv(MODEL)
+  assert.deepEqual([...DEEP_INFRA_MODEL_ENV_KEYS].sort(), [
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_MODEL',
+    'ANTHROPIC_SMALL_FAST_MODEL',
+  ])
+  for (const key of DEEP_INFRA_MODEL_ENV_KEYS) {
+    assert.equal(pinned[key], MODEL, `${key} must point at the spec's model`)
+  }
+  assert.ok(Object.isFrozen(pinned))
+})
+
+test('a Claude model id is a config_mismatch before anything spawns, however it is spelled', async () => {
+  for (const model of ['claude-sonnet-5-5', 'claude-3-5-haiku-20241022', 'anthropic/claude-sonnet-5-5']) {
+    await assert.rejects(
+      provider.start(spec({ model })),
+      (thrown: unknown) => code(thrown) === 'config_mismatch',
+      `${model} names a vendor this endpoint is not`,
+    )
+    await assert.rejects(
+      provider.resume('sess_abc' as never, spec({ model })),
+      (thrown: unknown) => code(thrown) === 'config_mismatch',
+      `a resume is checked like a start: ${model}`,
+    )
+  }
+})
+
+test('switching a live session to a Claude id is refused by the same rule', async () => {
+  // Otherwise the switch is the one path that skips the start-time check, and a
+  // running session quietly becomes a Claude session with a DeepInfra token.
+  await assert.rejects(
+    provider.setModel({ sessionId: 'ses_aaaaaaaaaaaaaaaa' } as never, 'anthropic/claude-sonnet-5-5'),
+    (thrown: unknown) => code(thrown) === 'config_mismatch',
+  )
+})
+
+test('an allowlist pins the profile to a set of DeepInfra ids, and refuses the rest', async () => {
+  const allowed = new DeepInfraProvider({
+    allowedModels: [MODEL],
+    contextLimits: { 'deepseek-ai/DeepSeek-V3.2': 65_536 },
+  })
+  // On the allowlist and past validation: the refusal is the unknown handle, not the model.
+  await assert.rejects(
+    allowed.setModel({ sessionId: 'ses_aaaaaaaaaaaaaaaa' } as never, MODEL),
+    (thrown: unknown) => code(thrown) === 'not_found',
+  )
+  // A real DeepInfra model with a configured window, but not one this profile may use.
+  await assert.rejects(
+    allowed.start(spec({ model: 'deepseek-ai/DeepSeek-V3.2' })),
+    (thrown: unknown) => code(thrown) === 'config_mismatch',
+  )
+  await assert.rejects(
+    allowed.setModel({ sessionId: 'ses_aaaaaaaaaaaaaaaa' } as never, 'deepseek-ai/DeepSeek-V3.2'),
+    (thrown: unknown) => code(thrown) === 'config_mismatch',
+  )
+  // No allowlist, same spec: the model is merely unconfigured here, which is a different refusal.
+  const open = new DeepInfraProvider({ contextLimits: { 'deepseek-ai/DeepSeek-V3.2': 65_536 } })
+  await assert.rejects(
+    open.setModel({ sessionId: 'ses_aaaaaaaaaaaaaaaa' } as never, 'deepseek-ai/DeepSeek-V3.2'),
+    (thrown: unknown) => code(thrown) === 'not_found',
+  )
 })
 
 test('a model with no configured window is refused, not given a default', async () => {
