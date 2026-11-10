@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/security-findings",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Security findings (architecture §6.2): the Scanner port an adapter implements, the fingerprint that dedupes a finding across line shifts, and the pure planner that turns one scan's outcomes into finding.raised / finding.seen / scan.skipped.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
