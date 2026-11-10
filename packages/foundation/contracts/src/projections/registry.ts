@@ -14,7 +14,7 @@ import { brief, contract, contractVersionRef, work } from './work.ts'
 import { peer, peerActivity, peerCompactions, session } from './peers.ts'
 import { build, holder, pullRequest, worktree } from './delivery.ts'
 import { message } from './mailbox.ts'
-import { decision, finding, judgeQuestion, notification, routine, tokenReport } from './ops.ts'
+import { decision, finding, judgeQuestion, monthSpend, notification, routine, tokenReport } from './ops.ts'
 import { evalCase, evalRun } from './evals.ts'
 
 export const PROJECTION_SCHEMAS = {
@@ -37,6 +37,7 @@ export const PROJECTION_SCHEMAS = {
   finding: finding(),
   judgeQuestion: judgeQuestion(),
   tokenReport: tokenReport(),
+  monthSpend: monthSpend(),
   evalRun: evalRun(),
   evalCase: evalCase(),
 } as const

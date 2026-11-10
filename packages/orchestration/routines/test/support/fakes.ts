@@ -152,7 +152,10 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
     compactions: { all: async () => [] },
     // §6.2's cost report is not something a routine decides on; no test in this
     // package reads it, so the fake answers the empty report.
-    tokens: { all: async () => [] },
+    tokens: {
+      all: async () => [],
+      month: async (month) => ({ month, costUsd: 0, turns: 0, unpricedTurns: 0 }),
+    },
     // No activity is seeded either: a routine decides from the log, and the
     // activity row is a reading of it for a person, not an input to a rule.
     activity: { all: async () => [] },

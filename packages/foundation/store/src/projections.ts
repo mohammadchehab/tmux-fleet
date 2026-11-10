@@ -69,6 +69,7 @@ export const PROJECTION_TABLES = [
   'findings',
   'judge_questions',
   'token_report',
+  'spend_by_month',
   'messages',
   'eval_runs',
   'eval_cases',
@@ -1810,6 +1811,18 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
         peerId,
         ts,
       )
+      // The month's total, which is what a monthly cap is measured against
+      // (shared-fleet.md §3); the rows below never reset a period.
+      db.run(
+        `INSERT INTO spend_by_month (month, cost_usd, turns, unpriced_turns) VALUES (?, ?, 1, ?)
+         ON CONFLICT (month) DO UPDATE SET
+           cost_usd = cost_usd + excluded.cost_usd,
+           turns = turns + 1,
+           unpriced_turns = unpriced_turns + excluded.unpriced_turns`,
+        new Date(ts).toISOString().slice(0, 7),
+        costUsd ?? 0,
+        costUsd === undefined ? 1 : 0,
+      )
       const role = peerById(db, peerId)?.role ?? 'unknown'
       // The per-Work row, and the peer's rollup under the empty work id (§6.2).
       const rows: readonly string[] = workId === undefined ? [''] : [workId, '']
@@ -2184,6 +2197,18 @@ export const readers = (db: Sqlite): ReadModel => {
       // nothing here that grows with the log's history.
       all: async () =>
         db.all<TokenRow>('SELECT * FROM token_report ORDER BY peer_id, work_id').map((row) => tokenReportFromRow(row)),
+      month: async (month) => {
+        const row = db.get<{ cost_usd: number; turns: number; unpriced_turns: number }>(
+          'SELECT cost_usd, turns, unpriced_turns FROM spend_by_month WHERE month = ?',
+          month,
+        )
+        return parse(PROJECTION_SCHEMAS.monthSpend, {
+          month,
+          costUsd: Number(row?.cost_usd ?? 0),
+          turns: Number(row?.turns ?? 0),
+          unpricedTurns: Number(row?.unpriced_turns ?? 0),
+        })
+      },
     },
     activity: {
       // One query for the whole fleet: the last tool, the current Work, and that

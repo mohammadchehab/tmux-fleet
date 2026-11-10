@@ -723,6 +723,69 @@ test('a turn adds its price to the Work and to the peer rollup, and an unpriced 
   await store.close()
 })
 
+/** A turn as `turn.usage_recorded` records it, priced or not, at `ts`. */
+const usage = (costUsd: number | undefined, ts: string): AppendEvent =>
+  event(
+    'turn.usage_recorded',
+    'engineer-1',
+    {
+      peerId: 'engineer-1',
+      contextTokens: 1_000,
+      contextLimit: 200_000,
+      inputTokens: 100,
+      outputTokens: 10,
+      cachedTokens: 0,
+      toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+      ...(costUsd === undefined ? {} : { costUsd }),
+    },
+    ts,
+  )
+
+const SPEND_LOG: readonly AppendEvent[] = [
+  usage(1.5, '2026-10-30T09:00:00.000Z'),
+  // 01:00 on the 1st in UTC+2 is still October in UTC, which is the month the cap is kept in.
+  usage(0.25, '2026-11-01T01:00:00.000+02:00'),
+  usage(2, '2026-11-01T00:00:00.000Z'),
+  usage(undefined, '2026-11-10T10:00:00.000Z'),
+  usage(0.5, '2026-11-10T11:00:00.000Z'),
+]
+
+test("a month's spend is the sum of that month's turns in UTC, and an unpriced turn is counted as one", async () => {
+  const store = await open()
+  await store.append([...SPEND_LOG])
+  const reader = store.reader()
+
+  assert.deepEqual(await reader.tokens.month('2026-10'), { month: '2026-10', costUsd: 1.75, turns: 2, unpricedTurns: 0 })
+  assert.deepEqual(await reader.tokens.month('2026-11'), { month: '2026-11', costUsd: 2.5, turns: 3, unpricedTurns: 1 })
+  assert.deepEqual(
+    await reader.tokens.month('2026-12'),
+    { month: '2026-12', costUsd: 0, turns: 0, unpricedTurns: 0 },
+    'a month with no turns spent nothing, which is an answer, not a miss',
+  )
+
+  await store.rebuild()
+  assert.deepEqual(await reader.tokens.month('2026-11'), { month: '2026-11', costUsd: 2.5, turns: 3, unpricedTurns: 1 })
+  await store.close()
+})
+
+test("a store upgraded from schema 8 has this month's spend at once, not after its next rebuild", async () => {
+  const path = tempStorePath()
+  const before = await openSqliteStore({ path, clock: fixedClock })
+  await before.append([...SPEND_LOG])
+  await before.close()
+
+  // What a store written by the previous build looks like: the log, and no table.
+  const db = new DatabaseSync(path)
+  db.exec("DROP TABLE spend_by_month; UPDATE store_meta SET value = '8' WHERE key = 'schema_version';")
+  db.close()
+
+  const after = await openSqliteStore({ path, clock: fixedClock })
+  const reader = after.reader()
+  assert.deepEqual(await reader.tokens.month('2026-10'), { month: '2026-10', costUsd: 1.75, turns: 2, unpricedTurns: 0 })
+  assert.deepEqual(await reader.tokens.month('2026-11'), { month: '2026-11', costUsd: 2.5, turns: 3, unpricedTurns: 1 })
+  await after.close()
+})
+
 const standardsSet = (version: number, digest: string, ts = '2026-11-10T09:02:00.000Z'): AppendEvent =>
   event(
     'peer.standards_set',

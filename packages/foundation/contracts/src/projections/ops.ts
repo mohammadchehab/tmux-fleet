@@ -227,6 +227,31 @@ export const tokenReport = (): Schema<TokenReport> =>
     updatedAt: timestamp(),
   })
 
+/**
+ * The fleet's spend in one calendar month (UTC), across every peer (§6.2). The
+ * token report above is cumulative and never resets a period; a cap is monthly,
+ * so a pace against it needs the month's own sum (shared-fleet.md §3).
+ */
+export interface MonthSpend {
+  /** `YYYY-MM`, in UTC. */
+  readonly month: string
+  /** Summed from the turns that reported a price; see `TokenReport.costUsd`. */
+  readonly costUsd: number
+  readonly turns: number
+  /** Turns that reported no price, so `costUsd` is a floor rather than the bill when this is above 0. */
+  readonly unpricedTurns: number
+}
+
+export const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/
+
+export const monthSpend = (): Schema<MonthSpend> =>
+  objectAs<MonthSpend>()({
+    month: string({ pattern: MONTH_PATTERN }),
+    costUsd: number({ min: 0 }),
+    turns: count(),
+    unpricedTurns: count(),
+  })
+
 // ---------------------------------------------------------- judge questions
 
 /**
