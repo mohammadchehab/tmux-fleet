@@ -188,7 +188,10 @@ test('§10: a red head is never merged, and its Work stays short of `merged`', a
   t.after(() => sandbox.stop())
   await sandbox.call('up')
 
+  // `works` is non-empty by construction; indexing is `T | undefined` under
+  // `noUncheckedIndexedAccess`, and asserting beats a non-null assertion.
   const workId = works[0]
+  assert.ok(workId !== undefined)
   await sandbox.composed.append(workFloor(workId, 1))
 
   forge.open({ repo, number: 1, workId })

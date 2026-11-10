@@ -9,10 +9,10 @@
  *
  * There is one way out, and the fleet uses it: a body may append through the
  * **raw store** instead of the waking sink. Then its events are facts written
- * down, not wake-ups, and a trigger that names them is safe. `notify` and
- * `security-scan` are built that way in `compose.ts`; `pr-babysit` (in flight)
- * is the load-bearing case — it appends `pr.opened`, `pr.checks_changed`,
- * `pr.review_changed` and `pr.merged`, and wakes on all four.
+ * down, not wake-ups, and a trigger that names them is safe. `notify`,
+ * `security-scan` and `pr-babysit` are built that way in `compose.ts`;
+ * `pr-babysit` is the load-bearing case — it appends `pr.opened`,
+ * `pr.checks_changed`, `pr.review_changed` and `pr.merged`, and wakes on all four.
  *
  * So the invariant, for every routine body the build ships: **if a body appends
  * through the waking sink, the event types it can append and the event types its
@@ -82,6 +82,13 @@ const bodyEmits: Readonly<Partial<Record<RoutineKind, BodyEmissions>>> = {
   'security-scan': { types: ['finding.raised', 'finding.seen', 'scan.skipped'], wakes: false },
   // §6.1: the ledger records what the channel did.
   notify: { types: ['notify.sent', 'notify.failed', 'notify.withdrawn'], wakes: false },
+  // §6's third row: the poll writes down what the forge said. This is the body
+  // whose every append is a type its own trigger names, so it only holds because
+  // `compose.ts` hands it the raw store.
+  'pr-babysit': {
+    types: ['pr.opened', 'pr.checks_changed', 'pr.review_changed', 'pr.merged'],
+    wakes: false,
+  },
 }
 
 /** The types a routine's trigger is woken by; a schedule, a heartbeat or a start wakes nothing by type. */
@@ -106,13 +113,13 @@ test('no routine is woken by an event its own body appends (§6)', () => {
 
 /**
  * The table above is only a guard if no body can exist without a row in it. The
- * four phase 1 bodies are `installedFactories`; `notify` and `security-scan` are
- * factories `compose.ts` adds, because they need a channel and a tool set the
- * routines package may not know (§1.1). A third such body — `pr-babysit` is in
- * flight — is added to this list in the same change that adds its row.
+ * four phase 1 bodies are `installedFactories`; `notify`, `security-scan` and
+ * `pr-babysit` are factories `compose.ts` adds, because they need a channel, a
+ * tool set or a forge the routines package may not know (§1.1). A further such
+ * body is added to this list in the same change that adds its row.
  */
 test('every routine body this build ships has an emission set (§6)', () => {
-  const bodies = [...Object.keys(installedFactories), 'notify', 'security-scan'].sort()
+  const bodies = [...Object.keys(installedFactories), 'notify', 'security-scan', 'pr-babysit'].sort()
   assert.deepEqual(
     Object.keys(bodyEmits).sort(),
     bodies,
