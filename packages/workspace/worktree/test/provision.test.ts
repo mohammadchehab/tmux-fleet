@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, realpathSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -92,5 +92,50 @@ describe('createWorktreeProvisioner', () => {
 
     assert.equal(git(made.path, 'rev-parse', 'HEAD'), git(origin, 'rev-parse', 'main'))
     assert.notEqual(git(made.path, 'rev-parse', 'HEAD'), git(root, 'rev-parse', 'HEAD'))
+  })
+
+  it('leaves the shared checkout’s git status clean: a repo that does not ignore .claude/worktrees gets a local exclude', async () => {
+    const root = repo()
+    const provisioner = createWorktreeProvisioner()
+    await provisioner.ensure({ root, topic: 'peer-a', branch: 'peer/a' })
+    await provisioner.ensure({ root, topic: 'peer-b', branch: 'peer/b' })
+
+    // Without the exclude this is `?? .claude/`, and a careless `git add -A` commits two checkouts.
+    assert.equal(git(root, 'status', '--porcelain'), '')
+    const exclude = readFileSync(join(root, '.git/info/exclude'), 'utf8')
+    assert.equal(exclude.split('\n').filter((line) => line === '/.claude/worktrees/').length, 1, 'added once, not per peer')
+  })
+
+  it('does not touch the exclude file of a repo that already ignores the path, nor any tracked file', async () => {
+    const root = repo()
+    writeFileSync(join(root, '.gitignore'), '.claude/worktrees/\n')
+    git(root, 'add', '.gitignore')
+    git(root, 'commit', '-q', '-m', 'ignore worktrees')
+    const before = readFileSync(join(root, '.git/info/exclude'), 'utf8')
+
+    await createWorktreeProvisioner().ensure({ root, topic: 'peer-a', branch: 'peer/a' })
+
+    assert.equal(readFileSync(join(root, '.git/info/exclude'), 'utf8'), before)
+    assert.equal(git(root, 'status', '--porcelain'), '')
+  })
+
+  it('appends on its own line when the exclude file has no trailing newline, keeping what was there', async () => {
+    const root = repo()
+    writeFileSync(join(root, '.git/info/exclude'), '*.log')
+
+    await createWorktreeProvisioner().ensure({ root, topic: 'peer-a', branch: 'peer/a' })
+
+    assert.equal(readFileSync(join(root, '.git/info/exclude'), 'utf8'), '*.log\n/.claude/worktrees/\n')
+  })
+
+  it('repairs a checkout that already exists but was never excluded, on the idempotent path too', async () => {
+    const root = repo()
+    git(root, 'worktree', 'add', '-q', '-b', 'peer/a', join(root, '.claude/worktrees/peer-a'))
+    assert.match(git(root, 'status', '--porcelain'), /\.claude/)
+
+    const again = await createWorktreeProvisioner().ensure({ root, topic: 'peer-a', branch: 'peer/a' })
+
+    assert.equal(again.created, false)
+    assert.equal(git(root, 'status', '--porcelain'), '')
   })
 })
