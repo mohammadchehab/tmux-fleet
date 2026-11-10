@@ -260,7 +260,11 @@ export const record = <T>(valueSchema: Schema<T>): Schema<Readonly<Record<string
     }
     const out: Record<string, T> = {}
     for (const [key, entry] of Object.entries(value)) {
-      out[key] = valueSchema.decode(entry, path === '' ? key : `${path}.${key}`, issues, mode)
+      const decoded = valueSchema.decode(entry, path === '' ? key : `${path}.${key}`, issues, mode)
+      // Defined, not assigned: `out['__proto__'] = …` runs the prototype setter, which
+      // drops a primitive and replaces the prototype with an object. The result is
+      // still a plain object, so no caller sees a different shape (TASK-49).
+      Object.defineProperty(out, key, { value: decoded, writable: true, enumerable: true, configurable: true })
     }
     return out
   })
