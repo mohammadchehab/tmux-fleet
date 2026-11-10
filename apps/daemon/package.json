@@ -15,6 +15,7 @@
     "@fleet/foundation-core": "workspace:*",
     "@fleet/foundation-store": "workspace:*",
     "@fleet/orchestration-gate": "workspace:*",
+    "@fleet/orchestration-pm": "workspace:*",
     "@fleet/orchestration-routines": "workspace:*",
     "@fleet/runtime-mailbox": "workspace:*",
     "@fleet/runtime-provider-claude": "workspace:*",

@@ -27,6 +27,7 @@ import { systemClock, type Clock } from '@fleet/foundation-core'
 import type { ProjectManager, ProviderRegistry, PullRequests } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import { createGate } from '@fleet/orchestration-gate'
+import { createProjectManager } from '@fleet/orchestration-pm'
 import { createScheduler, type Scheduler } from '@fleet/orchestration-routines'
 import { createMailbox } from '@fleet/runtime-mailbox'
 import { ClaudeProvider } from '@fleet/runtime-provider-claude'
@@ -37,7 +38,6 @@ import { createExecutorRouter, type KindExecutor } from './executor.ts'
 import { persistentDirs, profilePaths, type PathRoots } from './paths.ts'
 import { loadProfile, type Profile } from './profile.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
-import { idlePm } from './pm.ts'
 import { createSupervisor, type Supervisor } from './sessions.ts'
 
 export interface Wiring {
@@ -55,7 +55,7 @@ export interface ComposeDeps {
   readonly clock?: Clock
   /** Defaults to the SQLite store `@fleet/foundation-store` ships; a test passes its own. */
   readonly openStore?: StoreFactory['open']
-  /** The PM that decides (§5.2). Defaults to `idlePm` until `orchestration/pm` lands. */
+  /** The PM that decides (§5.2). Defaults to `@fleet/orchestration-pm`'s own. */
   readonly pm?: ProjectManager
   /** `integrations/github`, the gate's §10 port. Absent means no `merge`/`retarget` executor. */
   readonly pullRequests?: PullRequests
@@ -100,7 +100,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   await store.migrate()
 
   const providers = deps.providers ?? buildProviders(profile)
-  const pm = deps.pm ?? idlePm
+  const pm = deps.pm ?? createProjectManager()
   const wiring: Wiring = { profile, store, providers, clock, pm }
 
   // The supervisor is the only thing that may hold a provider instance (§2), so
