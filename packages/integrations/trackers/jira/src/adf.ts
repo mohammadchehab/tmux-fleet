@@ -143,6 +143,28 @@ const tidy = (text: string): string =>
     .trim()
 
 /**
+ * Text as the ADF document API v3 wants it back: one `paragraph` per line.
+ *
+ * This is the narrow inverse of `adfToText`, and deliberately not a markdown
+ * parser. A note the fleet writes is prose — a phrase and a sentence or two —
+ * and the only structure ADF must be given is the structure prose has: lines.
+ * Reading the result with `adfToText` gives the input back, which is what makes
+ * `comment` able to recognise a note the ticket already carries.
+ *
+ * A blank line is not a paragraph: ADF has no empty `paragraph`, and an empty
+ * `text` node is rejected by Jira.
+ */
+export const textToAdf = (text: string): Node => ({
+  type: 'doc',
+  version: 1,
+  content: text
+    .split('\n')
+    .map((row) => row.trimEnd())
+    .filter((row) => row !== '')
+    .map((row) => ({ type: 'paragraph', content: [{ type: 'text', text: row }] })),
+})
+
+/**
  * An ADF document as text. A description that is already a string — which is
  * what Server / Data Center's API v2 returns, and what a hand-written fixture
  * may hold — is passed through tidied rather than refused.

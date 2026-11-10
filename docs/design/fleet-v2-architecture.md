@@ -387,6 +387,12 @@ The shared types (`SessionSpec`, `Turn`, `ProviderEvent`, `PermissionMode`, `Pro
 `blocked(reason)` and `cancelled`. Transitions are pure functions of events; the PM only appends the event that
 causes them.
 
+A peer reports progress with `fleet note <phase> <text>`, which appends `work.noted` — the four phases are a closed
+list, `plan | implement | mr | blocked`, and the Work is resolved from the peer's `assignee` rather than named by it
+(a peer does not choose what it works on). A note is recorded-only: it is mirrored to the board as a comment by
+`tracker-sync`, and it moves no state, because a peer that could append `work.blocked` would be walking the machine
+above. `blocked` is the one phase with a consequence — it raises the same `Decision` `unblock` would, one per Work.
+
 ### 5.2 The loop
 
 One tick runs on any event (not a timer poll) and on a heartbeat. Each tick is a pure function
@@ -400,6 +406,7 @@ One tick runs on any event (not a timer poll) and on a heartbeat. Each tick is a
 | track PR | PR event | update `Work`; when checks green on head SHA and review satisfied → `mergeable` |
 | merge | `mergeable` | PR gate (§10) merges; PM never merges itself |
 | unblock | peer `waiting_input` ∧ its own `Work` is `blocked` | route by `Work.blockedOn`: an answered `Decision` from the log if there is one, else the reviewer role for `peer`/`contract`, else a `Decision` row for the user — one per `Work`, never a Judge call |
+| note | `work.noted` with phase `blocked` | the same `Decision` row `unblock` raises for that Work, once — a note the fleet can act on is never answered by nobody |
 | idle | peer `idle` > N min, nothing assignable | mark capacity free; raise `no_work` to the user, once |
 | standup | schedule | render a report from projections; no model call |
 | stale | `Brief` older than a newer `Contract` version | supersede the brief, tell the peer (§12) |

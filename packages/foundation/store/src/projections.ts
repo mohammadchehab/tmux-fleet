@@ -2004,6 +2004,12 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     // came from is already merged — so it is read from `events` when someone asks
     // where a branch went.
     case 'branch.deleted':
+    // `work.noted` is a peer's structured progress note (§5.1). It moves no state:
+    // the board mirror is `tracker-sync` reacting to the event itself, and the one
+    // phase with a consequence — `blocked` — is a PM rule appending a Decision, not
+    // a column. A Work row holding "the latest note" would be a second answer to
+    // what the log already answers, so it is read from `events`.
+    case 'work.noted':
       return
   }
 

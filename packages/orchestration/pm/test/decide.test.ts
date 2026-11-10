@@ -859,3 +859,65 @@ test('a Work with no ticket says nothing about one', () => {
   if (assign?.kind !== 'assign') return
   assert.doesNotMatch(assign.brief.text, /Ticket:/)
 })
+
+// ------------------------------------------------------------------ blocked notes
+// §5.1: a peer's `work.noted` with phase `blocked` is the peer saying it cannot go on. `plan`,
+// `implement` and `mr` are progress and the PM does nothing with them; `blocked` raises the same
+// inbox row `work.blocked` would, because it is the same question about the same Work.
+
+/** An engineer working its own Work, and the note it just wrote. */
+const noted = (over: { phase?: string; body?: string; workId?: string } = {}) => ({
+  snapshot: state({
+    peers: [peer({ peerId: 'engineer-1' as never, state: 'working' })],
+    work: [work({ state: 'in_progress', assignee: 'engineer-1' as never })],
+  }),
+  note: event('work.noted', 'wrk_0000000000000001', {
+    workId: over.workId ?? 'wrk_0000000000000001',
+    peerId: 'engineer-1',
+    phase: over.phase ?? 'blocked',
+    body: over.body ?? 'the store has no way to replay a partial log',
+  }),
+})
+
+test('a blocked note becomes one question in the inbox, naming the peer and the words it used', () => {
+  const { snapshot, note } = noted()
+  const actions = decide({ state: snapshot, tick: tick(), event: note }).actions
+
+  const asked = only(actions, 'request_decision')
+  assert.equal(asked.decisionKind, 'blocked')
+  assert.equal(asked.decisionId, blockedDecisionId(snapshot.work[0]!), 'the same row `work.blocked` would raise')
+  assert.equal(asked.workId, snapshot.work[0]!.workId)
+  assert.deepEqual(asked.options, [])
+  assert.match(asked.question, /engineer-1 says it is blocked/)
+  assert.match(asked.question, /no way to replay a partial log/)
+  assert.deepEqual(asked.causedBy, [note.seq], 'the question cites the note that asked it')
+})
+
+test('a progress note is mirrored to the board and asks the user nothing', () => {
+  for (const phase of ['plan', 'implement', 'mr']) {
+    const { snapshot, note } = noted({ phase })
+    assert.deepEqual(decide({ state: snapshot, tick: tick(), event: note }).actions, [], `${phase} moves nothing`)
+  }
+})
+
+test('a blocked note does not open a second row for a Work the user already has a question about', () => {
+  const { snapshot, note } = noted()
+  const asked = only(decide({ state: snapshot, tick: tick(), event: note }).actions, 'request_decision')
+  const answered = state({
+    peers: snapshot.peers,
+    work: snapshot.work,
+    decisions: [decision({ decisionId: asked.decisionId, kind: 'blocked', workId: asked.workId })],
+  })
+
+  assert.deepEqual(decide({ state: answered, tick: tick(), event: note }).actions, [])
+})
+
+test('a heartbeat has no note to read, so a blocked note never asks twice from the clock alone', () => {
+  const { snapshot } = noted()
+  assert.deepEqual(decide({ state: snapshot, tick: tick() }).actions, [])
+})
+
+test('a note about a Work the fleet does not have is left in the log rather than guessed at', () => {
+  const { snapshot, note } = noted({ workId: 'wrk_00000000000000ff' })
+  assert.deepEqual(decide({ state: snapshot, tick: tick(), event: note }).actions, [])
+})

@@ -26,9 +26,11 @@
 import { fleetError, systemClock, type Clock } from '@fleet/foundation-core'
 import type { ExternalItem, Tracker, WorkState } from '@fleet/foundation-contracts'
 import { checkAuth, type JiraAuth } from './auth.ts'
+import { adfToText, textToAdf } from './adf.ts'
 import { createJiraClient, type FetchLike, type JiraClient, type JiraRequest } from './client.ts'
 import {
   browseUrl,
+  commentsFrom,
   isLastPage,
   issuesFrom,
   JIRA_FIELDS,
@@ -60,6 +62,14 @@ const DEFAULT_PAGE_SIZE = 100
 
 /** No board has this many pages of actionable cards; a pull that reaches it is looping, not reading. */
 const DEFAULT_MAX_PAGES = 50
+
+/**
+ * How many of an issue's newest comments `comment` reads to decide whether the
+ * note is already there. A note the fleet just wrote is the newest one, and a
+ * ticket that has gathered more than this since the last wake is a ticket with a
+ * conversation on it, where one repeated line is the smaller problem.
+ */
+const COMMENT_DEDUPE_WINDOW = 50
 
 const issuePath = (key: string, suffix = ''): string =>
   `/rest/api/3/issue/${encodeURIComponent(key)}${suffix}`
@@ -187,6 +197,31 @@ export const createJiraTracker = (options: JiraTrackerOptions): Tracker => {
       })
       if (answer === undefined) {
         throw fleetError('external_failed', `cannot link ${prUrl}: jira has no issue ${key}`, {
+          details: { key, url: browseUrl(options.baseUrl, key) },
+        })
+      }
+    },
+
+    async comment(key, body) {
+      // Jira has no `globalId` for a comment, so "already there" is decided by
+      // reading them back and comparing the text — the same flattening this
+      // package already does for a description. The read is the price of a
+      // second wake not doubling the note.
+      const existing = await client.json({
+        method: 'GET',
+        path: issuePath(key, '/comment'),
+        query: { maxResults: COMMENT_DEDUPE_WINDOW, orderBy: '-created' },
+      })
+      const carried = commentsFrom(existing).map((comment) => adfToText(comment))
+      if (carried.includes(body)) return
+
+      const answer = await client.optional({
+        method: 'POST',
+        path: issuePath(key, '/comment'),
+        body: { body: textToAdf(body) },
+      })
+      if (answer === undefined) {
+        throw fleetError('external_failed', `cannot comment on ${key}: jira has no issue ${key}`, {
           details: { key, url: browseUrl(options.baseUrl, key) },
         })
       }

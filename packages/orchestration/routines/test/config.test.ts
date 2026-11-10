@@ -40,6 +40,22 @@ describe('the defaults are all on', () => {
     assert.equal(heartbeat('reconcile'), 600_000)
   })
 
+  it('wakes dispatch on work.noted, so a blocked note is answered on the tick that carries it', () => {
+    const event = defaultTriggers.dispatch.find((trigger) => trigger.kind === 'event')
+    assert.ok(event?.kind === 'event')
+    // §5.1: the note is recorded-only — no projection keeps it — so the heartbeat that follows has
+    // the Work but not the words. `work.noted` is the only wake the blocked-note rule can have.
+    assert.ok(event.types.includes('work.noted'), `dispatch is woken by ${event.types.join(', ')}`)
+  })
+
+  it('wakes tracker-sync on work.noted, which is the only way a note reaches a card', () => {
+    const event = defaultTriggers['tracker-sync'].find((trigger) => trigger.kind === 'event')
+    assert.ok(event?.kind === 'event')
+    // A note is a sink event and not a heartbeat's business: the pull half of the
+    // routine asks the board what it has, and the board cannot tell it a note.
+    assert.ok(event.types.includes('work.noted'), `tracker-sync is woken by ${event.types.join(', ')}`)
+  })
+
   it('schedules the standup at 09:00', () => {
     const standup = defaultTriggers.standup.find((trigger) => trigger.kind === 'schedule')
     assert.equal(standup?.kind === 'schedule' ? standup.at : undefined, '09:00')

@@ -182,6 +182,24 @@ export interface Tracker {
 
   /** Point the ticket at the PR that implements it (§10). Idempotent: the same URL twice adds nothing. */
   link(key: string, prUrl: string): Promise<void>
+
+  /**
+   * Post a note on the ticket: how a peer's structured progress (`work.noted`,
+   * §5.1) reaches the board a human is reading.
+   *
+   * Idempotent on the body, the same way `link` is on the URL. `tracker-sync` is
+   * woken by an event and may see that event more than once — a re-run, a
+   * resumed session, a replayed log — and a card that collected one copy of a
+   * note per wake would be unreadable. So an adapter sends a body the ticket
+   * already carries nowhere, and treats "already there" as success rather than
+   * as a call it dodged.
+   *
+   * Unlike `transition`, this is sent even when the profile maps no state for
+   * the note: a note is not a column, and the fleet has no vocabulary to invent
+   * for it. The body arrives already rendered — the note's phase is part of the
+   * text — because a board that only understands prose cannot show a phase.
+   */
+  comment(key: string, body: string): Promise<void>
 }
 
 /**

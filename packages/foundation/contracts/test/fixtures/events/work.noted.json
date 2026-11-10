@@ -1,0 +1,16 @@
+{
+  "seq": 13,
+  "ts": "2026-11-10T09:13:00.000Z",
+  "type": "work.noted",
+  "subject": "wrk_7f3a91c2d84b0e56",
+  "actor": "peer:engineer-1",
+  "causedBy": [
+    12
+  ],
+  "data": {
+    "workId": "wrk_7f3a91c2d84b0e56",
+    "peerId": "engineer-1",
+    "phase": "implement",
+    "body": "The checks verdict is now pinned to the head sha; tests next."
+  }
+}

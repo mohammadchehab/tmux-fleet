@@ -265,6 +265,35 @@ describe('run: send', () => {
   })
 })
 
+describe('run: note', () => {
+  it('notes on the Work the caller holds, naming the peer from FLEET_PEER', async () => {
+    const { deps, out, calls } = harness(
+      { note: () => ({ workId: 'wrk_7f3a91c2d84b0e56', phase: 'implement' }) },
+      { env: { FLEET_PROFILE: 'squad', FLEET_PEER: 'engineer-1' } },
+    )
+    assert.equal(await run(argv('note', 'implement', 'the', 'checks', 'verdict', 'is', 'pinned'), deps), 0)
+    // A peer names no workId: the daemon reads it off the assignee (§5.1).
+    assert.deepEqual(calls, [
+      { method: 'note', params: { peerId: 'engineer-1', phase: 'implement', body: 'the checks verdict is pinned' } },
+    ])
+    assert.match(out[0] ?? '', /noted implement on wrk_7f3a91c2d84b0e56/)
+  })
+
+  it('refuses a phase outside the closed list, naming the four that exist', async () => {
+    const { deps, err, calls } = harness({}, { env: { FLEET_PROFILE: 'squad', FLEET_PEER: 'engineer-1' } })
+    assert.equal(await run(argv('note', 'done', 'finished it'), deps), 2)
+    assert.match(err[0] ?? '', /phase "done" is not one of plan, implement, mr, blocked/)
+    assert.deepEqual(calls, [])
+  })
+
+  it('refuses to guess whose note it is when the shell was not started by the fleet', async () => {
+    const { deps, err, calls } = harness({})
+    assert.equal(await run(argv('note', 'plan', 'read the design'), deps), 2)
+    assert.match(err[0] ?? '', /FLEET_PEER is not set/)
+    assert.deepEqual(calls, [])
+  })
+})
+
 describe('run: peek', () => {
   it('asks for the peer\'s last N messages when told to', async () => {
     const { deps, out, calls } = harness({ peek: () => ({ messages: [] }) })

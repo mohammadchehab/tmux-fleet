@@ -46,6 +46,7 @@ interface FakeTracker extends Tracker {
   readonly got: string[]
   readonly transitions: { key: string; to: string }[]
   readonly links: { key: string; url: string }[]
+  readonly comments: { key: string; body: string }[]
   /** Make `pull` throw, for a board the daemon could not reach. */
   failPull(): void
   /** Make the next write for one key throw, so a single card is refused. */
@@ -66,6 +67,7 @@ const fakeTracker = (items: readonly ExternalItem[] = []): FakeTracker => {
   const got: string[] = []
   const transitions: { key: string; to: string }[] = []
   const links: { key: string; url: string }[] = []
+  const comments: { key: string; body: string }[] = []
   const refused = new Set<string>()
   let pullFails = false
 
@@ -76,6 +78,7 @@ const fakeTracker = (items: readonly ExternalItem[] = []): FakeTracker => {
     got,
     transitions,
     links,
+    comments,
     failPull: () => {
       pullFails = true
     },
@@ -96,6 +99,10 @@ const fakeTracker = (items: readonly ExternalItem[] = []): FakeTracker => {
     link: async (key, url) => {
       if (refused.has(key)) throw new Error(`${key} is locked`)
       links.push({ key, url })
+    },
+    comment: async (key, body) => {
+      if (refused.has(key)) throw new Error(`${key} is locked`)
+      comments.push({ key, body })
     },
   }
 }
@@ -246,7 +253,7 @@ describe('the pull half: a heartbeat asks the board what it has', () => {
 })
 
 /**
- * The three events a sink can be woken by, as the log would hand them over:
+ * The events a sink can be woken by, as the log would hand them over:
  * decoded through the registry, so a test cannot state a payload the store
  * would have refused.
  */
@@ -261,6 +268,9 @@ const started = (target: Work, seq = 1): FleetEvent =>
 
 const reviewRequested = (target: Work, number: number, seq = 1): FleetEvent =>
   asLogged('work.review_requested', target.workId, { workId: target.workId, peerId: PEER, pr: { repo: REPO, number } }, seq)
+
+const noted = (target: Work, phase: string, body: string, seq = 1): FleetEvent =>
+  asLogged('work.noted', target.workId, { workId: target.workId, peerId: PEER, phase, body }, seq)
 
 const merged = (target: Work, number: number, headSha: string, seq = 1): FleetEvent =>
   asLogged(
@@ -303,6 +313,55 @@ describe('the sink half: a work event moves the one card it is about', () => {
 
     assert.deepEqual(tracker.transitions, [{ key: 'TASK-1', to: 'merged' }])
     assert.deepEqual(tracker.links, [])
+  })
+
+  it('work.noted comments on the card instead of moving it, and the phase is in the words', async () => {
+    const tracker = fakeTracker([item('TASK-1')])
+    const target = work('TASK-1')
+    const deps = depsOf(tracker, [target])
+
+    await sync(deps, contextOf(noted(target, 'implement', 'the checks verdict is pinned to the head sha')))
+
+    assert.deepEqual(tracker.pulled, [], 'a note is not a reason to read the board')
+    assert.deepEqual(tracker.transitions, [], 'a note is not a column')
+    assert.deepEqual(tracker.comments, [
+      { key: 'TASK-1', body: `${PEER} (implement): the checks verdict is pinned to the head sha` },
+    ])
+  })
+
+  it('a blocked note reaches the board as a comment and the PM as a question, not as a column', async () => {
+    const tracker = fakeTracker([item('TASK-1')])
+    const target = work('TASK-1')
+    const deps = depsOf(tracker, [target])
+
+    const outcome = await sync(deps, contextOf(noted(target, 'blocked', 'nothing can replay a partial log')))
+
+    assert.deepEqual(tracker.transitions, [])
+    assert.deepEqual(tracker.comments.map((comment) => comment.body), [
+      `${PEER} (blocked): nothing can replay a partial log`,
+    ])
+    assert.equal(outcome.actions, 1)
+    assert.equal(outcome.actionsFailed, 0)
+    const record = appended(deps.store, 'tracker.synced')[0]
+    assert.ok(record !== undefined && record.type === 'tracker.synced')
+    assert.equal(record.data.commented, 1)
+    assert.equal(record.data.transitioned, 0)
+  })
+
+  it('a card that refuses the note is counted like any other refused write', async () => {
+    const tracker = fakeTracker()
+    tracker.refuse('TASK-2')
+    const target = work('TASK-2')
+    const deps = depsOf(tracker, [target])
+
+    const outcome = await sync(deps, contextOf(noted(target, 'mr', 'opened #7')))
+
+    assert.equal(outcome.actions, 0)
+    assert.equal(outcome.actionsFailed, 1)
+    const record = appended(deps.store, 'tracker.synced')[0]
+    assert.ok(record !== undefined && record.type === 'tracker.synced')
+    assert.equal(record.data.commented, 0)
+    assert.match(String(record.data.error), /locked/)
   })
 
   it('a Work with no external is not a sink, and a Work the log does not hold moves nothing', async () => {

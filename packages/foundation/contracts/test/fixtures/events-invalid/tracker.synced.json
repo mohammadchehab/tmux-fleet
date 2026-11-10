@@ -9,14 +9,15 @@
       34
     ],
     "data": {
-      "system": "backlog",
+      "system": 42,
       "query": "To Do,In Progress",
-      "pulled": "not-a-number",
+      "pulled": 3,
       "proposed": 1,
       "transitioned": 2,
       "linked": 1,
+      "commented": 1,
       "failed": 0
     }
   },
-  "path": "data.pulled"
+  "path": "data.system"
 }

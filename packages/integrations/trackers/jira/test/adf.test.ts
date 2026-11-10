@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { adfToText } from '../src/adf.ts'
+import { adfToText, textToAdf } from '../src/adf.ts'
 
 const doc = (...content: readonly unknown[]) => ({ type: 'doc', version: 1, content })
 const paragraph = (...content: readonly unknown[]) => ({ type: 'paragraph', content })
@@ -89,5 +89,20 @@ describe('adfToText', () => {
 
   it('passes a plain string through, tidied', () => {
     assert.equal(adfToText('  Already\n\n\n\ntext  '), 'Already\n\ntext')
+  })
+})
+
+describe('textToAdf', () => {
+  it('makes one paragraph per line, dropping the blank ones ADF cannot hold', () => {
+    assert.deepEqual(textToAdf('plan: read it\n\nimplement: wrote it'), {
+      type: 'doc',
+      version: 1,
+      content: [paragraph(text('plan: read it')), paragraph(text('implement: wrote it'))],
+    })
+  })
+
+  it('reads back as the text it was given, which is how a comment is recognised as already there', () => {
+    const note = 'mr: https://github.com/acme/fleet/pull/7\nblocked: waiting on the contract'
+    assert.equal(adfToText(textToAdf(note)), note)
   })
 })
