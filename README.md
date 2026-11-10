@@ -46,7 +46,9 @@ pnpm fleet up me       # starts fleetd and registers the profile's peers
 `fleet up` accepts as written. Edit the one thing it cannot know — `repos`, one `owner/name` per repository — then
 `fleet up me`. Everything after that is a client of the daemon it started: `pnpm fleet ls`,
 `pnpm fleet send pm info "..."`, `pnpm fleet down`, and `pnpm fleet-view me` for the tmux view — one read-only pane
-per peer, redrawn from the same API; `pnpm fleet-view me --once` prints it without tmux.
+per peer, redrawn from the same API; `pnpm fleet-view me --once` prints it without tmux. `pnpm fleet-board me` serves a
+read-only web board of the Work items on `http://127.0.0.1:7777/`, re-read from the daemon on every request;
+`pnpm fleet-board me --once` prints the same page instead of listening.
 
 ## Tool policy
 

@@ -68,6 +68,8 @@ import { message } from './projections/mailbox.ts'
 import type { Message } from './projections/mailbox.ts'
 import { peer, peerCompactions } from './projections/peers.ts'
 import type { Peer, PeerCompactions } from './projections/peers.ts'
+import { work } from './projections/work.ts'
+import type { Work } from './projections/work.ts'
 import { turnKinds } from './provider.ts'
 import type { TurnKind } from './provider.ts'
 
@@ -92,6 +94,7 @@ export const daemonMethods = [
   'events.append',
   'evals',
   'replay',
+  'work',
 ] as const
 export type DaemonMethod = (typeof daemonMethods)[number]
 
@@ -365,6 +368,7 @@ export interface DaemonParams {
   readonly 'events.append': EventsAppendParams
   readonly evals: EvalsParams
   readonly replay: ReplayParams
+  readonly work: NoParams
 }
 
 export type DaemonParamsOf<M extends DaemonMethod> = DaemonParams[M]
@@ -383,6 +387,7 @@ const paramsSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonParamsOf
   'events.append': eventsAppendParams,
   evals: evalsParams,
   replay: replayParams,
+  work: noParams,
 }
 
 /** The schema for one method's params; what both the daemon and the CLI validate against. */
@@ -496,6 +501,26 @@ export const replayResult = (): Schema<ReplayResult> =>
     objectAs<ReplayWindow>()({ mode: literal('window'), events: array(fleetEvent()) }),
   ])
 
+/**
+ * `work`: every Work item, with the state the projection holds (§3, §5.1).
+ *
+ * The board's read. It is a list rather than a query because a fleet's board is
+ * small by construction — one squad's Work — and a filter here would be a second
+ * opinion about which items exist. Each row is the projection's own `Work`, so a
+ * client renders what the store knows instead of a shape invented for one caller
+ * (§2).
+ */
+export interface WorkResult {
+  readonly work: readonly Work[]
+}
+
+export const workResult = (): Schema<WorkResult> =>
+  objectAs<WorkResult>()({
+    // The same kind of bound every other list read carries: a projection past
+    // this is a fleet bug, not an answer worth putting on a socket.
+    work: array(work(), { maxItems: 2000 }),
+  })
+
 // ------------------------------------------------------------ results table
 
 /**
@@ -516,6 +541,7 @@ export interface DaemonResults {
   readonly 'events.append': EventsAppendResult
   readonly evals: EvalsResult
   readonly replay: ReplayResult
+  readonly work: WorkResult
 }
 
 export type DaemonResultOf<M extends DaemonMethod> = DaemonResults[M]
@@ -531,6 +557,7 @@ const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[
   'events.append': eventsAppendResult,
   evals: evalRunWithCases,
   replay: replayResult,
+  work: workResult,
 }
 
 /** The schema for one method's result. The exhaustive key type is what makes a new method a compile error. */
@@ -572,4 +599,10 @@ export interface DaemonApi {
    * would be a second writer on the same store.
    */
   replay(params: ReplayParams): Promise<ReplayResult>
+  /**
+   * Every Work item and the state the projection holds it in (§3, §5.1). The
+   * board's read, and the tmux view's next: a client that wants the board
+   * should not have to open the store or watch the log.
+   */
+  work(): Promise<WorkResult>
 }

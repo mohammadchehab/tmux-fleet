@@ -1,0 +1,20 @@
+{
+  "name": "@fleet/app-board",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "`fleet-board`: a read-only web board of the fleet's Work items, served from fleetd's local API (architecture §2, §3). Imports foundation and the daemon's socket only.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "fleet-board": "./src/main.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

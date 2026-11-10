@@ -25,9 +25,10 @@ import {
   type DecisionId,
   type PeerId,
   type SessionId,
+  type WorkId,
   type TurnId,
 } from '@fleet/foundation-core'
-import type { PeerSessionLease, Turn } from '@fleet/foundation-contracts'
+import type { AppendEvent, PeerSessionLease, Turn } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import { createMailbox } from '@fleet/runtime-mailbox'
 import type { Scheduler } from '@fleet/orchestration-routines'
@@ -194,6 +195,50 @@ test('ls reports the profile peers with the state the store knows', async () => 
   assert.equal(peers.find((peer) => peer.peerId === 'engineer-1')?.role, 'engineer')
   await daemon.down()
   assert.equal((await store.latestSeq()) > 0, true)
+})
+
+test('work reports every Work item in the state the projection holds, unfiltered', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+
+  const STACKED = 'wrk_7f3a91c2d84b0e56' as WorkId
+  const BOARD = 'wrk_2b3c4d5e6f708192' as WorkId
+  const proposed = (workId: WorkId, title: string): AppendEvent => ({
+    ts: '2026-11-10T09:00:00.000Z',
+    type: 'work.proposed',
+    subject: workId,
+    actor: 'user',
+    causedBy: [],
+    data: { workId, title, role: 'engineer', dependsOn: [] },
+  })
+  await store.append([
+    proposed(STACKED, 'Retarget stacked PRs before merging'),
+    proposed(BOARD, 'Say which phase the board is in'),
+  ])
+  await store.append([
+    {
+      ts: '2026-11-10T09:01:00.000Z',
+      type: 'work.ready',
+      subject: BOARD,
+      actor: 'pm',
+      causedBy: [],
+      data: { workId: BOARD, reason: 'nothing to wait for' },
+    },
+  ])
+
+  const { work } = await daemon.work()
+  // The projection's order is `created_at, work_id`; both were proposed at the same
+  // instant, so the id breaks the tie. The daemon adds no ordering of its own.
+  assert.deepEqual(
+    work.map((item) => [item.workId, item.state]),
+    [
+      ['wrk_2b3c4d5e6f708192', 'ready'],
+      ['wrk_7f3a91c2d84b0e56', 'proposed'],
+    ],
+    'the rows are the projection rows, in its order, each in its own state',
+  )
+  assert.equal(work[0]?.title, 'Say which phase the board is in')
+  await daemon.down()
 })
 
 test('send writes the message through the Mailbox, hands it to the peer, and peek reads it back', async () => {

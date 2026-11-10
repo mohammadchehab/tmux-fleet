@@ -84,6 +84,10 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
         cases: [],
       }
     },
+    async work() {
+      calls.push('work')
+      return { work: [] }
+    },
     async decide(input) {
       calls.push(`decide:${String(input.id)}:${input.decision}`)
       const answered: Decision = {
