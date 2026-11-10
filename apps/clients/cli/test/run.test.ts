@@ -575,6 +575,16 @@ describe('run: evals run', () => {
     assert.deepEqual((calls[0]?.params as { command: { args: string[] } }).command.args, ['--save-baseline'])
   })
 
+  it('files a --save-baseline run under its own build task, so a plain run of the same identity cannot dedupe it away (TASK-35)', async () => {
+    const plain = evals(await built(evalAnswer({ kind: 'pass', exitCode: 0 })))
+    assert.equal(await run(judge(), plain.deps), 0)
+    const saving = evals(await built(evalAnswer({ kind: 'saved', exitCode: 0 })))
+    assert.equal(await run(judge('--save-baseline'), saving.deps), 0)
+
+    const taskOf = (calls: readonly { params?: unknown }[]) => (calls[0]?.params as { task: string }).task
+    assert.notEqual(taskOf(saving.calls), taskOf(plain.calls), 'the ledger keys on (repo, sha, task)')
+  })
+
   it('sends the rows through events.append in the two batches the citation rule asks for', async () => {
     const { deps, calls } = evals(await built(evalAnswer({ kind: 'pass', exitCode: 0 })))
     assert.equal(await run(judge(), deps), 0)

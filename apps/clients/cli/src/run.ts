@@ -657,7 +657,12 @@ const execute = async (
       // §17 asks that an identical run never repeats, so the run is a build: the task
       // carries the whole identity, the ledger answers with the row it already has or
       // runs the suite once, and a rerun costs a read.
-      const task = evalBuildTask({ suite: command.suite, provider: command.provider, model: command.model })
+      const task = evalBuildTask({
+        suite: command.suite,
+        provider: command.provider,
+        model: command.model,
+        saveBaseline: command.saveBaseline,
+      })
       const evalsBin = deps.env?.['FLEET_EVALS_BIN']
       const requested: BuildsParams = {
         repo: asArgument(repoSchema(), command.repo, 'repo'),
