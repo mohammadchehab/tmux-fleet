@@ -11,9 +11,10 @@
  * **The secret is never carried.** gitleaks reports `Secret` and `Match`; both
  * go to the log if they ride along, and a leaked secret in an event store is
  * the same leak with a longer half-life. The finding carries the rule, the
- * path and gitleaks' description instead — which is exactly §6.2's fingerprint
- * rule (rule + location), and it dedupes the same secret re-committed at the
- * same place.
+ * path and gitleaks' description instead, plus the leak's commit and line as
+ * the snippet: §6.2's fingerprint is rule + path + snippet, so a re-run of the
+ * same leak dedupes while a different secret of the same rule in the same file
+ * is a finding of its own.
  *
  * `--exit-code 0` matches CI's reasoning: whether a finding blocks is the
  * fleet's decision, not each tool's own convention, so exit 1-with-a-report is
@@ -26,6 +27,17 @@ import { arrayOf, jsonOf, lineOf, recordOf, relativize, runTool, stringOf, type 
 /** A committed secret is high by default: gitleaks reports no severity of its own. */
 const SECRET_SEVERITY = 'high' as const
 
+/**
+ * Where a leak sits: gitleaks' own `Fingerprint` (`commit:file:rule:line`), else
+ * the commit and line it reports. Never `Secret` or `Match`.
+ */
+const locationOf = (leak: Record<string, unknown>, line: number | undefined): string | undefined => {
+  const own = stringOf(leak.Fingerprint)
+  if (own !== undefined) return own
+  const commit = stringOf(leak.Commit)
+  return commit === undefined && line === undefined ? undefined : `${commit ?? ''}:${line === undefined ? '' : String(line)}`
+}
+
 /** Parse gitleaks' JSON array. `Secret` and `Match` are deliberately not read. */
 export const parseGitleaks = (report: string, cwd = '.'): readonly RawFinding[] =>
   arrayOf(jsonOf(report, 'gitleaks')).flatMap((raw) => {
@@ -34,6 +46,7 @@ export const parseGitleaks = (report: string, cwd = '.'): readonly RawFinding[] 
     const ruleId = stringOf(leak.RuleID)
     if (path === undefined || ruleId === undefined) return []
     const line = lineOf(leak.StartLine)
+    const where = locationOf(leak, line)
     return [
       {
         ruleId,
@@ -43,6 +56,10 @@ export const parseGitleaks = (report: string, cwd = '.'): readonly RawFinding[] 
         // The rule id is what a reader acts on; the description names the rule's
         // kind ("Generic API Key"). Neither is the secret.
         message: stringOf(leak.Description) ?? ruleId,
+        // What tells two secrets of one rule in one file apart: the fleet's
+        // fingerprint is rule + path + this, and the description is the same for
+        // every hit of a rule. It is a place, never the secret.
+        ...(where === undefined ? {} : { snippet: where }),
       },
     ]
   })

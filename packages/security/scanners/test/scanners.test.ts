@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import type { Repo, Sha } from '@fleet/foundation-core'
-import type { ScanOutcome } from '@fleet/security-findings'
+import { fingerprintOf, type ScanOutcome } from '@fleet/security-findings'
 import {
   createGitleaksScanner,
   createOsvScanner,
@@ -194,7 +194,7 @@ test('gitleaks writes its report to the caller’s path and reads it back', asyn
     'origin/main..HEAD',
   ])
   assert.deepEqual(ok(outcome).findings, [
-    { ruleId: 'generic-api-key', severity: 'high', path: 'src/config.ts', line: 7, message: 'Identified a generic API key' },
+    { ruleId: 'generic-api-key', severity: 'high', path: 'src/config.ts', line: 7, message: 'Identified a generic API key', snippet: ':7' },
   ])
 })
 
@@ -221,6 +221,23 @@ test('the secret itself never becomes a finding', () => {
   assert.ok(!rendered.includes('AKIAIOSFODNN7EXAMPLE'), 'the secret must not ride into the event log')
   assert.ok(!rendered.includes('REDACTED'), 'nor the redacted match, which is noise in a finding')
   assert.equal(finding.message, 'Identified a generic API key')
+})
+
+test('two different secrets of one rule in one file are two findings, not one', () => {
+  const leak = (line: number, commit: string) => ({
+    RuleID: 'generic-api-key',
+    Description: 'Identified a generic API key',
+    File: 'src/config.ts',
+    StartLine: line,
+    Commit: commit,
+    Fingerprint: `${commit}:src/config.ts:generic-api-key:${String(line)}`,
+    Secret: 'REDACTED',
+  })
+  const found = parseGitleaks(JSON.stringify([leak(7, 'aaa111'), leak(20, 'aaa111'), leak(7, 'bbb222')]), cwd)
+  const fingerprints = found.map((finding) => fingerprintOf(finding))
+
+  assert.equal(new Set(fingerprints).size, 3, 'a later, different secret must not be deduped into the first')
+  assert.deepEqual(fingerprints, found.map((finding) => fingerprintOf(finding)), 'the same report fingerprints the same way')
 })
 
 // ------------------------------------------------------------------------ osv
