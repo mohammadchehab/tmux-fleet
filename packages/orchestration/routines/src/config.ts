@@ -45,7 +45,20 @@ export const defaultTriggers: Readonly<Record<RoutineKind, readonly Trigger[]>> 
     { kind: 'heartbeat', everyMs: 60_000 },
     {
       kind: 'event',
-      types: ['work.proposed', 'work.ready', 'work.merged', 'peer.registered', 'peer.state_changed', 'contract.published'],
+      types: [
+        'work.proposed',
+        'work.ready',
+        // `work.mergeable` is the moment §10's `merge` rule has something to do, and
+        // `work.merged` is the moment it no longer does. Without them the PM would
+        // only get to a green PR on the 60 s heartbeat — up to a minute of a Work
+        // sitting mergeable while nothing asks the gate, which is the wake §6 exists
+        // to avoid.
+        'work.mergeable',
+        'work.merged',
+        'peer.registered',
+        'peer.state_changed',
+        'contract.published',
+      ],
     },
   ],
   'keep-busy': [{ kind: 'event', types: ['peer.state_changed'] }],

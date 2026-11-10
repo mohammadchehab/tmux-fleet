@@ -21,7 +21,13 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { BranchHead, DaemonMethod, DaemonResponse } from '../../../packages/foundation/contracts/src/index.ts'
+import type {
+  BranchHead,
+  DaemonMethod,
+  DaemonResponse,
+  PullRequests,
+  RoutineKind,
+} from '../../../packages/foundation/contracts/src/index.ts'
 import { profilePaths, type ProfilePaths } from '../../../packages/foundation/core/src/index.ts'
 import { compose, type Composed } from '../../../apps/daemon/src/compose.ts'
 import { stateFilePathOf } from '../../../apps/daemon/src/sessions.ts'
@@ -73,6 +79,15 @@ export interface SandboxOptions {
   readonly securityIo?: ToolIo
   /** How the nightly scan names `main`'s head, so a test never fetches a remote (§9). */
   readonly branchHead?: BranchHead
+  /**
+   * The §6 routines to switch on. Everything not named stays off, so a test that
+   * turns `dispatch` on does not also get a heartbeat from a routine it never
+   * mentioned — the default is "off" here rather than §6's "on", because a timer
+   * firing mid-assertion says nothing about the lifecycle.
+   */
+  readonly routines?: readonly RoutineKind[]
+  /** §10's forge. Absent means the real `gh` port, which a CI runner does not have. */
+  readonly pullRequests?: PullRequests
 }
 
 /** An event as these tests read it: only the three fields any assertion here needs. */
@@ -107,6 +122,7 @@ const profileYaml = (
   repos: readonly string[],
   notify?: 'macos' | 'none',
   security?: readonly string[],
+  routines: readonly RoutineKind[] = [],
 ): string => {
   const lines = [`profile: ${name}`, 'repos:', ...repos.map((repo) => `  - ${repo}`), 'peers:']
   for (const peer of peers) {
@@ -121,6 +137,9 @@ const profileYaml = (
     // they stay off with the rest.
     if (kind === 'notify' && notify === 'macos') continue
     if (kind === 'security-scan' && security !== undefined) continue
+    // A routine a test asked for is named with no settings at all, so §6's defaults
+    // apply to it — including the heartbeat, which is what makes a poller poll.
+    if (routines.includes(kind as RoutineKind)) continue
     lines.push(`    ${kind}: { enabled: ${String(settings.enabled)} }`)
   }
   return `${lines.join('\n')}\n`
@@ -136,7 +155,11 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
   const paths = profilePaths(PROFILE_NAME, { home, configHome })
 
   await mkdir(join(configHome, 'fleet', 'profiles'), { recursive: true })
-  await writeFile(paths.profileFile, profileYaml(PROFILE_NAME, peers, repos, options.notify, options.security), 'utf8')
+  await writeFile(
+    paths.profileFile,
+    profileYaml(PROFILE_NAME, peers, repos, options.notify, options.security, options.routines),
+    'utf8',
+  )
 
   const scripted = createScriptedProvider({
     ...options.scripted,
@@ -150,6 +173,7 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
     ...(options.notifier === undefined ? {} : { notifier: options.notifier }),
     ...(options.securityIo === undefined ? {} : { securityIo: options.securityIo }),
     ...(options.branchHead === undefined ? {} : { branchHead: options.branchHead }),
+    ...(options.pullRequests === undefined ? {} : { pullRequests: options.pullRequests }),
   })
 
   const raw = (method: DaemonMethod, params?: unknown): Promise<DaemonResponse> =>
