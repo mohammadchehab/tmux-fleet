@@ -35,6 +35,9 @@ importers:
       '@fleet/foundation-store':
         specifier: workspace:*
         version: link:../../packages/foundation/store
+      '@fleet/integrations-github':
+        specifier: workspace:*
+        version: link:../../packages/integrations/github
       '@fleet/notify-core':
         specifier: workspace:*
         version: link:../../packages/notify/core
@@ -97,6 +100,15 @@ importers:
       '@fleet/foundation-core':
         specifier: workspace:*
         version: link:../core
+
+  packages/integrations/github:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../foundation/core
 
   packages/notify/channels/macos:
     dependencies:
