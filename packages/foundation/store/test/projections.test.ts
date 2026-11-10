@@ -733,6 +733,7 @@ const standardsSet = (version: number, digest: string, ts = '2026-11-10T09:02:00
       briefId: `brf_${String(version).padStart(16, '0')}`,
       digest,
       sources: [{ name: 'AGENTS.md', chars: 120, truncated: false, ref: 'abc1234' }],
+      skipped: [],
     },
     ts,
     'pm',

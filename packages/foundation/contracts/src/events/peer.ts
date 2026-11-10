@@ -54,7 +54,8 @@ export const peerRegistered = event(
  * is what makes them so. The bytes live in a content-addressed file named by
  * `digest` (a cache and an archive, never the truth), and `sources` records what
  * was read: how many characters, whether it was cut, and the commit it came from
- * — so a peer's rules can be audited, and a replay does not re-read a disk.
+ * — so a peer's rules can be audited, and a replay does not re-read a disk — and
+ * `skipped` what it was meant to read and could not.
  *
  * Not `brief.published`: that is a Work's brief and carries a `workId`, and a
  * standing brief belongs to a peer, not a Work.
@@ -78,6 +79,13 @@ export const peerStandardsSet = event(
       }),
       { maxItems: 40 },
     ),
+    /**
+     * What the peer was *meant* to carry and does not: a repo with no default
+     * branch to read `AGENTS.md` from, a file that is not on it. Recorded so the
+     * board can say "no repo standards loaded" instead of a peer quietly working
+     * without them.
+     */
+    skipped: array(object({ name: text(300), reason: text(300) }), { maxItems: 40 }),
   }),
 )
 

@@ -12,6 +12,9 @@
     "sources": [
       { "name": "Non-negotiables (docs/non-negotiables.md)", "chars": 812, "truncated": false },
       { "name": "AGENTS.md", "chars": 3401, "truncated": false, "ref": "8ec4641c2b1a7e9d0f3a5b6c7d8e9f0a1b2c3d4e" }
+    ],
+    "skipped": [
+      { "name": "CLAUDE.md", "reason": "not on origin/main at 8ec4641" }
     ]
   }
 }
