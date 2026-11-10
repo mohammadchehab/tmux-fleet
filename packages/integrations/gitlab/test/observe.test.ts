@@ -88,10 +88,15 @@ describe('reviewFrom: approvals, which is all GitLab reports', () => {
     assert.deepEqual(reviewFrom(approvals), { state: 'approved', reviewer: 'reviewer-1' })
   })
 
-  it('is approved from a non-empty approved_by even when the flag lags behind', () => {
+  it('is approved with no name when GitLab approves and cites nobody', () => {
+    assert.deepEqual(reviewFrom({ approved: true, approved_by: [] }), { state: 'approved' })
+  })
+
+  it('is pending when approved_by is populated but the flag is false — a project may require more than one', () => {
+    // One approval on a two-approval project arrives as `approved: false` beside a single entry. The list is who
+    // approved; only the flag says the project is satisfied, and the gate merges on that.
     assert.deepEqual(reviewFrom({ approved: false, approved_by: [{ user: { username: 'a' } }] }), {
-      state: 'approved',
-      reviewer: 'a',
+      state: 'pending',
     })
   })
 
