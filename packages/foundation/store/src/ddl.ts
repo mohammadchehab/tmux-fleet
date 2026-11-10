@@ -283,6 +283,25 @@ CREATE TABLE IF NOT EXISTS store_meta (
 `
 
 /**
+ * An event about an entity the log never opened: the event stays in `events`, but
+ * the projection had no row to write, and a silent drop would make a broken log
+ * look like a healthy one. Keyed `(event_seq, projection)` — one row per event per
+ * entity type — so a replay regenerates exactly the rows `append` recorded.
+ */
+const ANOMALIES = `
+CREATE TABLE IF NOT EXISTS projection_anomalies (
+  event_seq  INTEGER NOT NULL,
+  projection TEXT    NOT NULL,
+  event_type TEXT    NOT NULL,
+  subject    TEXT    NOT NULL,
+  detail     TEXT    NOT NULL,
+  at         TEXT    NOT NULL,
+  PRIMARY KEY (event_seq, projection)
+) STRICT;
+CREATE INDEX IF NOT EXISTS projection_anomalies_projection ON projection_anomalies (projection);
+`
+
+/**
  * Migrations, in order. A store records the highest applied version in
  * `store_meta` and applies everything above it; version 1 is the initial
  * schema (architecture §3).
@@ -292,6 +311,12 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 1,
     name: 'initial',
     statements: [EVENTS, PEERS, WORK, DELIVERY, OPS, MAILBOX, META],
+  },
+  {
+    // additive: a projection of the log's own misses, so an upgraded store needs no backfill
+    version: 2,
+    name: 'projection_anomalies',
+    statements: [ANOMALIES],
   },
 ]
 

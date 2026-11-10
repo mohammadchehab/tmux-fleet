@@ -62,7 +62,35 @@ export const PROJECTION_TABLES = [
   'findings',
   'token_report',
   'messages',
+  'projection_anomalies',
 ] as const
+
+/**
+ * An event about an entity the log never opened (§3, §5.4). `events` is append-only, so
+ * the event stays; the projection simply has no row to write. Dropping it silently would
+ * make a broken log look like a healthy one, so the miss becomes a row of its own, keyed
+ * `(event seq, projection)`: a replay regenerates exactly what `append` recorded.
+ *
+ * This does not throw — a hand-written test log would otherwise fail inside `append`,
+ * far from the assertion that explains it. `strictProjection` (the store's test mode) is
+ * where a miss becomes fatal.
+ */
+export const recordAnomaly = (db: Sqlite, event: FleetEvent, projection: string, detail: string): void => {
+  db.run(
+    `INSERT OR REPLACE INTO projection_anomalies (event_seq, projection, event_type, subject, detail, at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    event.seq,
+    projection,
+    event.type,
+    event.subject,
+    detail,
+    event.ts,
+  )
+}
+
+/** The one line every updater uses when its row is missing: the projection name, then the id. */
+const missing = (db: Sqlite, event: FleetEvent, projection: string, id: string): void =>
+  recordAnomaly(db, event, projection, `no ${projection} row for ${id}`)
 
 export const clearProjections = (db: Sqlite): void => {
   for (const table of PROJECTION_TABLES) db.run(`DELETE FROM ${table}`)
@@ -171,10 +199,13 @@ const writePeer = (db: Sqlite, peer: Peer): void =>
  * That cannot happen in a store replayed from seq 1; it is tolerated so a
  * hand-written test log fails visibly at the assertion, not inside `append`.
  */
-const updatePeer = (db: Sqlite, peerId: string, patch: Partial<Peer>, ts: string): Peer | undefined => {
+const updatePeer = (db: Sqlite, peerId: string, patch: Partial<Peer>, event: FleetEvent): Peer | undefined => {
   const current = peerById(db, peerId)
-  if (current === undefined) return undefined
-  const next = parse(PROJECTION_SCHEMAS.peer, { ...current, ...patch, updatedAt: ts })
+  if (current === undefined) {
+    missing(db, event, 'peer', peerId)
+    return undefined
+  }
+  const next = parse(PROJECTION_SCHEMAS.peer, { ...current, ...patch, updatedAt: event.ts })
   writePeer(db, next)
   return next
 }
@@ -263,10 +294,13 @@ const writeWork = (db: Sqlite, work: Work): void => {
 const workById = (db: Sqlite, workId: string): Work | undefined =>
   rowOf(db, PROJECTION_SCHEMAS.work, 'work', 'work_id', workId)
 
-const updateWork = (db: Sqlite, workId: string, patch: Partial<Work>, ts: string): void => {
+const updateWork = (db: Sqlite, workId: string, patch: Partial<Work>, event: FleetEvent): void => {
   const current = workById(db, workId)
-  if (current === undefined) return
-  writeWork(db, parse(PROJECTION_SCHEMAS.work, { ...current, ...patch, updatedAt: ts }))
+  if (current === undefined) {
+    missing(db, event, 'work', workId)
+    return
+  }
+  writeWork(db, parse(PROJECTION_SCHEMAS.work, { ...current, ...patch, updatedAt: event.ts }))
 }
 
 /** Add a PR to a Work without duplicating one already recorded. */
@@ -275,10 +309,13 @@ const withPr = (current: Work, pr: PullRequestRef): Work['prs'] =>
     ? current.prs
     : [...current.prs, { repo: pr.repo, number: pr.number }]
 
-const attachPr = (db: Sqlite, workId: string, pr: PullRequestRef, ts: string): void => {
+const attachPr = (db: Sqlite, workId: string, pr: PullRequestRef, event: FleetEvent): void => {
   const current = workById(db, workId)
-  if (current === undefined) return
-  updateWork(db, workId, { prs: withPr(current, pr) }, ts)
+  if (current === undefined) {
+    missing(db, event, 'work', workId)
+    return
+  }
+  updateWork(db, workId, { prs: withPr(current, pr) }, event)
 }
 
 // ---------------------------------------------------------- contracts & briefs
@@ -356,11 +393,14 @@ const updatePullRequest = (
   repo: string,
   number: number,
   patch: Partial<PullRequest>,
-  ts: string,
+  event: FleetEvent,
 ): void => {
   const current = pullRequestById(db, repo, number)
-  if (current === undefined) return
-  writePullRequest(db, parse(PROJECTION_SCHEMAS.pullRequest, { ...current, ...patch, updatedAt: ts }))
+  if (current === undefined) {
+    missing(db, event, 'pull request', `${repo}#${number}`)
+    return
+  }
+  writePullRequest(db, parse(PROJECTION_SCHEMAS.pullRequest, { ...current, ...patch, updatedAt: event.ts }))
 }
 
 const writeBuild = (db: Sqlite, build: Build): void =>
@@ -481,9 +521,12 @@ export const messageById = (db: Sqlite, msgId: string): Message | undefined => {
   return row === undefined ? undefined : messageFromRow(row)
 }
 
-const updateMessage = (db: Sqlite, msgId: string, patch: Partial<Message>): void => {
+const updateMessage = (db: Sqlite, msgId: string, patch: Partial<Message>, event: FleetEvent): void => {
   const current = messageById(db, msgId)
-  if (current === undefined) return
+  if (current === undefined) {
+    missing(db, event, 'message', msgId)
+    return
+  }
   const next = parse(PROJECTION_SCHEMAS.message, { ...current, ...patch })
   writeRow(
     db,
@@ -597,9 +640,12 @@ const writeRoutine = (db: Sqlite, routine: Routine): void =>
     ['routine_id'],
   )
 
-const updateRoutine = (db: Sqlite, routineId: string, patch: Partial<Routine>): void => {
+const updateRoutine = (db: Sqlite, routineId: string, patch: Partial<Routine>, event: FleetEvent): void => {
   const current = routineById(db, routineId)
-  if (current === undefined) return
+  if (current === undefined) {
+    missing(db, event, 'routine', routineId)
+    return
+  }
   writeRoutine(db, parse(PROJECTION_SCHEMAS.routine, { ...current, ...patch }))
 }
 
@@ -868,7 +914,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     }
     case 'peer.state_changed': {
       const { peerId, state, sessionId } = event.data
-      updatePeer(db, peerId, sessionId === undefined ? { state } : { state, currentSessionId: sessionId }, ts)
+      updatePeer(db, peerId, sessionId === undefined ? { state } : { state, currentSessionId: sessionId }, event)
       return
     }
     case 'peer.failed': {
@@ -885,7 +931,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
         db,
         peerId,
         sessionId === undefined ? { state: 'failed' } : { state: 'failed', currentSessionId: sessionId },
-        ts,
+        event,
       )
       // §6.1 `failure`: a crash, a session that will not resume, a config mismatch.
       raiseNotification(db, notificationKeyOf('failure', peerId, reason), 'failure', ts)
@@ -906,7 +952,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
           startedAt: ts,
         }),
       )
-      updatePeer(db, peerId, { currentSessionId: sessionId }, ts)
+      updatePeer(db, peerId, { currentSessionId: sessionId }, event)
       return
     }
     case 'session.ended': {
@@ -920,7 +966,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
         )
       }
       const peer = peerById(db, peerId)
-      if (peer?.currentSessionId === sessionId) updatePeer(db, peerId, { currentSessionId: undefined }, ts)
+      if (peer?.currentSessionId === sessionId) updatePeer(db, peerId, { currentSessionId: undefined }, event)
       return
     }
     case 'provider.errored': {
@@ -951,23 +997,26 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
     case 'work.contract_needed':
-      updateWork(db, event.data.workId, { state: 'needs_contract', contractId: event.data.contractId }, ts)
+      updateWork(db, event.data.workId, { state: 'needs_contract', contractId: event.data.contractId }, event)
       return
     case 'work.ready':
-      updateWork(db, event.data.workId, { state: 'ready' }, ts)
+      updateWork(db, event.data.workId, { state: 'ready' }, event)
       return
     case 'work.assigned': {
       const { workId, peerId, briefId, briefVersion } = event.data
-      updateWork(db, workId, { state: 'assigned', assignee: peerId, briefId, briefVersion }, ts)
+      updateWork(db, workId, { state: 'assigned', assignee: peerId, briefId, briefVersion }, event)
       return
     }
     case 'work.started':
-      updateWork(db, event.data.workId, { state: 'in_progress', assignee: event.data.peerId }, ts)
+      updateWork(db, event.data.workId, { state: 'in_progress', assignee: event.data.peerId }, event)
       return
     case 'work.review_requested': {
       const { workId, pr } = event.data
       const current = workById(db, workId)
-      if (current === undefined) return
+      if (current === undefined) {
+        missing(db, event, 'work', workId)
+        return
+      }
       writeWork(
         db,
         parse(PROJECTION_SCHEMAS.work, {
@@ -984,7 +1033,10 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       const { workId, pr } = event.data
       const state = event.type === 'work.mergeable' ? 'mergeable' : 'merged'
       const current = workById(db, workId)
-      if (current === undefined) return
+      if (current === undefined) {
+        missing(db, event, 'work', workId)
+        return
+      }
       writeWork(
         db,
         parse(PROJECTION_SCHEMAS.work, { ...current, state, prs: withPr(current, pr), updatedAt: ts }),
@@ -992,18 +1044,18 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
     case 'work.cleaned':
-      updateWork(db, event.data.workId, { state: 'cleaned' }, ts)
+      updateWork(db, event.data.workId, { state: 'cleaned' }, event)
       return
     case 'work.blocked':
       updateWork(
         db,
         event.data.workId,
         { state: 'blocked', blockedReason: event.data.reason, blockedOn: event.data.blockedOn },
-        ts,
+        event,
       )
       return
     case 'work.cancelled':
-      updateWork(db, event.data.workId, { state: 'cancelled', blockedReason: event.data.reason }, ts)
+      updateWork(db, event.data.workId, { state: 'cancelled', blockedReason: event.data.reason }, event)
       return
 
     // --------------------------------------------- contracts, briefs, delivery
@@ -1051,16 +1103,19 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
         ['brief_id'],
       )
       // The peer's context now carries this version; the Mailbox compares against it (§7).
-      updatePeer(db, peerId, { briefVersion: version }, ts)
+      updatePeer(db, peerId, { briefVersion: version }, event)
       // And the Work's current brief moves with it, so the `stale` rule (§5.2) compares against the brief
       // actually published, not the one `work.assigned` first named. A no-op for a Work that does not exist.
-      updateWork(db, workId, { briefId, briefVersion: version }, ts)
+      updateWork(db, workId, { briefId, briefVersion: version }, event)
       return
     }
     case 'brief.superseded': {
       const { briefId, supersededBy } = event.data
       const current = briefById(db, briefId)
-      if (current === undefined) return
+      if (current === undefined) {
+        missing(db, event, 'brief', briefId)
+        return
+      }
       const next = parse(PROJECTION_SCHEMAS.brief, { ...current, supersededBy })
       writeRow(
         db,
@@ -1091,34 +1146,34 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
           updatedAt: ts,
         }),
       )
-      if (workId !== undefined) attachPr(db, workId, pr, ts)
+      if (workId !== undefined) attachPr(db, workId, pr, event)
       return
     }
     case 'pr.checks_changed': {
       const { pr, headSha, state, failing } = event.data
-      updatePullRequest(db, pr.repo, pr.number, { headSha, checks: state, failingChecks: failing }, ts)
+      updatePullRequest(db, pr.repo, pr.number, { headSha, checks: state, failingChecks: failing }, event)
       return
     }
     case 'pr.review_changed': {
       const { pr, headSha, state } = event.data
-      updatePullRequest(db, pr.repo, pr.number, { headSha, review: state }, ts)
+      updatePullRequest(db, pr.repo, pr.number, { headSha, review: state }, event)
       return
     }
     case 'pr.merged': {
       const { pr, headSha } = event.data
-      updatePullRequest(db, pr.repo, pr.number, { headSha, merged: true }, ts)
+      updatePullRequest(db, pr.repo, pr.number, { headSha, merged: true }, event)
       return
     }
     case 'pr.retargeted': {
       const { pr, toBase } = event.data
-      updatePullRequest(db, pr.repo, pr.number, { base: toBase }, ts)
+      updatePullRequest(db, pr.repo, pr.number, { base: toBase }, event)
       return
     }
     case 'ci.failed_final': {
       const { pr, headSha, check } = event.data
       const current = pullRequestById(db, pr.repo, pr.number)
       const failing = current?.failingChecks.includes(check) === true ? current.failingChecks : [...(current?.failingChecks ?? []), check]
-      updatePullRequest(db, pr.repo, pr.number, { headSha, checks: 'failing', failingChecks: failing }, ts)
+      updatePullRequest(db, pr.repo, pr.number, { headSha, checks: 'failing', failingChecks: failing }, event)
       raiseNotification(db, notificationKeyOf('failure', `${pr.repo}#${pr.number}`, check), 'failure', ts)
       return
     }
@@ -1143,7 +1198,10 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       const current = buildById(db, buildId)
       // The ledger is keyed on `(repo, sha, task)` and the request carries them;
       // a finish with no request in the log has nothing to complete.
-      if (current === undefined) return
+      if (current === undefined) {
+        missing(db, event, 'build', buildId)
+        return
+      }
       writeBuild(
         db,
         parse(PROJECTION_SCHEMAS.build, {
@@ -1204,16 +1262,16 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
     case 'message.delivered':
-      updateMessage(db, event.data.msgId, { state: 'delivered', deliveredAt: ts })
+      updateMessage(db, event.data.msgId, { state: 'delivered', deliveredAt: ts }, event)
       return
     case 'message.acked':
-      updateMessage(db, event.data.msgId, { state: 'acked', ackedAt: ts })
+      updateMessage(db, event.data.msgId, { state: 'acked', ackedAt: ts }, event)
       return
     case 'message.rejected':
       updateMessage(db, event.data.msgId, {
         state: 'rejected',
         currentBriefVersion: event.data.currentBriefVersion,
-      })
+      }, event)
       return
 
     // ------------------------------------------------- routines and worktrees
@@ -1235,7 +1293,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
     case 'routine.finished':
-      updateRoutine(db, event.data.routineId, { state: 'finished', lastRunAt: ts })
+      updateRoutine(db, event.data.routineId, { state: 'finished', lastRunAt: ts }, event)
       return
     case 'routine.failed': {
       const routineId = event.data.routineId
@@ -1244,7 +1302,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
         state: 'failed',
         lastRunAt: ts,
         failures: (current?.failures ?? 0) + 1,
-      })
+      }, event)
       return
     }
     case 'worktree.created': {
@@ -1270,7 +1328,10 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     case 'worktree.classified': {
       const { worktreeId, class: worktreeClass, dirty, unpushed, holders } = event.data
       const current = worktreeById(db, worktreeId)
-      if (current === undefined) return
+      if (current === undefined) {
+        missing(db, event, 'worktree', worktreeId)
+        return
+      }
       writeWorktree(
         db,
         parse(PROJECTION_SCHEMAS.worktree, {
@@ -1447,14 +1508,20 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     case 'finding.seen': {
       const { findingId, sha } = event.data
       const current = findingById(db, findingId)
-      if (current === undefined) return
+      if (current === undefined) {
+        missing(db, event, 'finding', findingId)
+        return
+      }
       writeFinding(db, parse(PROJECTION_SCHEMAS.finding, { ...current, sha, seenCount: current.seenCount + 1 }))
       return
     }
     case 'finding.verdict_given': {
       const { findingId, verdict, reason, by } = event.data
       const current = findingById(db, findingId)
-      if (current === undefined) return
+      if (current === undefined) {
+        missing(db, event, 'finding', findingId)
+        return
+      }
       writeFinding(
         db,
         parse(PROJECTION_SCHEMAS.finding, {
@@ -1470,7 +1537,10 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     case 'finding.routed': {
       const { findingId, workId, decisionId } = event.data
       const current = findingById(db, findingId)
-      if (current === undefined) return
+      if (current === undefined) {
+        missing(db, event, 'finding', findingId)
+        return
+      }
       writeFinding(db, parse(PROJECTION_SCHEMAS.finding, { ...current, workId, decisionId }))
       return
     }
