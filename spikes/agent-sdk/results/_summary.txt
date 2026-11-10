@@ -1,0 +1,41 @@
+Exit status of every captured probe run
+========================================
+Each probe prints exactly one "PROBE_RESULT <json>" line on stdout; run.sh recorded the process exit code
+and appended the line to <provider>-evidence.jsonl. All probes below completed with exit 0 — no watchdog
+(PROBE_WATCHDOG_MS, 90 s) and no hard stop (45 s) fired in the final runs.
+
+provider   probe            exit   PROBE_RESULT   notes
+--------------------------------------------------------------------------------
+claude     events             0    1
+claude     usage              0    1             getContextUsage full + summary, modelUsage
+claude     question           0    1             canUseTool(AskUserQuestion) at 1 988 ms
+claude     permission         0    1             default deny, setPermissionMode results, bypass session
+claude     interrupt          0    1             interrupt at 5 009 ms, aborted turn ends is_error
+claude     model              0    1
+claude     switch             0    1             sonnet-5-5 -> haiku-4-5
+claude     structured         0    1
+claude     compaction         0    1             pre 15 492 / post 4 476
+claude     resume-write       0    1
+claude     resume-read        0    1             PURPLE-OTTER-4417 recalled in a second process
+deepinfra  events             0    1
+deepinfra  usage              0    1
+deepinfra  question           0    1             canUseTool(AskUserQuestion) at 2 916 ms
+deepinfra  permission         0    1
+deepinfra  interrupt          0    1             interrupt at 5 010 ms
+deepinfra  model              0    1
+deepinfra  switch             0    1             no-op switch to the same model (both turns identical)
+deepinfra  switch-v32         0    1             V4.1-Flash-1017 -> DeepSeek-V3.2, real switch
+deepinfra  structured         0    1
+deepinfra  compaction         0    1             pre 7 718 / post 3 636
+deepinfra  resume-write       0    1
+deepinfra  resume-read        0    1             PURPLE-OTTER-4417 recalled in a second process
+
+claude     env-inheritance    -    (none)         deliberate failure reproduction: no PROBE_RESULT by design,
+                                                  it shows a "claude" session that ran DeepSeek because
+                                                  options.env forwarded ANTHROPIC_BASE_URL from the parent.
+cli        stream-json        -    (none)         condensed raw `claude -p --output-format stream-json` run,
+                                                  used only for the §7 fallback comparison.
+
+Aborted/retried during development and not kept in results/: an early interrupt probe that hung because the
+async iterator stays open after interrupt() (600 s, killed — the fix is the bounded timers now in probe.mjs),
+and two ad-hoc scripts that forgot to strip the parent environment and silently ran DeepInfra.

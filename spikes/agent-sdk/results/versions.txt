@@ -1,0 +1,33 @@
+Agent SDK spike — environment for the captured run in results/
+================================================================
+
+@anthropic-ai/claude-agent-sdk   0.3.322
+claude CLI (spawned by the SDK)  2.1.285 (Claude Code)
+node                             v26.11.0
+platform                         Darwin arm64 (macOS)
+
+Providers
+---------
+claude
+  model            claude-sonnet-5-5 (default), switched to claude-haiku-4-5-20251001 in the switch probe
+  auth             inherited Claude Code login, apiKeySource: 'none' (keychain OAuth)
+  context window   1000000 (reported by the SDK and correct)
+  endpoint         first party (ANTHROPIC_BASE_URL unset)
+
+deepinfra
+  ANTHROPIC_BASE_URL        https://api.deepinfra.com/anthropic
+  ANTHROPIC_AUTH_TOKEN      from ~/.config/deepinfra/key
+  ANTHROPIC_MODEL           deepseek-ai/DeepSeek-V4.1-Flash-1017
+  ANTHROPIC_SMALL_FAST_MODEL same
+  switched to               deepseek-ai/DeepSeek-V3.2 in the switch probe
+  context window            200000 reported by the CLI / 1048576 actual (see deepinfra-context-window.txt)
+  pricing                   $0.20 in / $0.60 out / $0.006 cache read per 1M tokens
+
+SDK options used throughout
+---------------------------
+  settingSources: []                 no user/project settings, hooks or plugins
+  permissionMode: 'default'          except the permission probe's bypass case
+  env: built from scratch            every inherited ANTHROPIC_*, CLAUDE_CODE_*, CLAUDECODE,
+                                     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE stripped
+  prompt: AsyncIterable<SDKUserMessage>   streaming input required for multi-turn, setModel,
+                                     setPermissionMode and getContextUsage
