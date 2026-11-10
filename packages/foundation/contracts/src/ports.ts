@@ -68,6 +68,25 @@ export interface PullRequests {
 }
 
 /**
+ * A branch head, read from a checkout (§6.2's nightly scan). The fleet must name
+ * the commit it is about to scan before it scans it, and no projection holds
+ * that: the store records what the fleet *observed*, and nobody has observed
+ * `main`'s head on a quiet night. So it is a port — implemented by
+ * `@fleet/workspace-worktree` over `git` and injected by `apps/daemon` — and
+ * `ReadModel` stays projections-only.
+ */
+export interface BranchHead {
+  /**
+   * The commit `origin/<branch>` points at in `cwd`, after asking the remote, or
+   * `undefined` when the ref cannot be read (no such branch, not a repository,
+   * `git` unreachable). An unknown head is a recorded skip, never a guess:
+   * scanning a stale `origin/main` and calling it tonight's `main` would be the
+   * one lie a security scan must not tell.
+   */
+  head(cwd: string, branch: string): Promise<Sha | undefined>
+}
+
+/**
  * The providers that exist, by id. `supervisor` and `reconcile` resolve a
  * peer's provider through this; nothing else holds a provider instance (§2).
  *

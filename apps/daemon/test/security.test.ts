@@ -16,12 +16,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import type { Clock, Repo, Sha, WorktreeId } from '@fleet/foundation-core'
-import { appendIssues, type AppendEvent, type FleetEvent } from '@fleet/foundation-contracts'
+import { appendIssues, type AppendEvent, type BranchHead, type FleetEvent } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import type { RoutineContext } from '@fleet/orchestration-routines'
 import type { ScanRequest } from '@fleet/security-findings'
 import type { ScannerId, ToolIo } from '@fleet/security-scanners'
-import { createSecurityScanFactory, securityScanned, targetsOf } from '../src/security.ts'
+import { createSecurityScanFactory, prTargetsOf, scanTargets, securityScanned } from '../src/security.ts'
 
 const repo = 'acme/fleet' as Repo
 const sha = 'a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0' as Sha
@@ -121,6 +121,17 @@ const semgrepReport = (): string =>
   })
 
 const events = async (store: EventStore): Promise<readonly FleetEvent[]> => store.read(0, 500)
+
+/** A `FleetEvent` as the append that produced it: the store's `seq` is not the caller's to pass. */
+const withoutSeq = (event: FleetEvent): AppendEvent => {
+  const { seq, ...appendable } = event
+  return appendable as AppendEvent
+}
+
+/** A `BranchHead` that answers from a map of checkout path to sha — no git, no remote, no network. */
+const headOf = (heads: Readonly<Record<string, string>>): BranchHead => ({
+  head: async (cwd) => heads[cwd] as Sha | undefined,
+})
 
 const findingsOf = async (store: EventStore) => (await store.reader()).findings.all()
 
@@ -270,13 +281,13 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
     await store.close()
   })
 
-  it('a scheduled tick scans nothing rather than guessing a target, and appends nothing', async () => {
+  it('a scheduled tick with no nightly wiring scans nothing rather than guessing a target', async () => {
     const store = await open()
     await store.append([worktreeCreated])
 
-    // The nightly path has no head-sha source yet (§6.2's other trigger). Until
-    // it does, a tick is a no-op — and this test is the record of that, so no
-    // future change can make a schedule silently scan `main`'s guess.
+    // A profile that never wired checkouts to scan gets no nightly target. The
+    // schedule must not be read as "scan whatever checkout happens to exist" —
+    // that is the guess this test forbids.
     const outcome = await securityScanned(
       {
         store: { append: (batch) => store.append(batch) },
@@ -298,19 +309,110 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
     await store.close()
   })
 
-  it('only a pr.opened event is a target, and it is scanned at its head SHA', () => {
-    const opened = targetsOf({
+  it('a nightly tick scans main at the head the checkout names, full scope', async () => {
+    const store = await open()
+    await store.append([worktreeCreated])
+
+    const outcome = await securityScanned(
+      {
+        store: { append: (batch) => store.append(batch) },
+        io: fakeIo({ stdout: { semgrep: semgrepReport() } }),
+        scanners: ['semgrep'],
+        reportPath,
+        read: store.reader(),
+        nightly: { repos: [repo], branch: 'main', head: headOf({ [checkout]: sha }) },
+      },
+      context(),
+    )
+
+    const raised = (await events(store)).filter((event) => event.type === 'finding.raised')
+    assert.equal(raised.length, 1)
+    assert.equal(outcome.actions, 1)
+    assert.equal(outcome.actionsFailed, 0)
+    // Nightly scans the whole tree, unlike a PR's diff: the point is everything
+    // that is on main tonight, not only what tonight's PR touched.
+    assert.equal(raised[0]?.data.sha, sha)
+    await store.close()
+  })
+
+  it('a nightly repo with no resolvable head is a recorded skip with no sha, and a failed action', async () => {
+    const store = await open()
+    await store.append([worktreeCreated])
+
+    const outcome = await securityScanned(
+      {
+        store: { append: (batch) => store.append(batch) },
+        io: fakeIo({ stdout: { semgrep: semgrepReport() } }),
+        scanners: ['semgrep'],
+        reportPath,
+        read: store.reader(),
+        // The checkout exists, but git cannot name a head for it.
+        nightly: { repos: [repo], branch: 'main', head: headOf({}) },
+      },
+      context(),
+    )
+
+    const skips = (await events(store)).filter((event) => event.type === 'scan.skipped')
+    assert.equal(skips.length, 1)
+    assert.equal(skips[0]?.data.sha, undefined, 'a repo-level skip names no commit')
+    assert.equal(skips[0]?.data.tool, 'security-scan')
+    assert.match(String(skips[0]?.data.reason), /no main head/)
+    assert.equal(outcome.actions, 1)
+    assert.equal(outcome.actionsFailed, 1, 'an unscanned repo is visible, not idle')
+    assert.deepEqual(appendIssues(withoutSeq(skips[0]!)), [], 'the shardless skip is a valid append')
+
+    await store.close()
+  })
+
+  it('a nightly repo the fleet has no checkout for is not a target, and not a failure', async () => {
+    const store = await open()
+
+    // No `worktree.created`: the fleet has no copy of the repo, so there is
+    // nothing to scan. Recording a failure every night for a repo we are not
+    // working in is how `actionsFailed` stops meaning anything.
+    const outcome = await securityScanned(
+      {
+        store: { append: (batch) => store.append(batch) },
+        io: fakeIo({ stdout: { semgrep: semgrepReport() } }),
+        scanners: ['semgrep'],
+        reportPath,
+        read: store.reader(),
+        nightly: { repos: [repo], branch: 'main', head: headOf({}) },
+      },
+      context(),
+    )
+
+    assert.equal(outcome.actions, 0)
+    assert.equal(outcome.actionsFailed, 0)
+    assert.deepEqual(
+      (await events(store)).filter((event) => event.type === 'scan.skipped' || event.type === 'finding.raised'),
+      [],
+    )
+
+    await store.close()
+  })
+
+  it('a heartbeat has no nightly target even when the wiring is present', async () => {
+    const plan = await scanTargets(
+      { read: {} as never, nightly: { repos: [repo], branch: 'main', head: headOf({}) } },
+      { ...context(), trigger: 'heartbeat' },
+    )
+    assert.deepEqual(plan, { targets: [], unresolved: [] })
+  })
+
+  it('only a pr.opened event is a PR target, and it is scanned at its head SHA', () => {
+    const scanned = prTargetsOf({
       seq: 1,
       ...prOpened,
     } as FleetEvent)
 
-    assert.equal(opened.length, 1)
-    assert.deepEqual(opened[0]?.request, {
+    assert.equal(scanned.length, 1)
+    assert.deepEqual(scanned[0]?.request, {
       target: { repo, sha, pr: { repo, number: 42 } },
       scope: 'diff',
     } satisfies ScanRequest)
 
-    assert.deepEqual(targetsOf(undefined), [], 'a heartbeat has no target')
+    assert.deepEqual(prTargetsOf(undefined), [], 'a heartbeat has no target')
   })
 
   it('validates every batch it appends against the contract', async () => {

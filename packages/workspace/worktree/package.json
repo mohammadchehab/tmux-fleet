@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/workspace-worktree",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The checkouts peers work in (architecture §9): the `BranchHead` port over git, so a nightly security scan can name the commit it is about to scan (§6.2).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

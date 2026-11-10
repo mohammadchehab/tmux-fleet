@@ -24,8 +24,8 @@
 
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { persistentDirs, profilePaths, systemClock, type Clock, type PathRoots } from '@fleet/foundation-core'
-import type { EventSink, ProjectManager, ProviderRegistry, PullRequests } from '@fleet/foundation-contracts'
+import { persistentDirs, profilePaths, systemClock, type Clock, type PathRoots, type Repo } from '@fleet/foundation-core'
+import type { BranchHead, EventSink, ProjectManager, ProviderRegistry, PullRequests } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import { createGitHubPullRequests } from '@fleet/integrations-github'
 import type { Notifier } from '@fleet/notify-core'
@@ -38,6 +38,7 @@ import { ClaudeProvider, createStructuredCompletion } from '@fleet/runtime-provi
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
 import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
+import { createBranchHead } from '@fleet/workspace-worktree'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createExecutorRouter, type KindExecutor } from './executor.ts'
 import { createDaemonExecutors } from './executors.ts'
@@ -105,6 +106,11 @@ export interface ComposeDeps {
    * a scan never shells out from a test run.
    */
   readonly securityIo?: ToolIo
+  /**
+   * How the nightly §6.2 scan names `main`'s head (§9). Defaults to a `git`
+   * adapter; a test passes a fake, so a suite never fetches a remote.
+   */
+  readonly branchHead?: BranchHead
 }
 
 export interface Composed {
@@ -257,6 +263,13 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
             io: deps.securityIo ?? { exec: execFileExec, has: whichProbe(execFileExec), readFile: readFileNode },
             scanners,
             reportPath: tempPathNode,
+            // §6.2's 02:00 scan: main's head, read from each repo's checkout through
+            // the `workspace` port (§9). A profile with no repos scans nothing.
+            nightly: {
+              repos: profile.repos.map((name) => name as Repo),
+              branch: 'main',
+              head: deps.branchHead ?? createBranchHead(),
+            },
           }),
         }),
   }

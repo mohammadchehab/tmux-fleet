@@ -29,10 +29,17 @@ does not have.
 The routine runs on `pr.opened` (§6.2's every-PR rule), against the head SHA, in the worktree the fleet already made for
 that repository (§9) — never in the daemon's own working directory, which is a different tree on every host.
 
-**The nightly scan is not wired yet.** §6.2 also asks for a 02:00 scan of main's head, and the fleet has no source for
-that SHA (there is no `workspace`/git package to ask, and neither the `Worktree` nor the `PullRequest` projection
-carries a base commit). A scheduled tick therefore returns zero actions instead of scanning a guess. The 02:00 trigger
-is still configured in `packages/orchestration/routines/src/config.ts`; what it does today is nothing.
+**The nightly scan reads main's head from git.** §6.2's 02:00 schedule has no event to name a commit, so the body asks
+the `workspace` port `BranchHead` (`@fleet/workspace-worktree`, §9) for `origin/main` in each profile repo's checkout:
+`git fetch` then `git rev-parse origin/main`. That commit is the target, scanned at `full` scope (the whole tree, not a
+PR's diff). Because §6 catches up a schedule with no recorded run, a profile's first `fleet up` runs the nightly scan
+immediately, and thereafter at 02:00 local.
+
+A repo the fleet **has no checkout for** is not scanned and not reported — there is nothing to scan, and a failure for
+every repo you are not working in would make `actionsFailed` noise. A repo that **has** a checkout but whose `origin/main`
+cannot be read is a `scan.skipped` with no `sha` and its reason, counted in `actionsFailed`: we meant to scan it and could
+not, which is the absence §6.2 says must not be silent. A failed `git fetch` (offline) is not fatal — the scan reads
+whatever `origin/main` the checkout last saw, and records the sha it actually scanned.
 
 ## What each tool answers
 

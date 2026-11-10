@@ -21,7 +21,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { DaemonMethod, DaemonResponse } from '../../../packages/foundation/contracts/src/index.ts'
+import type { BranchHead, DaemonMethod, DaemonResponse } from '../../../packages/foundation/contracts/src/index.ts'
 import { profilePaths, type ProfilePaths } from '../../../packages/foundation/core/src/index.ts'
 import { compose, type Composed } from '../../../apps/daemon/src/compose.ts'
 import { stateFilePathOf } from '../../../apps/daemon/src/sessions.ts'
@@ -71,6 +71,8 @@ export interface SandboxOptions {
   readonly security?: readonly string[]
   /** How the scanners reach their tools, so a test never needs semgrep installed. */
   readonly securityIo?: ToolIo
+  /** How the nightly scan names `main`'s head, so a test never fetches a remote (§9). */
+  readonly branchHead?: BranchHead
 }
 
 /** An event as these tests read it: only the three fields any assertion here needs. */
@@ -147,6 +149,7 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
     providers: new Map([['claude', scripted.provider]]),
     ...(options.notifier === undefined ? {} : { notifier: options.notifier }),
     ...(options.securityIo === undefined ? {} : { securityIo: options.securityIo }),
+    ...(options.branchHead === undefined ? {} : { branchHead: options.branchHead }),
   })
 
   const raw = (method: DaemonMethod, params?: unknown): Promise<DaemonResponse> =>
