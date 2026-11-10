@@ -110,7 +110,7 @@ describe('registered from config, nothing hand-wired', () => {
   })
 
   it('does not run a routine the profile disabled', async () => {
-    const { deps, pm, store } = harness({ config: { routines: { standup: { enabled: false } } } })
+    const { deps, pm, store } = harness({ config: { standup: { enabled: false } } })
     const scheduler = createScheduler(deps)
     await scheduler.start()
     // reconcile and keep-busy and dispatch are on; standup and worktree-gc are off.
@@ -233,7 +233,7 @@ describe('a miss is caught up on restart', () => {
 
   it('catches a standup up once, not once per missed day', async () => {
     const { deps, read, pm } = harness({
-      config: { routines: { 'worktree-gc': { enabled: false } } },
+      config: { 'worktree-gc': { enabled: false } },
     })
     const at = new Date(2026, 10, 10, 10, 0, 0, 0).toISOString()
     read.put({

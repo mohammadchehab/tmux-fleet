@@ -14,6 +14,8 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
+import { planRoutines } from '@fleet/orchestration-routines'
+
 import { decodeProfile, loadProfile, type Profile } from '../src/profile.ts'
 
 const minimal = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -302,5 +304,57 @@ peers:
   it('reports invalid YAML as the file it could not read', async () => {
     const file = await tempProfile('engineer', 'profile: [unclosed\n')
     await assert.rejects(loadProfile(file, 'engineer'), /is not valid YAML/)
+  })
+})
+
+describe('the routines block', () => {
+  it('configures the routine the profile names, spelled the way the file spells it', () => {
+    const profile = decodeProfile(
+      minimal({ routines: { dispatch: { enabled: false }, standup: { at: '07:30' } } }),
+    )
+    assert.deepEqual(profile.routines, { dispatch: { enabled: false }, standup: { at: '07:30' } })
+    // The claim that used to be false: a routine the profile disabled is gone
+    // from the plan the scheduler builds, not still running with its defaults.
+    const planned = planRoutines(profile.routines).map((routine) => routine.kind)
+    assert.equal(planned.includes('dispatch'), false)
+    assert.ok(planned.includes('reconcile'), 'a routine the profile does not name still runs')
+  })
+
+  it('refuses a routine the fleet does not have, naming it', () => {
+    assert.throws(
+      () => decodeProfile(minimal({ routines: { dispatchh: { enabled: true } } })),
+      /routines\.dispatchh: is not a routine; this fleet has dispatch, /,
+    )
+  })
+
+  it('refuses a misspelt setting rather than dropping it', () => {
+    assert.throws(() => decodeProfile(minimal({ routines: { dispatch: { enabeld: true } } })), /routines\.dispatch\.enabeld/)
+  })
+
+  it('refuses the old nested spelling instead of ignoring it', () => {
+    // One version read `routines: {routines: {...}}`, which no live profile ever
+    // wrote. Now that the file's shape is the config's, that spelling is a typo
+    // like any other, and it says so rather than silently configuring nothing.
+    assert.throws(
+      () => decodeProfile(minimal({ routines: { routines: { dispatch: { enabled: false } } } })),
+      /routines\.routines: is not a routine/,
+    )
+  })
+
+  it('reports a bad profile as the file and the issue, not as a stack trace', async () => {
+    const file = await tempProfile(
+      'engineer',
+      `profile: engineer
+repos: []
+peers: [{ id: engineer-1, role: a, provider: claude, model: m }]
+routines:
+  dispatchh: { enabled: true }
+`,
+    )
+    await assert.rejects(
+      loadProfile(file, 'engineer'),
+      (thrown: unknown) =>
+        (thrown as { code?: string }).code === 'invalid_input' && /routines\.dispatchh/.test((thrown as Error).message),
+    )
   })
 })

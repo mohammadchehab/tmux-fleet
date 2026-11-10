@@ -38,16 +38,14 @@ import { createScriptedProvider, type ScriptedOptions, type ScriptedProvider } f
 
 /** §6's routines, all off; a lifecycle test asserts about turns, not timers. */
 const allRoutinesOff = {
-  routines: {
-    dispatch: { enabled: false },
-    'keep-busy': { enabled: false },
-    'pr-babysit': { enabled: false },
-    standup: { enabled: false },
-    'worktree-gc': { enabled: false },
-    reconcile: { enabled: false },
-    'security-scan': { enabled: false },
-    notify: { enabled: false },
-  },
+  dispatch: { enabled: false },
+  'keep-busy': { enabled: false },
+  'pr-babysit': { enabled: false },
+  standup: { enabled: false },
+  'worktree-gc': { enabled: false },
+  reconcile: { enabled: false },
+  'security-scan': { enabled: false },
+  notify: { enabled: false },
 } as const
 
 export interface SandboxPeer {
@@ -136,8 +134,8 @@ const profileYaml = (
   }
   if (notify !== undefined) lines.push('notify:', `  channel: ${notify}`)
   if (security !== undefined) lines.push('security:', '  scanners:', ...security.map((scanner) => `    - ${scanner}`))
-  lines.push('tickIntervalMs: 50', 'routines:', '  routines:')
-  for (const [kind, settings] of Object.entries(allRoutinesOff.routines)) {
+  lines.push('tickIntervalMs: 50', 'routines:')
+  for (const [kind, settings] of Object.entries(allRoutinesOff)) {
     // `notify` and `security-scan` are the two routines a test may want switched
     // on; without their profile block the daemon installs no body for them, so
     // they stay off with the rest.

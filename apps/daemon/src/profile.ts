@@ -24,18 +24,19 @@ import {
   peerId,
   positiveInt,
   refine,
+  SchemaError,
   text,
   unionAs,
   type Schema,
 } from '@fleet/foundation-core'
 import type { PeerId } from '@fleet/foundation-core'
-import { workStates, type WorkState } from '@fleet/foundation-contracts'
+import { routineKinds, workStates, type WorkState } from '@fleet/foundation-contracts'
 import {
   jiraSearchFlavors,
   type JiraSearchFlavor,
 } from '@fleet/integrations-trackers-jira'
 import { parse as parseYaml } from 'yaml'
-import type { RoutinesConfig } from '@fleet/orchestration-routines'
+import type { RoutineSettings, RoutinesConfig } from '@fleet/orchestration-routines'
 
 /** The providers this daemon can wire up today. A profile names one per peer. */
 export const profileProviders = ['claude', 'deepinfra'] as const
@@ -286,18 +287,50 @@ const peerProfile = (): Schema<PeerProfile> =>
   })
 
 /**
- * Routines are passed through undecoded: `planRoutines` already refuses an
- * unknown kind with a message that names the ones that exist, and §6's table is
- * its business, not the profile reader's.
+ * One routine's settings (§6): `enabled`, and the two the trigger reads. Every
+ * field is optional because naming a routine at all means "run it", and the
+ * defaults are the schedule; what a profile says here is the exception.
+ */
+const routineSettings = (): Schema<RoutineSettings> =>
+  objectAs<RoutineSettings>()({
+    enabled: optional(boolean()),
+    everyMinutes: optional(positiveInt()),
+    // The shape is checked here and the value by the scheduler, which owns what
+    // a time of day means; `at: 9am` should fail at load either way.
+    at: optional(text(5)),
+  })
+
+/**
+ * The `routines` block, decoded the way it is written: one entry per kind.
+ *
+ * This used to be a pass-through cast, on the theory that `planRoutines` would
+ * refuse anything wrong. It did refuse an unknown kind — but by then the block
+ * had been handed on verbatim and the config it was read as nested one level
+ * deeper, so `routines: {dispatch: {enabled: false}}` (the spelling in every
+ * example) configured nothing and every routine ran. A profile is hand-written
+ * and silence here means "on", so a key this reader does not recognise is
+ * refused and named: a routine that quietly never ran, or never stopped, is the
+ * one failure a settings block must not have.
  */
 const routinesBlock = (): Schema<RoutinesConfig> => ({
   tag: 'RoutinesConfig',
-  decode: (value, path, issues) => {
+  decode: (value, path, issues, mode) => {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       issues.push({ path, message: 'must be a mapping of routine kind to settings' })
-      return {} as RoutinesConfig
+      return {}
     }
-    return value as RoutinesConfig
+    const settings: Record<string, RoutineSettings> = {}
+    for (const [kind, block] of Object.entries(value)) {
+      if (!(routineKinds as readonly string[]).includes(kind)) {
+        issues.push({
+          path: `${path}.${kind}`,
+          message: `is not a routine; this fleet has ${routineKinds.join(', ')}`,
+        })
+        continue
+      }
+      settings[kind] = routineSettings().decode(block, `${path}.${kind}`, issues, mode)
+    }
+    return settings as RoutinesConfig
   },
 })
 
@@ -484,7 +517,17 @@ export const loadProfile = async (file: string, expectedName: string): Promise<P
     throw fleetError('invalid_input', `${file} is not valid YAML: ${(cause as Error).message}`, { cause })
   }
 
-  const profile = decodeProfile(parsed)
+  let profile: Profile
+  try {
+    profile = decodeProfile(parsed)
+  } catch (cause) {
+    // A profile is hand-written, so a schema failure is a typo in it, and the
+    // issue list — `routines.dispatchh: is not a routine; …` — is the whole
+    // remedy. `SchemaError` is a `RangeError`, so left alone it reaches the
+    // user as a stack trace with the sentence buried in it.
+    if (!(cause instanceof SchemaError)) throw cause
+    throw fleetError('invalid_input', `${file}: ${cause.message}`, { cause })
+  }
   if (profile.profile !== expectedName) {
     throw fleetError(
       'invalid_input',
