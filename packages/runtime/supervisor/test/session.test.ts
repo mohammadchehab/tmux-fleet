@@ -29,7 +29,10 @@ const handle = (sessionId: string, model = 'claude-sonnet-5-5'): SessionHandle =
 class Feed {
   readonly #queue: ProviderEvent[] = []
   #waiter: ((result: IteratorResult<ProviderEvent>) => void) | undefined
+  #rejecter: ((reason: unknown) => void) | undefined
   #closed = false
+  /** The failure this stream will throw instead of ending, set by `fail()`. */
+  #failure: { readonly error: unknown } | undefined
 
   push(...events: readonly ProviderEvent[]): void {
     for (const event of events) {
@@ -40,6 +43,20 @@ class Feed {
       } else {
         this.#queue.push(event)
       }
+    }
+  }
+
+  /**
+   * The stream itself fails, the way an adapter whose child process dies mid-read
+   * does: `next()` rejects instead of the provider synthesising `session.ended`.
+   */
+  fail(error: unknown): void {
+    this.#failure = { error }
+    if (this.#rejecter !== undefined) {
+      const reject = this.#rejecter
+      this.#rejecter = undefined
+      this.#waiter = undefined
+      reject(error)
     }
   }
 
@@ -55,11 +72,13 @@ class Feed {
   [Symbol.asyncIterator](): AsyncIterator<ProviderEvent> {
     return {
       next: () => {
+        if (this.#failure !== undefined) return Promise.reject(this.#failure.error)
         const queued = this.#queue.shift()
         if (queued !== undefined) return Promise.resolve({ value: queued, done: false })
         if (this.#closed) return Promise.resolve({ value: undefined, done: true })
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
           this.#waiter = resolve
+          this.#rejecter = reject
         })
       },
       return: () => Promise.resolve({ value: undefined, done: true }),
@@ -515,6 +534,45 @@ test('a question answered inside its turn does not hold the purge off: the turn 
   await until(() => stub.calls.length === 1, 'the purge to fire at the boundary that answered the question')
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
   r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  await run
+})
+
+test('a stream that throws ends the session in the store before the peer is recovered', async () => {
+  // An adapter that dies mid-read rejects out of `events()` and never gets to
+  // synthesise its own `session.ended`. Without the record below, the store
+  // would show a session that started and never ended — and a replay would read
+  // it as live, while the handle behind it is dead (§3, §4, §8).
+  const r = rig()
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.fail(new Error('the adapter blew up'))
+
+  await until(() => r.recovered.length === 1, 'the recovery to be asked for')
+  const ends = r.records.filter((record) => record.type === 'session.ended')
+  assert.equal(ends.length, 1, 'the dead session is recorded as ended, exactly once')
+  assert.equal(ends[0]?.type === 'session.ended' ? ends[0].data.endReason : undefined, 'crashed')
+  assert.equal(ends[0]?.subject, 'ses_aaaaaaaaaaaaaaaa')
+  // What the wrapper wrote is still what the store accepts.
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
+
+  await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
+  r.feeds.get('ses_cccccccccccccccc')?.push({ type: 'session.ended', reason: 'exit' })
   await run
 })
 

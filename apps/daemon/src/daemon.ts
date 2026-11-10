@@ -21,7 +21,7 @@
  * directly would be a second PM.
  */
 
-import { fleetError, peerActor, systemClock, type Actor, type Clock, type PeerId, type Seq } from '@fleet/foundation-core'
+import { fleetError, peerActor, systemClock, toFleetError, type Actor, type Clock, type PeerId, type Seq } from '@fleet/foundation-core'
 import type {
   AppendEvent,
   Decision,
@@ -116,6 +116,35 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     return result.length
   }
 
+  /**
+   * Hand a peer's box to its session, right after a message joined it (§7).
+   *
+   * `no_session` is the queued case, not a failure: a peer that is registered
+   * but not running keeps the message pending, and the Mailbox replays it into
+   * the session that resumes it. Everything else is a delivery the user asked
+   * for that did not happen — a provider that refused the turn, a session being
+   * purged — so it is logged, and the message still stays in the box for the
+   * next attempt rather than failing the send the user already completed.
+   */
+  const deliverNow = async (peer: PeerId): Promise<void> => {
+    try {
+      const outcome = await deps.mailbox.deliver(peer)
+      if (!outcome.ok) {
+        console.error(`fleetd: delivery to ${peer} failed and the message stays pending: ${outcome.error.message}`)
+        return
+      }
+      const stuck = outcome.value.failures.filter((failure) => failure.reason !== 'no_session')
+      if (stuck.length > 0) {
+        const reasons = [...new Set(stuck.map((failure) => failure.reason))].join(', ')
+        console.error(`fleetd: ${String(stuck.length)} message(s) for ${peer} stay pending: ${reasons}`)
+      }
+    } catch (thrown) {
+      // The message is the store's already; a broken delivery must not turn a
+      // completed send into an error the caller would retry.
+      console.error(`fleetd: delivery to ${peer} threw and the message stays pending: ${toFleetError(thrown, 'internal').message}`)
+    }
+  }
+
   const peerRows = async (): Promise<readonly PeerRow[]> => {
     const peers = await read.peers.all()
     const declared = new Map(deps.profile.peers.map((peer) => [peer.id, peer]))
@@ -196,6 +225,10 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
         body: input.body,
       })
       if (!result.ok) throw result.error
+      // §7: the message is the store's and the Mailbox is how a peer is reached,
+      // so a live peer gets the turn now. Awaiting it is what makes `fleet send`
+      // followed by `fleet peek` show what actually happened.
+      await deliverNow(input.to)
       return { msgId: result.value }
     },
 
