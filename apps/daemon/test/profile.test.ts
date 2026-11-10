@@ -64,6 +64,14 @@ describe('decoding a profile', () => {
     assert.throws(() => decodeProfile(minimal({ delelteMergedBranches: true })), /unknown field/)
   })
 
+  it('reads §6.1’s budget, and reads no block as no cap', () => {
+    assert.equal(decodeProfile(minimal()).budget, undefined)
+    assert.deepEqual(decodeProfile(minimal({ budget: { usd: 40 } })).budget, { usd: 40 })
+    // A cap of zero would ask the moment the first turn is billed: a number, but not a budget.
+    assert.throws(() => decodeProfile(minimal({ budget: { usd: 0 } })), /above zero/)
+    assert.throws(() => decodeProfile(minimal({ budget: { usd: -5 } })), /budget/)
+  })
+
   it('reads §10’s forge: no block is github.com, and a GitLab profile names its own host', () => {
     assert.equal(decodeProfile(minimal()).forge, undefined)
     const gitlab = decodeProfile(minimal({ forge: { kind: 'gitlab', host: 'rhl11374ap.ncbnpr.local' } }))

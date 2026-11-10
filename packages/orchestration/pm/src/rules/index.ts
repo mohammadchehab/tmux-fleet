@@ -21,7 +21,7 @@ export { draft } from './context.ts'
 export type { Draft, Rule, RuleContext } from './context.ts'
 export { assignReadyWork } from './assign.ts'
 export { questionDuplicates, questionThinCards, similarity } from './dedupe.ts'
-export { requestDecisions } from './escalate.ts'
+export { budgetDecisionId, requestDecisions } from './escalate.ts'
 export {
   approvalDecisionId,
   approvalInputsHash,
