@@ -71,6 +71,31 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/notify/channels/macos:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../../foundation/core
+      '@fleet/notify-core':
+        specifier: workspace:*
+        version: link:../../core
+
+  packages/notify/core:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../foundation/core
+    devDependencies:
+      '@fleet/foundation-store':
+        specifier: workspace:*
+        version: link:../../foundation/store
+
   packages/orchestration/briefs:
     dependencies:
       '@fleet/foundation-contracts':
