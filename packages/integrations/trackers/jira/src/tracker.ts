@@ -31,6 +31,7 @@ import { createJiraClient, type FetchLike, type JiraClient, type JiraRequest } f
 import {
   browseUrl,
   commentsFrom,
+  currentStatusOf,
   isLastPage,
   issuesFrom,
   JIRA_FIELDS,
@@ -172,6 +173,16 @@ export const createJiraTracker = (options: JiraTrackerOptions): Tracker => {
       )
       const transition = transitions.find((candidate) => candidate.to === status)
       if (transition === undefined) {
+        // A workflow does not offer a transition into the column an issue is
+        // already in, so the missing entry cannot tell "it is there" from "it
+        // cannot go there" — the issue's own status is what says which. Only
+        // this path reads it, so a board that can make the move is one request.
+        const answer = await client.optional({
+          method: 'GET',
+          path: issuePath(key),
+          query: { fields: 'status' },
+        })
+        if (answer !== undefined && currentStatusOf(answer.body) === status) return
         throw fleetError('external_failed', `jira issue ${key} cannot move to "${status}": it offers ${transitionTargets(transitions)}`, {
           details: { key, status, offered: transitions.map((candidate) => candidate.to ?? candidate.name) },
         })
