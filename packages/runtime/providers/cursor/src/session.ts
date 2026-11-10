@@ -28,6 +28,8 @@
  *   and plan mode is what makes that safe.
  * - **stderr is not surfaced.** The CLI echoes request detail there, and these
  *   strings become stored events; a failure is reported by exit code instead.
+ *   It is still read, and thrown away: a pipe nobody drains fills at 64 KiB and
+ *   blocks the CLI's next write, which hangs the turn with no error at all.
  */
 
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
@@ -271,6 +273,8 @@ export class CursorSession {
 
   /** Read the turn's stdout, and finish the turn when the process is done. */
   #pump(live: LiveTurn): void {
+    // Drained, never kept (see the file comment).
+    live.child.stderr.resume()
     let buffered = ''
     live.child.stdout.setEncoding('utf8')
     live.child.stdout.on('data', (chunk: string) => {
@@ -334,10 +338,11 @@ export class CursorSession {
         live.usage = line.usage
         this.#turnTokens = line.usage
         const reason: TurnEndReason = live.interrupted ? 'interrupted' : line.failed ? 'failed' : 'completed'
-        this.#endTurn(live, line.usage, line.error)
-        if (reason === 'failed') {
-          this.#emit({ type: 'error', message: line.error ?? 'cursor-agent reported a failed turn', retryable: true })
-        }
+        // `#endTurn` reads failure from the error, so a failure the CLI gave no
+        // words for still needs one — or it would be reported as completed.
+        const error = line.failed ? (line.error ?? 'cursor-agent reported a failed turn') : undefined
+        this.#endTurn(live, line.usage, error)
+        if (reason === 'failed' && error !== undefined) this.#emit({ type: 'error', message: error, retryable: true })
         return
       }
       // `init` names a display model and its own permission vocabulary, and the
