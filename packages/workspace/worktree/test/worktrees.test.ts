@@ -2,7 +2,9 @@
  * `Worktrees` over a fake `git` (§9). What §9 asks of this adapter is narrow and
  * worth pinning down: it removes the path it was given, it removes it from the
  * repository that owns it (never from inside the checkout itself, which git
- * refuses), and it never asks for `--force`.
+ * refuses), it never asks for `--force`, and it will not remove a path git does
+ * not list as one of that repository's checkouts — the path comes from a
+ * projection row, and a row is not an argument.
  */
 
 import assert from 'node:assert/strict'
@@ -34,7 +36,7 @@ describe('createWorktrees', () => {
   it('asks git where the repository is, then removes the checkout from there', async () => {
     const { runner, calls } = fakeGit({
       'rev-parse': ok('/repo/.git\n'),
-      worktree: ok(''),
+      worktree: ok(`worktree ${path}\n\nHEAD abc\n\nbranch refs/heads/main\n`),
     })
 
     await createWorktrees(runner).remove(path)
@@ -43,6 +45,7 @@ describe('createWorktrees', () => {
       calls.map((call) => call.args),
       [
         ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+        ['worktree', 'list', '--porcelain'],
         ['worktree', 'remove', path],
       ],
     )
@@ -50,15 +53,44 @@ describe('createWorktrees', () => {
     // directory it is standing in, and that is exactly the path being removed.
     assert.equal(calls[0]?.cwd, path)
     assert.equal(calls[1]?.cwd, '/repo')
+    assert.equal(calls[2]?.cwd, '/repo')
+  })
+
+  it('refuses a path git does not list as a checkout of this repository, and removes nothing', async () => {
+    const { runner, calls } = fakeGit({
+      'rev-parse': ok('/repo/.git\n'),
+      // Another repository's checkout, or a plain directory: git has no such worktree.
+      worktree: ok('worktree /repo\n\nHEAD abc\n\nbranch refs/heads/main\n'),
+    })
+
+    await assert.rejects(createWorktrees(runner).remove(path), {
+      message: /is not a worktree \/repo has; nothing was removed/,
+    })
+    assert.ok(calls.every((call) => call.args[1] !== 'remove'))
+  })
+
+  it('refuses a relative path before it resolves against whatever cwd the daemon has', async () => {
+    const { runner, calls } = fakeGit({})
+
+    await assert.rejects(createWorktrees(runner).remove('.claude/worktrees/fleet-work-1'), {
+      message: /is not an absolute path; no worktree was removed/,
+    })
+    assert.equal(calls.length, 0)
   })
 
   it('never forces: a checkout holding changes is git’s to refuse (§9)', async () => {
-    const { runner, calls } = fakeGit({ 'rev-parse': ok('/repo/.git\n'), worktree: failed("fatal: '" + path + "' contains modified or untracked files") })
+    const calls: Call[] = []
+    const runner: GitRunner = async (args, cwd) => {
+      calls.push({ args, cwd })
+      if (args[0] === 'rev-parse') return ok('/repo/.git\n')
+      if (args[1] === 'list') return ok(`worktree ${path}\n\nHEAD abc\n\nbranch refs/heads/main\n`)
+      return failed(`fatal: '${path}' contains modified or untracked files, use --force to delete it`)
+    }
 
     await assert.rejects(createWorktrees(runner).remove(path), {
       message: /git refused to remove the worktree .* contains modified or untracked files/,
     })
-    assert.ok(calls[1]?.args.every((arg) => arg !== '--force' && arg !== '-f'))
+    assert.ok(calls.every((call) => call.args.every((arg) => arg !== '--force' && arg !== '-f')))
   })
 
   it('refuses a path git does not know as a worktree, without trying to remove it', async () => {

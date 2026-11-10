@@ -372,6 +372,22 @@ describe('branches and deleteBranch: ยง10 keeps the delete, the gate does not (ย
     assert.deepEqual(fake.calls[0], ['api', `${project}/repository/branches?per_page=100`])
   })
 
+  it('asks the project what its trunk is, instead of assuming `main`', async () => {
+    const fake = fakeGlab(() => json({ id: 7, default_branch: 'develop' }))
+    const trunk = await createGitLabPullRequests({ glab: fake.glab }).defaultBranch(where)
+
+    assert.equal(trunk, 'develop')
+    assert.deepEqual(fake.calls[0], ['api', project])
+  })
+
+  it('refuses a project that reports no trunk rather than falling back to a guess', async () => {
+    const fake = fakeGlab(() => json({ id: 7 }))
+    await assert.rejects(createGitLabPullRequests({ glab: fake.glab }).defaultBranch(where), {
+      code: 'external_failed',
+      message: /reports no default branch/,
+    })
+  })
+
   it('reads the branch, then deletes it', async () => {
     const fake = fakeGlab((args) => (args.includes('DELETE') ? {} : json({ name: 'feat', commit: { id: 'abc1234' } })))
     await createGitLabPullRequests({ glab: fake.glab }).deleteBranch(where, 'feat', head)

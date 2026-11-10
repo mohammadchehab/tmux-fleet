@@ -85,6 +85,14 @@ export interface PullRequests {
   branches(repo: Repo): Promise<readonly Branch[]>
 
   /**
+   * The branch this repository treats as trunk, as it reports it — asked rather
+   * than assumed. `main` and `master` are conventions, and a repo on `develop`,
+   * `trunk` or `release/2.x` is the same fact under another name: a caller that
+   * protects a hardcoded list protects the conventions and fails open on the rest.
+   */
+  defaultBranch(repo: Repo): Promise<string>
+
+  /**
    * Delete a remote branch, pinned to the sha the caller decided on — the same rule
    * as `merge`, for the same reason. The forge is asked what the branch points at
    * now; that head must equal `expectedSha` or nothing is deleted and the call throws

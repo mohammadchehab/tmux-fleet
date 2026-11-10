@@ -182,6 +182,9 @@ export const createFakeForge = (): FakeForge => {
       put({ ...row(repo, number), headSha: sha(500 + pushed) })
     },
 
+    /** The repo's trunk, as a forge reports it: what the sweep must never delete. */
+    defaultBranch: async () => 'main',
+
     /** The branches the fake's PRs sit on. §6's `branch-cleanup` sweeps these. */
     async branches(scope: Repo) {
       return [...rows.values()]

@@ -103,6 +103,18 @@ const githubRepo = (repo: Repo): string => {
   return value
 }
 
+/**
+ * A branch name as one path in the refs API. Slashes are kept — `heads/feature/x`
+ * is how GitHub names a ref that lives under a folder — but every other character
+ * is percent-encoded: a branch name is data from the remote, and the delete this
+ * builds is destructive, so `#`, `?` or `%` in it must not be read as URL syntax.
+ */
+const refPath = (branch: string): string =>
+  branch
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+
 export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPullRequests => {
   const gh = options.gh ?? createGh()
   const limit = options.limit ?? DEFAULT_LIMIT
@@ -273,6 +285,22 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
     },
 
     /**
+     * The repo's trunk, as GitHub names it. One field off the repo itself, because
+     * the branch list does not mark the default and `main` is a convention rather
+     * than a fact.
+     */
+    async defaultBranch(repo) {
+      const raw = await gh.run(['api', `repos/${githubRepo(repo)}`, '--jq', '.default_branch'])
+      const name = raw.stdout.trim()
+      if (name === '' || name === 'null') {
+        throw fleetError('external_failed', `${String(repo)} reports no default branch`, {
+          details: { repo: String(repo) },
+        })
+      }
+      return name
+    },
+
+    /**
      * Delete, pinned to `expectedSha`. The read-check-delete sequence is the only
      * pair GitHub offers — the refs API takes no `If-Match` — so the window between
      * the two calls is narrowed, not closed; what closes it is the caller's reason
@@ -280,7 +308,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
      * moved branch. Nothing is deleted when the read disagrees.
      */
     async deleteBranch(repo, branch, expectedSha) {
-      const path = `repos/${githubRepo(repo)}/git/ref/heads/${branch}`
+      const path = `repos/${githubRepo(repo)}/git/ref/heads/${refPath(branch)}`
       const head = await gh.run(['api', path])
       if (head.code !== 0) {
         // A branch that is not there is its own answer: the caller asked to delete a
@@ -302,7 +330,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
           { details: { repo: String(repo), branch, expectedSha: String(expectedSha) } },
         )
       }
-      const deleted = await gh.run(['api', '-X', 'DELETE', `repos/${githubRepo(repo)}/git/refs/heads/${branch}`])
+      const deleted = await gh.run(['api', '-X', 'DELETE', `repos/${githubRepo(repo)}/git/refs/heads/${refPath(branch)}`])
       if (deleted.code !== 0) {
         throw fleetError(
           'external_failed',

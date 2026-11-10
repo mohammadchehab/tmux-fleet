@@ -298,6 +298,37 @@ describe('branches and deleteBranch: §10 keeps the delete, the gate does not (�
     assert.ok(fake.calls[0]?.includes('--paginate'), 'a repo with more than one page of branches must be read whole')
   })
 
+  it('encodes a branch name, and keeps the slashes that make it a ref path', async () => {
+    // A branch name is data from the remote and the delete is destructive: `#` must
+    // not become a URL fragment, and `%` must not smuggle in an encoded character.
+    const fake = fakeGh((args) => (args.includes('DELETE') ? {} : json({ object: { sha: 'abc1234' } })))
+    await createGitHubPullRequests({ gh: fake.gh }).deleteBranch(where, 'fleet/topic#2', head)
+
+    assert.deepEqual(fake.calls[0], ['api', 'repos/mohammadchehab/tmux-fleet/git/ref/heads/fleet/topic%232'])
+    assert.deepEqual(fake.calls[1], [
+      'api',
+      '-X',
+      'DELETE',
+      'repos/mohammadchehab/tmux-fleet/git/refs/heads/fleet/topic%232',
+    ])
+  })
+
+  it('asks the repo what its trunk is, instead of assuming `main`', async () => {
+    const fake = fakeGh(() => ({ code: 0, stdout: 'develop\n', stderr: '' }))
+    const trunk = await createGitHubPullRequests({ gh: fake.gh }).defaultBranch(where)
+
+    assert.equal(trunk, 'develop')
+    assert.deepEqual(fake.calls[0], ['api', 'repos/mohammadchehab/tmux-fleet', '--jq', '.default_branch'])
+  })
+
+  it('refuses a repo that reports no trunk rather than falling back to a guess', async () => {
+    const fake = fakeGh(() => ({ code: 0, stdout: 'null\n', stderr: '' }))
+    await assert.rejects(createGitHubPullRequests({ gh: fake.gh }).defaultBranch(where), {
+      code: 'external_failed',
+      message: /reports no default branch/,
+    })
+  })
+
   it('reads the ref, then deletes it — the two calls the pin needs', async () => {
     const fake = fakeGh((args) => (args.includes('DELETE') ? {} : json({ object: { sha: 'abc1234' } })))
     await createGitHubPullRequests({ gh: fake.gh }).deleteBranch(where, 'feat', head)
