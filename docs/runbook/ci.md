@@ -35,8 +35,13 @@ closed as obsolete with it). `checks` is now the only job in `ci.yml`.
 | tool | scans | on |
 | :- | :- | :- |
 | [semgrep](https://semgrep.dev) `p/typescript`, `p/javascript`, `p/nodejs` | SAST over `packages/ apps/ tests/` | PR + main + nightly |
-| [gitleaks](https://github.com/gitleaks/gitleaks) | secrets: the PR's commits, or the whole history on main/nightly | PR + main + nightly |
+| [gitleaks](https://github.com/gitleaks/gitleaks) | secrets: the whole history, on every event | PR + main + nightly |
 | [osv-scanner](https://github.com/google/osv-scanner) | `pnpm-lock.yaml` against the OSV database | PR + main + nightly |
+
+A PR scans the same ranges as `main`, history included, so a green PR is evidence of a green `main`. It used to scan
+`base..head` only, and that is blind to the change that matters: #103 deleted a spike directory and the `.gitleaksignore`
+entry for a secret in it, the PR was green because the diff touched no commit holding the secret, and `main` went red on
+the next push (#104). The full scan takes about a second.
 
 Trivy is absent until there is a `Dockerfile`, `infra/` or `deploy/` to scan; `claude-security` (model-driven review) is
 phase 2 and belongs on nightly and path-flagged PRs, not every PR. Both are §6.2's call, not an omission.
@@ -71,6 +76,11 @@ the reason lives next to it:
 | gitleaks | `.gitleaksignore` — one fingerprint per line (`<commit>:<path>:<rule>:<line>`), a comment above it saying why |
 | semgrep | `# nosemgrep: <rule-id>` on the line, with a reason |
 | osv-scanner | an `osv-scanner.toml` `[[IgnoredVulns]]` entry, with a reason |
+
+A gitleaks fingerprint is a claim about a **commit**, not about the working tree: `<commit>:<path>:<rule>:<line>` names a
+point in history that cannot be edited away. Deleting the path it names does **not** retire it — the commit is still in
+the history the next scan reads, so the finding comes straight back and the entry has to stay. That is what #103 did to
+the spike's `probe.mjs` and #104 undid.
 
 Dismissing an alert in code scanning hides it from the list but does **not** make the gate pass — the next run reads the
 report again. Two places that disagree about what is acceptable is worse than one that is strict.

@@ -1,8 +1,14 @@
 # Security scanning, the mechanism behind design §6.2.
 #
-#   every PR      semgrep (SAST), gitleaks (the diff's secrets), osv-scanner (pnpm-lock.yaml)
-#   every main    the same three, gitleaks over the whole history rather than the diff
+#   every PR      the same three scans as main, over the same ranges — so a green PR means a green main
+#   every main    semgrep (SAST), gitleaks over the whole history, osv-scanner (pnpm-lock.yaml)
 #   nightly       the same as a push to main, on a cron, so a CVE published after a merge is still found
+#
+# A PR scans the whole history, not just its diff (#103 → #104). A diff scan is blind to exactly the changes that
+# alter what the scanner reads: deleting a file, or editing `.gitleaksignore`. #103 deleted a spike that had a
+# suppressed fingerprint and the PR was green, because the diff never touched the commit that still held it — then
+# main, which scans the history, went red. The full scan costs about a second here; a rule listing which paths
+# trigger it would be one more thing to keep current, and the file it would forget is the one that matters.
 #
 # Not here, on purpose (§6.2): trivy (no Dockerfile, no infra/, no deploy/ in this repo — add it the day one lands) and
 # claude-security (model-driven and expensive: nightly and path-flagged PRs, phase 2). CodeQL is not used: §6.2 picks
@@ -28,8 +34,8 @@ permissions:
   contents: read
   # SARIF upload, so every finding shows in Security → Code scanning and can be triaged or dismissed with a reason.
   security-events: write
-  # gitleaks reads the PR's commits on a pull_request event from a fork.
-  pull-requests: read
+  # No `pull-requests: read`: the scans read the checked-out history, never the pull request object. Dropped with the
+  # base..head range that needed it.
 
 env:
   REPORTS: .ci-reports
@@ -68,16 +74,13 @@ jobs:
           osv-scanner --version
           semgrep --version
 
-      # On a PR the diff is what is being reviewed: base..head, so a finding is attributed to the change introducing it.
-      # On main and nightly, the whole history — a secret committed long ago is still leaked.
+      # The whole history on every event, PR included — a secret committed long ago is still leaked, and a diff scan
+      # cannot see one whose commit is older than the change being reviewed (see the header: #103 → #104). It costs
+      # about a second on this repo; the SARIF still points at the commit, so a finding is traceable to its origin.
       - name: gitleaks (secrets)
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = pull_request ]; then
-            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
-          else
-            RANGE="HEAD"
-          fi
+          RANGE="HEAD"
           echo "gitleaks: scanning $RANGE"
           # --exit-code 0: whether a finding blocks is severity-gate.mjs's decision — one place, not each tool's own
           # convention. A tool that crashes still fails the job; a tool that finds something reports it here.
