@@ -1012,6 +1012,18 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       )
       return
     }
+    case 'peer.standards_set': {
+      const { peerId, version } = event.data
+      const current = peerById(db, peerId)
+      // A version only goes up (§12.1): the Mailbox rejects mail citing an older
+      // one, so a lower or equal one would un-reject what it just rejected.
+      if (current !== undefined && version <= current.briefVersion) {
+        recordAnomaly(db, event, 'peer', `standards version ${String(version)} does not exceed ${String(current.briefVersion)} for ${peerId}`)
+        return
+      }
+      updatePeer(db, peerId, { briefVersion: version }, event)
+      return
+    }
     case 'peer.state_changed': {
       const { peerId, state, sessionId } = event.data
       updatePeer(db, peerId, sessionId === undefined ? { state } : { state, currentSessionId: sessionId }, event)
@@ -2095,7 +2107,6 @@ export const readers = (db: Sqlite): ReadModel => {
       all: async () =>
         db.all<TokenRow>('SELECT * FROM token_report ORDER BY peer_id, work_id').map((row) => tokenReportFromRow(row)),
     },
-
     activity: {
       // One query for the whole fleet: the last tool, the current Work, and that
       // Work's edit count, joined in SQL. A peer with neither an activity row nor
@@ -2138,7 +2149,7 @@ export const readers = (db: Sqlite): ReadModel => {
               ...(row.last_target === null ? {} : { lastTarget: row.last_target }),
               ...(row.last_tool_at === null ? {} : { lastToolAt: row.last_tool_at }),
               ...(row.last_turn_at === null ? {} : { lastTurnAt: row.last_turn_at }),
-              edits: Number(row.edits),
+              edits: row.edits,
             }),
           ),
     },

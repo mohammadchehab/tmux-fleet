@@ -244,3 +244,79 @@ ${trackers ?? ''}`,
     }
   })
 })
+
+/**
+ * §5.3's Judge, as `fleet up` builds it.
+ *
+ * The daemon used to build the Judge's transport with no env, so its one-shot
+ * call ran on fleetd's ambient identity: on a machine with no Claude login it
+ * answered `subtype: success` with no structured output and every `thin_card`
+ * escalated forever; on a machine with one it silently judged as that login.
+ *
+ * A profile that names a `judge:` block must therefore be able to make the
+ * composition root read that provider's credential — and must be refused at
+ * start when it cannot, rather than falling back to the machine.
+ */
+describe('the profile’s judge block, as the daemon builds it', () => {
+  const withJudge = async (judge: string): Promise<string> => {
+    const home = await mkdtemp(join(tmpdir(), 'fleet-judge-'))
+    const configHome = join(home, '.config')
+    const paths = profilePaths('judged', { home, configHome })
+    await mkdir(join(configHome, 'fleet', 'profiles'), { recursive: true })
+    await writeFile(
+      paths.profileFile,
+      `profile: judged
+repos: [backbase/me-services-fleet]
+peers:
+  - id: engineer-1
+    role: engineer
+    provider: claude
+    model: claude-sonnet-5-5
+${judge}
+`,
+      'utf8',
+    )
+    return home
+  }
+
+  it('refuses to start when the judge names a provider whose key is missing', async () => {
+    // The point of the test: this refusal can only happen if the block reached
+    // the env builder. A compose that ignored `judge:` would start happily and
+    // judge on whatever identity the machine has.
+    const home = await withJudge(`judge:
+  provider: deepinfra
+  model: ${MODEL}
+`)
+    try {
+      await assert.rejects(
+        compose({ profileName: 'judged', roots: { home, configHome: join(home, '.config') }, environ: {} }),
+        (thrown: unknown) => code(thrown) === 'config_mismatch',
+      )
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('asks the model the block names, so the request and the pinned env agree', async () => {
+    const home = await withJudge(`judge:
+  provider: deepinfra
+  model: ${MODEL}
+`)
+    const composed = await compose({
+      profileName: 'judged',
+      roots: { home, configHome: join(home, '.config') },
+      environ: { DEEPINFRA_API_KEY: 'not-a-real-key' },
+    })
+    try {
+      // Without this the transport would pin DeepSeek in the env and then ask
+      // for `claude-haiku-4-5` in the request, which is the same vendor mismatch
+      // in a different place.
+      assert.equal(composed.judge.model, MODEL)
+    } finally {
+      await composed.daemon.down().catch(() => {})
+      await composed.server.close().catch(() => {})
+      await composed.store.close().catch(() => {})
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+})

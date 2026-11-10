@@ -70,7 +70,7 @@ import { createBranchHead, createWorktreeProvisioner, createWorktrees } from '@f
 import { createBranchCleanupFactory } from '../routines/branch-cleanup.ts'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createDaemonBuilds } from './builds.ts'
-import { createProviderEnv } from '../env/deepinfra-env.ts'
+import { createProviderEnv, judgeEnvFor, type DeepInfraEnvOptions } from '../env/deepinfra-env.ts'
 import { createExecutorRouter, type KindExecutor } from '../execution/executor.ts'
 import { createDaemonExecutors } from '../execution/executors.ts'
 import { createDaemonJudge } from '../execution/judge.ts'
@@ -194,6 +194,13 @@ export interface Composed {
    * what ran, not what is installed.
    */
   readonly scheduler: Scheduler
+  /**
+   * §5.3's Judge, exposed for the same reason as `scheduler`: a test composing a
+   * real fleet has no other handle on it, and the two things worth asserting
+   * about it — which model answers, and where the call is sent — are properties
+   * of this object rather than of anything the ledger records.
+   */
+  readonly judge: JudgeService
   /**
    * The waking sink's own append. A composed fleet's writes have to wake the same
    * way the daemon's do — a test that appended straight to the store would be
@@ -341,11 +348,25 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // environment or the file the profile names — never stored, never in argv,
   // never in an event or an error. The supervisor asks again on every start, so
   // a rotated key takes effect without restarting the daemon.
-  const providerEnv = createProviderEnv({
+  const providerEnvOptions: DeepInfraEnvOptions = {
     profile,
     environ: deps.environ ?? process.env,
     configHome: paths.configHome,
-  })
+  }
+  const providerEnv = createProviderEnv(providerEnvOptions)
+
+  // §5.3's Judge is a provider path, so it gets the same fragment a peer's
+  // session does — from the profile's `judge:` block, never from fleetd's own
+  // identity. Read once here rather than per question, because the Judge is one
+  // call site and a question is not a session.
+  //
+  // No block means no fragment, which is the old behaviour deliberately kept: a
+  // machine that is logged in answers on that login, and a profile that wants the
+  // Judge somewhere else says so. What must not happen is the silent version — a
+  // `judge:` block that names a provider and is then ignored — so a missing key
+  // throws here, before the fleet is up, rather than being discovered later as a
+  // question that escalated for no stated reason.
+  const judgeEnv = await judgeEnvFor(providerEnvOptions)(profile.judge)
 
   // The supervisor is the only thing that may hold a provider instance (§2), so
   // it is built first and the Mailbox reaches peers through it (§7). It appends
@@ -396,9 +417,12 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     createDaemonJudge({
       store,
       // §5.3's transport: one schema-constrained call, run in the profile's own
-      // directory with no session, no tools and no settings. The Judge's own
-      // default model is the cheap one (§5.3) until a profile names another.
-      transport: createStructuredCompletion({ cwd: paths.stateDir }),
+      // directory with no session, no tools and no settings. `env` is the
+      // profile's `judge:` fragment (see above), so the answering model is the
+      // one the profile named rather than whatever identity fleetd was started
+      // with; absent a block, the cheap default model on fleetd's own identity.
+      transport: createStructuredCompletion({ cwd: paths.stateDir, env: judgeEnv }),
+      ...(profile.judge === undefined ? {} : { model: profile.judge.model }),
       clock,
     })
   executors.push(
@@ -561,7 +585,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     },
   })
 
-  return { daemon, server, store, supervisor, scheduler, append: wake.append, lock }
+  return { daemon, server, store, supervisor, scheduler, judge, append: wake.append, lock }
 }
 
 /** The log path a supervisor writes to; exported so the log line and §2's layout cannot drift apart. */

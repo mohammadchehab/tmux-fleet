@@ -421,3 +421,38 @@ describe('the purge limits a profile asks for', () => {
     assert.throws(() => decodeProfile(minimal({ limits: { purge: { maxSessionMinutes: -5 } } })), /maxSessionMinutes/)
   })
 })
+
+/**
+ * §5.3: who answers the Judge.
+ *
+ * The block exists because its absence had a silent meaning: the Judge's call
+ * was built with no env, so it ran as whatever identity fleetd was started with.
+ * These tests keep the block honest — a provider it does not know, or a block
+ * with no model, is refused by name rather than falling back to the default the
+ * block was written to override.
+ */
+describe('the judge block', () => {
+  it('reads the provider and the model that answer §5.3’s questions', () => {
+    const profile = decodeProfile(minimal({ judge: { provider: 'deepinfra', model: 'deepseek-ai/DeepSeek-V4.1-Flash-1017' } }))
+    assert.deepEqual(profile.judge, { provider: 'deepinfra', model: 'deepseek-ai/DeepSeek-V4.1-Flash-1017' })
+  })
+
+  it('is absent by default, which keeps the old behaviour', () => {
+    assert.equal(decodeProfile(minimal()).judge, undefined)
+  })
+
+  it('refuses a provider this build has no adapter for', () => {
+    assert.throws(() => decodeProfile(minimal({ judge: { provider: 'openai', model: 'gpt-5' } })), /openai/)
+  })
+
+  it('refuses a block with no model, rather than defaulting to one the provider may not serve', () => {
+    assert.throws(() => decodeProfile(minimal({ judge: { provider: 'deepinfra' } })), /model/)
+  })
+
+  it('refuses a field it does not know', () => {
+    assert.throws(
+      () => decodeProfile(minimal({ judge: { provider: 'claude', model: 'claude-haiku-4-5', temperature: 0.2 } })),
+      /unknown field|temperature/,
+    )
+  })
+})
