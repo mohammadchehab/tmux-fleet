@@ -14,12 +14,12 @@
  * 4. **Mailbox, Judge, executor, scheduler, server.** Each takes only the ports
  *    it needs (§1.1).
  *
- * Two things a profile may ask for but this build cannot yet deliver are
- * named as such rather than silently replaced: `integrations/github` (the
- * gate's port) and `orchestration/briefs` (the `assign` and `supersede_brief`
- * executors). A daemon composed without a `pullRequests` port has no `merge`
- * executor at all, so a merge action fails with "no executor is wired for
- * 'merge'" instead of pretending.
+ * One thing a profile may ask for but this build cannot yet deliver is named as
+ * such rather than silently replaced: `orchestration/briefs` (the `assign` and
+ * `supersede_brief` executors). The gate's port is real — `integrations/github`
+ * over `gh` — so every composed daemon has a `merge` executor; it shells out
+ * only when a merge or retarget action actually runs, so a fleet that never
+ * merges never starts a `gh`.
  */
 
 import { mkdir } from 'node:fs/promises'
@@ -27,6 +27,7 @@ import { join } from 'node:path'
 import { systemClock, type Clock } from '@fleet/foundation-core'
 import type { EventSink, ProjectManager, ProviderRegistry, PullRequests } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
+import { createGitHubPullRequests } from '@fleet/integrations-github'
 import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
 import type { JudgeService } from '@fleet/orchestration-judge'
@@ -70,7 +71,10 @@ export interface ComposeDeps {
   readonly openStore?: StoreFactory['open']
   /** The PM that decides (§5.2). Defaults to `@fleet/orchestration-pm`'s own. */
   readonly pm?: ProjectManager
-  /** `integrations/github`, the gate's §10 port. Absent means no `merge`/`retarget` executor. */
+  /**
+   * The gate's §10 port. Defaults to `@fleet/integrations-github` over `gh`; a
+   * test passes a fake, so a suite never authenticates or touches a repository.
+   */
   readonly pullRequests?: PullRequests
   /** Providers to construct instead of the built-in set, by the profile's `provider` name. */
   readonly providers?: ReadonlyMap<string, Provider>
@@ -185,22 +189,18 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   })
 
   // §10: the gate is the only executor that merges, and it needs the GitHub port.
-  // Without that port there is no gate at all, so a merge action fails visibly
-  // rather than being routed to an executor that cannot do anything.
-  const gate =
-    deps.pullRequests === undefined
-      ? undefined
-      : createGate({
-          pullRequests: deps.pullRequests,
-          store: { append: wake.append },
-          clock,
-          ...(profile.deleteMergedBranches === undefined
-            ? {}
-            : { deleteMergedBranches: profile.deleteMergedBranches }),
-        })
+  // Building the port runs nothing: `gh` starts only when a merge or retarget
+  // action gets that far, so a fleet that never merges never shells out.
+  const pullRequests: PullRequests = deps.pullRequests ?? createGitHubPullRequests()
+  const gate = createGate({
+    pullRequests,
+    store: { append: wake.append },
+    clock,
+    ...(profile.deleteMergedBranches === undefined ? {} : { deleteMergedBranches: profile.deleteMergedBranches }),
+  })
 
   const executors: KindExecutor[] = [
-    ...(gate === undefined ? [] : [{ kinds: gate.kinds, executor: gate }]),
+    { kinds: gate.kinds, executor: gate },
     ...(deps.executors?.({ ...wiring, supervisor }) ?? []),
   ]
 

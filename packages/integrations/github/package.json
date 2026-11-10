@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/integrations-github",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "GitHub over `gh` (architecture §10): the PullRequests port, the mapping from `gh --json` to the contract's shapes, and matchHeadSha — the rule that an observation may only be recorded against the head it graded.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
