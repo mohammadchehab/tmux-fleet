@@ -19,13 +19,20 @@ import { remoteDefault } from './refs.ts'
 const SHA = /^[0-9a-f]{40}$/
 
 /**
- * The repo's git config is shared with every worktree, so a peer can write it. Two
- * keys make a *network* command run a program of the config's choosing; they are
- * reset on the two commands that touch the remote. `credential.helper` is left as
- * it is on purpose: it is how a private repository authenticates, and stripping it
- * would make this fail for exactly the repos that need it.
+ * The repo's git config is shared with every worktree, so a peer can write it. A peer
+ * can write `core.sshCommand` to run a program of its choosing; `core.gitProxy` and
+ * `core.askPass` could run programs or credential helpers. They are reset on the two
+ * commands that touch the remote. `credential.helper` is left as it is on purpose:
+ * it is how a private repository authenticates, and stripping it would make this fail
+ * for exactly the repos that need it.
  */
-const TRANSPORT = ['-c', 'core.sshCommand=ssh', '-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never'] as const
+const TRANSPORT = [
+  '-c', 'core.sshCommand=ssh',
+  '-c', 'core.fsmonitor=false',
+  '-c', 'core.askPass=',
+  '-c', 'core.gitProxy=',
+  '-c', 'protocol.ext.allow=never',
+] as const
 
 export const createRepoFiles = (runner: GitRunner = execFileGit): RepoFiles => ({
   async read(cwd, path) {
