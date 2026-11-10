@@ -281,3 +281,59 @@ test('the spawned cursor-agent runs in spec.cwd, so it reads that checkout’s o
   const where = readFileSync(cwdLog, 'utf8').split('\n').filter((line) => line !== '')
   assert.deepEqual(where.map((dir) => realpathSync(dir)), [checkout, checkout])
 })
+
+test('fleetd’s own environment never reaches the cursor child: only the allowlist and the spec’s env do', async () => {
+  const { provider, spec } = harness()
+  const log = join(mkdtempSync(join(tmpdir(), 'fleet-cursor-env-')), 'env.jsonl')
+  const leaked = {
+    FLEET_TEST_AWS_SECRET_ACCESS_KEY: 'aws-secret',
+    FLEET_TEST_GITHUB_TOKEN: 'ghp_secret',
+    ANTHROPIC_API_KEY: 'sk-ant-secret',
+    DEEPINFRA_API_KEY: 'di-secret',
+    // cursor-agent's own key variable: ambient, it is just another secret fleetd holds.
+    CURSOR_API_KEY: 'cur-ambient-secret',
+  }
+  const before = Object.fromEntries(Object.keys(leaked).map((key) => [key, process.env[key]]))
+  Object.assign(process.env, leaked)
+  try {
+    const handle = await provider.start(spec({ env: { FAKE_CURSOR_ENV_LOG: log, FAKE_CURSOR_LOG: join(tmpdir(), 'fleet-cursor-unused.jsonl'), FLEET_PEER: 'peer-1' } }))
+    await watch(provider, handle).until(ended(handle.briefTurnId))
+  } finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+
+  // create-chat and the turn are two processes; neither may see a secret.
+  const seen = readFileSync(log, 'utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as string[])
+  assert.equal(seen.length, 2)
+  for (const keys of seen) {
+    for (const key of Object.keys(leaked)) assert.ok(!keys.includes(key), `${key} reached the cursor child`)
+    assert.ok(keys.includes('PATH'), 'the child is still a working process')
+    assert.ok(keys.includes('FLEET_PEER'), 'what the spec asked for arrives')
+  }
+})
+
+test('a cursor key arrives only when the spec carries it, never by inheritance', async () => {
+  const { provider, spec } = harness()
+  const log = join(mkdtempSync(join(tmpdir(), 'fleet-cursor-env-')), 'env.jsonl')
+  const before = process.env.CURSOR_API_KEY
+  process.env.CURSOR_API_KEY = 'cur-ambient-secret'
+  try {
+    // No spec key: the ambient one must not stand in for it.
+    const bare = await provider.start(spec({ env: { FAKE_CURSOR_ENV_LOG: log } }))
+    await watch(provider, bare).until(ended(bare.briefTurnId))
+    // A spec key: deliberate, so it arrives.
+    const keyed = await provider.start(spec({ env: { FAKE_CURSOR_ENV_LOG: log, CURSOR_API_KEY: 'cur-configured' } }))
+    await watch(provider, keyed).until(ended(keyed.briefTurnId))
+  } finally {
+    if (before === undefined) delete process.env.CURSOR_API_KEY
+    else process.env.CURSOR_API_KEY = before
+  }
+
+  const seen = readFileSync(log, 'utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as string[])
+  assert.equal(seen.length, 4, 'create-chat and a turn for each session')
+  assert.ok(seen.slice(0, 2).every((keys) => !keys.includes('CURSOR_API_KEY')), 'ambient key withheld')
+  assert.ok(seen.slice(2).every((keys) => keys.includes('CURSOR_API_KEY')), 'the spec’s key arrives')
+})

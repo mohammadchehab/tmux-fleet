@@ -52,6 +52,7 @@ import type {
   TurnEndReason,
   Usage,
 } from '@fleet/runtime-provider-sdk'
+import { buildChildEnv } from '@fleet/runtime-provider-sdk'
 
 import { openingMessage } from './brief.ts'
 import { parseLines, type CursorTurnUsage } from './stream.ts'
@@ -249,8 +250,9 @@ export class CursorSession {
       child = spawn(this.#config.executable, args, {
         cwd: this.#spec.cwd,
         // The spec's env is this one process's environment, which is what removes
-        // v1's shared-tmux env drift (§4, §13, §14.1).
-        env: { ...process.env, ...this.#spec.env },
+        // v1's shared-tmux env drift (§4, §13, §14.1) — on top of an allowlist of
+        // process variables, never `process.env`, so fleetd's keys stay in fleetd.
+        env: { ...buildChildEnv(this.#spec).env },
         stdio: ['ignore', 'pipe', 'pipe'],
       }) as TurnProcess
     } catch (thrown) {

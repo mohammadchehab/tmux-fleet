@@ -19,6 +19,9 @@ const record = () => {
   // Where the process was started, for a test that asserts the session's cwd.
   const cwdLog = process.env.FAKE_CURSOR_CWD_LOG
   if (cwdLog) appendFileSync(cwdLog, `${process.cwd()}\n`)
+  // The names (never the values) of the environment the process was given.
+  const envLog = process.env.FAKE_CURSOR_ENV_LOG
+  if (envLog) appendFileSync(envLog, `${JSON.stringify(Object.keys(process.env).sort())}\n`)
 }
 
 const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
