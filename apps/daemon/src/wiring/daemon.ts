@@ -87,6 +87,12 @@ export interface DaemonDeps {
    * own — a test — and then there is no capability to contradict a profile.
    */
   readonly providerCapabilities?: (provider: ProfileProvider) => { readonly effort: boolean } | undefined
+  /**
+   * shared-fleet.md §2.2: the loop that publishes this fleet's pace, when the
+   * profile has a `coord` block. Started with the fleet and stopped first, so a
+   * fleet that is down stops telling the pool it has idle peers.
+   */
+  readonly coordination?: { start(): void; stop(): void }
 }
 
 export interface Daemon extends DaemonApi {
@@ -156,6 +162,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     // catch-up leaves the daemon down and a second `up` retries it, rather than
     // reporting a fleet that is caught up when it is not.
     const caughtUp = await catchUpWork({ read, append, clock })
+    deps.coordination?.start()
     running = true
     // An `up` after a `down` is a new daemon, and a new daemon has another stop
     // in front of it. The memo from the previous `down` describes a state that
@@ -194,8 +201,11 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
    */
   const stop = async (): Promise<void> => {
     await (stopping ??= (async () => {
-      // Scheduler first: a routine that is mid-decide must not be handed a peer
-      // the supervisor has just stopped (§6, §7).
+      // The pool first: a fleet going down must not publish its peers as idle
+      // while the supervisor stops them (shared-fleet.md §3). Then the scheduler:
+      // a routine that is mid-decide must not be handed a peer the supervisor has
+      // just stopped (§6, §7).
+      deps.coordination?.stop()
       deps.scheduler.stop()
       await deps.supervisor.stop()
       running = false

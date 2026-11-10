@@ -39,6 +39,7 @@ import {
 } from '@fleet/foundation-core'
 import type {
   BranchHead,
+  Coordination,
   EventSink,
   ProjectManager,
   ProviderRegistry,
@@ -70,6 +71,7 @@ import type { BookkeepingFailure } from '@fleet/runtime-supervisor'
 import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
 import { createBranchHead, createRepoFiles, createWorktreeProvisioner, createWorktrees } from '@fleet/workspace-worktree'
 import { createBranchCleanupFactory } from '../routines/branch-cleanup.ts'
+import { coordinationFor } from '../routines/coordination.ts'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createDaemonBuilds } from './builds.ts'
 import { createProviderEnv, judgeEnvFor, type DeepInfraEnvOptions } from '../env/deepinfra-env.ts'
@@ -123,6 +125,14 @@ export interface ComposeDeps {
    * test passes a fake, so a suite never authenticates or touches a repository.
    */
   readonly pullRequests?: PullRequests
+  /**
+   * shared-fleet.md §2: the coordination transport, for a profile with a `coord`
+   * block. Defaults to git against the block's repository; a test passes the
+   * in-memory one, so a suite never reaches GitHub.
+   */
+  readonly coordination?: Coordination
+  /** Who this fleet publishes as, when `coord.user` is absent. Defaults to asking `gh`. */
+  readonly githubLogin?: () => Promise<string>
   /** Providers to construct instead of the built-in set, by the profile's `provider` name. */
   readonly providers?: ReadonlyMap<string, Provider>
   /**
@@ -605,6 +615,23 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     ...(deps.buildProcess === undefined ? {} : { process: deps.buildProcess }),
   })
 
+  // shared-fleet.md §3: a profile in an engagement publishes its pace. `loadProfile`
+  // has refused a `coord` block without a `budget`, so the cap is there. Built
+  // before the daemon and started by `up`, so `fleet up` is where a missing `gh`
+  // login is refused rather than a log line an hour later.
+  const coordination =
+    profile.coord === undefined || profile.budget === undefined
+      ? undefined
+      : await coordinationFor({
+          coord: profile.coord,
+          capUsd: profile.budget.usd,
+          paths,
+          read: store.reader(),
+          clock,
+          ...(deps.coordination === undefined ? {} : { coordination: deps.coordination }),
+          ...(deps.githubLogin === undefined ? {} : { login: deps.githubLogin }),
+        })
+
   const daemon = createDaemon({
     profile,
     paths,
@@ -618,6 +645,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     // So `fleet up` can say when a profile asked for an effort the provider it
     // named cannot honour (TASK-12): the map here is the one the sessions run on.
     providerCapabilities: (name) => providers.get(name)?.capabilities,
+    ...(coordination === undefined ? {} : { coordination }),
   })
   const server = await createDaemonServer({
     api: daemon,
