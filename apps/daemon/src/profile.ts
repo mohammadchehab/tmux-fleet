@@ -32,9 +32,6 @@ import type { PeerId } from '@fleet/foundation-core'
 import { workStates, type WorkState } from '@fleet/foundation-contracts'
 import {
   jiraSearchFlavors,
-  type JiraAuth,
-  type JiraCloudAuth,
-  type JiraPatAuth,
   type JiraSearchFlavor,
 } from '@fleet/integrations-trackers-jira'
 import { parse as parseYaml } from 'yaml'
@@ -181,17 +178,48 @@ export interface BacklogTrackerProfile extends TrackerProfileBase {
   readonly urlBase?: string
 }
 
+/**
+ * Where a Jira site's credential is read from — never the credential itself.
+ * The rule `DeepInfraProfile` states holds for every provider: a profile is a
+ * file in the repo's reach, and a token in it would be a token in `git status`.
+ * `jira-env.ts` resolves these into the token the adapter is handed at compose.
+ */
+export interface JiraCredentialProfile {
+  /**
+   * The variable in **fleetd's own** environment that holds the token. Defaults
+   * per `kind` — `JIRA_API_TOKEN` for Cloud, `JIRA_PAT` for Server / Data
+   * Center — because the two kinds are issued by different systems and one
+   * machine may hold both.
+   */
+  readonly tokenEnv?: string
+  /** The file to read the token from when `tokenEnv` yields nothing: its **first line**. */
+  readonly tokenFile?: string
+}
+
+/** Cloud: `email` names the account its API token was issued for. */
+export interface JiraCloudAuthProfile extends JiraCredentialProfile {
+  readonly kind: 'cloud'
+  readonly email: string
+}
+
+/** Server / Data Center: one personal access token, already an identity, so no email half. */
+export interface JiraPatAuthProfile extends JiraCredentialProfile {
+  readonly kind: 'pat'
+}
+
+export type JiraAuthProfile = JiraCloudAuthProfile | JiraPatAuthProfile
+
 /** A Jira site: REST v3 over HTTPS, in whichever flavour its release serves. */
 export interface JiraTrackerProfile extends TrackerProfileBase {
   readonly system: 'jira'
   /** The site, e.g. `https://acme.atlassian.net`. The credential is never part of it. */
   readonly baseUrl: string
   /**
-   * Which of the two credentials this install issues. The shape comes from the
-   * adapter rather than being restated here, so a token cannot end up decoded
-   * into a field the adapter does not read.
+   * Which of the two credentials this install issues, and where the token is
+   * read from. A block that writes the token down instead is refused as an
+   * unknown field rather than quietly accepted — `jira-env.ts` says why.
    */
-  readonly auth: JiraAuth
+  readonly auth: JiraAuthProfile
   /**
    * Which search endpoint this release serves. Defaults from `auth.kind` — an
    * API token is Cloud's, a PAT is a Server install's — and is named only for a
@@ -371,17 +399,26 @@ const backlogTrackerBlock = (): Schema<BacklogTrackerProfile> =>
     urlBase: optional(text(400)),
   })
 
-/** Cloud with an email and an API token, or Server/DC with a PAT. Which one is `kind`. */
-const jiraAuthBlock = (): Schema<JiraAuth> =>
-  unionAs<JiraAuth>()([
-    objectAs<JiraCloudAuth>()({
+/**
+ * Cloud with an email plus where its API token is read from, or Server/DC with
+ * a PAT and the same two sources. Which one is `kind`.
+ *
+ * There is no `token` key: a profile that carries one is refused as an unknown
+ * field. The refusal is the point — a credential pasted into a YAML file is a
+ * credential in `git status`, and a silent rename would let the paste stand.
+ */
+const jiraAuthBlock = (): Schema<JiraAuthProfile> =>
+  unionAs<JiraAuthProfile>()([
+    objectAs<JiraCloudAuthProfile>()({
       kind: oneOf(['cloud'] as const),
       email: text(200),
-      token: text(500),
+      tokenEnv: optional(text(120)),
+      tokenFile: optional(text(400)),
     }),
-    objectAs<JiraPatAuth>()({
+    objectAs<JiraPatAuthProfile>()({
       kind: oneOf(['pat'] as const),
-      token: text(500),
+      tokenEnv: optional(text(120)),
+      tokenFile: optional(text(400)),
     }),
   ])
 
