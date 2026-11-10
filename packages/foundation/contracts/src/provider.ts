@@ -170,6 +170,14 @@ export interface ToolPolicyRule {
  * no match means `defaultAction`. `AskUserQuestion` is never evaluated: a
  * question always reaches a human.
  *
+ * Authoring rules the adapter enforces: an `allow` rule's pattern must cover the
+ * whole subject (it is matched as `^(?:pattern)$`), so `^echo ` allows nothing
+ * and `^echo .*$` is what to write; `ask` and `deny` patterns stay unanchored
+ * searches, so a deny still matches inside a longer command. A Bash command
+ * with a control construct (`;` `&` `|` backtick `$(` `<` `>` or a newline) is
+ * never covered by an `allow` rule, and a subject over 64 KB is not examined at
+ * all: both go to a person.
+ *
  * This is a guard rail, not a sandbox. "No production" (fleet rule 2) is
  * enforced by what is in the peer's environment, never by a deny pattern.
  */
