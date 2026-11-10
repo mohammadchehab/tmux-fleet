@@ -141,6 +141,9 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
     // No evals are seeded: no routine compares two runs, and the CLI's `evals
     // compare` reads the real store, not this fake.
     evals: { get: async () => undefined },
+    // No builds are seeded: no routine reads the ledger, and the ledger's own
+    // suite supplies the reader it needs.
+    builds: { find: async () => undefined, get: async () => undefined },
     // No compactions are seeded: no routine reads them yet, and an empty read is
     // what the daemon's `ls` would get from a fleet that has never compacted.
     compactions: { all: async () => [] },

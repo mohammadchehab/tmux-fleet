@@ -443,6 +443,15 @@ const writeBuild = (db: Sqlite, build: Build): void =>
 const buildById = (db: Sqlite, buildId: string): Build | undefined =>
   rowOf(db, PROJECTION_SCHEMAS.build, 'builds', 'build_id', buildId)
 
+/**
+ * The dedupe read (§11). `builds` is `UNIQUE (repo, sha, task)`, so this is a
+ * single indexed row and can never return two.
+ */
+const buildByKey = (db: Sqlite, repo: string, sha: string, task: string): Build | undefined => {
+  const row = db.get<{ data: string }>('SELECT data FROM builds WHERE repo = ? AND sha = ? AND task = ?', repo, sha, task)
+  return row === undefined ? undefined : json(PROJECTION_SCHEMAS.build, row.data)
+}
+
 const writeWorktree = (db: Sqlite, worktree: Worktree): void => {
   writeRow(
     db,
@@ -1940,6 +1949,10 @@ export const readers = (db: Sqlite): ReadModel => {
     },
     worktrees: {
       all: async () => rows(PROJECTION_SCHEMAS.worktree, 'SELECT data FROM worktrees ORDER BY path'),
+    },
+    builds: {
+      find: async (repo, sha, task) => buildByKey(db, repo, sha, task),
+      get: async (id) => buildById(db, id),
     },
     routines: {
       all: async () => db.all<RoutineRow>('SELECT * FROM routines ORDER BY routine_id').map((row) => routineFromRow(row)),

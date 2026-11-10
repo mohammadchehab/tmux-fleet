@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { FleetError, type DecisionId, type EvalRunId, type PeerId, type SessionId, type Sha } from '@fleet/foundation-core'
-import type { DaemonMethod, EvalRunWithCases, LsResult } from '@fleet/foundation-contracts'
+import {
+  FleetError,
+  type DecisionId,
+  type EvalRunId,
+  type PeerId,
+  type Repo,
+  type SessionId,
+  type Sha,
+} from '@fleet/foundation-core'
+import type { BuildsResult, DaemonMethod, EvalRunWithCases, LsResult } from '@fleet/foundation-contracts'
 import type { DaemonCaller } from '../src/client.ts'
 import { run, type RunDeps } from '../src/run.ts'
 
@@ -625,5 +633,82 @@ describe('run: replay', () => {
     const { deps, out } = harness({ replay: () => ({ mode: 'rebuild', events: 2, latestSeq: 2 }) })
     assert.equal(await run(argv('replay', '--json'), deps), 0)
     assert.deepEqual(JSON.parse(out[0] ?? ''), { mode: 'rebuild', events: 2, latestSeq: 2 })
+  })
+})
+
+describe('run: build', () => {
+  const sha = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
+  const built: BuildsResult = {
+    build: {
+      buildId: 'bld_0123456789abcdef',
+      repo: 'backbase/me-services-fleet' as Repo,
+      sha: sha as Sha,
+      task: 'evals:judge:deepinfra:a-model',
+      host: 'remote',
+      status: 'succeeded',
+      logPath: `/home/tester/.fleet/squad/artifacts/builds/${sha}/evals-judge.deepinfra.a-model.log`,
+      durationMs: 4200,
+      startedAt: now,
+      finishedAt: now,
+    },
+    deduped: false,
+  }
+
+  it('passes everything after "--" through untouched, flags and all', async () => {
+    const { deps, calls } = harness({ builds: () => built })
+    const code = await run(
+      argv('build', built.build.task, sha, '--repo', 'backbase/me-services-fleet', '--', 'pnpm', 'test', '--filter', '-c'),
+      deps,
+    )
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      {
+        method: 'builds',
+        params: {
+          repo: 'backbase/me-services-fleet',
+          sha,
+          task: built.build.task,
+          command: { bin: 'pnpm', args: ['test', '--filter', '-c'] },
+        },
+      },
+    ])
+  })
+
+  it('says a triple that already ran was reused rather than run again', async () => {
+    const { deps, out } = harness({ builds: () => ({ ...built, deduped: true }) })
+    assert.equal(await run(argv('build', built.build.task, sha, '--repo', 'backbase/me-services-fleet', '--', 'pnpm', 'test'), deps), 0)
+    assert.match(out[0] ?? '', /reused: this triple had already run/)
+    assert.match(out[0] ?? '', new RegExp(`log\\s+.*${sha}.*\\.log`))
+    assert.match(out[0] ?? '', /took {2}4200ms/)
+  })
+
+  it('refuses a build with no repo, since the key would be a different one', async () => {
+    const { deps, err, calls } = harness({})
+    assert.equal(await run(argv('build', 'evals:judge:x:y', sha, '--', 'pnpm', 'test'), deps), 2)
+    assert.match(err[0] ?? '', /needs --repo <owner\/name>/)
+    assert.deepEqual(calls, [])
+  })
+
+  it('refuses a build with nothing to run', async () => {
+    const { deps, err, calls } = harness({})
+    const code = await run(argv('build', 'evals:judge:x:y', sha, '--repo', 'backbase/me-services-fleet', '--'), deps)
+    assert.equal(code, 2)
+    assert.match(err[0] ?? '', /needs a command after "--"/)
+    assert.deepEqual(calls, [])
+  })
+
+  it('refuses "--" on a command that has no command of its own', async () => {
+    const { deps, err, calls } = harness({})
+    assert.equal(await run(argv('ls', '--', 'echo', 'hi'), deps), 2)
+    assert.match(err[0] ?? '', /only `fleet build` takes a command after "--"/)
+    assert.deepEqual(calls, [])
+  })
+
+  it('refuses a sha the contract would refuse, without a round trip', async () => {
+    const { deps, err, calls } = harness({})
+    const code = await run(argv('build', 'evals:judge:x:y', 'not-a-sha', '--repo', 'backbase/me-services-fleet', '--', 'pnpm'), deps)
+    assert.equal(code, 2)
+    assert.match(err[0] ?? '', /sha: expected/)
+    assert.deepEqual(calls, [])
   })
 })

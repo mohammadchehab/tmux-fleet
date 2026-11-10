@@ -15,7 +15,16 @@
 
 import { existsSync } from 'node:fs'
 
-import { decisionId, evalRunId, fleetError, peerId, profilePaths, toFleetError } from '@fleet/foundation-core'
+import {
+  decisionId,
+  evalRunId,
+  fleetError,
+  peerId,
+  profilePaths,
+  repo as repoSchema,
+  sha as shaSchema,
+  toFleetError,
+} from '@fleet/foundation-core'
 import {
   evalSuites,
   turnKinds,
@@ -30,7 +39,16 @@ import { asArgument, isUnreachable, type DaemonCaller } from './client.ts'
 import { formatEvalCompare } from './evals-compare.ts'
 import { formatEvalRun } from './evals-report.ts'
 import { readEvalsOutput, type EvalsEvents, type EvalsProcessResult, type EvalsRunOptions } from './evals.ts'
-import { formatDecision, formatDown, formatLs, formatPeek, formatReplay, formatSend, formatUp } from './render.ts'
+import {
+  formatBuild,
+  formatDecision,
+  formatDown,
+  formatLs,
+  formatPeek,
+  formatReplay,
+  formatSend,
+  formatUp,
+} from './render.ts'
 import { socketPathOf } from './socket.ts'
 
 /** Both eval verbs, so a wrong one names every one that exists. */
@@ -50,12 +68,18 @@ const usage = (): string =>
     '  fleet replay [--from N [--to N]]    rebuild the projections, or read a window of the log',
     '  fleet evals run <suite>             run an eval suite against its baseline',
     '  fleet evals compare <runA> <runB>   two eval runs side by side (a run id is printed by `evals run`)',
+    '  fleet build <task> <sha> --repo <owner/name> -- <command...>',
+    '                                      ask for a build; a triple that already ran is reused, not re-run',
     '  fleet --help                        this',
     '',
     'options, on any command:',
     '  --socket <path>    talk to this socket instead of the profile\'s',
     '  --profile <name>   the profile, instead of $FLEET_PROFILE',
     '  --json             print the daemon\'s answer as JSON, for another client',
+    '',
+    'options, on `fleet build`:',
+    '  --repo <owner/name>  the repo the sha belongs to (required; with the sha and the task it is the key)',
+    '  -- <bin> [args...]   what runs when there is nothing to reuse (required; argv, never a shell line)',
     '',
     'options, on `evals run`:',
     '  --provider <name>  who answers: claude or deepinfra',
@@ -95,6 +119,14 @@ export type Command =
       readonly saveBaseline: boolean
     }
   | { readonly kind: 'evals-compare'; readonly runA: string; readonly runB: string }
+  | {
+      readonly kind: 'build'
+      readonly task: string
+      readonly sha: string
+      readonly repo: string
+      /** Everything after `--`, as argv: the first word is the binary, the rest its arguments. */
+      readonly command: readonly string[]
+    }
 
 export interface Parsed {
   readonly command: Command
@@ -137,11 +169,18 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
   let model: string | undefined
   let from: string | undefined
   let to: string | undefined
+  let repo: string | undefined
   let saveBaseline = false
   let json = false
 
-  for (let index = 2; index < argv.length; index += 1) {
-    const arg = argv[index] ?? ''
+  // `--` ends the CLI's own words and starts a command's (§11: a build's argv is
+  // passed through untouched, so `-c` in it is the build's flag, not ours).
+  const separator = argv.indexOf('--', 2)
+  const words = separator === -1 ? argv : argv.slice(0, separator)
+  const commandWords = separator === -1 ? [] : argv.slice(separator + 1)
+
+  for (let index = 2; index < words.length; index += 1) {
+    const arg = words[index] ?? ''
     if (arg === '--help' || arg === '-h') return { command: { kind: 'help' }, how: { json } }
     if (arg === '--json') {
       json = true
@@ -152,50 +191,56 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       continue
     }
     if (arg === '--socket' || arg.startsWith('--socket=')) {
-      const read = optionValue(argv, index, '--socket')
+      const read = optionValue(words, index, '--socket')
       socket = read.value
       index = read.next
       continue
     }
     if (arg === '--profile' || arg.startsWith('--profile=')) {
-      const read = optionValue(argv, index, '--profile')
+      const read = optionValue(words, index, '--profile')
       profile = read.value
       index = read.next
       continue
     }
     if (arg === '--limit' || arg.startsWith('--limit=')) {
-      const read = optionValue(argv, index, '--limit')
+      const read = optionValue(words, index, '--limit')
       limit = read.value
       index = read.next
       continue
     }
     if (arg === '--note' || arg.startsWith('--note=')) {
-      const read = optionValue(argv, index, '--note')
+      const read = optionValue(words, index, '--note')
       note = read.value
       index = read.next
       continue
     }
     if (arg === '--provider' || arg.startsWith('--provider=')) {
-      const read = optionValue(argv, index, '--provider')
+      const read = optionValue(words, index, '--provider')
       provider = read.value
       index = read.next
       continue
     }
     if (arg === '--model' || arg.startsWith('--model=')) {
-      const read = optionValue(argv, index, '--model')
+      const read = optionValue(words, index, '--model')
       model = read.value
       index = read.next
       continue
     }
     if (arg === '--from' || arg.startsWith('--from=')) {
-      const read = optionValue(argv, index, '--from')
+      const read = optionValue(words, index, '--from')
       from = read.value
       index = read.next
       continue
     }
     if (arg === '--to' || arg.startsWith('--to=')) {
-      const read = optionValue(argv, index, '--to')
+      const read = optionValue(words, index, '--to')
       to = read.value
+      index = read.next
+      continue
+    }
+    if (arg === '--repo' || arg.startsWith('--repo=')) {
+      const read = optionValue(words, index, '--repo')
+      repo = read.value
       index = read.next
       continue
     }
@@ -217,6 +262,11 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
   }
 
   if (name === undefined) return { command: { kind: 'help' }, how: how() }
+  // `--` is the build verb's, and only its: anywhere else it is a typo, and
+  // dropping what followed it quietly would hide one.
+  if (name !== 'build' && commandWords.length > 0) {
+    throw usageError(`only \`fleet build\` takes a command after "--"; ${name} does not`)
+  }
   switch (name) {
     case 'help':
       return { command: { kind: 'help' }, how: how() }
@@ -317,6 +367,18 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
         },
         how: how(),
       }
+    }
+    case 'build': {
+      arity('build', rest, '<task> <sha> --repo <owner/name> -- <command...>', (count) => count === 2)
+      const [task, sha] = rest
+      if (task === undefined || sha === undefined || task === '') {
+        throw usageError('usage: fleet build <task> <sha> --repo <owner/name> -- <command...>')
+      }
+      // Each of the three is one third of what the ledger keys a build on, so a
+      // missing one is not a default to guess at: it would be a different key.
+      if (repo === undefined) throw usageError('fleet build needs --repo <owner/name>: with the sha and the task it is what a build is keyed on')
+      if (commandWords.length === 0) throw usageError('fleet build needs a command after "--": it is what runs when there is nothing to reuse')
+      return { command: { kind: 'build', task, sha, repo, command: commandWords }, how: how() }
     }
     default:
       throw usageError(`unknown command ${name}`)
@@ -557,6 +619,16 @@ const execute = async (
       const runB = asArgument(evalRunId(), command.runB, 'run id')
       const [a, b] = await Promise.all([call('evals', { runId: runA }), call('evals', { runId: runB })])
       return { text: formatEvalCompare(a, b), value: { a, b } }
+    }
+    case 'build': {
+      const repo = asArgument(repoSchema(), command.repo, 'repo')
+      const sha = asArgument(shaSchema(), command.sha, 'sha')
+      const [bin, ...args] = command.command
+      if (bin === undefined) throw usageError('fleet build needs a command after "--"')
+      // The dedupe is the daemon's, so this asks every time: a triple that has
+      // run comes back as the row it already has, and `deduped` says which.
+      const result = await call('builds', { repo, sha, task: command.task, command: { bin, args } })
+      return { text: formatBuild(result), value: result }
     }
     case 'help':
       return { text: usage(), value: {} }

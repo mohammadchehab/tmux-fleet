@@ -11,7 +11,16 @@
  * prose: two vocabularies for one field is how a client drifts from the store.
  */
 
-import type { Decision, FleetEvent, Message, Peer, PeerCompactions, ReplayResult, Routine } from '@fleet/foundation-contracts'
+import type {
+  BuildsResult,
+  Decision,
+  FleetEvent,
+  Message,
+  Peer,
+  PeerCompactions,
+  ReplayResult,
+  Routine,
+} from '@fleet/foundation-contracts'
 import type { DownResult, LsResult, PeekResult, SendResult, UpResult } from '@fleet/foundation-contracts'
 
 const indent = (lines: readonly string[], by: number): readonly string[] =>
@@ -162,4 +171,25 @@ export const formatReplay = (result: ReplayResult): string => {
   }
   if (result.events.length === 0) return 'no events in that window'
   return [`${String(result.events.length)} event(s)`, ...indent(columns(result.events.map(eventRow)), 2)].join('\n')
+}
+
+/**
+ * A build is reported as the ledger recorded it, dedupe and all (§11).
+ *
+ * `deduped` is printed rather than inferred from the status, because it is the
+ * one thing the caller cannot see in the row: the same row comes back whether
+ * this request ran the command or a previous one already had, and that
+ * difference is the whole point of the key.
+ */
+export const formatBuild = (result: BuildsResult): string => {
+  const { build } = result
+  const lines = [
+    `${build.buildId}  ${build.status}  ${build.repo}@${build.sha}`,
+    `task  ${build.task}`,
+    `host  ${build.host}`,
+  ]
+  if (build.durationMs !== undefined) lines.push(`took  ${String(build.durationMs)}ms`)
+  if (build.logPath !== undefined) lines.push(`log   ${build.logPath}`)
+  lines.push(result.deduped ? 'reused: this triple had already run, so nothing ran again' : 'ran: no previous build of this triple')
+  return lines.join('\n')
 }

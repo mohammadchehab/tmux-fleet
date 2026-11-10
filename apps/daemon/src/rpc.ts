@@ -90,6 +90,8 @@ export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<
     case 'work':
       decode(daemonParamsFor('work'), params)
       return api.work()
+    case 'builds':
+      return api.builds(decode(daemonParamsFor('builds'), params))
   }
 }
 

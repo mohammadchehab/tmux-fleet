@@ -103,6 +103,22 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
       }
       return answered
     },
+    async builds(input) {
+      calls.push(`builds:${input.task}`)
+      return {
+        build: {
+          buildId: 'bld-1',
+          repo: input.repo,
+          sha: input.sha,
+          task: input.task,
+          host: 'local',
+          status: 'succeeded',
+          startedAt: '2026-11-10T10:00:00.000Z',
+          durationMs: 12,
+        },
+        deduped: false,
+      }
+    },
   }
 }
 

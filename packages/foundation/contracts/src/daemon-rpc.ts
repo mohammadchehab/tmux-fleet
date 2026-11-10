@@ -29,6 +29,7 @@
 
 import {
   array,
+  boolean,
   count,
   decisionId,
   evalRunId,
@@ -42,8 +43,10 @@ import {
   peerId,
   positiveInt,
   refine,
+  repo,
   seq,
   sessionId,
+  sha,
   unknownRecord,
   workId,
   string,
@@ -56,7 +59,9 @@ import {
   type EvalRunId,
   type MessageId,
   type PeerId,
+  type Repo,
   type Schema,
+  type Sha,
 } from '@fleet/foundation-core'
 import { appendIssues, fleetEvent } from './events/registry.ts'
 import type { AppendEvent, FleetEvent } from './events/registry.ts'
@@ -70,6 +75,11 @@ import { peer, peerCompactions } from './projections/peers.ts'
 import type { Peer, PeerCompactions } from './projections/peers.ts'
 import { work } from './projections/work.ts'
 import type { Work } from './projections/work.ts'
+
+import { build } from './projections/delivery.ts'
+import type { Build } from './projections/delivery.ts'
+import { buildCommand } from './shapes.ts'
+import type { BuildCommand } from './shapes.ts'
 import { turnKinds } from './provider.ts'
 import type { TurnKind } from './provider.ts'
 
@@ -95,6 +105,8 @@ export const daemonMethods = [
   'evals',
   'replay',
   'work',
+
+  'builds',
 ] as const
 export type DaemonMethod = (typeof daemonMethods)[number]
 
@@ -356,6 +368,35 @@ export const replayParams = (): Schema<ReplayParams> =>
     to: optional(seq()),
   })
 
+/**
+ * `builds`: a peer asks for a build (§11) — "a peer requests a build through the
+ * API; the ledger returns the existing result or runs it once".
+ *
+ * The caller names the command because the ledger keys on the task and not on
+ * what a task happens to run; the same task twice is the same build, and the
+ * command of the second request is not read. `requestedBy` is optional because a
+ * nightly eval is the scheduler's request, and §3 logs the two differently.
+ */
+export interface BuildsParams {
+  readonly repo: Repo
+  readonly sha: Sha
+  /** `<class>[:<detail>…]`; the class is what routes the build to a host (§11). */
+  readonly task: string
+  readonly command: BuildCommand
+  readonly requestedBy?: PeerId
+}
+
+export const buildsParams = (): Schema<BuildsParams> =>
+  objectAs<BuildsParams>()({
+    repo: repo(),
+    sha: sha(),
+    // The same bound the `build.*` events put on a task, so a request cannot ask
+    // for a build the log would then refuse to record.
+    task: string({ minLength: 1, maxLength: 100 }),
+    command: buildCommand(),
+    requestedBy: optional(peerId()),
+  })
+
 /** Method → its params. The single place the two closed sets are tied together. */
 export interface DaemonParams {
   readonly up: NoParams
@@ -369,6 +410,7 @@ export interface DaemonParams {
   readonly evals: EvalsParams
   readonly replay: ReplayParams
   readonly work: NoParams
+  readonly builds: BuildsParams
 }
 
 export type DaemonParamsOf<M extends DaemonMethod> = DaemonParams[M]
@@ -388,6 +430,7 @@ const paramsSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonParamsOf
   evals: evalsParams,
   replay: replayParams,
   work: noParams,
+  builds: buildsParams,
 }
 
 /** The schema for one method's params; what both the daemon and the CLI validate against. */
@@ -521,6 +564,19 @@ export const workResult = (): Schema<WorkResult> =>
     work: array(work(), { maxItems: 2000 }),
   })
 
+/**
+ * `builds`: the build as the log now holds it, and whether *this* call ran it.
+ * `deduped` is the answer to the question a peer actually asks — "did my
+ * request start work?" — which a client cannot infer from the row (§11).
+ */
+export interface BuildsResult {
+  readonly build: Build
+  readonly deduped: boolean
+}
+
+export const buildsResult = (): Schema<BuildsResult> =>
+  objectAs<BuildsResult>()({ build: build(), deduped: boolean() })
+
 // ------------------------------------------------------------ results table
 
 /**
@@ -542,6 +598,7 @@ export interface DaemonResults {
   readonly evals: EvalsResult
   readonly replay: ReplayResult
   readonly work: WorkResult
+  readonly builds: BuildsResult
 }
 
 export type DaemonResultOf<M extends DaemonMethod> = DaemonResults[M]
@@ -558,6 +615,7 @@ const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[
   evals: evalRunWithCases,
   replay: replayResult,
   work: workResult,
+  builds: buildsResult,
 }
 
 /** The schema for one method's result. The exhaustive key type is what makes a new method a compile error. */
@@ -605,4 +663,11 @@ export interface DaemonApi {
    * should not have to open the store or watch the log.
    */
   work(): Promise<WorkResult>
+  /**
+   * Request a build (§11): the existing result for `(repo, sha, task)`, or one
+   * run. The daemon owns the ledger, so a fleet shares one answer — a second
+   * peer asking for the same triple waits on the first request rather than
+   * starting a second build.
+   */
+  builds(params: BuildsParams): Promise<BuildsResult>
 }

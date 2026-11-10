@@ -253,6 +253,35 @@ export type TrackerProfile = BacklogTrackerProfile | JiraTrackerProfile
 export const profileScanners = ['semgrep', 'gitleaks', 'osv-scanner', 'trivy'] as const
 export type ProfileScanner = (typeof profileScanners)[number]
 
+/** §11's two hosts. `remote` exists only when the profile names a box to reach. */
+export const profileBuildHosts = ['local', 'remote'] as const
+export type ProfileBuildHost = (typeof profileBuildHosts)[number]
+
+/**
+ * §11, as a profile writes it: where light work runs, which task classes are
+ * heavy, and how to reach the box they run on.
+ *
+ * A class is the text before a task's first `:` — `evals` covers every suite and
+ * every model, which is the point of routing by class. The block is optional;
+ * without it every build runs locally, because a fleet that has not named a
+ * remote host should still record its builds.
+ */
+export interface ProfileBuilds {
+  /** Where a task that is not heavy runs. Defaults to `local`. */
+  readonly host?: ProfileBuildHost
+  /** Task classes that go to the remote host. Empty (or absent) means "nothing is heavy". */
+  readonly heavy?: readonly string[]
+  /** The remote host. Required for a `heavy` class to mean anything: the daemon refuses the combination. */
+  readonly remote?: {
+    /** The `ssh` target: a host, or a `~/.ssh/config` alias such as `hetzner`. */
+    readonly target: string
+    /** Where checkouts live on that host; one directory per repo below it. */
+    readonly root: string
+    /** The repo's remote as `git` sees it there. Defaults to `origin`. */
+    readonly remote?: string
+  }
+}
+
 export interface Profile {
   /** The profile's own name; must match the file it was read from (§2). */
   readonly profile: string
@@ -278,6 +307,11 @@ export interface Profile {
    * programs on every PR.
    */
   readonly security?: { readonly scanners: readonly ProfileScanner[] }
+  /**
+   * §11: what a build runs on, and which tasks are heavy. Absent means one local
+   * host and nothing heavy — the ledger still records every build.
+   */
+  readonly builds?: ProfileBuilds
   /**
    * §3: the board to mirror. Its presence is what installs `tracker-sync`, for
    * `security`'s reason — a profile that named no board has nothing to poll, and
@@ -467,6 +501,35 @@ export const purgeLimitsOf = (profile: Pick<Profile, 'limits'>): PurgeLimits => 
 }
 
 /** An empty list would install the routine and then scan nothing, which reads as coverage it does not have. */
+/**
+ * §11's block. A task class is the text before a task's first `:` (`task.ts`),
+ * so a class containing one would be a class no task could ever have: refused at
+ * load rather than silently routing nothing.
+ */
+const buildClass = (): Schema<string> =>
+  refine(
+    text(40),
+    (value) => value.length > 0 && !value.includes(':') && !value.includes(' '),
+    'a task class: the text before a task\'s first ":", with no spaces',
+  )
+
+const remoteBuildBlock = (): Schema<NonNullable<ProfileBuilds['remote']>> =>
+  objectAs<NonNullable<ProfileBuilds['remote']>>()({
+    target: text(200),
+    // An absolute path: a relative root would put each build's checkout
+    // wherever the remote shell happened to start, which is not a directory
+    // anyone can find again.
+    root: refine(text(400), (value) => value.startsWith('/'), 'an absolute path on the remote host'),
+    remote: optional(text(120)),
+  })
+
+const buildsBlock = (): Schema<ProfileBuilds> =>
+  objectAs<ProfileBuilds>()({
+    host: optional(oneOf(profileBuildHosts)),
+    heavy: optional(array(buildClass(), { maxItems: 20 })),
+    remote: optional(remoteBuildBlock()),
+  })
+
 const securityBlock = (): Schema<{ readonly scanners: readonly ProfileScanner[] }> =>
   objectAs<{ readonly scanners: readonly ProfileScanner[] }>()({
     scanners: refine(
@@ -570,6 +633,7 @@ export const profileSchema = (): Schema<Profile> =>
     forge: optional(forgeBlock()),
     notify: optional(notifyBlock()),
     security: optional(securityBlock()),
+    builds: optional(buildsBlock()),
     trackers: optional(trackerBlock()),
     limits: optional(limitsBlock()),
     tickIntervalMs: optional(positiveInt()),
