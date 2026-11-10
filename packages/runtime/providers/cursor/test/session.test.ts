@@ -196,6 +196,39 @@ test('a failed turn says why, and is retryable', async () => {
   await provider.stop(handle)
 })
 
+test('a turn the CLI reports as failed is failed even when it gives no reason', async () => {
+  const { provider, spec } = harness()
+  const handle = await provider.start(spec())
+  const seen = watch(provider, handle)
+  await seen.until(ended(handle.briefTurnId))
+
+  const turnId = await provider.send(handle, turn('MUTE please'))
+  const done = await seen.until(ended(turnId))
+  assert.equal(done.type === 'turn.ended' && done.reason, 'failed')
+  assert.equal(done.type === 'turn.ended' && done.error, 'cursor-agent reported a failed turn')
+
+  const error = await seen.until((event) => event.type === 'error')
+  assert.deepEqual(error, { type: 'error', message: 'cursor-agent reported a failed turn', retryable: true })
+  await provider.stop(handle)
+})
+
+test('a turn that writes more to stderr than a pipe holds still finishes', async () => {
+  const { provider, spec } = harness()
+  const handle = await provider.start(spec())
+  const seen = watch(provider, handle)
+  await seen.until(ended(handle.briefTurnId))
+
+  const turnId = await provider.send(handle, turn('NOISY please'))
+  const done = await Promise.race([
+    seen.until(ended(turnId)),
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 5_000).unref()),
+  ])
+  // Stop first either way: a blocked child would otherwise keep the test process alive.
+  await provider.stop(handle)
+  assert.ok(done !== undefined, 'the turn never ended: cursor-agent is blocked writing to an undrained stderr')
+  assert.equal(done.type === 'turn.ended' && done.reason, 'completed')
+})
+
 test('a process that exits without a result fails its turn and names the exit', async () => {
   const { provider, spec } = harness()
   const handle = await provider.start(spec())

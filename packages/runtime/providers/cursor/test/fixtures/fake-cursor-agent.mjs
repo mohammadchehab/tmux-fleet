@@ -8,7 +8,7 @@
  * executable bit.
  */
 
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, writeSync } from 'node:fs'
 
 const CHAT_ID = '3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d'
 const args = process.argv.slice(2)
@@ -56,6 +56,19 @@ if (prompt.includes('INTERRUPT')) {
 } else if (prompt.includes('FAIL')) {
   emit({ type: 'result', subtype: 'error', is_error: true, duration_ms: 12, result: 'the model refused', session_id: sessionId })
   process.exit(1)
+} else if (prompt.includes('MUTE')) {
+  // A failure the CLI reports without a word of explanation.
+  emit({ type: 'result', subtype: 'error', is_error: true, duration_ms: 12, result: '', session_id: sessionId })
+  process.exit(1)
+} else if (prompt.includes('NOISY')) {
+  // Far more on stderr than a pipe buffers (64 KiB on macOS and Linux), written
+  // before the result: a parent that never reads stderr leaves this write, and so
+  // the process, blocked forever. `writeSync` blocks on a full pipe the way a
+  // native CLI's write(2) does; `process.stderr.write` is asynchronous on a macOS
+  // pipe and would hide the bug by buffering in this process instead.
+  writeSync(2, 'x'.repeat(1024 * 1024))
+  emit({ type: 'result', subtype: 'success', is_error: false, duration_ms: 34, result: 'done', session_id: sessionId })
+  process.exit(0)
 } else {
   emit({ type: 'tool_call', subtype: 'started', call_id: 'call-1', tool_call: { shellToolCall: { command: 'rg TODO' } } })
   emit({ type: 'tool_call', subtype: 'completed', call_id: 'call-1', tool_call: { shellToolCall: { command: 'rg TODO' } } })
