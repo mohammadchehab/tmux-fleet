@@ -696,3 +696,65 @@ describe('the sweep reads once and hashes what it read (§5.4)', () => {
     assert.equal((await one.run(scheduleContext())).inputsHash, (await two.run(scheduleContext())).inputsHash)
   })
 })
+
+describe('a peer’s long-lived branch carries several PRs (TASK-58, §9)', () => {
+  // #145 gives each writing peer one branch for every PR it opens, so a merged PR and
+  // an open one share a head — and the checkout is the peer's, in use, for the second.
+  const merged = prRow({ number: 12, merged: true })
+  const next = parse(pullRequestSchema(), { ...prRow({ merged: false }), number: 13 })
+  const forge = () => fakeForge({ rows: [merged, next], states: { 13: 'open' } })
+
+  it('keeps the checkout in the sweep while another PR on the branch is open', async () => {
+    const seen = harness(forge(), { projection: [merged, next], worktrees: [worktreeRow()] })
+    const outcome = await seen.run(scheduleContext())
+
+    assert.deepEqual(seen.worktrees.removed, [])
+    assert.deepEqual(typesOf(seen.store), [])
+    assert.equal(outcome.actions, 0)
+    assert.deepEqual(seen.forge.asked, [13], 'the merged PR is the log’s; the other one is the forge’s to answer')
+  })
+
+  it('keeps the checkout on the merge event while another PR on the branch is open', async () => {
+    const seen = harness(forge(), { projection: [merged, next], worktrees: [worktreeRow()] })
+    await seen.run(eventContext(workMerged()))
+
+    assert.deepEqual(seen.worktrees.removed, [])
+    assert.deepEqual(typesOf(seen.store), [])
+  })
+
+  it('keeps the checkout when the forge cannot say what the other PR is', async () => {
+    const seen = harness(fakeForge({ rows: [merged, next], fail: [13] }), {
+      projection: [merged, next],
+      worktrees: [worktreeRow()],
+    })
+    await seen.run(eventContext(workMerged()))
+    await seen.run(scheduleContext())
+
+    assert.deepEqual(seen.worktrees.removed, [])
+  })
+
+  it('still removes it once every other PR on the branch is closed', async () => {
+    const seen = harness(fakeForge({ rows: [merged, next], states: { 13: 'closed' } }), {
+      projection: [merged, next],
+      worktrees: [worktreeRow()],
+    })
+    await seen.run(scheduleContext())
+
+    assert.deepEqual(seen.worktrees.removed, [PATH])
+  })
+})
+
+describe('an active checkout is somebody’s, and nothing has said otherwise (TASK-58, §9)', () => {
+  // Nothing emits `worktree.classified`, so a row stays what `worktree.created` made it:
+  // `active`, with `dirty`/`unpushed`/`holders` at their defaults. Those defaults are
+  // not a scan's answer, and a removal decided on them is a guess.
+  it('keeps an `active` checkout on the sweep, and on the merge event, without a word to the owner', async () => {
+    const seen = harness(fakeForge(), { projection: [prRow()], worktrees: [worktreeRow({ class: 'active' })] })
+    await seen.run(scheduleContext())
+    await seen.run(eventContext(workMerged()))
+
+    assert.deepEqual(seen.worktrees.removed, [])
+    assert.deepEqual(typesOf(seen.store), [])
+    assert.deepEqual(seen.mailbox.sent, [])
+  })
+})
