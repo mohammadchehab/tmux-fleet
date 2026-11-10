@@ -30,9 +30,21 @@ export type ProfileName = string
 const PROFILE_NAME = /^[a-z][a-z0-9-]*$/
 
 export interface PathRoots {
-  /** `~` by default; a test points it at a temp directory. */
+  /**
+   * `~` by default; a test points it at a temp directory. Naming it also settles
+   * `configHome` — see there.
+   */
   readonly home?: string
-  /** `$XDG_CONFIG_HOME`, `~/.config` by default. */
+  /**
+   * `$XDG_CONFIG_HOME`, `~/.config` by default — but `~/.config` under a `home`
+   * this argument named.
+   *
+   * A caller that passes roots is saying "this is the tree"; it is a test, or a
+   * command that was handed a home. Reading `$XDG_CONFIG_HOME` anyway put the
+   * profile of a sandboxed `{home}` fleet somewhere in the real user's config
+   * whenever the variable happened to be set — which is how two suites passed
+   * on a laptop and failed on a CI runner that exports it.
+   */
   readonly configHome?: string
 }
 
@@ -52,6 +64,8 @@ export interface ProfilePaths {
   readonly daemonDir: string
   readonly socketPath: string
   readonly pidPath: string
+  /** `daemon/fleetd.lock` — the pid lock one live fleetd holds on the store. */
+  readonly lockPath: string
   readonly logPath: string
   /** `peers/<peerId>/state.md` (§8). */
   readonly peersDir: string
@@ -81,7 +95,9 @@ export const parseProfileName = (name: string): ProfileName => {
 export const profilePaths = (profile: ProfileName, roots: PathRoots = {}): ProfilePaths => {
   const name = parseProfileName(profile)
   const home = roots.home ?? homedir()
-  const configHome = roots.configHome ?? process.env.XDG_CONFIG_HOME ?? join(home, '.config')
+  const configHome =
+    roots.configHome ??
+    (roots.home === undefined ? (process.env.XDG_CONFIG_HOME ?? join(home, '.config')) : join(home, '.config'))
   const stateDir = join(home, '.fleet', name)
   const daemonDir = join(stateDir, 'daemon')
   return {
@@ -94,6 +110,7 @@ export const profilePaths = (profile: ProfileName, roots: PathRoots = {}): Profi
     daemonDir,
     socketPath: join(daemonDir, 'fleetd.sock'),
     pidPath: join(daemonDir, 'fleetd.pid'),
+    lockPath: join(daemonDir, 'fleetd.lock'),
     logPath: join(daemonDir, 'fleetd.log'),
     peersDir: join(stateDir, 'peers'),
     transcriptsDir: join(stateDir, 'transcripts'),

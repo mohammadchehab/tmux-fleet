@@ -3,8 +3,10 @@
  * `fleetd` the process (§2): parse the profile name, compose, `up`, stay alive.
  *
  * Everything interesting is in `compose.ts`; this file is the smallest thing
- * that can hold a daemon — argv in, signals out — and it is the only place that
- * calls `process.exit`, so `fleet up`'s failure is an exit code a shell can see.
+ * that can hold a daemon — argv in, signals out — and its failure is an exit
+ * code a shell can see. `fleet down` ends the process the same way a signal
+ * does, from `compose`'s `onDown`, so there are exactly two roads out and both
+ * close every port first.
  *
  * Usage: `fleetd <profile>` or `FLEET_PROFILE=<profile> fleetd`. The profile is
  * a name, never a path: `~/.config/fleet/profiles/<profile>.yaml` is fixed by
@@ -41,6 +43,7 @@ const main = async (): Promise<void> => {
         await composed.daemon.down()
         await composed.server.close()
         await composed.store.close()
+        await composed.lock.release()
         process.exit(0)
       } catch (error) {
         console.error(`fleetd: failed to shut down cleanly: ${String(error)}`)

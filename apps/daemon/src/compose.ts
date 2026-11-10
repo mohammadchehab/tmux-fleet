@@ -70,6 +70,7 @@ import { createProviderEnv } from './deepinfra-env.ts'
 import { createExecutorRouter, type KindExecutor } from './executor.ts'
 import { createDaemonExecutors } from './executors.ts'
 import { createDaemonJudge } from './judge.ts'
+import { acquireFleetLock, type FleetLock } from './lock.ts'
 import { createNotifyFactory, notifierFor } from './notify.ts'
 import { createPrBabysitFactory } from './pr-babysit.ts'
 import { loadProfile, type Profile, type TrackerProfile } from './profile.ts'
@@ -160,6 +161,13 @@ export interface ComposeDeps {
    * or touches a board.
    */
   readonly tracker?: Tracker
+  /**
+   * How the process ends once `down` has been answered. Defaults to exiting:
+   * a daemon that has said "stopped" and then stayed alive is a daemon the next
+   * `up` cannot start on the same store. A test passes its own, because exiting
+   * would take the test runner with it.
+   */
+  readonly exit?: () => void
 }
 
 export interface Composed {
@@ -179,6 +187,12 @@ export interface Composed {
    * testing a log nothing is listening to (§5.2).
    */
   readonly append: EventSink['append']
+  /**
+   * The store's pid lock. Exposed so every way a composed fleet stops — a
+   * signal, a `down` over the socket, a test's own teardown — gives the store
+   * back the same way, instead of each one inventing a release.
+   */
+  readonly lock: FleetLock
 }
 
 /**
@@ -261,6 +275,14 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   const paths = profilePaths(deps.profileName, deps.roots)
   const profile = await loadProfile(paths.profileFile, paths.profile)
   for (const dir of persistentDirs(paths)) await mkdir(dir, { recursive: true })
+
+  // Before the store, not after: two fleetds that both open it have already
+  // interleaved on it, and the point of the lock is that the second one never
+  // gets that far. A compose that throws from here on leaves the file behind
+  // with this process's pid in it, which is the state the lock's next starter
+  // already knows how to read — the pid is dead as soon as this process is.
+  const lock = await acquireFleetLock(paths.lockPath)
+  const stop = deps.exit ?? (() => process.exit(0))
 
   const store = await (deps.openStore ?? openSqliteStore)({ path: paths.storePath, clock })
   await store.migrate()
@@ -472,6 +494,11 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
         await daemon.down()
         await server.close()
         await store.close()
+        await lock.release()
+        // The last step, and the reason `down` means what it says: every port
+        // is closed, so nothing is left to drain and the process can end here
+        // rather than wait for a signal that will never come.
+        stop()
       })()
     },
     onError: (line, response) => {
@@ -480,7 +507,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     },
   })
 
-  return { daemon, server, store, supervisor, scheduler, append: wake.append }
+  return { daemon, server, store, supervisor, scheduler, append: wake.append, lock }
 }
 
 /** The log path a supervisor writes to; exported so the log line and §2's layout cannot drift apart. */
