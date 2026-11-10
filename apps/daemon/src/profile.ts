@@ -505,9 +505,13 @@ export const loadProfile = async (file: string, expectedName: string): Promise<P
   try {
     source = await readFile(file, 'utf8')
   } catch (cause) {
-    throw fleetError('not_found', `no profile at ${file}; \`fleet init ${expectedName}\` writes a starter one`, {
-      cause,
-    })
+    // Not "run fleet init": there is no such command. The file is the whole
+    // remedy, so the sentence names it and what it has to say.
+    throw fleetError(
+      'not_found',
+      `no profile at ${file}: write it (it names the fleet's repos and its peers) and run fleet up ${expectedName} again`,
+      { cause },
+    )
   }
 
   let parsed: unknown

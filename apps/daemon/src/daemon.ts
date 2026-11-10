@@ -216,6 +216,13 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     },
 
     async peek(input) {
+      // A peer this fleet does not have is a typo, not an empty mailbox: both
+      // render as "no messages", and only one of them is worth acting on.
+      if ((await read.peers.get(input.peer)) === undefined) {
+        throw fleetError('not_found', `no peer ${String(input.peer)} in this fleet; 'fleet ls' lists the peers`, {
+          details: { peerId: String(input.peer) },
+        })
+      }
       // `pending` is the unacked box: what the peer still has to act on, oldest
       // first, which is what `fleet peek` is for (§7). An `ack`ed message is
       // history and reads from the projection instead. Both are `Message` — the
