@@ -66,6 +66,18 @@ and its sha in a single request) followed by a fetch of only the refs that moved
 deterministic code — no model call, no tokens against anyone's cap. A task takes hours; learning of a claim up to a
 minute late costs nothing. Live chat between peers is the one thing this does not do well, and it is not a goal.
 
+Polling at scale has to stay cheap for GitHub and quiet on the network, so:
+
+- **A fleet branch is one commit, replaced.** Each publish is a parentless commit pushed over the last one, with a
+  lease on the sha the fleet last pushed. The branch is a current state, not a history, so a hundred fleets never
+  push a hundred growing histories.
+- **The heartbeat is pushed on change, or every 10 minutes.** Pace and capacity that did not move are not
+  re-published every poll; at 30 s for a hundred fleets that would be hundreds of thousands of commits a day.
+- **The interval adapts.** 30 s while this fleet has something pending (a bid, a claim, a decision), 5–10 min when
+  idle, and none while the laptop is idle or asleep.
+- **Every request says what it is.** Git's HTTP user agent is `tmux-fleet/<version> (fleet-coord)`, because a
+  fixed-interval poll to one host is what beaconing looks like to an endpoint agent.
+
 ### 2.3 A machine goes offline
 
 - **Its own work continues.** A fleet's store is local; its peers keep working on what they hold. Pushes queue and go

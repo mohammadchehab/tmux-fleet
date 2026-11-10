@@ -480,3 +480,83 @@ export interface PeerSessionLease {
 export interface PeerSessions {
   acquire(peerId: PeerId): Promise<Result<PeerSessionLease, FleetError>>
 }
+
+// ------------------------------------------------------------ coordination (shared-fleet.md §2)
+
+/**
+ * A ref in a shared fleet's coordination repository, named without `refs/heads/`
+ * (`eng-07/fleet/alice`, `eng-07/claim/7f3a9c…`), and the commit it points at.
+ */
+export interface CoordinationRef {
+  readonly name: string
+  readonly sha: Sha
+}
+
+/**
+ * What one ref holds: a flat set of named files. Flat on purpose — a fleet
+ * branch, a claim and a rotation each carry a handful of small documents, and
+ * a tree with no directories has no path a payload can climb out of.
+ */
+export type CoordinationFiles = Readonly<Record<string, string>>
+
+/**
+ * The medium shared fleets coordinate through (shared-fleet.md §2): one
+ * repository every member's fleet reads and writes, and nothing listening on any
+ * laptop. Implemented by `@fleet/integrations-coordination` over `git` and
+ * injected by `apps/daemon`; the poll loop, the pace publisher and the key
+ * manager see only this.
+ *
+ * Every ref has one writer (§2.1), and the port says which kind each call is for:
+ * `publish` replaces a ref this fleet owns, `create` makes one that may exist only
+ * once, `release` deletes one this fleet decided on. All three are pinned to the
+ * sha the caller last saw, so a write decided on stale inputs fails instead of
+ * landing — the same rule as `PullRequests.merge`.
+ */
+export interface Coordination {
+  /**
+   * Every ref and its sha, in one request (§2.2's poll), optionally only those
+   * under `prefix` (`eng-07/`). A ref's absence here is a fact: the list is the
+   * whole remote, not a page.
+   */
+  refs(prefix?: string): Promise<readonly CoordinationRef[]>
+
+  /**
+   * The files a ref holds, fetched only when `ref.sha` is not already local, so
+   * a poll that saw nothing move costs nothing. The answer names the sha it read,
+   * which is newer than `ref.sha` when the ref moved in between. `undefined` when
+   * the ref is gone.
+   */
+  read(ref: CoordinationRef): Promise<{ readonly sha: Sha; readonly files: CoordinationFiles } | undefined>
+
+  /**
+   * Replace a ref this fleet owns with one parentless commit holding `files`
+   * (§2.1: a fleet branch is a current state, not a history, so a hundred fleets
+   * do not push a hundred histories). `expected` is the sha the caller last
+   * published, `undefined` for a ref that must not exist yet. Anything else on the
+   * remote is a `head_moved` `FleetError` and nothing is written.
+   */
+  publish(input: {
+    readonly ref: string
+    readonly files: CoordinationFiles
+    readonly expected: Sha | undefined
+    readonly message: string
+  }): Promise<Sha>
+
+  /**
+   * Create a ref that may exist only once — a claim, a rotation (§2.1). Of any
+   * number of simultaneous creates exactly one is `created`; every other caller
+   * gets `created: false` and the winner's sha, never an error, because losing
+   * the race is the expected outcome for all but one.
+   */
+  create(input: {
+    readonly ref: string
+    readonly files: CoordinationFiles
+    readonly message: string
+  }): Promise<{ readonly created: boolean; readonly sha: Sha }>
+
+  /**
+   * Delete a ref, pinned to `expected` (§2.3: releasing a stale claim). A ref that
+   * moved is `head_moved` and stays; one already gone is `not_found`.
+   */
+  release(ref: string, expected: Sha): Promise<void>
+}
