@@ -38,11 +38,22 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
     { to: 'peer-1', kind: 'nudge', body: 'still red', briefVersion: 3 },
   ],
   peek: [{ peer: 'peer-1' }, { peer: 'peer-1', limit: 20 }],
+  usage: [
+    {
+      peerId: 'peer-1',
+      contextTokens: 1200,
+      contextLimit: 200000,
+      inputTokens: 900,
+      outputTokens: 300,
+      cachedTokens: 800,
+      toolCalls: { grep: 1, glob: 0, read: 2, codegraph: 3 },
+    },
+  ],
   decide: [{ id: 'dec_0123456789abcdef', decision: 'yes' }, { id: 'dec_0123456789abcdef', decision: 'no', note: 'later' }],
 }
 
-test('the method set is the six a client builds against', () => {
-  assert.deepEqual([...daemonMethods], ['up', 'down', 'ls', 'send', 'peek', 'decide'])
+test('the method set is the six a client builds against, and the usage report a hook sends', () => {
+  assert.deepEqual([...daemonMethods], ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage'])
 })
 
 for (const method of daemonMethods) {

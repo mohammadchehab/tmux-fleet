@@ -486,6 +486,10 @@ projection holds `open | confirmed | dismissed | fixed` with the decision that m
    from the provider's `usage()`. The `token-report` projection gives, per peer and role, tokens per Work item, the
    share of exploration done through codegraph, and redirect counts. Baseline: run a fixed set of tasks with the guard
    `off` then `enforce`; the stated target is a measured drop in tokens per completed Work item, reported, not assumed.
+   For a peer whose CLI has hooks, `apps/hooks/usage-report` is the Stop hook that does this: it measures the turn
+   from the transcript (tokens, and Grep/Glob/Read/codegraph calls by tool name) and sends the daemon's `usage` call
+   (`FLEET_PEER`, `FLEET_SOCKET`, `FLEET_CONTEXT_LIMIT` from the profile, optional `FLEET_WORK_ID`); it never fails the
+   peer, and it skips, with the reason, rather than guess a missing context limit.
 
 Failure modes: if `codegraph-ensure` fails, the session starts without the guard and `index.failed` is raised as a
 failure notification, since an unindexed peer silently costs more.
