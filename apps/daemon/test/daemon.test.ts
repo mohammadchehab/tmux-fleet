@@ -22,8 +22,12 @@ import {
   ok,
   persistentDirs,
   profilePaths,
+  type BriefId,
   type DecisionId,
   type PeerId,
+  type Repo,
+  type Seq,
+  type Sha,
   type SessionId,
   type WorkId,
   type TurnId,
@@ -114,17 +118,19 @@ const fakeSupervisor = (
   }
 }
 
-const fakeScheduler = (): Scheduler & { readonly log: readonly string[] } => {
+const fakeScheduler = (order: string[] = []): Scheduler & { readonly log: readonly string[] } => {
   const log: string[] = []
   return {
     log,
     plan: { routines: [], installed: [], unimplemented: [] },
     async start() {
       log.push('scheduler.start')
+      order.push('scheduler.start')
       return []
     },
     stop() {
       log.push('scheduler.stop')
+      order.push('scheduler.stop')
     },
     async tick() {
       return []
@@ -138,13 +144,46 @@ const fakeScheduler = (): Scheduler & { readonly log: readonly string[] } => {
   }
 }
 
-const harness = async (options: { readonly reachable?: boolean } = {}) => {
+/** A Work whose PR went green and merged inside one downtime (§5.1, §5.2). */
+const mergedWhileDown = (): readonly AppendEvent[] => {
+  const id = 'wrk_0000000000000009' as WorkId
+  const repo = 'acme/widgets' as Repo
+  const pr = { repo, number: 9 }
+  const headSha = 'b'.repeat(40) as Sha
+  const ts = '2026-11-10T09:00:00.000Z'
+  return [
+    { ts, type: 'work.proposed', subject: id, actor: 'user', data: { workId: id, title: 'merged while nobody watched', dependsOn: [] } },
+    { ts, type: 'work.ready', subject: id, actor: 'scheduler', data: { workId: id } },
+    { ts, type: 'work.assigned', subject: id, actor: 'pm', data: { workId: id, peerId: 'engineer-1' as PeerId, briefId: 'brf_0000000000000009' as BriefId, briefVersion: 1 } },
+    { ts, type: 'pr.opened', subject: `${repo}#9`, actor: 'scheduler', data: { pr, base: 'main', head: `work/${id}`, headSha, workId: id } },
+    { ts, type: 'pr.checks_changed', subject: `${repo}#9`, actor: 'scheduler', data: { pr, headSha, state: 'passing', failing: [] } },
+    { ts, type: 'pr.review_changed', subject: `${repo}#9`, actor: 'scheduler', data: { pr, headSha, state: 'approved' } },
+    { ts, type: 'pr.merged', subject: `${repo}#9`, actor: 'scheduler', data: { pr, headSha } },
+  ]
+}
+
+const harness = async (
+  options: {
+    readonly reachable?: boolean
+    /** Events that landed while fleetd was down, written before the daemon exists. */
+    readonly seed?: readonly AppendEvent[]
+    /** Every write the daemon makes, in the order the scheduler's own calls allow it. */
+    readonly order?: string[]
+  } = {},
+) => {
   const paths = pathsFor()
   for (const dir of persistentDirs(paths)) await mkdir(dir, { recursive: true })
   const store: EventStore = await openSqliteStore({ path: paths.storePath })
   await store.migrate()
+  if (options.seed !== undefined && options.seed.length > 0) await store.append(options.seed)
   const supervisor = fakeSupervisor(options)
-  const scheduler = fakeScheduler()
+  const scheduler = fakeScheduler(options.order)
+  // The daemon writes through this, the way `compose.ts` hands it the waking sink:
+  // what it records is what the daemon actually appended, and when.
+  const append = (batch: readonly AppendEvent[]): Promise<readonly Seq[]> => {
+    for (const event of batch) options.order?.push(event.type)
+    return store.append(batch)
+  }
   const mailbox = createMailbox({
     store: { append: (batch) => store.append(batch), messages: store.reader().messages },
     sessions: supervisor,
@@ -160,7 +199,7 @@ const harness = async (options: { readonly reachable?: boolean } = {}) => {
     logDir: join(paths.artifactsDir, 'builds'),
     process: async () => ({ code: 0, durationMs: 1 }),
   })
-  const daemon = createDaemon({ profile: profile(), paths, store, supervisor, mailbox, scheduler, ledger, pid: 99 })
+  const daemon = createDaemon({ profile: profile(), paths, store, append, supervisor, mailbox, scheduler, ledger, pid: 99 })
   return { daemon, store, supervisor, scheduler, paths }
 }
 
@@ -191,6 +230,36 @@ test('up starts the supervisor before the scheduler, and down stops them the oth
   assert.deepEqual(scheduler.log, ['scheduler.start', 'scheduler.stop'])
   assert.deepEqual(supervisor.log, ['supervisor.start', 'supervisor.stop'])
   assert.equal(daemon.running, false)
+})
+
+test('up catches up a Work whose PR merged while fleetd was down, after the scheduler starts', async () => {
+  const order: string[] = []
+  const { daemon, store } = await harness({ seed: mergedWhileDown(), order })
+  const workId = 'wrk_0000000000000009' as WorkId
+  assert.equal((await store.reader().work.get(workId))?.state, 'assigned', 'nobody translated the PR onto the Work')
+
+  await daemon.up()
+
+  assert.equal((await store.reader().work.get(workId))?.state, 'merged')
+  // The ordering is the point: the waking sink's scheduler is late-bound, so a write
+  // made before `scheduler.start()` would be committed and never woken (`wake.ts`).
+  assert.ok(
+    order.indexOf('scheduler.start') < order.indexOf('work.merged'),
+    `the catch-up is written after the scheduler is up, not before: ${order.join(', ')}`,
+  )
+  await daemon.down()
+})
+
+test('a second up after the catch-up writes no second work.merged', async () => {
+  const { daemon, store } = await harness({ seed: mergedWhileDown() })
+  await daemon.up()
+  await daemon.down()
+
+  await daemon.up()
+
+  const all = (await store.read(0, 10_000)).map((event) => event.type)
+  assert.equal(all.filter((type) => type === 'work.merged').length, 1, 'the restart found the Work caught up')
+  await daemon.down()
 })
 
 test('ls reports the profile peers with the state the store knows', async () => {

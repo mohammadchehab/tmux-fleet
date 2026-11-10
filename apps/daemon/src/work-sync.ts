@@ -35,6 +35,14 @@
  * - **A failed append does not fail the wake.** The triggering event is already
  *   committed; throwing would report "your write failed" about someone else's write.
  *   `createWakingSink`'s `onError` is where a gap like that is already reported.
+ *
+ * **A listener only hears what is appended while it is attached.** A `pr.merged` that
+ * landed while fleetd was down is in the log and in projections and was never turned
+ * into a `work.merged`: the Work sits at `mergeable` with its PR merged, no wake will
+ * ever mention it again, and the fleet's view of its own work is wrong in the one
+ * direction that matters. So the rules have a second caller, `catchUpWork`, which
+ * replays them against the projections at startup — same rules, same guards, so the
+ * two paths cannot disagree about what a log implies (§5.1).
  */
 
 import type { Clock, PeerId, SessionId, Timestamp } from '@fleet/foundation-core'
@@ -83,6 +91,77 @@ const workStarted = (ts: Timestamp, work: Work, sessionId?: SessionId): AppendEv
   data: { workId: work.workId, peerId: work.assignee as PeerId, ...(sessionId === undefined ? {} : { sessionId }) },
 })
 
+/** `work.review_requested`, if the Work is not yet past the point of asking. */
+const reviewRequestedFor = async (
+  deps: WorkSyncDeps,
+  ts: Timestamp,
+  workId: WorkId,
+  pr: { readonly repo: PullRequest['repo']; readonly number: number },
+): Promise<readonly AppendEvent[]> => {
+  const work = await deps.read.work.get(workId)
+  // An assignee is required by the event's own schema, and a Work nobody owns has
+  // nobody to have asked for the review.
+  if (work === undefined || work.assignee === undefined || !notYetReviewable(work)) return []
+  return [
+    {
+      ts,
+      type: 'work.review_requested',
+      subject: work.workId,
+      actor: `peer:${String(work.assignee)}`,
+      data: { workId: work.workId, peerId: work.assignee, pr },
+    },
+  ]
+}
+
+/** `work.mergeable`, if both halves of §10's merge condition are green on the PR row. */
+const mergeableFor = async (
+  deps: WorkSyncDeps,
+  ts: Timestamp,
+  pr: PullRequest,
+): Promise<readonly AppendEvent[]> => {
+  if (pr.workId === undefined || !green(pr)) return []
+  const work = await deps.read.work.get(pr.workId as WorkId)
+  if (work === undefined || !notYetMergeable(work)) return []
+  return [
+    {
+      ts,
+      type: 'work.mergeable',
+      subject: work.workId,
+      actor: 'scheduler',
+      data: { workId: work.workId, pr: prOf(pr), headSha: pr.headSha },
+    },
+  ]
+}
+
+/** `work.merged`, if the projection says the PR merged and the Work has not caught up. */
+const mergedFor = async (
+  deps: WorkSyncDeps,
+  ts: Timestamp,
+  pr: PullRequest,
+  mergeSha?: PullRequest['headSha'],
+): Promise<readonly AppendEvent[]> => {
+  // The rule is `pr.merged` and the projection agreeing, not the event alone: the
+  // catch-up below reaches this with no event at all, and a PR row that has not
+  // merged is not evidence that a Work merged.
+  if (pr.workId === undefined || !pr.merged) return []
+  const work = await deps.read.work.get(pr.workId as WorkId)
+  if (work === undefined || !open(work) || work.state === 'merged') return []
+  return [
+    {
+      ts,
+      type: 'work.merged',
+      subject: work.workId,
+      actor: 'scheduler',
+      data: {
+        workId: work.workId,
+        pr: prOf(pr),
+        headSha: pr.headSha,
+        ...(mergeSha === undefined ? {} : { mergeSha }),
+      },
+    },
+  ]
+}
+
 /**
  * The transitions one committed event implies, as events to append. Pure but for
  * the reads: every rule is a function of the event and the two projections.
@@ -120,57 +199,20 @@ const transitionsFor = async (
   if (event.type === 'pr.opened') {
     const workId = event.data.workId
     if (workId === undefined) return []
-    const work = await deps.read.work.get(workId as WorkId)
-    // An assignee is required by the event's own schema, and a Work nobody owns has
-    // nobody to have asked for the review.
-    if (work === undefined || work.assignee === undefined || !notYetReviewable(work)) return []
-    return [
-      {
-        ts,
-        type: 'work.review_requested',
-        subject: work.workId,
-        actor: `peer:${String(work.assignee)}`,
-        data: { workId: work.workId, peerId: work.assignee, pr: event.data.pr },
-      },
-    ]
+    return reviewRequestedFor(deps, ts, workId as WorkId, event.data.pr)
   }
 
   if (event.type === 'pr.checks_changed' || event.type === 'pr.review_changed') {
     // Either order, one `work.mergeable`: see the header.
     const pr = await findPr(deps, event.data.pr)
-    if (pr === undefined || pr.workId === undefined || !green(pr)) return []
-    const work = await deps.read.work.get(pr.workId as WorkId)
-    if (work === undefined || !notYetMergeable(work)) return []
-    return [
-      {
-        ts,
-        type: 'work.mergeable',
-        subject: work.workId,
-        actor: 'scheduler',
-        data: { workId: work.workId, pr: prOf(pr), headSha: pr.headSha },
-      },
-    ]
+    if (pr === undefined) return []
+    return mergeableFor(deps, ts, pr)
   }
 
   if (event.type === 'pr.merged') {
     const pr = await findPr(deps, event.data.pr)
-    if (pr === undefined || pr.workId === undefined) return []
-    const work = await deps.read.work.get(pr.workId as WorkId)
-    if (work === undefined || !open(work) || work.state === 'merged') return []
-    return [
-      {
-        ts,
-        type: 'work.merged',
-        subject: work.workId,
-        actor: 'scheduler',
-        data: {
-          workId: work.workId,
-          pr: prOf(pr),
-          headSha: pr.headSha,
-          ...(event.data.mergeSha === undefined ? {} : { mergeSha: event.data.mergeSha }),
-        },
-      },
-    ]
+    if (pr === undefined) return []
+    return mergedFor(deps, ts, pr, event.data.mergeSha)
   }
 
   return []
@@ -199,4 +241,62 @@ export const syncWork = (deps: WorkSyncDeps): CommittedListener => async (event)
   const batch = await transitionsFor(deps, event)
   if (batch.length === 0) return
   await deps.append(batch)
+}
+
+/** Order the PRs a Work may have for a stable replay: repo, then number. */
+const byRef = (a: PullRequest, b: PullRequest): number =>
+  a.repo === b.repo ? a.number - b.number : a.repo < b.repo ? -1 : 1
+
+/**
+ * The decisive PR for a Work: a merged one, else a green one, else the last — so a
+ * stacked pair replaying in one batch writes one `work.merged`, not one per PR.
+ */
+const decisive = (prs: readonly PullRequest[]): PullRequest | undefined => {
+  const latestFirst = [...prs].reverse()
+  return latestFirst.find((pr) => pr.merged) ?? latestFirst.find(green) ?? latestFirst[0]
+}
+
+/**
+ * Replay the rules against the projections, once, at startup: what a `pr.merged`
+ * appended while this listener was detached would have written.
+ *
+ * `findPr` reads `pullRequests.all()` per event, and this walks the same projection
+ * in full. That is safe *here* and the reason is narrow: these are the fleet's own
+ * rows, written by its own projection, and a full read is the whole set. It is not a
+ * forge answer and it must not be copied into one — a forge list is a page, and a
+ * page cannot prove absence (the shape of the bug in #130). The bound is the fleet's
+ * PR count, which the log already holds in memory to project.
+ *
+ * Idempotent by construction: every rule above reads the Work's current state and
+ * returns nothing when it disagrees, so a restart after the translation already
+ * happened appends nothing, and one before it appends exactly what the wake would
+ * have. Runs as one batch so a Work never sits half-caught-up.
+ */
+export const catchUpWork = async (deps: WorkSyncDeps): Promise<readonly AppendEvent[]> => {
+  const ts = deps.clock.now()
+  const linked = (await deps.read.pullRequests.all())
+    .filter((pr) => pr.workId !== undefined)
+    .sort(byRef)
+
+  const byWork = new Map<string, PullRequest[]>()
+  for (const pr of linked) {
+    const key = pr.workId as string
+    const group = byWork.get(key)
+    if (group === undefined) byWork.set(key, [pr])
+    else group.push(pr)
+  }
+
+  const batch: AppendEvent[] = []
+  for (const [workId, prs] of byWork) {
+    const pr = decisive(prs)
+    if (pr === undefined) continue
+    batch.push(
+      ...(await reviewRequestedFor(deps, ts, workId as WorkId, prOf(pr))),
+      ...(await mergeableFor(deps, ts, pr)),
+      ...(await mergedFor(deps, ts, pr)),
+    )
+  }
+
+  if (batch.length > 0) await deps.append(batch)
+  return batch
 }
