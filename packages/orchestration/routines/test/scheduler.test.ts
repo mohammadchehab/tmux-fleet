@@ -343,6 +343,29 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     assert.equal(state.runs, 2, 'and at the day it is retried, once')
   })
 
+  it('runs on a later recurring trigger when the first one is not due', async () => {
+    // `standup` is a daily schedule; an `everyMinutes` override appends a heartbeat after it, so the
+    // routine's triggers are [schedule, heartbeat]. 03:17 never falls inside the minute these ticks cover.
+    const { state, factory } = flaky('standup')
+    state.failing = false
+    const { deps, clock } = harness({
+      config: { ...standupOnly, standup: { enabled: true, at: '03:17', everyMinutes: 1 } },
+      factories: { standup: factory },
+    })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    assert.equal(state.runs, 1, 'a routine that never ran is due')
+
+    clock.advance(60_000)
+    const records = await scheduler.tick()
+    assert.equal(state.runs, 2, 'the heartbeat is due, though the schedule listed before it is not')
+    assert.deepEqual(
+      records.map((record) => record.trigger),
+      ['heartbeat'],
+      'and the run is labelled with the trigger that fired',
+    )
+  })
+
   it('escalates at the third failure, naming the error and the next retry', async () => {
     const { deps, store, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
     const scheduler = createScheduler(deps)
