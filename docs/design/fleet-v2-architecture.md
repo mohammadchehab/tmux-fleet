@@ -590,7 +590,7 @@ What is true today, and why a peer cannot use Figma, Atlassian or Delivery Facto
    is the default and keeps today's shape, so every existing fixture still decodes. `http` and `sse` carry
    `{id, url, headers?}`. `url` must be `https`, or `http` on a loopback host; it may carry no userinfo and no query,
    because a credential in a URL ends up in logs that a header does not. The claude adapter maps the three to the SDK's
-   `stdio`, `http` and `sse` server types; the cursor adapter still refuses all of them.
+   `stdio`, `http` and `sse` server types; the cursor adapter keeps refusing them until the cursor section below is built.
 2. **A profile declares servers; it never holds a secret.** Same rule as `deepinfra-env.ts` and `jira-env.ts`: a profile
    is a file in the repo's reach, so it names *where* a secret lives.
 
@@ -665,11 +665,52 @@ server, the role and the *name* of the secret, never a value. A session that sta
 fact in its brief ("figma is unavailable this session"), so it does not guess. The same check runs again at each
 session start, because tokens expire mid-run: a failure appends `mcp.unavailable {peerId, serverId, status}`, which §6.1
 turns into one deduplicated notification asking the user for the credential, never a retry loop. `fleet up --check`
-runs the preflight and stops. A cursor peer whose role lists any server fails the check immediately, with the adapter's
-existing reason, instead of at `start`.
+runs the preflight and stops. A cursor peer whose role lists a server fails the check immediately, with the adapter's
+existing reason, instead of at `start`, until the cursor section below is built.
 
 The probe is network I/O, so it is a port (`McpProbe`) in `foundation/contracts` with its implementation in a new
 `integrations/mcp` package injected by `apps/daemon` (§1.1); the package needs its key in `PACKAGE_ORDER`.
+
+### Cursor
+
+Every fix in this series covers cursor too (decided by Mohammad), so MCP needs an answer for it, and the answer is "yes, by
+a different mechanism, and only for a read-only credential". What is known, from `cursor-agent` 2026.11.05's own help (not
+yet exercised):
+
+- There is **no `--mcp-config` flag**. MCP servers come from a file: `.cursor/mcp.json` in the workspace or
+  `~/.cursor/mcp.json` for the user (`cursor-agent mcp login` names both). `mcp list | list-tools | enable | disable`
+  manage them, `--approve-mcps` approves every configured server in a non-interactive run, and `--workspace <path>` and
+  `--add-dir <path>` choose the workspace and further roots. `-H/--header` is for requests to Cursor's own API, not to an
+  MCP server, so it is not the channel.
+- **Today a cursor peer is not MCP-free, it is MCP-ungoverned.** The adapter spawns `cursor-agent` with
+  `{...process.env, ...spec.env}` (`cursor/src/session.ts`), not the allowlist the claude adapter builds (§4), and the CLI
+  reads the user's own `~/.cursor/mcp.json` (which on this machine already lists servers). Whether a `-p` run loads those
+  servers without `--approve-mcps` is unverified. "Refuses `spec.mcp`" therefore guards one door while the user's
+  config stays open; PR C0 measures it and PR C1 closes it.
+- **Plan mode and MCP tools: unverified.** `--mode plan` is documented as "read-only/planning (analyze, propose plans, no
+  edits)". Whether it lets an MCP tool run, and whether a write-capable MCP tool is blocked in it, decides everything
+  below; PR C0 answers both with one run in a scratch workspace.
+
+What cursor needs, if PR C0 says plan mode permits read tools:
+
+1. **A per-peer workspace the daemon owns**, `~/.fleet/<profile>/peers/<peerId>/cursor/`, holding a `.cursor/mcp.json`
+   written at session start from the same resolved `SessionSpec.mcp` and mode `0600`, with the peer's real checkout
+   passed as `--add-dir`. It is not written into the repo or the worktree (§2, "On disk": nothing the fleet writes at
+   runtime lives there). The file is rewritten at every start and removed on `stop`.
+2. **The adapter spawns with the allowlisted env**, the same `buildChildEnv` rule as claude, so the user's `~/.cursor`
+   servers and the daemon's own tokens are not in reach; `HOME` handling is part of PR C1, because the CLI finds the user
+   file through it.
+3. **Scope is the credential, not the policy.** Cursor has no per-call hook (§4), so a `tools.allow/deny` rule cannot be
+   enforced there. A server is wired to a cursor peer only if its declaration says `readonly: true` and the token behind it
+   is read-only at the vendor; otherwise `fleet up` refuses with the reason. This is the rule the security review should
+   hold hardest, because on cursor nothing stands between the model and every tool the server offers.
+4. **`capabilities.mcp`** (`false | 'config-file'`) so the supervisor and `fleet up --check` ask the provider instead of
+   special-casing its id, and the conformance suite gets one MCP case that each provider either passes or declares absent.
+
+The login that cursor offers (`cursor-agent mcp login`, an OAuth flow stored by the CLI) is the one place a cursor peer
+could use Figma or Atlassian *without* a minted token, and it is exactly what the fleet otherwise avoids: it is the user's
+own, fully privileged session, shared with every cursor peer. It is **not** adopted here; if security-architect wants it,
+it is a separate decision with a scoped account, not a default.
 
 ### PR split
 
@@ -681,6 +722,8 @@ The probe is network I/O, so it is a port (`McpProbe`) in `foundation/contracts`
 | 3 | `integrations/mcp` probe, `fleet up` preflight and `--check`, `mcp.unavailable`, notification | M | engineer | architect |
 | 4 | role content: `designer`/`engineer` must read the design through the server and may not work from a screenshot path | S | architect | none |
 | 5 | (only if PR 0 says so) the daemon proxy | L | engineer | **security-architect**, own design |
+| C0 | spike: does a `-p --mode plan` run load `~/.cursor/mcp.json` servers, run an MCP read tool, and block a write tool; does `.cursor/mcp.json` accept an env or secret reference | S | engineer | security-architect reads the result |
+| C1 | cursor adapter: allowlisted env, per-peer workspace and `mcp.json` (0600), `--add-dir`, `capabilities.mcp`, `readonly` rule, a cursor case in the conformance suite and one in the adapter tests | M | engineer | **security-architect** |
 
 ### Not decided here
 
