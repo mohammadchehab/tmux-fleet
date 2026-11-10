@@ -1042,6 +1042,9 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       )
       // The peer's context now carries this version; the Mailbox compares against it (§7).
       updatePeer(db, peerId, { briefVersion: version }, ts)
+      // And the Work's current brief moves with it, so the `stale` rule (§5.2) compares against the brief
+      // actually published, not the one `work.assigned` first named. A no-op for a Work that does not exist.
+      updateWork(db, workId, { briefId, briefVersion: version }, ts)
       return
     }
     case 'brief.superseded': {

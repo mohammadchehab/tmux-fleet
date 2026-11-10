@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { PeerId } from '@fleet/foundation-core'
+import type { PeerId, WorkId } from '@fleet/foundation-core'
 import type { AppendEvent } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore } from '../src/index.ts'
 import { appendable, fixedClock, fixtureLog, tempStorePath } from './fixtures.ts'
@@ -297,6 +297,20 @@ test("a published brief is the version the Mailbox compares a reply against", as
   const peer = await store.reader().peers.get('engineer-1' as PeerId)
   // 0 means "no brief yet": the Mailbox reads `undefined` until one is published (§7, §12).
   assert.equal(peer?.briefVersion, 1)
+  await store.close()
+})
+
+test("a published brief becomes the Work's current brief without moving its state", async () => {
+  const store = await open()
+  await store.append([appendable('peer.registered.json'), appendable('work.proposed.json'), appendable('work.ready.json')])
+  const before = await store.reader().work.get('wrk_7f3a91c2d84b0e56' as WorkId)
+  assert.equal(before?.briefId, undefined)
+
+  await store.append([appendable('brief.published.json')])
+  const after = await store.reader().work.get('wrk_7f3a91c2d84b0e56' as WorkId)
+  assert.equal(after?.briefId, 'brf_3c4d5e6f708192a3')
+  assert.equal(after?.briefVersion, 1)
+  assert.equal(after?.state, before?.state, 'publishing a brief is not an assignment')
   await store.close()
 })
 

@@ -563,6 +563,25 @@ fast-merged (the §2.1-style rules of the port plan become a contract). A new co
 briefs (§5.2 `stale`), so two peers cannot build on different layouts, and the foundation stops being a surprise
 serial blocker because the PM sees it as a dependency edge and parallelises everything behind the contract.
 
+### 12.1 Briefs
+
+A **Brief** is the text a peer is judged against: immutable, versioned **per peer** (the version only goes up, and the
+peer's `briefVersion` is the one its context carries), and tied to the contract versions it was written against.
+It is never edited; a change is a new Brief and `brief.superseded` on the old one, which stays readable.
+
+- **Decide, then execute.** The PM's `assign` and `supersede_brief` actions carry the complete `BriefHandoff` (§5.2),
+  because `decide` is pure and cannot publish. `orchestration/briefs` is their executor: it checks the Work (`ready`,
+  or for a supersede, still on the brief the decision was made against) and that the version goes up, appends
+  `brief.published` + `work.assigned` (or `brief.superseded`) in one atomic batch, then sends the brief through the
+  Mailbox as a `brief` message citing that version. Delivery and wake are the Mailbox's and the daemon's.
+- **Events first, then the send.** A failed send leaves a published brief and an assigned Work, which is true; the
+  retry is safe because a brief that is already the Work's current one is treated as done and the send is skipped when
+  the same brief is already in the peer's mailbox.
+- **The store follows `brief.published`:** the peer's `briefVersion` (for the Mailbox's stale check, §7) and the
+  Work's current `briefId`/`briefVersion` (for the `stale` rule), without moving the Work's state.
+- Contract gating stays the PM's (`needs_contract`): the executor does not re-derive it; a `ContractReader` port is
+  the follow-up if the PM and the executor ever need to disagree-check.
+
 ## 13. Problems → solutions
 
 | problem | how v2 solves it |
