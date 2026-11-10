@@ -49,6 +49,18 @@ const depsOf = (overrides: Partial<FakeDeps> = {}): FakeDeps => ({
   ...overrides,
 })
 
+/**
+ * The one entry a fake recorded. Each body asks its port once per run, so a test
+ * reads `only(...)` rather than `[0]`: a body that asked twice, or not at all,
+ * fails at the read instead of quietly handing the test `undefined`.
+ */
+const only = <T>(items: readonly T[]): T => {
+  assert.equal(items.length, 1, `expected one recorded call, got ${String(items.length)}`)
+  const [one] = items
+  assert.ok(one !== undefined, 'a call was recorded')
+  return one
+}
+
 describe('a routine is a seam onto the PM', () => {
   const cases: { readonly name: string; readonly factory: typeof dispatch; readonly kind: RoutineContext['kind'] }[] = [
     { name: 'dispatch', factory: dispatch, kind: 'dispatch' },
@@ -70,15 +82,15 @@ describe('a routine is a seam onto the PM', () => {
 
       assert.deepEqual(outcome, { actions: 4, actionsFailed: 0, inputsHash: 'hash-of-one' })
       assert.equal(deps.pm.requests.length, 1)
-      assert.deepEqual(deps.pm.requests[0].tick, {
+      assert.deepEqual(only(deps.pm.requests).tick, {
         routineId: entry.name,
         kind: entry.kind,
         trigger: 'startup',
         at: AT,
       })
       assert.equal(deps.executor.requests.length, 1)
-      assert.equal(deps.executor.requests[0].routineId, entry.name)
-      assert.equal(deps.executor.requests[0].actions.length, 4)
+      assert.equal(only(deps.executor.requests).routineId, entry.name)
+      assert.equal(only(deps.executor.requests).actions.length, 4)
     })
   }
 
@@ -97,9 +109,9 @@ describe('a routine is a seam onto the PM', () => {
     const read = fakeRead({ peers: [peer] })
     const deps = depsOf({ read })
     await dispatch(deps).run(contextOf())
-    assert.deepEqual(deps.pm.requests[0].state.peers, [peer])
+    assert.deepEqual(only(deps.pm.requests).state.peers, [peer])
     // Every projection is in the snapshot, empty or not (§5.2's `ReadModel`).
-    assert.deepEqual(Object.keys(deps.pm.requests[0].state).sort(), [
+    assert.deepEqual(Object.keys(only(deps.pm.requests).state).sort(), [
       'decisions',
       'findings',
       'messages',
@@ -117,16 +129,16 @@ describe('a routine is a seam onto the PM', () => {
     const deps = depsOf()
     const event = peerStateChanged(88)
     await keepBusy(deps).run(contextOf({ kind: 'keep-busy', trigger: 'event', event }))
-    assert.equal(deps.pm.requests[0].event, event)
-    assert.equal(deps.pm.requests[0].tick?.causedBySeq, 88)
-    assert.equal(deps.executor.requests[0].causedBySeq, 88)
+    assert.equal(only(deps.pm.requests).event, event)
+    assert.equal(only(deps.pm.requests).tick?.causedBySeq, 88)
+    assert.equal(only(deps.executor.requests).causedBySeq, 88)
   })
 
   it('leaves causedBySeq absent on a heartbeat rather than sending undefined', async () => {
     const deps = depsOf()
     await dispatch(deps).run(contextOf())
-    assert.equal('causedBySeq' in (deps.pm.requests[0].tick ?? {}), false)
-    assert.equal('causedBySeq' in deps.executor.requests[0], false)
+    assert.equal('causedBySeq' in (only(deps.pm.requests).tick ?? {}), false)
+    assert.equal('causedBySeq' in only(deps.executor.requests), false)
   })
 
   it('reports what the executor could not carry out, not just what the PM chose', async () => {
@@ -142,7 +154,7 @@ describe('a routine is a seam onto the PM', () => {
     deps.pm.answers({ actions: [renderStandup('2026-11-10')], inputsHash: 'hash-of-standup' })
     const outcome = await standup(deps).run(contextOf({ routineId: 'standup', kind: 'standup' }))
     assert.deepEqual(outcome, { actions: 1, actionsFailed: 0, inputsHash: 'hash-of-standup' })
-    assert.equal(deps.executor.requests[0].actions[0].kind, 'render_standup')
+    assert.equal(only(only(deps.executor.requests).actions).kind, 'render_standup')
   })
 
   it('propagates a PM failure, which the scheduler records as routine.failed', async () => {
@@ -157,7 +169,7 @@ describe('a routine is a seam onto the PM', () => {
     deps.pm.answers(NO_ACTIONS)
     const outcome = await dispatch(deps).run(contextOf())
     assert.deepEqual(outcome, { actions: 0, actionsFailed: 0, inputsHash: 'hash-of-nothing' })
-    assert.deepEqual(deps.executor.requests[0].actions, [])
+    assert.deepEqual(only(deps.executor.requests).actions, [])
   })
 
   it('is constructed with the PM, the executor and the read model, and nothing else', () => {

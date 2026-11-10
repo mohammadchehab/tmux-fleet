@@ -21,6 +21,25 @@ mkdirSync(outDir, { recursive: true })
 
 const isOptional = (schema: Schema<unknown>): boolean => (schema as { optional?: boolean }).optional === true
 
+/**
+ * A record lookup this generator is sure about: every key it reads came from
+ * `Object.keys` of the same record, so a miss is a bug in here and not an input
+ * to handle. `noUncheckedIndexedAccess` makes that certainty explicit instead of
+ * letting the code assume it silently.
+ */
+const field = <T>(record: Readonly<Record<string, T>>, key: string): T => {
+  const value = record[key]
+  if (value === undefined) throw new Error(`generate-invalid: no '${key}' in the fixture shape`)
+  return value
+}
+
+/** Rotate `values` by `offset`, so a corpus covers every position and not only the first. */
+const rotate = <T>(values: readonly T[], offset: number): T[] => {
+  if (values.length === 0) return []
+  const start = offset % values.length
+  return [...values.slice(start), ...values.slice(0, start)]
+}
+
 const dataShapeOf = (type: string): ObjectSchema<never> => {
   const schema = EVENT_SCHEMAS[type as keyof typeof EVENT_SCHEMAS] as unknown as ObjectSchema<never>
   const data = (schema.shape as Record<string, Schema<unknown>>).data as unknown as {
@@ -47,16 +66,15 @@ for (const name of eventTypes) {
     data: Record<string, unknown>
   }
   const shape = dataShapeOf(name).shape as Record<string, Schema<unknown>>
-  const keys = Object.keys(shape).filter((key) => !isOptional(shape[key]))
+  const keys = Object.keys(shape).filter((key) => !isOptional(field(shape, key)))
 
   // Rotate the field under test, so the corpus covers every position of `data`
   // rather than only the first id of every event.
-  const offset = eventTypes.indexOf(name)
-  const rotated = keys.map((_, i) => keys[(i + offset) % keys.length])
+  const rotated = rotate(keys, eventTypes.indexOf(name))
 
   let written: { input: unknown; path: string } | undefined
   for (const key of rotated) {
-    const tag = shape[key].tag
+    const tag = field(shape, key).tag
     const current = fixture.data[key]
     const candidates: unknown[] = []
     // A closed set: a value outside it is refused by the union of literals.
@@ -108,8 +126,7 @@ for (const [index, file] of providerNames.entries()) {
   const name = file.slice(0, -'.json'.length)
   const fixture = JSON.parse(readFileSync(new URL(file, providerEventsDir), 'utf8')) as Record<string, unknown>
   const keys = Object.keys(fixture).filter((key) => key !== 'type')
-  const offset = index % Math.max(keys.length, 1)
-  const rotated = keys.map((_, i) => keys[(i + offset) % keys.length])
+  const rotated = rotate(keys, index)
 
   let written: { input: unknown; path: string } | undefined
   for (const key of rotated) {

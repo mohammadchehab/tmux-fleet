@@ -164,7 +164,9 @@ class SqliteEventStore implements EventStore {
           applyEvent(this.#db, parse(fleetEvent(), { ...event, seq: lastInsertRowid, ts }))
           return lastInsertRowid
         })
-        this.#assertProjectionsClean(seqs[0])
+        // The batch is non-empty here, so there is a first seq: the strict check runs from the batch's own start.
+        const first = seqs[0]
+        if (first !== undefined) this.#assertProjectionsClean(first)
         return seqs
       })
     } catch (thrown) {

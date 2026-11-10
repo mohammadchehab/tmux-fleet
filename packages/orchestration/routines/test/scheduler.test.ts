@@ -34,6 +34,18 @@ const outcome = (actions: number, actionsFailed = 0): RoutineOutcome => ({
   inputsHash: `hash-of-${actions}`,
 })
 
+/**
+ * The first entry of a list these tests have just asserted is non-empty.
+ * `noUncheckedIndexedAccess` makes `[0]` a `T | undefined`, and reading it as a
+ * `T` should be said out loud once — with a message that names the missing
+ * record instead of a TypeError three lines later.
+ */
+const headOf = <T>(items: readonly T[], what: string): T => {
+  const [head] = items
+  assert.ok(head !== undefined, `expected at least one ${what}`)
+  return head
+}
+
 interface Harness {
   readonly deps: SchedulerDeps
   readonly store: ReturnType<typeof fakeStore>
@@ -121,7 +133,7 @@ describe('every run is an event', () => {
     clock.advance(250)
     const records = await scheduler.tick()
     assert.ok(records.length > 0)
-    const first = records[0]
+    const first = headOf(records, 'record')
     assert.deepEqual(
       store.ofType('routine.started').slice(0, 1).map((event) => [event.type, event.ts, event.subject, event.actor]),
       [['routine.started', '2026-11-10T09:00:00.250Z', first.routineId, 'scheduler']],
@@ -150,11 +162,11 @@ describe('every run is an event', () => {
     executor.failNext(2)
     const scheduler = createScheduler(deps)
     const records = await scheduler.tick()
-    const finished = store.ofType('routine.finished')[0]
+    const finished = headOf(store.ofType('routine.finished'), 'routine.finished')
     // A decision the PM made and the world refused is not a decision never made.
     assert.equal(finished.data.actions, 3)
     assert.equal(finished.data.actionsFailed, 2)
-    assert.equal(records[0].actionsFailed, 2)
+    assert.equal(headOf(records, 'record').actionsFailed, 2)
   })
 
   it('hands the decision to the executor, not to the store', async () => {
@@ -178,8 +190,8 @@ describe('every run is an event', () => {
     const records = await scheduler.tick()
     const failed = store.ofType('routine.failed')
     assert.equal(failed.length, 1)
-    assert.match(failed[0].data.error, /on fire/)
-    assert.equal(records[0].ok, false)
+    assert.match(headOf(failed, 'routine.failed').data.error, /on fire/)
+    assert.equal(headOf(records, 'record').ok, false)
   })
 
   it('does not run a body whose start cannot be recorded', async () => {
@@ -244,7 +256,7 @@ describe('a miss is caught up on restart', () => {
     await scheduler.start()
     const failed = store.ofType('routine.failed')
     assert.equal(failed.length, 1)
-    assert.match(failed[0].data.error, /interrupted/)
+    assert.match(headOf(failed, 'routine.failed').data.error, /interrupted/)
     assert.equal(decidedFor(pm).filter((kind) => kind === 'dispatch').length, 1)
   })
 
@@ -352,8 +364,8 @@ describe('events wake the routines that listen', () => {
     const scheduler = createScheduler(deps)
     const records = await scheduler.wake(peerStateChanged(41))
     assert.equal(runs.length, 1)
-    assert.equal(runs[0].trigger, 'event')
-    const started = store.ofType('routine.started')[0]
+    assert.equal(headOf(runs, 'run').trigger, 'event')
+    const started = headOf(store.ofType('routine.started'), 'routine.started')
     assert.equal(started.data.causedBySeq, 41)
     assert.equal(started.data.trigger, 'event')
     assert.equal(records.length, 1)
@@ -404,7 +416,7 @@ describe('start and stop', () => {
     const scheduler = createScheduler(deps)
     await scheduler.start()
     assert.equal(timers.installed.length, 1)
-    assert.equal(timers.installed[0].everyMs, 5_000)
+    assert.equal(headOf(timers.installed, 'timer').everyMs, 5_000)
     scheduler.stop()
     assert.equal(timers.cleared, 1)
   })
@@ -413,7 +425,7 @@ describe('start and stop', () => {
     const { deps, timers } = harness({ tickIntervalMs: 250 })
     const scheduler = createScheduler(deps)
     await scheduler.start()
-    assert.equal(timers.installed[0].everyMs, 250)
+    assert.equal(headOf(timers.installed, 'timer').everyMs, 250)
   })
 
   it('runs a tick when the timer fires', async () => {
