@@ -168,7 +168,13 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
     ]),
   )
 
-  /** When each routine last *finished*; the window `isDue` is judged against. Seeded from the projection. */
+  /**
+   * When each routine last *ran* — finished, failed, or was found interrupted —
+   * the window `isDue` is judged against. Seeded from the projection, which
+   * records `lastRunAt` on all three, so the memory here has to say what the log
+   * says: a run that failed happened, and its routine is next due at its own
+   * period rather than on the very next tick.
+   */
   const lastRun = new Map<string, Timestamp>()
   /** The per-routine overlap guard (§6). Checked and set synchronously, before any await. */
   const inFlight = new Set<string>()
@@ -296,7 +302,15 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
         inputsHash = outcome.inputsHash
       } catch (thrown) {
         const error = messageOf(toFleetError(thrown))
-        await deps.store.append([failedEvent(routine, clock.now(), error)])
+        const failedAt = clock.now()
+        await deps.store.append([failedEvent(routine, failedAt, error)])
+        // A failed run is a run: the projection stamps `lastRunAt` with it
+        // (`projections.ts`, `routine.failed`) and a restart seeds `lastRun` from
+        // that row. Leaving the map unset here made the two disagree, and the
+        // routine was due again on the next tick — for a body that reaches the
+        // forge, not one retry a period but one forge call every tick, for as
+        // long as the failure lasted.
+        lastRun.set(routine.id, failedAt)
         return record({
           actions: 0,
           actionsFailed: 0,

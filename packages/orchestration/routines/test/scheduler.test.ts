@@ -197,6 +197,22 @@ describe('every run is an event', () => {
     assert.equal(headOf(records, 'record').ok, false)
   })
 
+  it('a run whose body threw is due at its own period, not on the next tick', async () => {
+    const { deps, store, pm } = harness()
+    pm.failNext(new Error('the forge is down'))
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    assert.equal(store.ofType('routine.failed').length, 1)
+    const ran = store.ofType('routine.started').length
+
+    // The clock has not moved, so nothing is due again — the routine whose body
+    // threw included. A failed run is a run: `branch-cleanup` reaching the forge
+    // every tick for as long as `gh` was failing is the bug this holds shut.
+    await scheduler.tick()
+    assert.equal(store.ofType('routine.started').length, ran)
+    assert.equal(store.ofType('routine.failed').length, 1, 'and it did not fail a second time')
+  })
+
   it('does not run a body whose start cannot be recorded', async () => {
     const { deps, store, pm, executor } = harness()
     store.failNext(10)
