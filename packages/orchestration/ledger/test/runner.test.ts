@@ -65,6 +65,39 @@ describe('spawnToLog', () => {
     await spawnToLog({ file: process.execPath, args: ['-e', "process.stdout.write('hi\\n')"], logPath })
     await assert.rejects(() => readFile(buildStdoutPath(logPath), 'utf8'), /ENOENT/)
   })
+
+  it('times out and kills a hung process', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
+    const logPath = join(dir, 'build.log')
+    const timeoutMs = 100
+
+    const promise = spawnToLog({
+      file: process.execPath,
+      args: ['-e', "setInterval(() => {}, 1000)"],
+      logPath,
+      timeoutMs,
+    })
+
+    // Should reject after timeout, not hang forever
+    await assert.rejects(promise, /timeout/)
+  })
+
+  it('rejects with stream write errors instead of throwing uncaught exceptions', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
+    // Use a path that will fail with EACCES by pointing to a directory
+    const logPath = join(dir, 'subdir')
+    // Create the directory so opening it as a file will fail
+    await import('node:fs/promises').then((fs) => fs.mkdir(logPath))
+
+    const promise = spawnToLog({
+      file: process.execPath,
+      args: ['-e', "process.stdout.write('test\\n')"],
+      logPath,
+    })
+
+    // Should reject, not throw an uncaught exception
+    await assert.rejects(promise)
+  })
 })
 
 describe('statusOf', () => {

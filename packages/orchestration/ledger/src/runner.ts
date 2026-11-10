@@ -68,6 +68,8 @@ export interface ProcessInvocation {
   readonly logPath: string
   /** Stdout alone is appended here as well, when a caller wants the answer without the narration. */
   readonly stdoutPath?: string
+  /** Kill the process if it runs longer than this (milliseconds). */
+  readonly timeoutMs?: number
 }
 
 export interface ProcessOutcome {
@@ -101,6 +103,18 @@ export const statusOf = (code: number | null): BuildStatus => (code === 0 ? 'suc
 export const spawnToLog: RunProcess = (invocation) => {
   const startedAt = Date.now()
   return new Promise((resolve, reject) => {
+    let resolved = false
+    const finish = (outcome: ProcessOutcome) => {
+      if (resolved) return
+      resolved = true
+      resolve(outcome)
+    }
+    const fail = (error: Error) => {
+      if (resolved) return
+      resolved = true
+      reject(error)
+    }
+
     void mkdir(dirname(invocation.logPath), { recursive: true })
       .then(() => {
         const log = createWriteStream(invocation.logPath, { flags: 'a' })
@@ -108,6 +122,19 @@ export const spawnToLog: RunProcess = (invocation) => {
         // stays the whole build, in order, for whoever reads it afterwards.
         const answer =
           invocation.stdoutPath === undefined ? undefined : createWriteStream(invocation.stdoutPath, { flags: 'a' })
+
+        // Handle stream errors: EACCES, ENOSPC, etc.
+        log.once('error', (error) => {
+          child.kill('SIGKILL')
+          answer?.destroy()
+          fail(error)
+        })
+        answer?.once('error', (error) => {
+          child.kill('SIGKILL')
+          log.destroy()
+          fail(error)
+        })
+
         const env: NodeJS.ProcessEnv = { ...process.env }
         for (const [key, value] of Object.entries(invocation.env ?? {})) {
           if (value === undefined) delete env[key]
@@ -118,22 +145,34 @@ export const spawnToLog: RunProcess = (invocation) => {
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
         })
+
+        // Set up timeout if requested
+        let timeoutHandle: NodeJS.Timeout | undefined
+        if (invocation.timeoutMs !== undefined) {
+          timeoutHandle = setTimeout(() => {
+            child.kill('SIGKILL')
+            fail(new Error(`timeout: process exceeded ${invocation.timeoutMs}ms`))
+          }, invocation.timeoutMs)
+        }
+
         child.stdout?.on('data', (chunk: Buffer) => {
           log.write(chunk)
           answer?.write(chunk)
         })
         child.stderr?.pipe(log, { end: false })
         child.once('error', (error) => {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
           log.end(`${String(error)}\n`)
           answer?.end()
-          reject(error)
+          fail(error)
         })
         child.once('close', (code) => {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
           log.end()
           answer?.end()
-          resolve({ code, durationMs: Date.now() - startedAt })
+          finish({ code, durationMs: Date.now() - startedAt })
         })
       })
-      .catch(reject)
+      .catch(fail)
   })
 }
