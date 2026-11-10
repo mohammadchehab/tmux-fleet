@@ -7,6 +7,7 @@
 
 import type {
   DecisionId,
+  EvalRunId,
   FleetError,
   NotificationKey,
   PeerId,
@@ -20,6 +21,7 @@ import type {
 } from '@fleet/foundation-core'
 import type { ChecksState, ReviewState } from './events/delivery.ts'
 import type { AppendEvent } from './events/registry.ts'
+import type { EvalRunWithCases } from './projections/evals.ts'
 import type { Message } from './projections/mailbox.ts'
 import type { MessageAckState } from './events/messages.ts'
 import type { ProviderHandle, Turn } from './provider.ts'
@@ -251,6 +253,15 @@ export interface ReadModel {
   }
   readonly routines: {
     all(): Promise<readonly Routine[]>
+  }
+  /**
+   * §17's two projections. There is no `all()`: a comparison names its runs, and
+   * a read of every run with every case would grow with the log's history for a
+   * caller that only ever asks about two of them.
+   */
+  readonly evals: {
+    /** One run with its cases, or `undefined` if the log has no such run. */
+    get(runId: EvalRunId): Promise<EvalRunWithCases | undefined>
   }
 }
 

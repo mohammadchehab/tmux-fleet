@@ -31,12 +31,12 @@ const started = (cases = 3): AppendEvent => ({
   data: { runId: RUN, suite: 'judge', sha: SHA, provider: 'deepinfra', model: 'deepseek-ai/DeepSeek-V3.2', cases },
 })
 
-const scored = (attempt: number, pass: boolean, detail: string): AppendEvent => ({
+const scored = (attempt: number, pass: boolean, detail: string, caseId = 'stacked-merge-branch-loss'): AppendEvent => ({
   ts: AT,
   type: 'eval.case_scored',
   subject: RUN,
   actor: 'user',
-  data: { runId: RUN, caseId: 'stacked-merge-branch-loss', attempt, pass, score: pass ? 1 : 0, detail },
+  data: { runId: RUN, caseId, attempt, pass, score: pass ? 1 : 0, detail },
 })
 
 const finished = (cases = 3, passed = 1): AppendEvent => ({
@@ -66,8 +66,8 @@ interface Snapshot {
 
 /**
  * The eval tables as a comparable value. Read through a second handle on the
- * same file, because these projections have no `ReadModel` yet — the reader
- * lands with `fleet evals compare` (§17).
+ * same file and as columns rather than as the JSON blobs the reader parses, so
+ * what a projection wrote is asserted independently of how it is read back.
  */
 const snapshot = (path: string): Snapshot => {
   const db = new DatabaseSync(path)
@@ -225,6 +225,33 @@ test('a second start for the same id with a different identity is an anomaly, no
   assert.deepEqual(snapshot(path).anomalies, [
     { event_seq: 3, projection: 'evalRun', event_type: 'eval.run_started' },
   ])
+  await store.close()
+})
+
+test('the reader hands over a run and its cases, and nothing for a run the log has not seen', async () => {
+  const store = await openSqliteStore({ path: tempStorePath(), clock: fixedClock })
+  await store.append([
+    started(3),
+    scored(1, true, 'attempt 1: exact match', 'route-to-dead-session'),
+    scored(2, false, 'attempt 2: stale brief', 'stacked-merge-branch-loss'),
+    scored(1, true, 'attempt 1: exact match', 'stacked-merge-branch-loss'),
+    scored(3, true, 'attempt 3: exact match', 'stacked-merge-branch-loss'),
+  ])
+
+  const read = store.reader()
+  const found = await read.evals.get(RUN)
+  assert.equal(found?.run.runId, RUN)
+  assert.equal(found?.run.state, 'running', 'the same row a reader would otherwise have to assemble')
+  // By case id, so two comparisons of the same runs print in the same order.
+  assert.deepEqual(
+    found?.cases.map((row) => [row.caseId, row.attempts, row.passes, row.pass]),
+    [
+      ['route-to-dead-session', 1, 1, true],
+      ['stacked-merge-branch-loss', 3, 1, true],
+    ],
+  )
+  // An id the log never opened is a run this fleet cannot compare, not an empty run.
+  assert.equal(await read.evals.get('evr_0000000000000000' as EvalRunId), undefined)
   await store.close()
 })
 

@@ -7,7 +7,7 @@
  * does not route on an eval result, so `decide()` is not handed them.
  */
 
-import { boolean, count, number, objectAs, oneOf, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
+import { array, boolean, count, number, objectAs, oneOf, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
 import { evalRunId, sha } from '@fleet/foundation-core'
 import type { EvalRunId, Sha } from '@fleet/foundation-core'
 import { providerId } from '../provider.ts'
@@ -92,4 +92,23 @@ export const evalCase = (): Schema<EvalCase> =>
     score: number({ min: 0, max: 1 }),
     detail: text(2000),
     updatedAt: timestamp(),
+  })
+
+/**
+ * One run and its cases, read as one thing.
+ *
+ * `fleet evals compare <runA> <runB>` needs both halves of each run, and two
+ * separate reads could straddle a write — a tally from before a case landed and
+ * a case list from after. Handing them over together is what makes a comparison
+ * describe one state of the log.
+ */
+export interface EvalRunWithCases {
+  readonly run: EvalRun
+  readonly cases: readonly EvalCase[]
+}
+
+export const evalRunWithCases = (): Schema<EvalRunWithCases> =>
+  objectAs<EvalRunWithCases>()({
+    run: evalRun(),
+    cases: array(evalCase()),
   })
