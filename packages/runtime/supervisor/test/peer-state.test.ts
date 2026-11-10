@@ -22,6 +22,7 @@ const cases: readonly { readonly event: ProviderEvent; readonly expected: Return
   },
   { event: { type: 'approval.requested', turnId, requestId: 'apr_1', tool: 'Write' }, expected: 'waiting_input' },
   { event: { type: 'question.abandoned', questionId: newQuestionId() }, expected: 'working' },
+  { event: { type: 'approval.abandoned', requestId: 'apr_1' }, expected: 'working' },
   { event: { type: 'turn.ended', turnId, at: '2026-11-10T09:00:01.000Z', reason: 'completed' }, expected: 'idle' },
   { event: { type: 'turn.ended', turnId, at: '2026-11-10T09:00:01.000Z', reason: 'interrupted' }, expected: 'idle' },
   {

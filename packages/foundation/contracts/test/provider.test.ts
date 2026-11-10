@@ -35,6 +35,7 @@ const fixtureNames = (dir: URL): string[] =>
 
 /** The provider stream is a discriminated union, so a fixture is named by its `type`. */
 const providerEventTypes = [
+  'approval.abandoned',
   'approval.requested',
   'compaction',
   'error',
@@ -72,8 +73,10 @@ for (const type of providerEventTypes) {
   })
 }
 
-test('the provider stream vocabulary is ten events, and none is missing', () => {
-  assert.equal(providerEventTypes.length, 10)
+test('the provider stream vocabulary is eleven events, and none is missing', () => {
+  // Every way a question and an approval can die has a member of its own: a
+  // session that ends closes what it owns, and the supervisor is told so.
+  assert.equal(providerEventTypes.length, 11)
   assert.equal(new Set(providerEventTypes).size, providerEventTypes.length)
 })
 

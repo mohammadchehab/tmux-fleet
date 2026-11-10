@@ -217,8 +217,12 @@ export class ClaudeSession {
     // Recorded before the call: the abort arrives as an ordinary `result`, and the
     // only thing that distinguishes it from a failure is that we knew it was coming.
     this.#turnState = { ...this.#turnState, interrupted: true }
-    for (const abandoned of this.#pending.abandon('interrupted', turn).questions) {
+    const interrupted = this.#pending.abandon('interrupted', turn)
+    for (const abandoned of interrupted.questions) {
       this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId })
+    }
+    for (const abandoned of interrupted.approvals) {
+      this.#emit({ type: 'approval.abandoned', requestId: abandoned.requestId })
     }
     try {
       await this.#query.interrupt()
@@ -231,9 +235,12 @@ export class ClaudeSession {
   async stop(): Promise<void> {
     if (this.#state === 'ended') return
     this.#state = 'ended'
-    const { questions } = this.#pending.abandon('ended')
+    const { questions, approvals } = this.#pending.abandon('ended')
     for (const abandoned of questions) {
       this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId })
+    }
+    for (const abandoned of approvals) {
+      this.#emit({ type: 'approval.abandoned', requestId: abandoned.requestId })
     }
     this.#emit({ type: 'session.ended', reason: 'stopped' })
     this.#input.end()
@@ -567,9 +574,12 @@ export class ClaudeSession {
   #finish(reason: 'exit' | 'crash', error: string | undefined): void {
     if (this.#state === 'ended') return
     this.#state = reason === 'crash' ? 'failed' : 'ended'
-    const { questions } = this.#pending.abandon('ended')
+    const { questions, approvals } = this.#pending.abandon('ended')
     for (const abandoned of questions) {
       this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId })
+    }
+    for (const abandoned of approvals) {
+      this.#emit({ type: 'approval.abandoned', requestId: abandoned.requestId })
     }
     if (error !== undefined) this.#emit({ type: 'error', message: error, retryable: reason === 'crash' })
     this.#emit({ type: 'session.ended', reason })

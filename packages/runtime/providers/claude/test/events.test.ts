@@ -32,6 +32,7 @@ const everyEvent: readonly AdapterEvent[] = [
   { type: 'question.asked', turnId: turn, questionId, questions: [{ question: 'Which channel?', header: 'Channel' }] },
   { type: 'question.abandoned', questionId },
   { type: 'approval.requested', turnId: turn, requestId: 'apr_0123456789abcdef', tool: 'Bash', summary: 'rm -rf build' },
+  { type: 'approval.abandoned', requestId: 'apr_0123456789abcdef' },
   { type: 'session.ended', reason: 'stopped' },
   { type: 'session.ended', reason: 'exit', code: 0 },
   { type: 'error', message: 'boom', retryable: false },
