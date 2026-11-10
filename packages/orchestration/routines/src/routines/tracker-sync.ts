@@ -14,7 +14,9 @@
  *   tracker's own status, and the ticket is moved. `review_requested` also links
  *   the PR, which is the one thing a board cannot infer. `work.noted` moves no
  *   state — a note is not a column — so it is a comment on the ticket instead,
- *   rendered by `renderNote`, which is how §5.1's phases reach a person.
+ *   rendered by `renderNote`, which is how §5.1's phases reach a person. Only
+ *   when the profile sets `comments: true`: a note is a peer's prose and the
+ *   board may be a customer's, so an absent setting mirrors nothing.
  *
  * Dedupe is by `(system, key)` against the Works already in the log, not by a
  * remembered cursor: the sync may run against a fresh store, a replayed log or a
@@ -28,7 +30,7 @@
  * move does not make the other nine lies.
  */
 
-import { deriveId, digestOf, toFleetError } from '@fleet/foundation-core'
+import { deriveId, digestOf, redactSecrets, toFleetError } from '@fleet/foundation-core'
 import type {
   AppendEvent,
   EventSink,
@@ -61,6 +63,14 @@ export interface TrackerSyncDeps {
   readonly query: string
   /** The role a proposed Work asks for, when the profile names one (§5.2's `assign`). */
   readonly role?: string
+  /**
+   * Whether a note may be mirrored to the board as a comment. Absent is **off**
+   * (`TrackerProfileBase.comments`): the board this profile maps is not
+   * necessarily the fleet's own, and a peer's note is prose the fleet did not
+   * write and may not be free to publish. A `blocked` note still raises its
+   * Decision without this — that path never leaves the machine.
+   */
+  readonly comments?: boolean
 }
 
 /**
@@ -217,9 +227,19 @@ const sinkEvents = async (
   // idempotent on the body, which matters here: a resumed run or a replayed log
   // sees this event twice, and a card that collected one copy per sighting would
   // be unreadable.
+  //
+  // Gated on the profile's `comments`, off when absent: this text is a peer's,
+  // and the board on the other side may be a customer's. When the gate is shut
+  // nothing is appended for the note at all — `commented` stays 0, and
+  // `tracker.synced` says so, rather than the run looking like a mirror that
+  // failed. The body is redacted on the way out for the same reason it is
+  // redacted on the way into the log: a secret a peer typed is still a secret.
   if (note !== undefined) {
+    if (deps.comments !== true) {
+      return { transitioned, linked, commented, failed, ...(error === undefined ? {} : { error }) }
+    }
     try {
-      await deps.tracker.comment(external.key, renderNote(note))
+      await deps.tracker.comment(external.key, renderNote({ ...note, body: redactSecrets(note.body) }))
       commented += 1
     } catch (thrown) {
       failed += 1

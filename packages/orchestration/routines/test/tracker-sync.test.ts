@@ -128,6 +128,16 @@ const depsOf = (tracker: Tracker, works: readonly Work[] = []): TrackerSyncDeps 
   query: 'To Do,In Progress',
 })
 
+/**
+ * The same wiring with the profile's `comments: true`. Notes are not mirrored
+ * without it — the default in `depsOf` is the closed gate, which is what a
+ * profile that says nothing gets.
+ */
+const mirroring = (
+  tracker: Tracker,
+  works: readonly Work[] = [],
+): TrackerSyncDeps & { store: ReturnType<typeof fakeStore> } => ({ ...depsOf(tracker, works), comments: true })
+
 const contextOf = (event?: FleetEvent): RoutineContext => ({
   routineId: 'tracker-sync',
   kind: 'tracker-sync',
@@ -318,7 +328,7 @@ describe('the sink half: a work event moves the one card it is about', () => {
   it('work.noted comments on the card instead of moving it, and the phase is in the words', async () => {
     const tracker = fakeTracker([item('TASK-1')])
     const target = work('TASK-1')
-    const deps = depsOf(tracker, [target])
+    const deps = mirroring(tracker, [target])
 
     await sync(deps, contextOf(noted(target, 'implement', 'the checks verdict is pinned to the head sha')))
 
@@ -329,10 +339,47 @@ describe('the sink half: a work event moves the one card it is about', () => {
     ])
   })
 
+  it('a Jira tracker with no `comments` setting receives no comment call', async () => {
+    const tracker = fakeTracker([item('FLEET-7')])
+    // A customer's Jira: the profile names the board and says nothing about
+    // `comments`, which is the default, and the fleet posts nothing to it.
+    const target = work('FLEET-7', {
+      workId: workIdFor('jira', 'FLEET-7'),
+      external: { system: 'jira', key: 'FLEET-7' },
+    })
+    const deps = { ...depsOf(tracker, [target]), system: 'jira' }
+
+    const outcome = await sync(deps, contextOf(noted(target, 'implement', 'internal reasoning, not for a board')))
+
+    assert.deepEqual(tracker.comments, [], 'the gate is shut, so the port is never called')
+    assert.deepEqual(tracker.transitions, [], 'and it is still not a column')
+    assert.equal(outcome.actions, 0, 'a note nobody may mirror is not an action')
+    assert.equal(outcome.actionsFailed, 0, 'and it is not a failure either')
+    const record = appended(deps.store, 'tracker.synced')[0]
+    assert.ok(record !== undefined && record.type === 'tracker.synced')
+    assert.equal(record.data.commented, 0, 'the run says it mirrored nothing, rather than looking broken')
+  })
+
+  it('redacts a secret out of the note before it leaves the machine', async () => {
+    const tracker = fakeTracker([item('TASK-1')])
+    const target = work('TASK-1')
+    const deps = mirroring(tracker, [target])
+
+    // Deliberately not a secret-shaped literal: the point is the pattern the
+    // redactor matches, and a realistic-looking key in a fixture is a finding
+    // the scanners are right to raise.
+    await sync(deps, contextOf(noted(target, 'blocked', 'the fix is `--api_key=do-not-print-me` in the deploy script')))
+
+    const [comment] = tracker.comments
+    assert.ok(comment !== undefined)
+    assert.doesNotMatch(comment.body, /do-not-print-me/)
+    assert.match(comment.body, /\[REDACTED\]/)
+  })
+
   it('a blocked note reaches the board as a comment and the PM as a question, not as a column', async () => {
     const tracker = fakeTracker([item('TASK-1')])
     const target = work('TASK-1')
-    const deps = depsOf(tracker, [target])
+    const deps = mirroring(tracker, [target])
 
     const outcome = await sync(deps, contextOf(noted(target, 'blocked', 'nothing can replay a partial log')))
 
@@ -352,7 +399,7 @@ describe('the sink half: a work event moves the one card it is about', () => {
     const tracker = fakeTracker()
     tracker.refuse('TASK-2')
     const target = work('TASK-2')
-    const deps = depsOf(tracker, [target])
+    const deps = mirroring(tracker, [target])
 
     const outcome = await sync(deps, contextOf(noted(target, 'mr', 'opened #7')))
 

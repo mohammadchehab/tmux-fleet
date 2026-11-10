@@ -38,22 +38,14 @@ const prOpened: AppendEvent = {
   data: { pr: { repo, number: 7 }, base: 'main', head: 'topic/scan', headSha: sha },
 }
 
-/**
- * semgrep, answering with one finding — and recording nothing else, because
- * nothing else may run. `head` is the commit the fake checkout is at: the body
- * scans only a tree that is at the commit the finding is filed under.
- */
-const fakeIo = (head: Sha = sha): ToolIo => ({
+/** semgrep, answering with one finding — and recording nothing else, because nothing else may run. */
+const fakeIo = (): ToolIo => ({
   has: async (binary) => binary === 'semgrep',
-  exec: async (binary, args) => ({
+  exec: async (binary) => ({
     code: 0,
     stderr: '',
     stdout:
-      binary === 'git'
-        ? args[0] === 'rev-parse'
-          ? `${head}\n`
-          : ''
-        : binary === 'semgrep'
+      binary === 'semgrep'
         ? JSON.stringify({
             results: [
               {
@@ -117,7 +109,7 @@ test('§6.2: the 02:00 schedule scans main at the head the workspace port names'
   const mainSha = 'f00dc0ffee0123456789abcdef0123456789abcd' as Sha
   const sandbox = await createSandbox({
     security: ['semgrep'],
-    securityIo: fakeIo(mainSha),
+    securityIo: fakeIo(),
     // The `workspace` port (§9): a fake, so the nightly scan never fetches a remote.
     branchHead: { head: async (cwd) => (cwd === checkout ? mainSha : undefined) },
   })
