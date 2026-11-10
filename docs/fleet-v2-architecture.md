@@ -341,12 +341,100 @@ have not verified that its Claude driver covers a DeepInfra-pointed Anthropic en
 
 **Open question resolved:** the fleet is a standalone tool, not part of IsnadiBot's product (see Decided above).
 
+## 14.1 Path into IsnadiBot
+
+The fleet stays standalone for now, but its concepts are meant to become IsnadiBot product features. The fleet is the
+proving ground. Filled from IsnadiBot's code and docs (`docs/internals/glossary.md`, `fleet-operations.md`,
+`delegation.md`, `apps/server/src/{orchestration,provider,routines}`), not from memory.
+
+**Finding that changes the plan.** IsnadiBot already has a design for much of this: **E13 fleet operations**
+(`docs/internals/fleet-operations.md`, TASK-83..92): work items, a server-side `FleetDispatcherReactor` (Keep busy),
+`handoff` plus `thread.context.reset` (context epoch), auto-clear at 150k tokens, bot status
+(busy/asking/held/idle), standup routine, PR queue, scale, triage, role library. It describes itself as the native
+version of these `/fleet` skills. So the fleet's job is to prove the *behaviour* (the rules, the thresholds, the
+failure modes) while IsnadiBot's E13 is the destination for the *code*. Where E13 exists, the fleet must not invent
+a different shape.
+
+### Concept map
+
+| fleet v2 concept | IsnadiBot equivalent (verified) | gap / note |
+| :- | :- | :- |
+| peer | **Bot** in a **Group** with `bossBotId`; role from the role library (TASK-92) | the fleet's `peerId` = `botId`; role names match |
+| session | provider session on a **Thread** (`ProviderSession`, `ProviderSessionDirectory`) | fleet `Session` is a child of the peer; IsnadiBot's thread is the durable record and the provider session its runtime |
+| brief / turn | **Turn** (`thread.turn.start`); item `brief` | fleet `Brief` versioning has no equivalent; IsnadiBot has the item's brief, not versions or contract gating |
+| Work | **Work item** aggregate (`queued/assigned/in-progress/review/blocked/done`, `trackerLink`, `prUrl`) | fleet adds `needs_contract`, `mergeable`, `merged`, `cleaned`; map extra states to `blocked` + reason or propose them |
+| PM `decide()` | **Decider** (`orchestration/decider.ts`: commands + state to events) and `FleetDispatcherReactor` | match the split: pure decide, reactor executes. The dispatcher is "plain code assigns; boss woken only for judgement", the same rule as §5 |
+| Judge (typed question) | the **boss bot wake** (a judgement call) | fleet's typed closed question list is stricter; candidate to adopt in IsnadiBot |
+| routines | **Routines** (`apps/server/src/routines`, `schedule.ts`, runtime/repository) | fleet routines are event-triggered as well as scheduled; IsnadiBot routines are schedule-centred. Event triggers are a gap |
+| assign / delegate | **Delegation** (`SendToAgent`, child thread, handle returned, result acknowledged exactly once) and the dispatcher's assign | delegation is one running child turn with a waiter, not a queue (E13 says so); the fleet's `assign` maps to the dispatcher, not to delegation |
+| decision inbox | **Decisions** roster group: `hasPendingApprovals` / `hasPendingUserInput`, memory approvals, bot inbox | the fleet's `Decision` is wider (scope calls, escalated judge questions); fits as a new approval kind |
+| notifications | the **bot inbox and push** ("the owner is told through the bot inbox and push"); channels (Telegram/Slack/…) | macOS-desktop `Notifier` has no direct equivalent; push and channels are the later `Notifier`s. Dedupe/rate-limit rules are a candidate |
+| self-purge | **`handoff` tool + `thread.context.reset` (context epoch)** + auto-clear at `usedTokens` over limit | *exists in E13.* Fleet's typed `StateFile` ≈ the `handoff({item, branch, done, nextStep, waitingOn, doNot})` doc; align the fields |
+| event store | **Orchestration event store + projections** (`Domain Event`, `projector`, `ProjectionPipeline`, read model) | the fleet's SQLite store is the same pattern; keep event and aggregate naming compatible |
+| standup | built-in **standup routine** (TASK-88) | same |
+| capacity / peer status | **Bot status** busy/asking/held/idle (TASK-83), derived in `client-runtime` | same four words; fleet derives them server-side from provider events |
+| PR gate, PR queue | **PR queue** (TASK-89, read-only, sorted by who acts next) | IsnadiBot has no merge gate, no stack retarget; **fleet-only for now, future feature** |
+| worktree manager | thread `worktreePath` and workspace root; `workspace-layout.md` | no owner/GC/holder tracking found in the docs read; **future IsnadiBot feature** |
+| build ledger | none found | **future IsnadiBot feature** |
+| silent/failed session handling | **Silence watchdog** (reports, never interrupts) | fleet's `reconcile` restart-and-resume goes beyond it |
+| Provider | **`ProviderAdapterShape`** (`startSession`, `sendTurn`, `interruptTurn`, `respondToRequest`, `respondToUserInput`, `stopSession`, `listSessions`, `readThread`, `streamEvents`, `capabilities`) | §4 is a subset; see below |
+
+### Rules for fleet code so the move is a port
+
+1. **Use IsnadiBot's words** in types, events and docs: *bot* (alias `peer` only in CLI text), *group*, *provider*,
+   *thread*, *turn*, *work item*, *routine*, *delegation*, *handoff*, *context epoch*, *decider*, *projector*,
+   *reactor*, *read model*, *command*, *domain event*. No second vocabulary.
+2. **Mirror the decider/projector split.** `decide(state, command) → events` is pure; a projector applies events to
+   the read model; a **reactor** does the side effect. The PM state machine (§5) is a decider plus a dispatcher
+   reactor; the scheduler and notifier are reactors. Command and event names follow IsnadiBot's dotted form
+   (`work-item.assign`, `thread.context.reset`, `fleet.dispatch.decided`).
+3. **Receipts are not production behaviour in IsnadiBot** (`RuntimeReceiptBus` publishes nothing in production; it
+   is test-only). The fleet does not build control flow on receipts; it uses events. A receipt-shaped name
+   (`fleet.dispatch.decided`) is kept only as a test/observability signal.
+4. **Rename where §4 and IsnadiBot differ.** `Provider.send` → `sendTurn`, `interrupt` → `interruptTurn`, `stop` →
+   `stopSession`, `start` → `startSession`; `events()` is `streamEvents`. Add `status/usage/model` as the fleet's
+   extension methods, clearly marked (below).
+
+### What must stay contract-compatible
+
+- **The `Provider` subset of `ProviderAdapterShape`:** `startSession`, `sendTurn`, `interruptTurn`, `stopSession`,
+  `listSessions`, `streamEvents`, and `capabilities`, with the same input and output field names and the same
+  `ProviderRuntimeEvent` kinds. This is the seam §14 promised: an adapter over IsnadiBot's drivers is a thin file.
+  Extension methods the fleet adds (`status`, `usage`, `model`, `resume` ref) are optional and map to IsnadiBot's
+  `context-window.updated` activity (`usedTokens`/`maxTokens`) and session status.
+- **Event and aggregate names** for work items, threads, turns, handoff and context reset, so the store's events can
+  be imported into IsnadiBot's orchestration store.
+- **The work-item shape** `{id, groupId, title, brief, kind, role?, ownerBotId?, state, trackerLink?, threadId?,
+  prUrl?}` and the four bot-status words.
+- **The handoff doc fields** (`item, branch, done, nextStep, waitingOn, doNot`) as the superset core of the
+  `StateFile`.
+
+### Fleet-only and disposable
+
+`fleetd` as a process, the Unix-socket API, the SQLite file layout, the `fleet` CLI, the macOS notifier, the tmux
+view, the Backlog.md/Jira adapters, the hetzner build runner, and the repo-local worktree manager. They exist to run
+the fleet *outside* a product; when the behaviour moves into IsnadiBot they are replaced by its server, roster UI,
+inbox/push and workspace layer.
+
+### Future IsnadiBot features the fleet proves first
+
+Worktree ownership, GC and holder tracking; the PR merge gate with stack retargeting; the build ledger with remote
+runs; contract gating and brief versioning; event-triggered routines; typed judge questions; notification
+dedupe/rate-limit with a `fleet decide`-style answer path. Each lands in the fleet with a measured result, then is
+proposed to IsnadiBot as a TASK under E13 or a sibling epic.
+
+### Consequence for the phases
+
+Phase 0 gains one item: **align the contract files with IsnadiBot's names** (§ above) and write the concept map into the
+repo so engineers read it before naming anything. Phase 4 (§15) changes from "decide the seam" to "port the proven
+behaviour into E13": the fleet's tests become the acceptance tests for TASK-84/85/86.
+
 ## 15. Phased build plan
 
 Each phase is shippable and leaves a working fleet. v1 keeps running untouched until phase 3 replaces it.
 
-**Phase 0: contracts (days, architect + 1 engineer).** `Provider`, event schema, projection schemas, `SessionSpec`,
-Mailbox API as typed files and golden tests. Merged first, small. Everything below builds on it (§12).
+**Phase 0: contracts (days, architect + 1 engineer).** `Provider` (a subset of `ProviderAdapterShape`, §14.1), event schema, projection schemas, `SessionSpec`,
+Mailbox API as typed files and golden tests, named in IsnadiBot's vocabulary (§14.1). Merged first, small. Everything below builds on it (§12).
 
 **Phase 1: the vertical slice (the usable fleet).**
 `fleetd` + SQLite event store + Registry; **one provider (`claude`, with `deepinfra` as env config)**; Supervisor
@@ -363,7 +451,7 @@ runner; contract gating (§12); replay tool.
 **Phase 3: providers and sinks.** `opencode` and `cursor` providers; the Backlog/Jira adapters; tmux view; a web
 board on the daemon API; cut over from v1, delete the bash.
 
-**Phase 4: decide the IsnadiBot seam** (§14 step 4).
+**Phase 4: port into IsnadiBot.** The proven behaviour moves into E13 (§14.1); the fleet's tests become its acceptance tests.
 
 ## 16. Risks
 
