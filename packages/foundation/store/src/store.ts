@@ -43,6 +43,19 @@ export interface StoreOptions {
 }
 
 /**
+ * What the store can say about its own log (§3). The number that matters is
+ * `anomalies`: a miss means an event named an entity the log never opened, so a
+ * healthy store has none, and one that has any has lost events it should have had.
+ */
+export interface StoreHealth {
+  readonly latestSeq: Seq
+  /** Events in the log — the denominator for `anomalies`. */
+  readonly events: number
+  /** Rows in `projection_anomalies`; zero is healthy for any store. */
+  readonly anomalies: number
+}
+
+/**
  * Appending is the only write. A batch is validated strictly first
  * (`assertAppendable`), then atomic and ordered: either the whole batch gets
  * consecutive seqs or none of it does, and projections are updated in the same
@@ -63,6 +76,12 @@ export interface EventStore {
 
   /** The newest seq, or 0 when the store is empty. */
   latestSeq(): Promise<Seq>
+
+  /**
+   * The log's own numbers (§3). A read, so it works on the read-only handle
+   * `fleet status` opens against a live daemon — unlike `rebuild` or `backup`.
+   */
+  health(): Promise<StoreHealth>
 
   /** The projections, read-only: what the PM, the board and the CLI read (§3). */
   reader(): ReadModel

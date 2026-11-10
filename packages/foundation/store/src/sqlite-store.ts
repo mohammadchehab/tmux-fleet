@@ -28,7 +28,13 @@ import {
 import { LATEST_SCHEMA_VERSION, MIGRATIONS } from './ddl.ts'
 import { applyEvent, clearProjections, readers } from './projections.ts'
 import { Sqlite } from './sql.ts'
-import { assertAppendable, type EventStore, type StoreFactory, type StoreOptions } from './store.ts'
+import {
+  assertAppendable,
+  type EventStore,
+  type StoreFactory,
+  type StoreHealth,
+  type StoreOptions,
+} from './store.ts'
 
 /** A row of `events` as SQLite hands it back. `data` is the JSON of the event's payload. */
 interface EventRow {
@@ -156,6 +162,22 @@ class SqliteEventStore implements EventStore {
   async latestSeq(): Promise<Seq> {
     const row = this.#db.get<{ seq: number | null }>('SELECT MAX(seq) AS seq FROM events')
     return row?.seq === null || row?.seq === undefined ? 0 : Number(row.seq)
+  }
+
+  /**
+   * The log and its misses, as two counts. A report, not a transaction: an append
+   * landing between them shows up in the next call rather than as a wrong answer.
+   */
+  async health(): Promise<StoreHealth> {
+    const log = this.#db.get<{ events: number; seq: number | null }>(
+      'SELECT COUNT(*) AS events, MAX(seq) AS seq FROM events',
+    )
+    const anomalies = this.#db.get<{ n: number }>('SELECT COUNT(*) AS n FROM projection_anomalies')
+    return {
+      latestSeq: Number(log?.seq ?? 0),
+      events: Number(log?.events ?? 0),
+      anomalies: Number(anomalies?.n ?? 0),
+    }
   }
 
   reader(): ReadModel {
