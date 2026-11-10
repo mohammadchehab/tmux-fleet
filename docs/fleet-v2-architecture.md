@@ -229,33 +229,67 @@ method that returns text meant to be parsed.
 ```ts
 interface Provider {
   readonly id: string                                    // "claude", "deepinfra", "opencode", "cursor"
-  readonly capabilities: { resume: boolean; modelSwitch: boolean; usageTokens: boolean;
+  readonly capabilities: { resume: boolean; modelSwitch: boolean; usageTokens: boolean; usageCost: boolean;
                            structuredOutput: boolean; permissionModes: PermissionMode[] }
   start(spec: SessionSpec): Promise<SessionHandle>       // spec carries cwd, env, model, permissionMode, role brief, resume ref
   send(h: SessionHandle, msg: Turn): Promise<TurnId>     // a turn, never keystrokes
   interrupt(h: SessionHandle, turn?: TurnId): Promise<void>
   stop(h: SessionHandle): Promise<void>
-  status(h: SessionHandle): Promise<PeerState>           // "starting"|"working"|"waiting_input"|"idle"|"ended"|"failed"
+  answer(h: SessionHandle, questionId: string, answer: Answer): Promise<void>        // resolves a pending question
+  respond(h: SessionHandle, requestId: string, decision: "allow" | "deny"): Promise<void>  // resolves a pending approval
+  status(h: SessionHandle): Promise<PeerState>           // last known, derived locally; "starting"|"working"|"waiting_input"|"idle"|"ended"|"failed"
   usage(h: SessionHandle): Promise<{ contextTokens: number; contextLimit: number; costUsd?: number }>
-  model(h: SessionHandle): Promise<{ id: string; endpoint?: string }>   // read from the spawned process/SDK config, never a UI string
-  events(h: SessionHandle): AsyncIterable<ProviderEvent> // turn started/ended, tool use, question asked, error, compaction
-  resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle>
+  model(h: SessionHandle): Promise<{ id: string; endpoint?: string }>   // the LATEST init's model, never a UI string
+  events(h: SessionHandle): AsyncIterable<ProviderEvent> // plain data only: turn.started/ended{reason}, tool.use, question.asked, approval.requested, session.ended, error, compaction
+  resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle>   // always present; rejects FleetError("unsupported") when capabilities.resume is false (untested: both live providers report true)
 }
 ```
 
-- **`waiting_input`** is a provider event ("the model asked the user a question"), not a regex on `?`. That replaces
-  the `asking` guess.
+The shared types (`SessionSpec`, `Turn`, `ProviderEvent`, `PermissionMode`, `ProviderSessionRef`, `Usage`) live in
+`foundation/contracts`; `runtime/providers/sdk` declares only `Provider` and the capabilities over them, so `pm`,
+`notify` and the store never import a provider package.
+
+- **`waiting_input` is a plain-data event**, not a regex on `?`: `question.asked {turnId, questionId, questions[]}`
+  and `approval.requested {turnId, requestId, tool}`. The decision inbox answers through `answer()`/`respond()`, never
+  by resolving something carried in an event (events are stored and replayed). The adapter keeps the pending
+  promise keyed by an id it mints; `status()` is `waiting_input` while any is pending. A dead session leaves the
+  promise unresolved with no SDK event, so the adapter emits `question.abandoned` and the supervisor re-delivers the
+  stored answer on resume as a `nudge` turn (the promise is not durable).
+- **`session.ended` is synthesised by the adapter**, not read from a stream frame: the Claude SDK never emits it. The
+  adapter derives it from the event iterator finishing or throwing, or from the process exiting. The iterator does
+  **not** finish on interrupt, only when the input stream closes or the process ends (spike §5), so an interrupt
+  produces `turn.ended {reason: interrupted}` and no `session.ended`.
+- **`turn.ended` carries `reason: completed | interrupted | failed`** (+ `error`). Only `failed` raises a
+  `peer.failed` notification (§6.1); a deliberate interrupt notifies nobody. (Claude SDK: `is_error` with
+  `terminal_reason: aborted_tools` is `interrupted`, other `is_error` is `failed`.)
+- **`usage()` separates three things that fail independently.** `contextTokens` comes from the provider.
+  `contextLimit` is **always from config** (`config/policies/limits`, per provider + model), never from the SDK: a
+  DeepInfra session reports a 200,000 window for a 1,048,576 model, which would purge at 20%. `costUsd` is present
+  only when `capabilities.usageCost` is true; DeepInfra's SDK cost is priced at Claude list rates and is not real, so
+  the §11 ledger records it as null.
 - **Permission mode and env are part of `SessionSpec`**, validated by the supervisor against the peer's declared
-  mode before `start`. A session that comes up in another mode is stopped and restarted, not tolerated (§13).
+  mode before `start`. A session that comes up in another mode is stopped and restarted, not tolerated (§13). The
+  launch-mode check reads the **first** init event (`model()` follows the **latest**, which is how a model switch
+  shows); a capture variable that just keeps overwriting reports neither correctly. The conformance suite asserts the
+  first init carries the requested mode and that a write in `default` reaches the approval path.
+- **Env is built, never inherited.** The adapter never spreads `process.env`; it builds the child environment from an
+  explicit allowlist (PATH, HOME, TERM, LANG, TMPDIR, …) plus `SessionSpec.env`, and starts with
+  `settingSources: []` so the developer's own settings, hooks and env do not leak in (a bare run fired 13 hook frames
+  from a dev's settings; a leaked `ANTHROPIC_BASE_URL` made a session asked for `claude` silently run DeepSeek).
+  After start the supervisor compares what it observes with the spec: **observed = model id (always) + base URL
+  (when the adapter recorded what it set; the SDK does not expose it)**. A mismatch stops the session and emits
+  `peer.failed {reason: "config_mismatch", expected, observed}`.
 - **Implementations:**
   - `claude`: the Claude Agent SDK (preferred; gives events, usage, resume and structured output), falling back to
-    spawning the CLI with `--output-format stream-json`.
+    spawning the CLI with `--output-format stream-json`. Spike (`docs/design/spikes/agent-sdk.md`): SDK 0.3.322
+    carries this interface for both claude and deepinfra.
   - `deepinfra`: the same Claude implementation with `ANTHROPIC_BASE_URL`/key/model set in `SessionSpec.env` of
     *that one process*. No shared tmux server seeds env, so there is no drift.
   - `opencode`: its server/SDK mode (`opencode serve`) rather than a pane.
   - `cursor`: Cursor's headless agent with `--resume <chatId>`; if it exposes no usage, `capabilities.usageTokens =
     false` and the self-purge trigger falls back to turn count (§6).
 - A provider that cannot do something says so in `capabilities`; the supervisor adapts, it does not guess.
+- **Untested path:** the `resume()` `unsupported` branch has no evidence behind it, since claude and deepinfra both report `resume: true`. The first non-SDK provider (opencode or cursor) is where it will first be exercised; its conformance case is written then, not assumed.
 
 ## 5. The deterministic project manager
 
