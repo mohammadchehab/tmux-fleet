@@ -30,9 +30,22 @@ export interface OutboundMessage {
 export const deliveryFailures = ['no_session', 'resume_failed', 'stale_brief'] as const
 export type DeliveryFailure = (typeof deliveryFailures)[number]
 
+/**
+ * What one `deliver` call did. It describes a call that ran to the end of the
+ * queue, not one that stopped part-way: a provider that throws mid-batch makes
+ * `deliver` return `Err`, so the caller gets no outcome and no `delivered` list.
+ * Nothing is lost by that — each message was appended as `message.delivered`
+ * before the next was tried, and the Mailbox remembers which session it went to,
+ * so the retry does not put a second copy in front of a peer still on that
+ * session. A failed `deliver` is followed by one that resumes at the first
+ * message the provider did not accept (§7).
+ */
 export interface DeliveryOutcome {
   readonly peerId: PeerId
-  /** Messages handed to the provider in this call, oldest first. */
+  /**
+   * Messages handed to the provider in this call, oldest first. Only complete
+   * calls have one; see above for the mid-batch failure.
+   */
   readonly delivered: readonly MessageId[]
   /** True when the Mailbox had to resume a session first (§7). */
   readonly resumed: boolean

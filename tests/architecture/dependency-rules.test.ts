@@ -41,6 +41,7 @@ const WORKSPACE = [
   pkg('@fleet/runtime-provider-sdk', 'packages/runtime/providers/sdk'),
   pkg('@fleet/runtime-providers-claude', 'packages/runtime/providers/claude'),
   pkg('@fleet/runtime-supervisor', 'packages/runtime/supervisor'),
+  pkg('@fleet/runtime-mailbox', 'packages/runtime/mailbox'),
   pkg('@fleet/orchestration-pm', 'packages/orchestration/pm'),
   pkg('@fleet/orchestration-routines', 'packages/orchestration/routines'),
   pkg('@fleet/orchestration-gate', 'packages/orchestration/gate'),
@@ -119,6 +120,20 @@ test('a provider never imports the store', () => {
   assert.match(denies('@fleet/runtime-provider-sdk', '@fleet/foundation-store'), /a provider never imports the store/)
   // and the supervisor, which does own the adaptation, may
   allows('@fleet/runtime-supervisor', '@fleet/foundation-store')
+})
+
+test('the packages that speak to a provider import the sdk, never a concrete one', () => {
+  // the order rule alone would let supervisor and mailbox name claude or deepinfra; #30 closes that
+  for (const speaker of ['@fleet/runtime-supervisor', '@fleet/runtime-mailbox']) {
+    assert.match(denies(speaker, '@fleet/runtime-providers-claude'), /may import @fleet\/runtime-provider-sdk only/)
+    allows(speaker, '@fleet/runtime-provider-sdk')
+  }
+  // routines may not name one either: the shared types it needs are foundation's (§4). A sideways import of the
+  // sdk itself is still refused, which is what makes the rule about *which* provider, not *whether*.
+  assert.match(denies('@fleet/orchestration-routines', '@fleet/runtime-providers-claude'), /may import @fleet\/runtime-provider-sdk only/)
+  assert.match(denies('@fleet/orchestration-routines', '@fleet/runtime-provider-sdk'), /never import each other sideways/)
+  // a provider importing its siblings stays allowed: that is what the sdk is for
+  allows('@fleet/runtime-providers-claude', '@fleet/runtime-provider-sdk')
 })
 
 test('inside a group a package imports only the earlier-listed siblings', () => {

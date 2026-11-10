@@ -72,8 +72,12 @@ export interface MailboxDeps {
   readonly clock?: Clock
 }
 
-/** The states a message can still be delivered from: everything before `acked` or `rejected`. */
-const unacked: ReadonlySet<MessageAckState> = new Set<MessageAckState>(['pending', 'delivered'])
+/**
+ * The states a message can still be delivered from: everything before `acked`
+ * or `rejected`. Handed to the store as the read's filter, so `pending` and
+ * `deliver` never see a message there is nothing left to do with.
+ */
+const unacked: readonly MessageAckState[] = ['pending', 'delivered']
 
 /**
  * Oldest first. `sentAt` orders messages because the Mailbox is their only
@@ -129,10 +133,17 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
     }
   }
 
-  /** Every message for a peer, oldest first — the one shape every read below starts from. */
-  const messagesFor = async (to: PeerId): Promise<Result<readonly Message[], FleetError>> => {
+  /**
+   * Every message for a peer, oldest first — the one shape every read below
+   * starts from. `states` goes to the store, so a pending read does not carry
+   * every message the peer has ever had across the boundary only to drop them.
+   */
+  const messagesFor = async (
+    to: PeerId,
+    states?: readonly MessageAckState[],
+  ): Promise<Result<readonly Message[], FleetError>> => {
     try {
-      return ok([...(await deps.store.messages.forPeer(to))].sort(bySentAt))
+      return ok([...(await deps.store.messages.forPeer(to, states))].sort(bySentAt))
     } catch (thrown) {
       return err(toFleetError(thrown, 'store_failed'))
     }
@@ -169,9 +180,9 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
   })
 
   const deliverTo = async (to: PeerId): Promise<Result<DeliveryOutcome, FleetError>> => {
-    const all = await messagesFor(to)
+    const all = await messagesFor(to, unacked)
     if (!all.ok) return all
-    const waiting = all.value.filter((m) => unacked.has(m.state))
+    const waiting = all.value
     if (waiting.length === 0) return ok({ peerId: to, delivered: [], resumed: false, failures: [] })
 
     const current = await currentBrief(to)
@@ -292,12 +303,12 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
     },
 
     async pending(to: PeerId): Promise<readonly Message[]> {
-      const all = await messagesFor(to)
+      const all = await messagesFor(to, unacked)
       // The API declares a plain list, so a store failure throws rather than
       // pretending the box is empty: "nothing waiting" is a decision a caller acts
       // on, and a failed read must not be able to say it.
       if (!all.ok) throw all.error
-      return all.value.filter((m) => unacked.has(m.state))
+      return all.value
     },
 
     deliver(to: PeerId): Promise<Result<DeliveryOutcome, FleetError>> {

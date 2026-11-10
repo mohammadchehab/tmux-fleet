@@ -318,6 +318,23 @@ describe('reads', () => {
     )
   })
 
+  it('asks the store for the states it can act on, and for every state only when reading history', async () => {
+    const { store, mailbox } = setup()
+    unwrap(await send(mailbox, engineer))
+
+    await mailbox.pending(engineer)
+    unwrap(await mailbox.deliver(engineer))
+    await mailbox.history(engineer)
+
+    // The pending and delivery reads narrow at the store (§7, §15); history does not, because `fleet peek`
+    // shows what was acked and rejected too.
+    assert.deepEqual(store.reads, [
+      { peerId: engineer, states: ['pending', 'delivered'] },
+      { peerId: engineer, states: ['pending', 'delivered'] },
+      { peerId: engineer },
+    ])
+  })
+
   it('refuses to report an empty box when the read itself failed', async () => {
     const { store, mailbox } = setup()
     unwrap(await send(mailbox, engineer))

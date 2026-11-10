@@ -21,6 +21,7 @@ import type {
 import type { ChecksState, ReviewState } from './events/delivery.ts'
 import type { AppendEvent } from './events/registry.ts'
 import type { Message } from './projections/mailbox.ts'
+import type { MessageAckState } from './events/messages.ts'
 import type { ProviderHandle, Turn } from './provider.ts'
 import type { PullRequest, Worktree } from './projections/delivery.ts'
 import type { Decision, Finding, Notification, Routine } from './projections/ops.ts'
@@ -114,7 +115,8 @@ export interface ReadModel {
   /** §7's projection: what the Mailbox wrote, and what `fleet peek` reads. */
   readonly messages: {
     all(): Promise<readonly Message[]>
-    forPeer(id: PeerId): Promise<readonly Message[]>
+    /** One peer's messages; `states` narrows it, and is what the pending read of §7 asks for. */
+    forPeer(id: PeerId, states?: readonly MessageAckState[]): Promise<readonly Message[]>
   }
   readonly pullRequests: {
     all(): Promise<readonly PullRequest[]>
@@ -141,9 +143,15 @@ export interface EventSink {
   append(batch: readonly AppendEvent[]): Promise<readonly Seq[]>
 }
 
-/** The read side the Mailbox needs: the `message` projection for one peer (§3, §7). */
+/**
+ * The read side the Mailbox needs: the `message` projection for one peer (§3,
+ * §7). `states` is part of the read rather than a filter applied afterwards, so
+ * the pending and delivery reads touch only the rows they can still act on:
+ * `messages_pending (to_peer, state)` in the store DDL is that query (§15).
+ * Omitted means every state, which is what `history` and `find` want.
+ */
 export interface MessageReader {
-  forPeer(peerId: PeerId): Promise<readonly Message[]>
+  forPeer(peerId: PeerId, states?: readonly MessageAckState[]): Promise<readonly Message[]>
 }
 
 /**

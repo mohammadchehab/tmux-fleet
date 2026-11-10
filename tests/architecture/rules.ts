@@ -6,7 +6,8 @@
 //   foundation   <-  runtime, orchestration, workspace, security, notify, integrations
 //   apps/daemon  <-  all groups                  (the only wiring point)
 //   apps/clients, apps/hooks -> foundation types, and the daemon API over its socket
-//   groups never import each other sideways; they declare a port in foundation/contracts and the daemon injects it.
+//   groups never import each other sideways; they declare a port in foundation/contracts and the daemon injects it
+//   a package that speaks to a provider (supervisor, mailbox, routines) reaches providers/sdk and no concrete one
 
 /** A package of the workspace, identified by its package.json name and its directory. */
 export type PackageRef = {
@@ -91,6 +92,29 @@ export function isProvider(pkg: PackageRef): boolean {
   return pkg.group === 'runtime' && pkg.key.startsWith('providers/')
 }
 
+/**
+ * The packages that speak to a provider, and so may reach into `providers/*` — but only as far as the SDK. Which
+ * concrete provider is a runtime choice made once, in `apps/daemon` (§1.1), so a package that picked one would be a
+ * second place the fleet decides what a peer runs on.
+ *
+ * This is a separate rule from the order one on purpose: the order list already lets `supervisor` and `mailbox`
+ * import any earlier `providers/*`, which is true of the concrete adapters too. `orchestration/routines` is here
+ * even though a sideways import is refused anyway: it says *why* routines may not name a provider, and it is the
+ * package a future carve-out for `providers/sdk` would be about (the shared types it needs live in
+ * `foundation/contracts`, §4).
+ */
+export const SDK_ONLY_PACKAGES: readonly string[] = [
+  'runtime/supervisor',
+  'runtime/mailbox',
+  'orchestration/routines',
+]
+
+const PROVIDER_SDK = 'providers/sdk'
+
+export function isSdkOnly(pkg: PackageRef): boolean {
+  return SDK_ONLY_PACKAGES.includes(`${pkg.group}/${pkg.key}`)
+}
+
 function orderOf(pkg: PackageRef): number {
   return PACKAGE_ORDER[pkg.group]?.indexOf(pkg.key) ?? -1
 }
@@ -132,6 +156,12 @@ export function checkEdge(edge: ImportEdge, packages: ReadonlyMap<string, Packag
   // A provider never imports the store; the supervisor adapts its events into the store (§1.1).
   if (isProvider(from) && to.group === 'foundation' && to.key === 'store') {
     return `provider imports @fleet/foundation-store; a provider never imports the store — the supervisor adapts its events (§1.1)`
+  }
+
+  // A package that talks to a provider may reach providers/sdk and no concrete adapter: the provider choice is the
+  // daemon's, made once (§1.1, #30). Checked before the order rule, which would otherwise allow it.
+  if (isSdkOnly(from) && isProvider(to) && to.key !== PROVIDER_SDK) {
+    return `${from.group}/${from.key} imports the concrete provider ${to.name}; it may import @fleet/runtime-provider-sdk only — apps/daemon injects the provider the profile picked (§1.1)`
   }
 
   if (to.group === 'foundation') return null // every package may import foundation
