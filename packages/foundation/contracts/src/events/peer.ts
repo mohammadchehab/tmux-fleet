@@ -4,7 +4,21 @@
  * outlives its sessions, and nothing outside the registry sees a session ref.
  */
 
-import { boolean, event, object, oneOf, optional, string, text } from '@fleet/foundation-core'
+import {
+  boolean,
+  event,
+  number,
+  object,
+  objectAs,
+  oneOf,
+  optional,
+  refine,
+  string,
+  text,
+  type PeerId,
+  type Schema,
+  type SessionId,
+} from '@fleet/foundation-core'
 import { peerId, providerSessionRef, sessionId, worktreeId } from '@fleet/foundation-core'
 import { peerState } from '@fleet/foundation-core'
 import { permissionMode, providerId } from '../provider.ts'
@@ -38,15 +52,57 @@ export const peerStateChanged = event(
   }),
 )
 
+/**
+ * Why a peer failed. A closed set, so the notification class is a switch and
+ * not a match on prose; `message` carries the sentence a human reads (§6.1).
+ */
+export const peerFailureReasons = ['config_mismatch', 'session_died', 'resume_failed', 'provider_error'] as const
+export type PeerFailureReason = (typeof peerFailureReasons)[number]
+
+/**
+ * What the supervisor saw a session running. `model` is always observable;
+ * `baseUrl` only when the adapter recorded what it set, because no SDK exposes
+ * the endpoint it dialled (§4, §13).
+ */
+export interface SessionFacts {
+  readonly model: string
+  readonly baseUrl?: string
+}
+
+const sessionFacts = (): Schema<SessionFacts> =>
+  objectAs<SessionFacts>()({ model: string({ minLength: 1 }), baseUrl: optional(string({ minLength: 1 })) })
+
+export interface PeerFailedData {
+  readonly peerId: PeerId
+  readonly sessionId?: SessionId
+  readonly reason: PeerFailureReason
+  /** The human sentence: an exit code, the SDK's message, what was denied. */
+  readonly message?: string
+  /** Present with `config_mismatch`: what the `SessionSpec` asked for. */
+  readonly expected?: SessionFacts
+  /** Present with `config_mismatch`: what came up instead. */
+  readonly observed?: SessionFacts
+  readonly retryable: boolean
+}
+
 /** A peer's session died or would not resume: a failure notification class (§6.1). */
 export const peerFailed = event(
   'peer.failed',
-  object({
-    peerId: peerId(),
-    sessionId: optional(sessionId()),
-    reason: text(1000),
-    retryable: boolean(),
-  }),
+  refine(
+    objectAs<PeerFailedData>()({
+      peerId: peerId(),
+      sessionId: optional(sessionId()),
+      reason: oneOf(peerFailureReasons),
+      message: optional(text(1000)),
+      expected: optional(sessionFacts()),
+      observed: optional(sessionFacts()),
+      retryable: boolean(),
+    }),
+    // A mismatch with nothing to compare is not a diagnosis: the two facts are
+    // what makes the event worth storing (§4, §13).
+    (value) => value.reason !== 'config_mismatch' || (value.expected !== undefined && value.observed !== undefined),
+    'expected and observed when the reason is config_mismatch',
+  ),
 )
 
 /** A session came up. `resumed` is true when it continued a `ProviderSessionRef`. */
@@ -73,6 +129,12 @@ export const sessionEnded = event(
     peerId: peerId(),
     sessionId: sessionId(),
     endReason: oneOf(sessionEndReasons),
+    /**
+     * The provider process's exit code, when the provider runs one: kept on the
+     * stored event so a replay can still tell `exit 1` from `exit 0` (§4, §7).
+     * Absent for an in-process provider, and for a session we stopped.
+     */
+    code: optional(number({ int: true })),
   }),
 )
 

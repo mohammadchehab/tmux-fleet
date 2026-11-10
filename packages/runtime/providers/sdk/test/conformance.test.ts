@@ -38,6 +38,7 @@ const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider
     resume: true,
     modelSwitch: true,
     usageTokens: true,
+    usageCost: true,
     structuredOutput: false,
     permissionModes: ['default'],
     ...capabilities,
@@ -45,9 +46,14 @@ const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider
   start: async () => handle(id),
   send: async () => 'trn_8192a3b4c5d6e7f8' as TurnId,
   interrupt: async () => {},
+  answer: async () => {},
+  respond: async () => {},
   stop: async () => {},
   status: async () => 'idle',
-  usage: async () => ({ contextTokens: 0, contextLimit: 200_000 }),
+  usage: async () =>
+    capabilities.usageCost === false
+      ? { contextTokens: 0, contextLimit: 200_000 }
+      : { contextTokens: 0, contextLimit: 200_000, costUsd: 0 },
   model: async () => ({ id: 'stub-model' }),
   events: async function* () {
     return
@@ -134,6 +140,26 @@ test('a provider that refuses a resume it declared is caught', async () => {
   const caught = await resumeFailures(broken)
   assert.equal(caught.length, 1)
   assert.match(caught[0] ?? '', /although capabilities\.resume is true/)
+})
+
+test('a provider that invents a cost it declared it cannot know is caught', async () => {
+  const priced = {
+    ...stub('priced', { usageCost: false }),
+    usage: async () => ({ contextTokens: 0, contextLimit: 200_000, costUsd: 0.42 }),
+  }
+  const caught = await resumeFailures(priced)
+  assert.equal(caught.length, 1)
+  assert.match(caught[0] ?? '', /reported costUsd although capabilities\.usageCost is false/)
+})
+
+test('a provider that hides a cost it declared is caught', async () => {
+  const silent = {
+    ...stub('silent', { usageCost: true }),
+    usage: async () => ({ contextTokens: 0, contextLimit: 200_000 }),
+  }
+  const caught = await resumeFailures(silent)
+  assert.equal(caught.length, 1)
+  assert.match(caught[0] ?? '', /omitted costUsd although capabilities\.usageCost is true/)
 })
 
 test('a provider that refuses with the wrong code is caught', async () => {

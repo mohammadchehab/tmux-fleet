@@ -1,0 +1,7 @@
+{
+  "input": {
+    "type": "question.abandoned",
+    "questionId": 42
+  },
+  "path": "questionId"
+}

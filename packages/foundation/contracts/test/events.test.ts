@@ -136,3 +136,17 @@ test('an append with a misspelt optional field is refused, not silently stripped
     ['data.judgeModell'],
   )
 })
+
+test('a config_mismatch carries the two facts it is a diagnosis of (§4, §13)', () => {
+  const fixture = fixtureFor('peer.failed') as { data: Record<string, unknown> }
+  assert.equal(fixture.data.reason, 'config_mismatch')
+
+  const { expected: _expected, ...withoutExpected } = fixture.data
+  const result = decodeStrict(EVENT_SCHEMAS['peer.failed'] as Schema<unknown>, { ...fixture, data: withoutExpected })
+  assert.equal(result.ok, false, 'a mismatch with nothing to compare is not a diagnosis')
+  if (!result.ok) assert.match(result.error.issues[0]?.message ?? '', /expected and observed/)
+
+  // Every other reason may omit both: the message is then the whole story.
+  const died = { ...fixture, data: { ...fixture.data, reason: 'session_died', expected: undefined, observed: undefined } }
+  assert.doesNotThrow(() => parse(EVENT_SCHEMAS['peer.failed'], died))
+})

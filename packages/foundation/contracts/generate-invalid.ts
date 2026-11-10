@@ -11,7 +11,7 @@
  */
 
 import { readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { EVENT_SCHEMAS, eventTypes } from './src/index.ts'
+import { EVENT_SCHEMAS, eventTypes, providerEvent } from './src/index.ts'
 import type { ObjectSchema, Schema } from '@fleet/foundation-core'
 import { decodeStrict } from '@fleet/foundation-core'
 
@@ -92,3 +92,53 @@ for (const name of eventTypes) {
 
 console.log(`wrote ${generated.length} invalid fixtures`)
 console.log(readdirSync(outDir).length)
+
+// The provider stream crosses the process boundary too (§4), so it gets the
+// same treatment: one mutation per event `type`, with the path the union must
+// report. Provider events are flat, so the path is a bare key.
+const providerEventsDir = new URL('./test/fixtures/provider-events/', import.meta.url)
+const providerInvalidDir = new URL('./test/fixtures/provider-events-invalid/', import.meta.url)
+mkdirSync(providerInvalidDir, { recursive: true })
+
+const providerNames = readdirSync(providerEventsDir)
+  .filter((name) => name.endsWith('.json'))
+  .sort()
+
+for (const [index, file] of providerNames.entries()) {
+  const name = file.slice(0, -'.json'.length)
+  const fixture = JSON.parse(readFileSync(new URL(file, providerEventsDir), 'utf8')) as Record<string, unknown>
+  const keys = Object.keys(fixture).filter((key) => key !== 'type')
+  const offset = index % Math.max(keys.length, 1)
+  const rotated = keys.map((_, i) => keys[(i + offset) % keys.length])
+
+  let written: { input: unknown; path: string } | undefined
+  for (const key of rotated) {
+    const current = fixture[key]
+    const candidates: unknown[] = []
+    if (typeof current === 'string') candidates.push(42, 'not-a-valid-value')
+    else if (typeof current === 'number') candidates.push('not-a-number')
+    else if (Array.isArray(current)) candidates.push([])
+    for (const replacement of candidates) {
+      const mutated = structuredClone(fixture)
+      mutated[key] = replacement
+      const result = decodeStrict(providerEvent(), mutated)
+      if (!result.ok && result.error.issues.length === 1 && result.error.issues[0]?.path === key) {
+        written = { input: mutated, path: key }
+        break
+      }
+    }
+    if (written) break
+
+    const mutated = structuredClone(fixture)
+    delete mutated[key]
+    const result = decodeStrict(providerEvent(), mutated)
+    if (!result.ok && result.error.issues.length === 1 && result.error.issues[0]?.path === key) {
+      written = { input: mutated, path: key }
+      break
+    }
+  }
+  if (!written) throw new Error(`no mutation produces a single issue for provider event ${name}`)
+  writeFileSync(new URL(`${name}.json`, providerInvalidDir), `${JSON.stringify(written, null, 2)}\n`)
+}
+
+console.log(`wrote ${readdirSync(providerInvalidDir).length} invalid provider-event fixtures`)

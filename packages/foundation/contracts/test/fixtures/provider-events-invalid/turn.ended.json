@@ -1,0 +1,14 @@
+{
+  "input": {
+    "type": "turn.ended",
+    "turnId": 42,
+    "at": "2026-11-10T09:04:12.000Z",
+    "reason": "completed",
+    "usage": {
+      "contextTokens": 172400,
+      "contextLimit": 200000,
+      "costUsd": 0.42
+    }
+  },
+  "path": "turnId"
+}

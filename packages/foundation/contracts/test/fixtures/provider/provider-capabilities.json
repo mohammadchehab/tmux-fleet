@@ -2,6 +2,12 @@
   "resume": true,
   "modelSwitch": false,
   "usageTokens": true,
+  "usageCost": false,
   "structuredOutput": true,
-  "permissionModes": ["default", "acceptEdits", "bypassPermissions", "plan"]
+  "permissionModes": [
+    "default",
+    "acceptEdits",
+    "bypassPermissions",
+    "plan"
+  ]
 }

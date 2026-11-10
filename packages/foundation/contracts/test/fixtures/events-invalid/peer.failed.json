@@ -11,7 +11,16 @@
     "data": {
       "peerId": "engineer-1",
       "sessionId": "ses_1a2b3c4d5e6f7081",
-      "reason": "session exited with code 1 and did not answer",
+      "reason": "config_mismatch",
+      "message": "the session came up on deepseek-v3.2 for a spec that asked for claude-sonnet-5-5",
+      "expected": {
+        "model": "claude-sonnet-5-5",
+        "baseUrl": "https://api.anthropic.com"
+      },
+      "observed": {
+        "model": "deepseek-v3.2",
+        "baseUrl": "https://api.deepinfra.com/v1/anthropic"
+      },
       "retryable": "not-a-boolean"
     }
   },

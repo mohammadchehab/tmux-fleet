@@ -15,11 +15,13 @@ import {
   contractId,
   peerId,
   providerSessionRef,
+  questionId,
   turnId,
   type BriefId,
   type ContractId,
   type PeerId,
   type ProviderSessionRef,
+  type QuestionId,
   type SessionId,
   type TurnId,
   type WorkId,
@@ -48,6 +50,11 @@ export interface ProviderCapabilities {
   readonly modelSwitch: boolean
   /** `usage()` reports real context tokens, so the self-purge trigger is measurable. */
   readonly usageTokens: boolean
+  /**
+   * `usage()` reports a real `costUsd`. When false the spend ledger records
+   * null rather than a number the vendor priced at someone else's rates (§4, §11).
+   */
+  readonly usageCost: boolean
   /** The provider can answer a `Judge`-style call against a schema. */
   readonly structuredOutput: boolean
   /** The permission modes this provider honours; `SessionSpec.permissionMode` must be one. */
@@ -59,6 +66,7 @@ export const providerCapabilities = (): Schema<ProviderCapabilities> =>
     resume: boolean(),
     modelSwitch: boolean(),
     usageTokens: boolean(),
+    usageCost: boolean(),
     structuredOutput: boolean(),
     permissionModes: array(permissionMode(), { maxItems: permissionModes.length }),
   })
@@ -193,10 +201,19 @@ export interface Turn {
 export const turn = (): Schema<Turn> =>
   objectAs<Turn>()({ text: text(), kind: oneOf(turnKinds), briefVersion: positiveInt() })
 
-/** What `Provider.usage` reports; the self-purge trigger reads `contextTokens` (§8). */
+/**
+ * What `Provider.usage` reports; the self-purge trigger reads `contextTokens`
+ * (§8). The three numbers fail independently, so they are sourced independently.
+ */
 export interface Usage {
   readonly contextTokens: number
+  /**
+   * Always from config (`config/policies/limits`, per provider and model),
+   * never from the SDK: an SDK that guesses the window would purge a large
+   * model at a fifth of its real context (§4, §8).
+   */
   readonly contextLimit: number
+  /** Present only when `capabilities.usageCost` is true; null-equivalent otherwise (§4, §11). */
   readonly costUsd?: number
 }
 
@@ -207,14 +224,50 @@ export const usage = (): Schema<Usage> =>
     costUsd: optional(number({ min: 0 })),
   })
 
+/** Why a turn ended. Only `failed` may raise a `peer.failed` (§6.1); an interrupt notifies nobody. */
+export const turnEndReasons = ['completed', 'interrupted', 'failed'] as const
+export type TurnEndReason = (typeof turnEndReasons)[number]
+
 /**
- * The stream a provider pushes (§4). `waiting_input` is derived from
- * `question.asked`, not from a regex on `?`; a turn boundary is where the
+ * Why a provider's session stream ended. The adapter synthesises
+ * `session.ended` — no SDK here emits one — from the iterator finishing or
+ * throwing, or from the process exiting (§4). `stopped` is a stop we asked for.
+ */
+export const providerSessionEndReasons = ['exit', 'crash', 'stopped'] as const
+export type ProviderSessionEndReason = (typeof providerSessionEndReasons)[number]
+
+/** One question in a `question.asked`, shaped like the SDK's `AskUserQuestion`. */
+export interface ProviderQuestion {
+  readonly question: string
+  readonly header?: string
+  readonly multiSelect?: boolean
+  readonly options?: readonly { readonly label: string; readonly description?: string }[]
+}
+
+/** The labels chosen, one per question, in the order the questions were asked. */
+export type QuestionAnswer = readonly string[]
+
+/**
+ * The stream a provider pushes (§4): plain data, never text meant to be parsed.
+ * `waiting_input` is derived from an unanswered `question.asked` or
+ * `approval.requested`, not from a regex on `?`; a turn boundary is where the
  * self-purge trigger is evaluated (§8).
+ *
+ * `question.asked` and `approval.requested` carry the id the decision inbox
+ * answers through `answer()`/`respond()`; an event is stored and replayed, so
+ * it never carries the answer itself.
  */
 export type ProviderEvent =
   | { readonly type: 'turn.started'; readonly turnId: TurnId; readonly at: string }
-  | { readonly type: 'turn.ended'; readonly turnId: TurnId; readonly at: string; readonly usage?: Usage }
+  | {
+      readonly type: 'turn.ended'
+      readonly turnId: TurnId
+      readonly at: string
+      readonly reason: TurnEndReason
+      /** Why it failed; present with `reason: 'failed'`. */
+      readonly error?: string
+      readonly usage?: Usage
+    }
   | {
       readonly type: 'tool.use'
       readonly turnId: TurnId
@@ -222,7 +275,28 @@ export type ProviderEvent =
       /** A short, already-redacted summary; never the full tool input. */
       readonly summary?: string
     }
-  | { readonly type: 'question.asked'; readonly turnId: TurnId; readonly question: string }
+  | {
+      readonly type: 'question.asked'
+      readonly turnId: TurnId
+      readonly questionId: QuestionId
+      readonly questions: readonly ProviderQuestion[]
+    }
+  /** The pending question died with its session and will never be answered (§4). */
+  | { readonly type: 'question.abandoned'; readonly questionId: QuestionId }
+  | {
+      readonly type: 'approval.requested'
+      readonly turnId: TurnId
+      readonly requestId: string
+      readonly tool: string
+      /** A short, already-redacted summary of what the tool would do. */
+      readonly summary?: string
+    }
+  | {
+      readonly type: 'session.ended'
+      readonly reason: ProviderSessionEndReason
+      /** The provider process's exit code; absent for an in-process provider. */
+      readonly code?: number
+    }
   | { readonly type: 'error'; readonly message: string; readonly retryable: boolean }
   | {
       readonly type: 'compaction'
@@ -234,17 +308,50 @@ export type ProviderEvent =
 const isoInstant = (): Schema<string> =>
   refine(string({ minLength: 20, maxLength: 30 }), (v) => !Number.isNaN(Date.parse(v)), 'an ISO 8601 timestamp')
 
+const providerQuestion = (): Schema<ProviderQuestion> =>
+  objectAs<ProviderQuestion>()({
+    question: text(),
+    header: optional(string({ maxLength: 80 })),
+    multiSelect: optional(boolean()),
+    options: optional(array(object({ label: string({ minLength: 1, maxLength: 200 }), description: optional(text()) }))),
+  })
+
 export const providerEvent = (): Schema<ProviderEvent> =>
   unionAs<ProviderEvent>()([
     object({ type: literal('turn.started'), turnId: turnId(), at: isoInstant() }),
-    object({ type: literal('turn.ended'), turnId: turnId(), at: isoInstant(), usage: optional(usage()) }),
+    object({
+      type: literal('turn.ended'),
+      turnId: turnId(),
+      at: isoInstant(),
+      reason: oneOf(turnEndReasons),
+      error: optional(text()),
+      usage: optional(usage()),
+    }),
     object({
       type: literal('tool.use'),
       turnId: turnId(),
       tool: string({ minLength: 1 }),
       summary: optional(string({ maxLength: 500 })),
     }),
-    object({ type: literal('question.asked'), turnId: turnId(), question: text() }),
+    object({
+      type: literal('question.asked'),
+      turnId: turnId(),
+      questionId: questionId(),
+      questions: refine(array(providerQuestion()), (v) => v.length > 0, 'at least one question'),
+    }),
+    object({ type: literal('question.abandoned'), questionId: questionId() }),
+    object({
+      type: literal('approval.requested'),
+      turnId: turnId(),
+      requestId: string({ minLength: 1, maxLength: 80 }),
+      tool: string({ minLength: 1 }),
+      summary: optional(string({ maxLength: 500 })),
+    }),
+    object({
+      type: literal('session.ended'),
+      reason: oneOf(providerSessionEndReasons),
+      code: optional(number({ int: true })),
+    }),
     object({ type: literal('error'), message: text(), retryable: boolean() }),
     object({
       type: literal('compaction'),
