@@ -189,6 +189,29 @@ test('send writes the message through the Mailbox and peek reads it back', async
   await daemon.down()
 })
 
+test('usage records a peer\'s turn as turn.usage_recorded, and refuses a peer the fleet does not know', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+  const report = {
+    peerId: 'engineer-1' as PeerId,
+    contextTokens: 1200,
+    contextLimit: 200_000,
+    inputTokens: 900,
+    outputTokens: 300,
+    cachedTokens: 800,
+    toolCalls: { grep: 1, glob: 0, read: 2, codegraph: 3 },
+  }
+  assert.deepEqual(await daemon.usage(report), { recorded: true })
+
+  const recorded = (await store.read(1)).filter((event) => event.type === 'turn.usage_recorded')
+  assert.equal(recorded.length, 1)
+  assert.equal(recorded[0]?.subject, 'engineer-1')
+  assert.equal(recorded[0]?.actor, 'peer:engineer-1')
+
+  await assert.rejects(() => daemon.usage({ ...report, peerId: 'ghost' as PeerId }), /no peer/)
+  await daemon.down()
+})
+
 test('decide answers an open decision and refuses one that is not there', async () => {
   const { daemon, store } = await harness()
   await daemon.up()

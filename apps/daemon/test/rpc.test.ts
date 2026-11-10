@@ -45,6 +45,10 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
       calls.push(`peek:${String(input.peer)}`)
       return { messages: [] }
     },
+    async usage(input) {
+      calls.push(`usage:${String(input.peerId)}`)
+      return { recorded: true } as const
+    },
     async decide(input) {
       calls.push(`decide:${String(input.id)}:${input.decision}`)
       return {
@@ -76,6 +80,22 @@ test('send passes its params through, decoded', async () => {
     params: { to: 'engineer-1' as PeerId, kind: 'info', body: 'hello', briefVersion: 3 },
   })
   assert.deepEqual(subject.calls, ['send:engineer-1:info:3'])
+})
+
+test('usage decodes its report strictly and a bad field is named', async () => {
+  const subject = api()
+  const report = {
+    peerId: 'engineer-1',
+    contextTokens: 10,
+    contextLimit: 200_000,
+    inputTokens: 5,
+    outputTokens: 5,
+    cachedTokens: 0,
+    toolCalls: { grep: 0, glob: 0, read: 1, codegraph: 0 },
+  }
+  await dispatch(subject, { method: 'usage', params: report })
+  assert.deepEqual(subject.calls, ['usage:engineer-1'])
+  await assert.rejects(() => dispatch(subject, { method: 'usage', params: { ...report, contextLimit: 0 } }), /contextLimit/)
 })
 
 test('a bad peer id names the field, not just "params is invalid"', async () => {

@@ -33,15 +33,20 @@ import {
   decisionId,
   literal,
   messageId,
+  number,
   object,
   objectAs,
   oneOf,
   optional,
   peerId,
   positiveInt,
+  sessionId,
+  workId,
   string,
   text,
   unionAs,
+  type SessionId,
+  type WorkId,
   type DecisionId,
   type MessageId,
   type PeerId,
@@ -60,11 +65,12 @@ import type { TurnKind } from './provider.ts'
 
 /**
  * The closed set of things a client may ask for. `up` and `down` move the
- * daemon; the other four are the fleet as the user sees it. A method added here
+ * daemon; `send`, `peek`, `decide` and `ls` are the fleet as the user sees it;
+ * `usage` is how a peer's Stop hook reports a finished turn (§6.2). A method added here
  * without a case in `daemonParamsFor` does not compile, and without a case in
  * the daemon's dispatcher does not compile there either.
  */
-export const daemonMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide'] as const
+export const daemonMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage'] as const
 export type DaemonMethod = (typeof daemonMethods)[number]
 
 /**
@@ -212,6 +218,40 @@ export const decideParams = (): Schema<DecideParams> =>
     note: optional(text(2000)),
   })
 
+/**
+ * `usage`: one finished turn, as a peer's Stop hook measured it (§6.2). The
+ * fields are `turn.usage_recorded`'s, so the daemon appends that event without
+ * inferring anything. `contextLimit` comes from the profile, never from the
+ * transcript (§4): a hook that guessed it would make the purge trigger a guess.
+ */
+export interface UsageParams {
+  readonly peerId: PeerId
+  readonly sessionId?: SessionId
+  readonly workId?: WorkId
+  readonly contextTokens: number
+  readonly contextLimit: number
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cachedTokens: number
+  /** How the turn spent its exploration (§6.2): the guard is measured, not assumed. */
+  readonly toolCalls: { readonly grep: number; readonly glob: number; readonly read: number; readonly codegraph: number }
+  readonly costUsd?: number
+}
+
+export const usageParams = (): Schema<UsageParams> =>
+  objectAs<UsageParams>()({
+    peerId: peerId(),
+    sessionId: optional(sessionId()),
+    workId: optional(workId()),
+    contextTokens: count(),
+    contextLimit: positiveInt(),
+    inputTokens: count(),
+    outputTokens: count(),
+    cachedTokens: count(),
+    toolCalls: object({ grep: count(), glob: count(), read: count(), codegraph: count() }),
+    costUsd: optional(number({ min: 0 })),
+  })
+
 /** The methods that take no arguments; `{}` and an absent `params` are the same request. */
 export type NoParams = Readonly<Record<string, never>>
 
@@ -223,6 +263,7 @@ export interface DaemonParams {
   readonly send: SendParams
   readonly peek: PeekParams
   readonly decide: DecideParams
+  readonly usage: UsageParams
 }
 
 export type DaemonParamsOf<M extends DaemonMethod> = DaemonParams[M]
@@ -237,6 +278,7 @@ const paramsSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonParamsOf
   send: sendParams,
   peek: peekParams,
   decide: decideParams,
+  usage: usageParams,
 }
 
 /** The schema for one method's params; what both the daemon and the CLI validate against. */
@@ -292,6 +334,13 @@ export const peekResult = (): Schema<PeekResult> => objectAs<PeekResult>()({ mes
 /** `decide` answers with the decision as it now stands — answered, with the option recorded. */
 export type DecisionRow = Decision
 
+/** `usage`: recorded. The event's own seq is not the client's business. */
+export interface UsageResult {
+  readonly recorded: true
+}
+
+export const usageResult = (): Schema<UsageResult> => objectAs<UsageResult>()({ recorded: literal(true) })
+
 // --------------------------------------------------------------------- port
 
 /**
@@ -311,4 +360,6 @@ export interface DaemonApi {
   peek(params: PeekParams): Promise<PeekResult>
   /** Answer an open decision (§6.1). The decision event is written by the PM's next tick, not here. */
   decide(params: DecideParams): Promise<DecisionRow>
+  /** Record one turn's usage as `turn.usage_recorded`; what the `token-report` projection reads (§6.2). */
+  usage(params: UsageParams): Promise<UsageResult>
 }

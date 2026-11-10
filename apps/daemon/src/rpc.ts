@@ -34,7 +34,7 @@ import {
   type DecisionId,
   type Schema,
 } from '@fleet/foundation-core'
-import { turnKinds, type TurnKind } from '@fleet/foundation-contracts'
+import { turnKinds, usageParams, type TurnKind, type UsageParams } from '@fleet/foundation-contracts'
 
 /** `fleet ls`: one line per peer, plus what the scheduler is running (§2, §6). */
 export interface PeerRow {
@@ -99,6 +99,8 @@ export interface DaemonApi {
   peek(input: { readonly peer: PeerId; readonly limit?: number }): Promise<{ readonly messages: readonly PeekedMessage[] }>
   /** Answer an open decision (§6.1). The decision event is written by the PM's next tick, not here. */
   decide(input: { readonly id: DecisionId; readonly decision: string; readonly note?: string }): Promise<DecisionRow>
+  /** A peer's Stop hook reports one finished turn; recorded as `turn.usage_recorded` (§6.2). */
+  usage(input: UsageParams): Promise<{ readonly recorded: true }>
 }
 
 /** A message as a client reads it: the projection row, flattened for the wire. */
@@ -114,7 +116,7 @@ export interface PeekedMessage {
 
 // ------------------------------------------------------------------ the wire
 
-export const rpcMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide'] as const
+export const rpcMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage'] as const
 export type RpcMethod = (typeof rpcMethods)[number]
 
 export interface RpcRequest {
@@ -221,6 +223,8 @@ export const dispatch = async (api: DaemonApi, request: RpcRequest): Promise<unk
       return api.peek(decode(peekParams(), request.params ?? {}))
     case 'decide':
       return api.decide(decode(decideParams(), request.params ?? {}))
+    case 'usage':
+      return api.usage(decode(usageParams(), request.params ?? {}))
   }
 }
 

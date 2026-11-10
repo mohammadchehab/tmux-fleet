@@ -1,0 +1,20 @@
+{
+  "name": "@fleet/hook-usage-report",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Stop hook that reports a finished turn's usage to the daemon (architecture §6.2, §8). Imports foundation and the daemon's socket only.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "fleet-usage-report": "./src/main.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

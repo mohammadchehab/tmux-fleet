@@ -21,7 +21,7 @@
  * directly would be a second PM.
  */
 
-import { fleetError, systemClock, type Actor, type Clock, type PeerId, type Seq } from '@fleet/foundation-core'
+import { fleetError, peerActor, systemClock, type Actor, type Clock, type PeerId, type Seq } from '@fleet/foundation-core'
 import type {
   AppendEvent,
   Decision,
@@ -205,6 +205,24 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       }
       await append([answeredEvent(input.id, decision, input.decision, input.note, clock.now())])
       return decisionRow(decision)
+    },
+
+    async usage(input) {
+      // The hook runs as the peer, so the peer is the actor; an unknown peer is refused rather than
+      // recorded against nothing (the `token-report` groups by peer).
+      if ((await read.peers.get(input.peerId)) === undefined) {
+        throw fleetError('not_found', `no peer ${input.peerId} to record usage for`)
+      }
+      await append([
+        {
+          type: 'turn.usage_recorded',
+          ts: clock.now(),
+          subject: input.peerId,
+          actor: peerActor(input.peerId),
+          data: input,
+        },
+      ])
+      return { recorded: true } as const
     },
   }
 }
