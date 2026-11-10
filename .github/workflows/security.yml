@@ -81,8 +81,8 @@ jobs:
           gitleaks detect --source . --redact --no-banner --log-opts="$RANGE" \
             --report-format sarif --report-path "$REPORTS/gitleaks.sarif" --exit-code 0
 
-      # SAST over the TypeScript half. legacy/v1 is bash (shellcheck covers it in CI) and spikes/ is throwaway evidence
-      # outside the workspace (§1.1) — scanning either only reports noise nobody will act on.
+      # SAST over the workspace. spikes/ is throwaway evidence outside it (§1.1) — scanning it only reports noise
+      # nobody will act on.
       # Targets the repo root with --exclude rather than a list of directories: semgrep exits 2 on a path that does not
       # exist, so `packages apps tests` failed the job the day `apps/` had not been created yet. Root + excludes keeps
       # working as the layout grows. No --quiet: it hides the reason a scan failed, and findings reach the log through
@@ -93,7 +93,7 @@ jobs:
         run: |
           set -euo pipefail
           semgrep scan --config p/typescript --config p/javascript --config p/nodejs \
-            --exclude legacy --exclude spikes --exclude docs --exclude node_modules \
+            --exclude spikes --exclude docs --exclude node_modules \
             --disable-version-check --sarif --output "$REPORTS/semgrep.sarif" .
 
       # The lockfile is the whole dependency surface: an osv finding here is a known-vulnerable package this repo ships.
