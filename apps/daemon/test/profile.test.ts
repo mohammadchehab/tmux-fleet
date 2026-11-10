@@ -66,6 +66,28 @@ describe('decoding a profile', () => {
     assert.throws(() => decodeProfile(minimal({ security: { scanners: [] } })), /at least one scanner/)
   })
 
+  it('reads the DeepInfra block: the ids this fleet may run, and the endpoint it runs them on', () => {
+    const profile = decodeProfile(
+      minimal({
+        providers: {
+          deepinfra: { allowedModels: ['deepseek-ai/DeepSeek-V4.1-Flash-1017'], baseUrl: 'https://deepinfra.staging/anthropic' },
+        },
+      }),
+    )
+    assert.deepEqual(profile.providers?.deepinfra?.allowedModels, ['deepseek-ai/DeepSeek-V4.1-Flash-1017'])
+    assert.equal(profile.providers?.deepinfra?.baseUrl, 'https://deepinfra.staging/anthropic')
+    // No block is the old behaviour, and it must stay readable: most profiles have none.
+    assert.equal(decodeProfile(minimal()).providers, undefined)
+  })
+
+  it('refuses a misspelt key inside the provider block, and an empty allowlist that permits nothing', () => {
+    // A profile is hand-written; `allowedModel` would decode to "no policy" if it
+    // were dropped, which is the one outcome an allowlist must not have.
+    assert.throws(() => decodeProfile(minimal({ providers: { deepinfra: { allowedModel: ['m'] } } })), /unknown field/)
+    assert.throws(() => decodeProfile(minimal({ providers: { deepinfra: { allowedModels: [] } } })), /at least one model/)
+    assert.throws(() => decodeProfile(minimal({ providers: { opencode: {} } })), /unknown field/)
+  })
+
   it('refuses a peer with no model: `peer.registered` carries one, so a default would be an invented policy', () => {
     assert.throws(
       () => decodeProfile(minimal({ peers: [{ id: 'engineer-1', role: 'engineer', provider: 'claude' }] })),
