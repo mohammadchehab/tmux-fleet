@@ -11,6 +11,7 @@ a public release, and the only credential is the workflow's own `GITHUB_TOKEN`.
 | workflow | job | runs on | ~time | required on main |
 | :- | :- | :- | -: | :- |
 | `CI` | `checks` | every PR, every push to main | 1 min | **yes** |
+| `CI` | `stale-squash` | every PR | 5 s | **yes** |
 | `Security` | `security` | every PR, every push to main, nightly 05:17 UTC | 2 min | no (advisory, see below) |
 
 ### `checks` — the gate
@@ -28,7 +29,33 @@ mechanical, and a person reviewing a diff is a poor substitute for them.
 
 There was a second job, `legacy-v1`, that ran shellcheck and v1's smoke suite. It went with `legacy/v1/` when that tree
 was deleted, along with the `resume.sh` quarantine it carried ([#28](https://github.com/mohammadchehab/tmux-fleet/issues/28),
-closed as obsolete with it). `checks` is now the only job in `ci.yml`.
+closed as obsolete with it).
+
+### `stale-squash` — a green PR that would revert main
+
+[#179](https://github.com/mohammadchehab/tmux-fleet/pull/179) was squash-merged from a branch that predated seven merged
+PRs. A squash applies the diff between the branch's merge-base and its head, so the merge deleted everything those seven
+had added to the files it touched — their tests included, which is why the run stayed green: the reverted tests went with
+the reverted code, and `main` was red afterwards. [#187](https://github.com/mohammadchehab/tmux-fleet/pull/187) is the
+restore.
+
+The job runs [`stale-squash-guard.ts`](../../.github/scripts/stale-squash-guard.ts) on the PR's **head**, not on GitHub's
+merge commit — the merge contains `main`, so nothing would ever look deleted. It takes the lines `main` gained after the
+PR's merge-base, keeps the files the PR touches (only those hunks are applied, so a file with no hunk cannot be
+reverted), and fails if the head no longer has any of them. Each finding is one annotation per file and commit that added
+the lines, with a few example lines: no similarity score, no model, either the line is there or it is not.
+
+A revert is a legitimate thing to want. A line of its own in the PR body declares it — `Revert: #180`, GitHub's own
+`Reverts owner/repo#180`, or `This reverts commit <sha>` — and the check passes, writes the declaration and everything it
+drops into the log, and lets a reviewer see the decision. Prose that contains the word does not count: #179's own body
+said "Nothing in #166 is reverted".
+
+When it fails, it is usually right. Rebase onto `main` and re-run; the PR diff then says what it actually changes. If it
+fired on a PR that genuinely means to delete those lines, declare the revert.
+
+The guard is only as good as its history: it compares `HEAD` with a fetched `origin/main`, so it runs on the head's full
+history (`fetch-depth: 0`) plus an explicit `git fetch` of `main`. If those refs are missing the check exits 2 — an error,
+never a pass.
 
 ### `security` — §6.2, by mechanism
 
@@ -100,8 +127,8 @@ thing that depends on it and says what it saw. Today's set:
 
 ## Merging
 
-Branch protection on `main` requires `checks`, does **not** require an up-to-date branch, requires no reviews, and does
-not enforce the rules for administrators — so the way we merge today keeps working:
+Branch protection on `main` requires `checks` and `stale-squash`, does **not** require an up-to-date branch, requires no
+reviews, and does not enforce the rules for administrators — so the way we merge today keeps working:
 
 ```sh
 gh pr merge --squash --admin
@@ -117,7 +144,7 @@ Squash is the only merge method the repo allows, and auto-merge is on, so a PR c
 gh pr merge --auto --squash
 ```
 
-It merges when `checks` goes green and not before — that is the whole point of arming it early. Up-to-date is off on
+It merges when the required checks go green and not before — that is the whole point of arming it early. Up-to-date is off on
 purpose: with a branch that must be current, every merge knocks every other open PR out of date and a queue of them
 stalls on rebase rounds. The trade is that two PRs touching the same lines can each be green alone and still conflict
 after the first lands; the second's own run catches it, and its merge is what fails.
