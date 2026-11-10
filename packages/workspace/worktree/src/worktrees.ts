@@ -123,6 +123,30 @@ export const createWorktrees = (runner: GitRunner = execFileGit): Worktrees => (
     // Ensure it's a valid ref name
     const branch = `work-${topic}`
 
+    // A name already taken is not this call's to adopt: the branch would carry
+    // commits this call knows nothing about, and the `checkout -b` below would
+    // report that as a git quirk rather than an answer. Refused here, before a
+    // checkout exists, so there is nothing to undo — and the message names the
+    // one case that is common: a leftover from a create that failed before the
+    // failure paths below deleted their branch.
+    const taken = await runner(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], checkoutPath)
+    if (taken.code === 0) {
+      throw new Error(
+        `branch ${branch} already exists; nothing was created — delete it if it is left over from an earlier failed create`,
+      )
+    }
+
+    // Put the repository back the way this call found it. `git worktree remove`
+    // never touches a branch, so cleaning up only the checkout leaves
+    // `work-<topic>` behind and every retry then dies at `checkout -b`: a failure
+    // that should have cost one attempt cost the topic instead. The branch is
+    // deleted from the repository rather than the checkout, because by then the
+    // checkout this ran in is the one just removed.
+    const undo = async (): Promise<void> => {
+      await runner(['worktree', 'remove', path], checkoutPath).catch(() => {})
+      await runner(['branch', '-D', branch], checkoutPath).catch(() => {})
+    }
+
     // Create the worktree: git worktree add --detach <path> <base>
     const created = await runner(['worktree', 'add', '--detach', path, `origin/${base}`], checkoutPath)
     if (created.code !== 0) throw refused(`git refused to create worktree at ${path}`, created)
@@ -130,16 +154,14 @@ export const createWorktrees = (runner: GitRunner = execFileGit): Worktrees => (
     // Create and check out the work branch
     const branchCreated = await runner(['checkout', '-b', branch, `origin/${base}`], path)
     if (branchCreated.code !== 0) {
-      // Clean up the worktree if branch creation fails
-      await runner(['worktree', 'remove', path], checkoutPath).catch(() => {})
+      await undo()
       throw refused(`git refused to create branch ${branch}`, branchCreated)
     }
 
     // Push the branch to make it remote-tracking
     const pushed = await runner(['push', '-u', 'origin', branch], path)
     if (pushed.code !== 0) {
-      // Clean up if push fails
-      await runner(['worktree', 'remove', path], checkoutPath).catch(() => {})
+      await undo()
       throw refused(`git refused to push branch ${branch}`, pushed)
     }
 
