@@ -145,12 +145,28 @@ export class ClaudeProvider implements ProviderWithResume {
     return this.#session(handle).pending()
   }
 
-  /** Change the model on a live session (`capabilities.modelSwitch`). */
+  /**
+   * Change the model on a live session (`capabilities.modelSwitch`, §4). The
+   * method is always present, like `resume()`; a provider that cannot switch
+   * says so in `capabilities` and rejects rather than lying by no-op.
+   */
   async setModel(handle: SessionHandle, model: string): Promise<void> {
+    if (!this.capabilities.modelSwitch) {
+      throw fleetError('unsupported', `provider ${this.id} cannot switch model on a live session`, {
+        details: { providerId: this.id, model },
+      })
+    }
     return this.#session(handle).setModel(model)
   }
 
-  /** The adapter's own stream, including the events the current contract cannot carry. */
+  /**
+   * The adapter's own stream, including the events the current contract cannot
+   * carry yet.
+   *
+   * @deprecated Stopgap until the contracts PR lands; `events()` then carries
+   * question/approval ids and reasons itself, and this goes away. See the
+   * package's contract delta — nothing should depend on it.
+   */
   detailEvents(handle: SessionHandle): AsyncIterable<AdapterEvent> {
     return this.#session(handle).detailEvents()
   }

@@ -105,6 +105,11 @@ export type AdapterEvent =
  * A blocked approval becomes a `question.asked` because at the current contract
  * the one thing a supervisor must not miss is that the peer is waiting on a
  * person; the structure stays in `PendingRequests`, where `respond()` reads it.
+ *
+ * This projection is a stopgap, and a lossy one: it hides the approval from the
+ * decision inbox. When the contracts PR widens `ProviderEvent` this becomes the
+ * identity function and both it and `detailEvents()` go — `events()` is then the
+ * adapter's own stream.
  */
 export const toContract = (event: AdapterEvent): ProviderEvent | undefined => {
   switch (event.type) {

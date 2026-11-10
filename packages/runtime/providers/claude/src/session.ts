@@ -101,6 +101,12 @@ export class ClaudeSession {
   #sessionRef: ProviderSessionRef | undefined
   /** The latest `init`'s model; the process's model right now, not the one requested. */
   #observedModel: string | undefined
+  /**
+   * The model the session is *asked* to run: `spec.model`, until `setModel()`
+   * replaces it. Every `init` is compared against this, so a switch that did
+   * not take is reported rather than assumed.
+   */
+  #requestedModel: string
   #observedMode: string | undefined
   #state: PeerState = 'starting'
   #inflight: TurnId[] = []
@@ -115,6 +121,7 @@ export class ClaudeSession {
     this.sessionId = newSessionId()
     this.peerId = spec.peerId
     this.providerId = config.providerId
+    this.#requestedModel = spec.model
     this.#pending = new PendingRequests(() => config.clock.now())
     this.#input = new InputQueue()
 
@@ -140,8 +147,8 @@ export class ClaudeSession {
     const init = await this.#whenStarted()
     this.#state = 'idle'
 
-    if (init.model !== this.#spec.model) {
-      this.#configMismatch('model', this.#spec.model, init.model)
+    if (init.model !== this.#requestedModel) {
+      this.#configMismatch('model', this.#requestedModel, init.model)
     }
     if (init.permissionMode !== this.#spec.permissionMode) {
       this.#emit({
@@ -205,8 +212,14 @@ export class ClaudeSession {
     return this.#sessionRef
   }
 
+  /**
+   * The model the session is actually on: the latest `init`'s, falling back to
+   * what was asked for. After `setModel()` the previous observation is dropped,
+   * so this reports the new model rather than the one the session has left; the
+   * next turn's `init` confirms it.
+   */
   get model(): string {
-    return this.#observedModel ?? this.#spec.model
+    return this.#observedModel ?? this.#requestedModel
   }
 
   get permissionMode(): string {
@@ -218,8 +231,11 @@ export class ClaudeSession {
     return recordedEndpoint(this.#spec.env)
   }
 
-  /** The turn the brief was delivered as. Not on `SessionHandle` yet; see the PR's contract delta. */
-  get briefTurn(): TurnId {
+  /**
+   * The turn the brief was delivered as — the first turn, which exists only to
+   * make the CLI speak (`start()`). `SessionHandle.briefTurnId` carries this.
+   */
+  get briefTurnId(): TurnId {
     return this.#openingTurn
   }
 
@@ -255,9 +271,16 @@ export class ClaudeSession {
     this.#emit({ type: 'approval.resolved', requestId: resolved.requestId, decision })
   }
 
-  /** Change the model on a live session — the SDK supports it; the `Provider` interface has no method for it yet. */
+  /**
+   * Change the model on a live session (`capabilities.modelSwitch`). The new
+   * model becomes the requested one, so the next `init` echo is checked against
+   * it — a switch the CLI ignores surfaces as `config_mismatch`, not silence.
+   */
   async setModel(model: string): Promise<void> {
     this.#assertLive()
+    this.#requestedModel = model
+    // What the session was on is no longer what it is on; stop reporting it.
+    this.#observedModel = undefined
     try {
       await this.#query.setModel(model)
     } catch (thrown) {
@@ -279,7 +302,16 @@ export class ClaudeSession {
     return this.#events.project(toContract)
   }
 
-  /** The richer stream the contract cannot carry yet. One consumer, like `events()`. */
+  /**
+   * The richer stream `events()` will carry once the contracts PR lands.
+   *
+   * @deprecated Stopgap, not a second interface. `events()` carries all of this
+   * (question ids, `approval.requested`/`resolved`, `turn.ended.reason`,
+   * `session.ended`) as soon as the event union grows; then this method and the
+   * lossy `toContract` projection both go, and `events()` is the adapter's own
+   * stream. Do not build a consumer on it — the supervisor's decision inbox is
+   * the reason it exists, and it should read `events()`.
+   */
   detailEvents(): AsyncIterable<AdapterEvent> {
     return this.#events
   }
