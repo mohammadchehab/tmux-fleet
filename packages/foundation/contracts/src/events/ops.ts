@@ -31,6 +31,7 @@ export const routineKinds = [
   'pr-babysit',
   'standup',
   'worktree-gc',
+  'branch-cleanup',
   'reconcile',
   'security-scan',
   'notify',

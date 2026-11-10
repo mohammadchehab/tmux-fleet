@@ -44,7 +44,7 @@ tmux-fleet/
 │  │  └─ mailbox/                 # addressing by peerId, briefs, versions, acks, resume-then-deliver (§7)
 │  ├─ orchestration/              # deciding and moving work
 │  │  ├─ pm/                      # the work state machine, decide(), rules, Judge client, Decision log (§5)
-│  │  ├─ routines/                # scheduler + routines: dispatch, keep-busy, pr-babysit, standup, reconcile (§6)
+│  │  ├─ routines/                # scheduler + routines: dispatch, keep-busy, pr-babysit, branch-cleanup, standup, reconcile (§6)
 │  │  ├─ briefs/                  # Contract and Brief publishing, dependency gating, staleness (§12)
 │  │  ├─ gate/                    # PR gate, stack retarget, merge-ownership policy (§10)
 │  │  ├─ ledger/                  # Build ledger and the remote (hetzner) runner (§11)
@@ -391,7 +391,8 @@ which owns them:
 | `keep-busy` | peer idle event | the dispatch `assign` rule; if nothing is ready, creates a `sweep` Work for the architect |
 | `pr-babysit` | PR/check events + 5 min poll via `gh` | updates `PR`; retargets stacked dependents (§10); rebases/nudges on conflict |
 | `standup` | cron (default 09:00 local) and on request | report from projections |
-| `worktree-gc` | daily + on `merged` | §9 |
+| `worktree-gc` | daily | §9: orphaned checkouts and stray holders; the merge half is `branch-cleanup`'s |
+| `branch-cleanup` | `work.merged`/`pr.merged` + daily 04:00 | §10: deletes a merged branch pinned to the merged head, after retargeting any dependent; removes that Work's worktree; sweeps the rest and tells owners instead of deleting |
 | `reconcile` | startup + 10 min | provider `status` vs registry; restart dead sessions, fix drift |
 | `security-scan` | PR assigned to security-architect, nightly | §6.2: runs scanners, raises typed findings |
 | `notify` | events + 5 min | §6.1: the notification projection, delivered through `Notifier` |
@@ -568,7 +569,16 @@ The Worktree manager is the only thing that creates or deletes worktrees; peers 
   present (role `pr-architect`, or the human policy in the profile when none runs), and the PR has no unmerged stack
   parent.
 - **Stacks are first-class**: `PR.stackParent`. Before merging a parent, the gate retargets every dependent to the
-  parent's base and **never passes `--delete-branch` while a dependent exists** (the #102 loss).
+  parent's base.
+- **Merging never deletes.** The gate no longer passes `--delete-branch` at all (#102): a merge that deletes cannot be
+  retried without it, and a dependent that appears mid-merge is a branch someone still sits on. Deletion is its own act,
+  `branch-cleanup` (§6), with its own pin: the delete names the sha it expects and refuses a branch that moved
+  (`head_moved`). The rule is **no deletion while a dependent exists**, not "never delete": a dependent is retargeted
+  onto the base the merge went into first, and a dependent that cannot move keeps the branch alive.
+- **Two triggers, one rule.** A `work.merged` event deletes that branch with the merged head sha and removes the merged
+  Work's worktree (§9), recording `branch.deleted {repo, branch, sha, by}` — the sha is the commit to restore the branch
+  from. A nightly sweep deletes only branches whose head equals a merged PR's head; anything else (closed without merge,
+  no PR, commits after the merge) is left alone and the owner is told.
 - Merge ownership is a profile policy the gate enforces; with no reviewer role running the gate asks the user, it does
   not stall silently.
 
@@ -618,7 +628,8 @@ It is never edited; a change is a new Brief and `brief.superseded` on the old on
 | stale instructions, no single brief/contract | versioned `Brief` and `Contract`, resolved at every session start, superseded on change (§7, §12) |
 | work starts before the contract | `needs_contract` gate (§12) |
 | worktree sprawl, orphans, stray holders, live link on a spike | §9: owner at creation, GC on merge, holder tracking, link check |
-| stacked-merge branch loss | §10: retarget before merge, no `--delete-branch` with dependents |
+| stacked-merge branch loss | §10: retarget before merge; merging never deletes, `branch-cleanup` deletes pinned and only with no dependent |
+| 76 branches left behind (nothing ever deleted after #102) | §6/§10: `branch.deleted` on the merge event, plus a nightly sweep that deletes only a branch whose head a merge recorded |
 | merge ownership gap | §10: gate in code, owner policy in profile, asks user if none |
 | duplicate builds | §11 ledger, unique `(repo, sha, task)`; heavy on hetzner |
 | idle peers, unknown capacity | `keep-busy` on idle events; capacity is a projection |
@@ -667,7 +678,7 @@ reports what it learned.
 | decision inbox + notifications with dedupe, rate limit, one still-waiting reminder, `fleet decide`-style answer closing the state | Decisions group, bot inbox, push | the notification-state machine (§6.1) and its three classes | no escalation routing from the dispatcher |
 | stable identity: peer id outlives sessions; mailbox resumes before delivery | durable bots/threads | message-to-id with resume-then-deliver; no session handle leaks to callers | no brief versioning |
 | versioned briefs and contracts, `needs_contract` gate | item `brief` | brief version carried into each turn; reject stale replies; do not assign dependents before the shared contract is published | none |
-| PR gate: green on current head SHA, no `--delete-branch` with dependents, retarget stacks first | PR queue is read-only | the gate rules (§10) | no merge or stack handling |
+| PR gate: green on current head SHA, retarget stacks first, deletion as a separate pinned act | PR queue is read-only | the gate rules (§10) and `branch-cleanup` (§6) | no merge, stack or cleanup handling |
 | worktree manager: owner at creation, GC on merge, holder tracking, never delete local-only work | thread `worktreePath`, `workspace-layout.md` | the lifecycle (§9) | no ownership or GC found in the docs read |
 | build ledger unique on `(repo, sha, task)`, remote for heavy tasks | none found | the idea | gap |
 | scanner routine with typed, fingerprint-deduped findings; peers verify, not hunt (§6.2) | none in product code | the finding lifecycle and the routing to work items and decisions | gap |

@@ -17,10 +17,17 @@
  * it needs the forge's port, a sink and a mailbox, none of which the scheduler
  * hands a routine, so `apps/daemon` registers it the way it registers `notify`
  * (§1.1).
+ *
+ * `branch-cleanup` is not in here for `pr-babysit`'s reason, plus one more: it
+ * removes a checkout through §9's `Worktrees` port, which only the daemon holds.
+ * It is also the first body whose trigger includes an event (`work.merged`), so a
+ * profile with no `repos` gets no factory and the branch it would have deleted
+ * stays where it is.
  */
 
 import type { RoutineKind } from '@fleet/foundation-contracts'
 import type { RoutineFactory } from '../routine.ts'
+import { cleanup } from './branch-cleanup.ts'
 import { dispatch } from './dispatch.ts'
 import { keepBusy } from './keep-busy.ts'
 import { babysit } from './pr-babysit.ts'
@@ -28,7 +35,7 @@ import { reconcile } from './reconcile.ts'
 import { standup } from './standup.ts'
 import { sync } from './tracker-sync.ts'
 
-export { babysit, dispatch, keepBusy, reconcile, standup, sync }
+export { babysit, cleanup, dispatch, keepBusy, reconcile, standup, sync }
 
 export const installedFactories: Readonly<Partial<Record<RoutineKind, RoutineFactory>>> = {
   dispatch,

@@ -1708,6 +1708,11 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     // fleet is derived from it — the Work rows come from `work.*` — so it is an
     // audit trail, read from `events` when someone asks what the board said.
     case 'tracker.synced':
+    // `branch.deleted` is the record a deleted branch can be restored from (§10):
+    // `sha` is the commit it pointed at. No row is derived from it — the PR row it
+    // came from is already merged — so it is read from `events` when someone asks
+    // where a branch went.
+    case 'branch.deleted':
       return
   }
 

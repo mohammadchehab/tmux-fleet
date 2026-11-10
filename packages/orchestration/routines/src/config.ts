@@ -74,6 +74,14 @@ export const defaultTriggers: Readonly<Record<RoutineKind, readonly Trigger[]>> 
     { kind: 'schedule', at: '03:00' },
     { kind: 'event', types: ['work.merged', 'pr.merged'] },
   ],
+  // §10: a merge is the moment the head branch may go, and the nightly sweep is
+  // what finds the ones merged while this routine was down or merged by hand. The
+  // event half never waits for the sweep, because a dependent arriving in between
+  // is exactly what the delete's pin exists to catch.
+  'branch-cleanup': [
+    { kind: 'schedule', at: '04:00' },
+    { kind: 'event', types: ['work.merged', 'pr.merged'] },
+  ],
   reconcile: [
     { kind: 'startup' },
     { kind: 'heartbeat', everyMs: 600_000 },

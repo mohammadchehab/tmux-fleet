@@ -20,7 +20,16 @@
 import { fleetError, type Repo, type Sha } from '@fleet/foundation-core'
 import type { PullRequest, PullRequests, ReviewState } from '@fleet/foundation-contracts'
 import { createGh, type Gh, type GhResult } from './gh.ts'
-import { createdFrom, gradedChecksFrom, mergeShaFrom, pullRequestFrom, reviewFrom, type GradedChecks } from './observe.ts'
+import {
+  branchListFrom,
+  createdFrom,
+  gradedChecksFrom,
+  mergeShaFrom,
+  pullRequestFrom,
+  refShaFrom,
+  reviewFrom,
+  type GradedChecks,
+} from './observe.ts'
 
 /** The fields every read asks for. One list, so a `get` and a `list` row are the same shape (§10). */
 const FIELDS = [
@@ -244,6 +253,63 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
         .then(mergeShaFrom)
         .catch(() => undefined)
       return sha === undefined ? {} : { mergeSha: sha }
+    },
+
+    /**
+     * Every remote branch, head sha included. `--paginate` on its own concatenates
+     * the pages into output no JSON parser can read, so `--slurp` collects them into
+     * one array and `add` joins it: one call, one JSON value, whatever the repo's size.
+     */
+    async branches(repo) {
+      const raw = await gh.json([
+        'api',
+        `repos/${githubRepo(repo)}/branches?per_page=100`,
+        '--paginate',
+        '--slurp',
+        '--jq',
+        'add | map({name: .name, sha: .commit.sha})',
+      ])
+      return branchListFrom(raw)
+    },
+
+    /**
+     * Delete, pinned to `expectedSha`. The read-check-delete sequence is the only
+     * pair GitHub offers — the refs API takes no `If-Match` — so the window between
+     * the two calls is narrowed, not closed; what closes it is the caller's reason
+     * (a merge whose head sha this event log recorded) plus the next sweep seeing a
+     * moved branch. Nothing is deleted when the read disagrees.
+     */
+    async deleteBranch(repo, branch, expectedSha) {
+      const path = `repos/${githubRepo(repo)}/git/ref/heads/${branch}`
+      const head = await gh.run(['api', path])
+      if (head.code !== 0) {
+        // A branch that is not there is its own answer: the caller asked to delete a
+        // thing it believes exists, and an `undefined` would read as success.
+        if (/not found/i.test(head.stderr)) {
+          throw fleetError('not_found', `${String(repo)} has no branch ${branch}`, {
+            details: { repo: String(repo), branch },
+          })
+        }
+        throw fleetError('external_failed', `gh api ${path} exited ${head.code}: ${head.stderr.trim() || 'no output'}`, {
+          details: { repo: String(repo), branch, exitCode: head.code },
+        })
+      }
+      const current = refShaFrom(head.stdout)
+      if (current !== String(expectedSha)) {
+        throw fleetError(
+          'head_moved',
+          `${String(repo)}'s ${branch} points at ${current ?? 'no sha'}, not ${String(expectedSha)}; nothing was deleted`,
+          { details: { repo: String(repo), branch, expectedSha: String(expectedSha) } },
+        )
+      }
+      const deleted = await gh.run(['api', '-X', 'DELETE', `repos/${githubRepo(repo)}/git/refs/heads/${branch}`])
+      if (deleted.code !== 0) {
+        throw fleetError(
+          'external_failed',
+          `gh api -X DELETE ${path} exited ${deleted.code}: ${deleted.stderr.trim() || 'no output'}`,
+          { details: { repo: String(repo), branch, exitCode: deleted.code } },
+        )
+      }
     },
   }
 }

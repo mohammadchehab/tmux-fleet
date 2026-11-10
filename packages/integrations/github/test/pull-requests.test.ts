@@ -275,3 +275,58 @@ describe('merge', () => {
     )
   })
 })
+
+describe('branches and deleteBranch: §10 keeps the delete, the gate does not (§6)', () => {
+  const head = 'abc1234' as Sha
+
+  it('lists every branch with the commit it points at, following the paginated API', async () => {
+    // `--slurp --jq 'add | map(...)'` prints one flat array, which is what the fake's
+    // stdout is: the jq runs inside `gh`, so the adapter reads the already-flattened shape.
+    const fake = fakeGh(() =>
+      json([
+        { name: 'feat', sha: 'abc1234' },
+        { name: 'fleet/work-1', sha: 'def5678' },
+      ]),
+    )
+    const branches = await createGitHubPullRequests({ gh: fake.gh }).branches(where)
+
+    assert.deepEqual(branches, [
+      { name: 'feat', sha: 'abc1234' },
+      { name: 'fleet/work-1', sha: 'def5678' },
+    ])
+    assert.deepEqual(fake.calls[0]?.slice(0, 2), ['api', 'repos/mohammadchehab/tmux-fleet/branches?per_page=100'])
+    assert.ok(fake.calls[0]?.includes('--paginate'), 'a repo with more than one page of branches must be read whole')
+  })
+
+  it('reads the ref, then deletes it — the two calls the pin needs', async () => {
+    const fake = fakeGh((args) => (args.includes('DELETE') ? {} : json({ object: { sha: 'abc1234' } })))
+    await createGitHubPullRequests({ gh: fake.gh }).deleteBranch(where, 'feat', head)
+
+    assert.deepEqual(fake.calls[0], ['api', 'repos/mohammadchehab/tmux-fleet/git/ref/heads/feat'])
+    assert.deepEqual(fake.calls[1], ['api', '-X', 'DELETE', 'repos/mohammadchehab/tmux-fleet/git/refs/heads/feat'])
+  })
+
+  it('refuses with `head_moved` when the branch moved, and deletes nothing', async () => {
+    const fake = fakeGh(() => json({ object: { sha: 'def5678' } }))
+    await assert.rejects(createGitHubPullRequests({ gh: fake.gh }).deleteBranch(where, 'feat', head), {
+      code: 'head_moved',
+      message: /points at def5678, not abc1234; nothing was deleted/,
+    })
+    assert.equal(fake.calls.length, 1, 'the delete is never sent')
+  })
+
+  it('reports a branch that is already gone as `not_found`, not as success', async () => {
+    const fake = fakeGh(() => ({ code: 1, stderr: 'gh: Not Found (HTTP 404)' }))
+    await assert.rejects(createGitHubPullRequests({ gh: fake.gh }).deleteBranch(where, 'feat', head), {
+      code: 'not_found',
+    })
+  })
+
+  it('throws when the delete itself is refused', async () => {
+    const fake = fakeGh((args) => (args.includes('DELETE') ? { code: 1, stderr: 'HTTP 422' } : json({ object: { sha: 'abc1234' } })))
+    await assert.rejects(createGitHubPullRequests({ gh: fake.gh }).deleteBranch(where, 'feat', head), {
+      code: 'external_failed',
+      message: /exited 1: HTTP 422/,
+    })
+  })
+})

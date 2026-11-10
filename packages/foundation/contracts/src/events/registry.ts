@@ -21,6 +21,7 @@ import {
   workStarted,
 } from './work.ts'
 import {
+  branchDeleted,
   briefPublished,
   briefSuperseded,
   buildFinished,
@@ -96,6 +97,7 @@ export const EVENT_SCHEMAS = {
   'pr.review_changed': prReview,
   'pr.merged': prMerged,
   'pr.retargeted': prRetargeted,
+  'branch.deleted': branchDeleted,
   'ci.failed_final': ciFailedFinal,
   'build.requested': buildRequested,
   'build.finished': buildFinished,

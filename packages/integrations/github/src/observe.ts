@@ -31,7 +31,7 @@ import {
   type Schema,
   type Sha,
 } from '@fleet/foundation-core'
-import type { ChecksState, PullRequest, ReviewState } from '@fleet/foundation-contracts'
+import type { Branch, ChecksState, PullRequest, ReviewState } from '@fleet/foundation-contracts'
 
 /** One checks observation. `headSha` is the sha `gh` graded — the whole point of `matchHeadSha` (§10). */
 export interface GradedChecks {
@@ -241,4 +241,42 @@ export const mergeShaFrom = (raw: unknown): Sha | undefined => {
   if (oid === undefined) return undefined
   const parsed = safeParse(shaShape(), oid)
   return parsed.ok ? parsed.value : undefined
+}
+
+// ------------------------------------------------------------------ branches
+
+/**
+ * The head sha `gh api <repo>/git/ref/heads/<branch>` reports, or `undefined` when
+ * the output is not a ref at all. It is compared, not returned as a `Sha`, because
+ * the caller is asking whether it equals a sha it already holds (§10's pin).
+ */
+export const refShaFrom = (stdout: string): string | undefined => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout) as unknown
+  } catch {
+    return undefined
+  }
+  return text(record(record(parsed)?.['object'])?.['sha'])
+}
+
+/**
+ * `gh api repos/…/branches --slurp` as the port's `Branch[]`. `--jq` has already
+ * flattened each page's rows to `{name, sha}`, so this only checks the shape: a
+ * missing name or an unusable sha is a call this package does not model, not a
+ * branch to skip silently — a sweep that skipped a branch would leave it forever.
+ */
+export const branchListFrom = (raw: unknown): readonly Branch[] => {
+  if (!Array.isArray(raw)) {
+    throw fleetError('external_failed', 'gh api branches printed something that is not a list')
+  }
+  const branches: Branch[] = []
+  for (const row of list(raw)) {
+    const name = text(row['name'])
+    if (name === undefined || name === '') {
+      throw fleetError('external_failed', 'gh reported a branch with no name')
+    }
+    branches.push({ name, sha: shape(shaShape(), row['sha'], 'branch head') })
+  }
+  return branches
 }

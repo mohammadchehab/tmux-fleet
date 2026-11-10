@@ -138,5 +138,7 @@ export const fakeGithub = (initial: readonly PullRequest[] = []): FakeGithub => 
     create: () => unsupported('create'),
     checks: () => unsupported('checks'),
     review: () => unsupported('review'),
+    branches: () => unsupported('branches'),
+    deleteBranch: () => unsupported('deleteBranch'),
   }
 }

@@ -102,9 +102,10 @@ describe('registered from config, nothing hand-wired', () => {
     assert.deepEqual([...scheduler.plan.installed].sort(), ['dispatch', 'keep-busy', 'reconcile', 'standup'])
     assert.deepEqual(
       [...scheduler.plan.unimplemented].sort(),
-      // `tracker-sync` is a body this package ships but does not install: `apps/daemon`
-      // registers it, because only it knows the profile's tracker (§1.1).
-      ['notify', 'pr-babysit', 'security-scan', 'tracker-sync', 'worktree-gc'],
+      // `tracker-sync`, `pr-babysit` and `branch-cleanup` are bodies this package
+      // ships but does not install: `apps/daemon` registers each, because only it
+      // holds the tracker, the forge and the worktree manager (§1.1).
+      ['branch-cleanup', 'notify', 'pr-babysit', 'security-scan', 'tracker-sync', 'worktree-gc'],
     )
   })
 

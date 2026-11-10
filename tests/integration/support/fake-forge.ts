@@ -46,6 +46,8 @@ export interface FakeForge extends PullRequests {
   readonly merges: readonly ForgeMerge[]
   /** How many times the port was read, so a test can say a poller stopped polling. */
   readonly reads: number
+  /** Every branch `deleteBranch()` removed, in order, with the sha it was pinned to. */
+  readonly deleted: readonly { readonly repo: Repo; readonly branch: string; readonly sha: Sha }[]
 }
 
 /** When the forge says the row was written. The daemon's own clock decides event times. */
@@ -61,6 +63,7 @@ const sha = (seed: number): Sha => `${'0'.repeat(37 - String(seed).length)}${Str
 export const createFakeForge = (): FakeForge => {
   const rows = new Map<string, ForgePr>()
   const merges: ForgeMerge[] = []
+  const deleted: { repo: Repo; branch: string; sha: Sha }[] = []
   let reads = 0
   let pushed = 0
 
@@ -76,6 +79,7 @@ export const createFakeForge = (): FakeForge => {
 
   return {
     merges,
+    deleted,
     get reads() {
       return reads
     },
@@ -176,6 +180,22 @@ export const createFakeForge = (): FakeForge => {
       // The new head is a different sha, which is the whole point: a merge recorded
       // against the old one would be a merge §10 does not allow.
       put({ ...row(repo, number), headSha: sha(500 + pushed) })
+    },
+
+    /** The branches the fake's PRs sit on. §6's `branch-cleanup` sweeps these. */
+    async branches(scope: Repo) {
+      return [...rows.values()]
+        .filter((pr) => pr.repo === scope)
+        .map((pr) => ({ name: pr.head, sha: pr.headSha }))
+    },
+
+    /** §10's pinned delete: the branch must still be at the sha the caller decided on. */
+    async deleteBranch(scope: Repo, branch: string, expectedSha: Sha) {
+      const found = [...rows.values()].find((pr) => pr.repo === scope && pr.head === branch)
+      if (found === undefined) throw new Error(`${String(scope)} has no branch ${branch}`)
+      if (found.headSha !== expectedSha) throw new Error(`${branch} moved off ${String(expectedSha)}`)
+      deleted.push({ repo: scope, branch, sha: expectedSha })
+      rows.delete(key(scope, found.number))
     },
   }
 }
