@@ -5,6 +5,7 @@
  */
 
 export * from './provider.ts'
+export * from './structured.ts'
 export * from './env.ts'
 export * from './events.ts'
 export * from './usage.ts'
