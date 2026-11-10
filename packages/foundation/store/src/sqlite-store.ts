@@ -180,6 +180,11 @@ class SqliteEventStore implements EventStore {
       .map((row) => toEvent(row))
   }
 
+  async latest(type: FleetEvent['type'], subject: string): Promise<FleetEvent | undefined> {
+    const row = this.#db.get<EventRow>(`${SELECT_EVENTS} WHERE type = ? AND subject = ? ORDER BY seq DESC LIMIT 1`, type, subject)
+    return row === undefined ? undefined : toEvent(row)
+  }
+
   async *iterate(from: Seq, to?: Seq): AsyncIterable<FleetEvent> {
     const sql = to === undefined ? `${SELECT_EVENTS} WHERE seq >= ? ORDER BY seq` : `${SELECT_EVENTS} WHERE seq >= ? AND seq <= ? ORDER BY seq`
     for (const row of this.#db.iterate<EventRow>(sql, ...(to === undefined ? [from] : [from, to]))) {

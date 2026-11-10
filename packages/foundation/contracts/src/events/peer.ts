@@ -5,6 +5,7 @@
  */
 
 import {
+  array,
   boolean,
   count,
   event,
@@ -20,7 +21,8 @@ import {
   type Schema,
   type SessionId,
 } from '@fleet/foundation-core'
-import { peerId, providerSessionRef, sessionId, worktreeId } from '@fleet/foundation-core'
+import { briefId, peerId, positiveInt, providerSessionRef, sessionId, worktreeId } from '@fleet/foundation-core'
+import { contentHash } from '../shapes.ts'
 import { peerState } from '@fleet/foundation-core'
 import { compactionTriggers, permissionMode, providerId } from '../provider.ts'
 
@@ -34,6 +36,48 @@ export const peerRegistered = event(
     model: string({ minLength: 1 }),
     permissionMode: permissionMode(),
     worktreeId: optional(worktreeId()),
+  }),
+)
+
+/**
+ * A peer's standing brief changed (§12.1): the standards it works under — the
+ * repo's own `AGENTS.md`/`CLAUDE.md`, the profile's non-negotiables, the skill
+ * documents its role needs — were read and are not what the peer last carried.
+ *
+ * Written **only when `digest` differs** from the peer's last one, before the
+ * session that will carry it starts, so the store and the session agree on what
+ * the peer was told. `version` goes up (the same per-peer counter a Work's
+ * `brief.published` moves, so a later `assign` must exceed it) and the projection
+ * sets `peer.briefVersion` from it; the Mailbox's staleness check (§7) reads that.
+ *
+ * Standards are read from the filesystem, which is not deterministic; this event
+ * is what makes them so. The bytes live in a content-addressed file named by
+ * `digest` (a cache and an archive, never the truth), and `sources` records what
+ * was read: how many characters, whether it was cut, and the commit it came from
+ * — so a peer's rules can be audited, and a replay does not re-read a disk.
+ *
+ * Not `brief.published`: that is a Work's brief and carries a `workId`, and a
+ * standing brief belongs to a peer, not a Work.
+ */
+export const peerStandardsSet = event(
+  'peer.standards_set',
+  object({
+    peerId: peerId(),
+    version: positiveInt(),
+    briefId: briefId(),
+    /** sha-256 of the standards text the peer is handed; equal text, equal digest. */
+    digest: contentHash(),
+    sources: array(
+      object({
+        /** How the peer is told where it came from: `AGENTS.md`, `Non-negotiables (…)`, `skill:…`. */
+        name: text(300),
+        chars: count(),
+        truncated: boolean(),
+        /** The commit it was read at, when it came from git; absent for a profile-owned file. */
+        ref: optional(string({ minLength: 1, maxLength: 100 })),
+      }),
+      { maxItems: 40 },
+    ),
   }),
 )
 

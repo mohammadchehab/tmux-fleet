@@ -10,6 +10,7 @@ import {
   peerCompacted,
   peerFailed,
   peerRegistered,
+  peerStandardsSet,
   peerStateChanged,
   providerError,
   sessionEnded,
@@ -78,6 +79,7 @@ import {
 export const EVENT_SCHEMAS = {
   // peers and sessions (§3, §4, §7)
   'peer.registered': peerRegistered,
+  'peer.standards_set': peerStandardsSet,
   'peer.state_changed': peerStateChanged,
   'peer.failed': peerFailed,
   'peer.compacted': peerCompacted,

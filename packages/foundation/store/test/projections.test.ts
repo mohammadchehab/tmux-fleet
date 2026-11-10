@@ -722,3 +722,52 @@ test('a turn adds its price to the Work and to the peer rollup, and an unpriced 
 
   await store.close()
 })
+
+const standardsSet = (version: number, digest: string, ts = '2026-11-10T09:02:00.000Z'): AppendEvent =>
+  event(
+    'peer.standards_set',
+    'engineer-1',
+    {
+      peerId: 'engineer-1',
+      version,
+      briefId: `brf_${String(version).padStart(16, '0')}`,
+      digest,
+      sources: [{ name: 'AGENTS.md', chars: 120, truncated: false, ref: 'abc1234' }],
+    },
+    ts,
+    'pm',
+  )
+
+const digestA = 'a'.repeat(64)
+const digestB = 'b'.repeat(64)
+
+test('peer.standards_set moves the peer’s briefVersion, which is what the Mailbox judges mail against (§7, §12.1)', async () => {
+  const store = await open()
+  await store.append([appendable('peer.registered.json')])
+  assert.equal((await store.reader().peers.get('engineer-1' as never))?.briefVersion, 0)
+
+  await store.append([standardsSet(1, digestA)])
+  assert.equal((await store.reader().peers.get('engineer-1' as never))?.briefVersion, 1)
+  await store.append([standardsSet(2, digestB)])
+  assert.equal((await store.reader().peers.get('engineer-1' as never))?.briefVersion, 2)
+})
+
+test('a standards version that does not go up is an anomaly and leaves the peer’s version alone', async () => {
+  const store = await open()
+  await store.append([appendable('peer.registered.json'), standardsSet(3, digestA)])
+  await store.append([standardsSet(3, digestB), standardsSet(2, digestB, '2026-11-10T09:03:00.000Z')])
+
+  assert.equal((await store.reader().peers.get('engineer-1' as never))?.briefVersion, 3)
+  assert.equal((await store.health()).anomalies, 2)
+})
+
+test('latest(type, subject) is the newest event of that type about that subject, or nothing', async () => {
+  const store = await open()
+  assert.equal(await store.latest('peer.standards_set', 'engineer-1'), undefined)
+
+  await store.append([appendable('peer.registered.json'), standardsSet(1, digestA), standardsSet(2, digestB, '2026-11-10T09:03:00.000Z')])
+  const latest = await store.latest('peer.standards_set', 'engineer-1')
+  assert.equal(latest?.type === 'peer.standards_set' && latest.data.digest, digestB)
+  assert.equal(await store.latest('peer.standards_set', 'engineer-2'), undefined, 'another subject has none')
+  assert.equal(await store.latest('peer.registered', 'engineer-1').then((e) => e?.type), 'peer.registered')
+})
