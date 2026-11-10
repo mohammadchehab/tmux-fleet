@@ -25,9 +25,12 @@ it deliberately in `tests/architecture/rules.ts` — with the design as the argu
 ## Checks before you call something done
 
 ```sh
-task typecheck   # tsc --noEmit; the compiler is the lint, there is no eslint
-task test        # the v2 tests, then typecheck
+pnpm typecheck   # tsc --noEmit; the compiler is the lint, there is no eslint
+pnpm test        # every package's test/, apps/ and tests/ — run it from the repo root, where the globs resolve
 ```
+
+`task test` runs those two in that order and `task typecheck` runs the compiler alone; either is fine, but a single
+package's suite is `node --test 'packages/<group>/<name>/test/**/*.test.ts'` from the root, not from the package.
 
 No build step: Node runs the TypeScript directly, so `erasableSyntaxOnly` is on and a package's entry point is its
 `src/index.ts` via the `exports` map.
@@ -44,6 +47,9 @@ There is no `task lint` any more: shellcheck and the skill-frontmatter check wer
 ## Conventions
 
 - Package names are `@fleet/<group>-<name>` — e.g. `@fleet/foundation-store`, `@fleet/runtime-provider-sdk`.
-- Cross-package tests live in `tests/`; unit tests sit next to their package as `test/*.test.ts`. One `task test` runs
+- Cross-package tests live in `tests/`; unit tests sit next to their package as `test/*.test.ts`. One `pnpm test` runs
   both sweeps, so a new package needs no task of its own.
+- A new package needs its key in `PACKAGE_ORDER` (`tests/architecture/rules.ts`), under the group §1.1 puts it in. The
+  architecture test names the package and the file until it is there, and the order it lists is also the import order
+  the rule enforces, so where the key goes is the decision, not a formality.
 - Never push to `main`; every change goes through a pull request.

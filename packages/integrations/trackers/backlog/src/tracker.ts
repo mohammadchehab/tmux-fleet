@@ -53,6 +53,30 @@ const queryArgs = (query: string): readonly string[] => {
 }
 
 /**
+ * How many `task view`s a pull keeps in flight. A pull reads every card it
+ * returns (see `pull`), and a board of sixty should not fork sixty processes at
+ * once — nor wait for them one at a time, which is what a sequential loop costs
+ * on the five-minute heartbeat this runs on.
+ */
+const VIEW_CONCURRENCY = 8
+
+/** `items.map` with at most `limit` calls outstanding, order preserved. */
+const mapLimit = async <T, R>(items: readonly T[], limit: number, f: (item: T) => Promise<R>): Promise<readonly R[]> => {
+  const out: R[] = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next
+      next += 1
+      if (index >= items.length) return
+      out[index] = await f(items[index] as T)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
+
+/**
  * The port over the CLI. `options.path` is the project; everything else is the
  * profile's opinion of the board.
  */
@@ -94,10 +118,29 @@ export const createBacklogTracker = (options: BacklogTrackerOptions): Tracker =>
   }
 
   return {
-    /** The profile's query is Backlog.md's status filter: `"To Do,In Progress"` means those two columns. */
+    /**
+     * The profile's query is Backlog.md's status filter: `"To Do,In Progress"`
+     * means those two columns.
+     *
+     * The list is a summary, and a thin one: `task list --json` prints no `path`
+     * and no `description` (1.55.3), so a row on its own has no URL a human can
+     * open and no body a brief can quote — the two things a card is read for.
+     * So every row is read once with the same `task view` `get` makes, and the
+     * row's place is taken by the card itself. The cost is one call per card on
+     * a heartbeat that already pays for the list; the alternative is a `Work`
+     * whose brief cannot link to the ticket it is about.
+     *
+     * A card that left the board between the list and its read is dropped: it
+     * was listed, and it is gone, so there is nothing to propose.
+     */
     async pull(query) {
       const raw = await cli.json(['task', 'list', '--json', ...queryArgs(query)])
-      return rowsFromList(raw).map((row) => itemFromRow(row, observe))
+      const listed = rowsFromList(raw).map((row) => itemFromRow(row, observe))
+      const read = await mapLimit(listed, VIEW_CONCURRENCY, async (item) => {
+        const task = await view(item.key)
+        return task === undefined ? undefined : itemFromRow(task, observe)
+      })
+      return read.filter((item): item is ExternalItem => item !== undefined)
     },
 
     async get(key) {

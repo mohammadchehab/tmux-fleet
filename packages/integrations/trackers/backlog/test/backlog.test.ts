@@ -53,20 +53,39 @@ const ok = (stdout: unknown): BacklogResult => ({
 
 const failed = (code: number, stderr: string): BacklogResult => ({ code, stdout: '', stderr })
 
-/** A card as `backlog task view --json` prints it (1.55.3). */
-const card = (fields: Readonly<Record<string, unknown>> = {}): Record<string, unknown> => ({
+/**
+ * A card as `backlog task view --json` prints it (1.55.3). It is the *view*, so
+ * it carries `path` and `description` — the two fields the list does not print,
+ * which is why `pull` reads each row with a view before returning it.
+ */
+const cardOf = (id: string, fields: Readonly<Record<string, unknown>> = {}): Record<string, unknown> => ({
   schemaVersion: 1,
   kind: 'task-view',
   task: {
-    id: 'TASK-1',
+    id,
     title: 'Add pagination',
     status: 'To Do',
     updatedAt: '2026-11-01T10:00:00.000Z',
-    path: 'backlog/tasks/task-1 - Add pagination.md',
+    path: `backlog/tasks/${id.toLowerCase()} - Add pagination.md`,
     description: 'Lists should page.',
     implementationNotes: '',
     ...fields,
   },
+})
+
+const card = (fields: Readonly<Record<string, unknown>> = {}): Record<string, unknown> => cardOf('TASK-1', fields)
+
+/**
+ * A row of `backlog task list --json`, with the fields 1.55.3 really prints and
+ * none it does not: no `path`, no `description`. A fixture that gave a list row
+ * those two would hide the very gap `pull` reads every card to close.
+ */
+const row = (id: string, fields: Readonly<Record<string, unknown>> = {}): Record<string, unknown> => ({
+  id,
+  title: 'Add pagination',
+  status: 'To Do',
+  updatedAt: '2026-11-01T10:00:00.000Z',
+  ...fields,
 })
 
 const list = (tasks: readonly unknown[]): Record<string, unknown> => ({ schemaVersion: 1, kind: 'task-list', tasks })
@@ -84,31 +103,54 @@ const trackerOf = (run: BacklogRunner, options: { statuses?: Partial<Record<Work
   })
 
 describe('pull: the profile query is the board status filter', () => {
-  it('asks for the named columns and maps each row', async () => {
-    const { run, calls } = runnerOf(
-      ok(list([{ id: 'TASK-1', title: 'Add pagination', status: 'To Do', updatedAt: '2026-11-01T10:00:00.000Z' }])),
-    )
+  it('asks for the named columns, then reads each card it returns', async () => {
+    const { run, calls } = runnerOf(ok(list([row('TASK-1')])), ok(card()))
 
     const items = await trackerOf(run).pull('To Do,In Progress')
 
-    assert.deepEqual(calls, [{ args: ['task', 'list', '--json', '-s', 'To Do,In Progress'], cwd: PROJECT }])
+    assert.deepEqual(calls, [
+      { args: ['task', 'list', '--json', '-s', 'To Do,In Progress'], cwd: PROJECT },
+      { args: ['task', 'view', 'TASK-1', '--json'], cwd: PROJECT },
+    ])
+    // The URL and the body are the view's: the list row has neither, and a Work
+    // proposed from a row with no URL is a brief with no link to its ticket.
     assert.deepEqual(items, [
       {
         system: 'backlog',
         key: 'TASK-1',
         title: 'Add pagination',
+        body: 'Lists should page.',
         status: 'To Do',
+        url: 'backlog/tasks/task-1 - Add pagination.md',
         updatedAt: '2026-11-01T10:00:00.000Z',
       },
     ])
   })
 
-  it('a row carries no body: the list is a summary, and get is what reads the card', async () => {
-    const { run } = runnerOf(ok(list([{ id: 'TASK-1', title: 'Add pagination', status: 'To Do' }])))
+  it('a card that left the board between the list and its read is dropped, not returned half-known', async () => {
+    const { run } = runnerOf(
+      ok(list([row('TASK-1'), row('TASK-2')])),
+      ok(cardOf('TASK-1')),
+      failed(1, 'Task TASK-2 not found.'),
+    )
 
-    const [first] = await trackerOf(run).pull('To Do')
+    const items = await trackerOf(run).pull('To Do')
 
-    assert.equal(first?.body, undefined)
+    assert.deepEqual(
+      items.map((item) => item.key),
+      ['TASK-1'],
+    )
+  })
+
+  it('a view that failed for any other reason fails the pull, rather than shortening the board', async () => {
+    const { run } = runnerOf(ok(list([row('TASK-1')])), failed(2, 'Error: project config is corrupt'))
+
+    await assert.rejects(() => trackerOf(run).pull('To Do'), (thrown: unknown) => {
+      assert.ok(thrown instanceof FleetError)
+      assert.equal(thrown.code, 'external_failed')
+      assert.deepEqual(thrown.details, { key: 'TASK-1', exitCode: 2 })
+      return true
+    })
   })
 
   it('an empty query asks for the whole board rather than a column named ""', async () => {
@@ -118,8 +160,8 @@ describe('pull: the profile query is the board status filter', () => {
     assert.deepEqual(calls[0]?.args, ['task', 'list', '--json'])
   })
 
-  it('stamps a row with no mtime, rather than leaving the read undated', async () => {
-    const { run } = runnerOf(ok(list([{ id: 'TASK-1', title: 't', status: 'To Do', updatedAt: null }])))
+  it('stamps a card with no mtime, rather than leaving the read undated', async () => {
+    const { run } = runnerOf(ok(list([row('TASK-1', { updatedAt: null })])), ok(card({ updatedAt: null })))
 
     const [first] = await trackerOf(run).pull('To Do')
 
