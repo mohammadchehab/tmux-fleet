@@ -85,7 +85,13 @@ providers:
       'utf8',
     )
 
-    const composed = await compose({ profileName: 'deepinfra-ids', roots: { home, configHome } })
+    // A key, so the refusal under test is the allowlist and not the missing
+    // credential: the env is built before the provider is asked to start.
+    const composed = await compose({
+      profileName: 'deepinfra-ids',
+      roots: { home, configHome },
+      environ: { DEEPINFRA_API_KEY: 'not-a-real-key' },
+    })
     try {
       // `up()` starts the supervisor first, so the refusal happens before the
       // scheduler is running and nothing is left ticking behind the assertion.

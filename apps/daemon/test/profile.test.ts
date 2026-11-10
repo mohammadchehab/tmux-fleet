@@ -88,6 +88,18 @@ describe('decoding a profile', () => {
     assert.throws(() => decodeProfile(minimal({ providers: { opencode: {} } })), /unknown field/)
   })
 
+  it('reads where the key is, never the key: a variable name and a file path', () => {
+    const profile = decodeProfile(
+      minimal({ providers: { deepinfra: { tokenEnv: 'MY_DEEPINFRA_KEY', tokenFile: '/run/secrets/deepinfra' } } }),
+    )
+    assert.equal(profile.providers?.deepinfra?.tokenEnv, 'MY_DEEPINFRA_KEY')
+    assert.equal(profile.providers?.deepinfra?.tokenFile, '/run/secrets/deepinfra')
+    // Both are optional: the defaults are what most machines use.
+    const bare = decodeProfile(minimal({ providers: { deepinfra: {} } }))
+    assert.equal(bare.providers?.deepinfra?.tokenEnv, undefined)
+    assert.equal(bare.providers?.deepinfra?.tokenFile, undefined)
+  })
+
   it('refuses a peer with no model: `peer.registered` carries one, so a default would be an invented policy', () => {
     assert.throws(
       () => decodeProfile(minimal({ peers: [{ id: 'engineer-1', role: 'engineer', provider: 'claude' }] })),

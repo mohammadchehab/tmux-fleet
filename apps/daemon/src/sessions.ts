@@ -76,6 +76,15 @@ export interface SupervisorDeps {
    * this one function rather than the pump.
    */
   readonly briefFor?: (peer: PeerProfile) => BriefHandoff
+  /**
+   * The env a peer's provider needs on top of its identity — an endpoint and a
+   * key, for a provider that has one. Built in `compose.ts` from the profile and
+   * asked for at each session start, so the key is read then and not at boot.
+   *
+   * Absent, a peer's env is only its identity, which is what a provider that
+   * inherits its credentials can run on.
+   */
+  readonly providerEnv?: (peer: PeerProfile) => Promise<Readonly<Record<string, string>>>
   /** Where the page reports what it cannot do, so a failed session is visible rather than silent. */
   readonly onError?: (peer: PeerId, error: unknown) => void
 }
@@ -101,10 +110,20 @@ export interface Supervisor extends PeerSessions {
   running(): readonly PeerId[]
 }
 
-const envFor = (peer: PeerProfile): Readonly<Record<string, string>> => ({
+/**
+ * A peer's env: its identity, plus whatever its provider needs to reach its
+ * endpoint. The identity is this file's business; the rest is a fragment built
+ * by the composition root, because an endpoint and a key belong to a provider
+ * this file must not know by name (§2).
+ *
+ * Built at **every** start, including a resume, so a rotated key is picked up
+ * without restarting the daemon.
+ */
+const envFor = async (peer: PeerProfile, deps: SupervisorDeps): Promise<Readonly<Record<string, string>>> => ({
   // The peer's own identity on the line, so a transcript says which peer wrote it.
   FLEET_PEER: String(peer.id),
   FLEET_ROLE: peer.role,
+  ...(deps.providerEnv === undefined ? {} : await deps.providerEnv(peer)),
 })
 
 /**
@@ -159,7 +178,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       cwd: deps.paths.stateDir,
       model: peer.model,
       permissionMode: peer.permissionMode ?? 'default',
-      env: envFor(peer),
+      env: await envFor(peer, deps),
       brief,
     }
     const handle = await provider.start(spec)

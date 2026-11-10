@@ -84,6 +84,22 @@ export interface DeepInfraProfile {
    * that names any other.
    */
   readonly baseUrl?: string
+  /**
+   * The variable in **fleetd's own** environment that holds the key. Defaults to
+   * `DEEPINFRA_API_KEY`, and is read at each session start, so a rotated key
+   * takes effect on the next start without restarting the daemon.
+   *
+   * Nothing here ever holds the key itself: a profile is a file in the repo's
+   * reach, and a token in it would be a token in `git status`.
+   */
+  readonly tokenEnv?: string
+  /**
+   * The file to read the key from when `tokenEnv` is unset or empty: its **first
+   * line**, trailing whitespace trimmed. Defaults to `$XDG_CONFIG_HOME/deepinfra/key`
+   * — `~/.config/deepinfra/key` — which is where v1 kept it, so an existing
+   * machine keeps working.
+   */
+  readonly tokenFile?: string
 }
 
 /** The provider blocks this build reads; a provider with no block uses its defaults. */
@@ -172,6 +188,11 @@ const deepInfraBlock = (): Schema<DeepInfraProfile> =>
       ),
     ),
     baseUrl: optional(text(300)),
+    // Names, not values: a profile says *where* the key is, and the daemon is
+    // the thing that reads it. A path long enough for a real one, short enough
+    // that a pasted key is refused rather than silently ignored.
+    tokenEnv: optional(text(120)),
+    tokenFile: optional(text(400)),
   })
 
 const providersBlock = (): Schema<ProvidersProfile> =>

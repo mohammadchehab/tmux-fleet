@@ -88,6 +88,12 @@ export interface SandboxOptions {
   readonly routines?: readonly RoutineKind[]
   /** §10's forge. Absent means the real `gh` port, which a CI runner does not have. */
   readonly pullRequests?: PullRequests
+  /**
+   * What fleetd's own environment holds. Empty by default, and never the test
+   * process's own: a developer with a real `DEEPINFRA_API_KEY` exported must not
+   * change what CI asserts, and a test that needs a key passes its own.
+   */
+  readonly environ?: Readonly<Record<string, string | undefined>>
 }
 
 /** An event as these tests read it: only the three fields any assertion here needs. */
@@ -169,7 +175,12 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
   const composed = await compose({
     profileName: PROFILE_NAME,
     roots: { home, configHome },
-    providers: new Map([['claude', scripted.provider]]),
+    // One fake under every id the profile names: it has no vendor, and the
+    // session's env — which is where a provider's credential and endpoint would
+    // be — is recorded on the spec, so a test can assert what the peer was
+    // handed without a real adapter in the way.
+    providers: new Map(peers.map((peer) => [peer.provider ?? 'claude', scripted.provider])),
+    environ: options.environ ?? {},
     ...(options.notifier === undefined ? {} : { notifier: options.notifier }),
     ...(options.securityIo === undefined ? {} : { securityIo: options.securityIo }),
     ...(options.branchHead === undefined ? {} : { branchHead: options.branchHead }),

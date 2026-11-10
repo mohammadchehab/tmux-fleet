@@ -1,6 +1,8 @@
 /**
  * `fleetd`'s entry point (§2): the composition root, and the only file that
  * knows a concrete provider, a concrete store or a concrete supervisor.
+ * (`deepinfra-env.ts` names `deepInfraEnv` too, but only to build one session's
+ * env from it; nothing there constructs a provider or knows its endpoint.)
  *
  * The order is deliberate and every step is here for a reason:
  *
@@ -56,6 +58,7 @@ import type { Provider } from '@fleet/runtime-provider-sdk'
 import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
 import { createBranchHead } from '@fleet/workspace-worktree'
 import { createDaemon, type Daemon } from './daemon.ts'
+import { createProviderEnv } from './deepinfra-env.ts'
 import { createExecutorRouter, type KindExecutor } from './executor.ts'
 import { createDaemonExecutors } from './executors.ts'
 import { createDaemonJudge } from './judge.ts'
@@ -89,6 +92,12 @@ export interface ComposeDeps {
   readonly clock?: Clock
   /** Defaults to the SQLite store `@fleet/foundation-store` ships; a test passes its own. */
   readonly openStore?: StoreFactory['open']
+  /**
+   * fleetd's own environment, which is where a profile's `tokenEnv` names a
+   * variable. Defaults to `process.env`; a test passes a map, so it never has to
+   * set a real credential in the process it runs in.
+   */
+  readonly environ?: Readonly<Record<string, string | undefined>>
   /** The PM that decides (§5.2). Defaults to `@fleet/orchestration-pm`'s own. */
   readonly pm?: ProjectManager
   /**
@@ -161,8 +170,9 @@ export const buildProviders = (profile: Profile): ReadonlyMap<string, Provider> 
   const needed = new Set(profile.peers.map((peer) => peer.provider))
   if (needed.has('claude')) providers.set('claude', new ClaudeProvider())
   if (needed.has('deepinfra')) {
-    // Same adapter, its own endpoint and limits, all from config (#26). The key
-    // is read by the provider from the environment; the daemon never sees it.
+    // Same adapter, its own endpoint and limits, all from config (#26). The
+    // credential is not part of this config: it belongs to a session, and
+    // `deepinfra-env.ts` is the one place that reads it.
     //
     // The profile's `providers.deepinfra` block is handed over unchanged rather
     // than re-checked here: the adapter is what refuses an id it cannot serve,
@@ -209,11 +219,21 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
 
   const wiring: Wiring = { profile, store, append: wake.append, providers, clock, pm }
 
+  // §4: a DeepInfra peer's key is read per session — from fleetd's own
+  // environment or the file the profile names — never stored, never in argv,
+  // never in an event or an error. The supervisor asks again on every start, so
+  // a rotated key takes effect without restarting the daemon.
+  const providerEnv = createProviderEnv({
+    profile,
+    environ: deps.environ ?? process.env,
+    configHome: paths.configHome,
+  })
+
   // The supervisor is the only thing that may hold a provider instance (§2), so
   // it is built first and the Mailbox reaches peers through it (§7). It appends
   // through the waking sink, because `session.started` is the event that wakes
   // the delivery of whatever is waiting for that peer.
-  const supervisor = createSupervisor({ profile, paths, store: wake, providers, clock })
+  const supervisor = createSupervisor({ profile, paths, store: wake, providers, clock, providerEnv })
 
   const mailbox = createMailbox({
     store: { append: wake.append, messages: store.reader().messages },
