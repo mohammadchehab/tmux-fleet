@@ -1582,17 +1582,23 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     // ------------------------------------------------------------------ evals
     case 'eval.run_started': {
       const { runId, suite, sha, provider, model, cases } = event.data
+      const current = evalRunById(db, runId)
       writeEvalRun(
         db,
         parse(PROJECTION_SCHEMAS.evalRun, {
+          // A start is identity, not a reset. A second start for a run that already has a
+          // row — a replayed append, or a runner that resumed with the same runId — keeps
+          // the state and aggregates that row has, so a finished result cannot be erased
+          // by its own start arriving late.
+          ...current,
           runId,
           suite,
           sha,
           provider,
           model,
           cases,
-          state: 'running',
-          startedAt: ts,
+          state: current?.state ?? 'running',
+          startedAt: current?.startedAt ?? ts,
         }),
       )
       return
@@ -1606,13 +1612,20 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
         return
       }
       const current = evalCaseFor(db, runId, caseId)
+      const attempts = current?.attempts ?? 0
+      // Attempt numbers are the adapter's, so the same one can arrive twice (an append
+      // retried after a lost reply) and a slower attempt can land after a faster later one.
+      // Only a number above every one already tallied is a new attempt: that is the attempt
+      // the row's verdict belongs to, and the only one that can count a pass. Counting any
+      // arrival would let `passes` outrun `attempts` — a pass rate no run produced, over a
+      // number §17 gates on. A repeat is projected as no-op, so a replay is still a no-op.
+      if (attempt <= attempts) return
       writeEvalCase(
         db,
         parse(PROJECTION_SCHEMAS.evalCase, {
           runId,
           caseId,
-          // The adapter's own attempt number, so an out-of-order arrival cannot lower the tally.
-          attempts: Math.max(current?.attempts ?? 0, attempt),
+          attempts: attempt,
           passes: (current?.passes ?? 0) + (pass ? 1 : 0),
           pass,
           score,
