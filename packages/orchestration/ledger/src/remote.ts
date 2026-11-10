@@ -116,6 +116,9 @@ export const remoteArgv = (target: string, script: string): readonly string[] =>
   script,
 ]
 
+/** The exit code `ssh` itself uses when it could not run the command at all. */
+const SSH_ERROR = 255
+
 export const createRemoteRunner = (options: RemoteRunnerOptions): BuildRunner => {
   const run = options.process ?? spawnToLog
   return {
@@ -131,7 +134,12 @@ export const createRemoteRunner = (options: RemoteRunnerOptions): BuildRunner =>
         stdoutPath: build.stdoutPath,
         timeoutMs: options.timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS,
       })
-      return { status: statusOf(outcome.code), durationMs: outcome.durationMs, exitCode: outcome.code }
+      // 255 is ssh's own error (no route, refused, a dropped connection), not the build's: the
+      // build did not reach a verdict, so it is `cancelled` and runs again on the next request.
+      // A remote command that itself exits 255 is read the same way; that is the price of
+      // ssh using the one code for both.
+      const status = outcome.code === SSH_ERROR ? 'cancelled' : statusOf(outcome.code)
+      return { status, durationMs: outcome.durationMs, exitCode: outcome.code }
     },
   }
 }

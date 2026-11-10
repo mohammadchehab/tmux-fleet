@@ -13,11 +13,15 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { fixedClock, fleetError } from '@fleet/foundation-core'
 import type { BuildId, PeerId } from '@fleet/foundation-core'
+import { buildLogPath } from '../src/runner.ts'
 import { createBuildLedger, type BuildLedger, type BuildRequest } from '../src/ledger.ts'
 import type { BuildRun, BuildRunner, BuildRunResult } from '../src/runner.ts'
 import { fakeBuilds, fakeStore, repo, sha } from './support/fakes.ts'
 
 const at = fixedClock('2026-11-10T10:00:00.000Z')
+
+/** Where the default request's log goes: the name is keyed to the whole build (`buildLogPath`). */
+const unitLog = buildLogPath('/logs', sha(), 'test:unit', repo())
 
 /** A runner that records what it was asked to run and answers with a fixed result. */
 const fakeRunner = (host: BuildRunner['host'], result: BuildRunResult = { status: 'succeeded', durationMs: 42, exitCode: 0 }) => {
@@ -89,8 +93,8 @@ describe('the build ledger', () => {
         sha: sha(),
         task: 'test:unit',
         command: { bin: 'pnpm', args: ['test'] },
-        logPath: '/logs/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678-test-unit.log',
-        stdoutPath: '/logs/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678-test-unit.out',
+        logPath: unitLog,
+        stdoutPath: unitLog.replace(/\.log$/, '.out'),
       },
     ])
 
@@ -114,7 +118,7 @@ describe('the build ledger', () => {
       sha: sha(),
       task: 'test:unit',
       status: 'succeeded',
-      logPath: '/logs/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678-test-unit.log',
+      logPath: unitLog,
       durationMs: 42,
     })
   })
@@ -181,7 +185,7 @@ describe('the build ledger', () => {
     assert.equal(store.ofType('build.finished')[0]?.data.durationMs, 7)
   })
 
-  it('records a runner that threw as a failed build, never a row stuck at running', async () => {
+  it('records a runner that threw as a build that ended (cancelled), never a row stuck at running', async () => {
     const throwing: BuildRunner = {
       host: 'local',
       async run() {
@@ -191,11 +195,11 @@ describe('the build ledger', () => {
     const { store, ledger, builds } = setup({ local: throwing })
     const outcome = await ledger.request(request())
 
-    assert.equal(outcome.build.status, 'failed')
+    assert.equal(outcome.build.status, 'cancelled')
     assert.equal(store.ofType('build.finished').length, 1)
     // The projection's row is what a retry reads: `running` there would be a
     // promise no second request would ever keep.
-    assert.equal((await builds.get('bld-1'))?.status, 'failed')
+    assert.equal((await builds.get('bld-1'))?.status, 'cancelled')
   })
 
   it('reclaims a stale running row under the same build id', async () => {
@@ -250,10 +254,9 @@ describe('the build ledger', () => {
     const { store, ledger } = setup({ logDir: '/home/fleet/.fleet/dev/artifacts/builds' })
     await ledger.request(request({ task: 'evals:judge:claude:opus' }))
 
-    assert.equal(
-      store.ofType('build.finished')[0]?.data.logPath,
-      '/home/fleet/.fleet/dev/artifacts/builds/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678-evals-judge-claude-opus.log',
-    )
+    const logPath = String(store.ofType('build.finished')[0]?.data.logPath)
+    assert.match(logPath, /^\/home\/fleet\/\.fleet\/dev\/artifacts\/builds\/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678-evals-judge-claude-opus-[0-9a-f]{8}\.log$/)
+    assert.equal(logPath, buildLogPath('/home/fleet/.fleet/dev/artifacts/builds', sha(), 'evals:judge:claude:opus', repo()))
   })
 
   it('does not leave a failed request holding the key', async () => {
@@ -270,5 +273,71 @@ describe('the build ledger', () => {
     store.failNext(fleetError('internal', 'disk full'))
     await assert.rejects(ledger.request(request()), /disk full/)
     assert.equal(local.runs.length, 0)
+  })
+})
+
+describe('an infrastructure failure is not a verdict on the commit (TASK-97)', () => {
+  /** A runner that answers from a script, one answer per run, and counts its runs. */
+  const scripted = (...answers: readonly (BuildRunResult | Error)[]) => {
+    let runs = 0
+    const runner: BuildRunner = {
+      host: 'local',
+      async run() {
+        const answer = answers[Math.min(runs, answers.length - 1)] as BuildRunResult | Error
+        runs += 1
+        if (answer instanceof Error) throw answer
+        return answer
+      },
+    }
+    return { runner, runs: () => runs }
+  }
+  const ok: BuildRunResult = { status: 'succeeded', durationMs: 5, exitCode: 0 }
+
+  it('records a runner that could not run as cancelled, and runs it again on the next request', async () => {
+    const script = scripted(new Error('spawn pnpm ENOENT'), ok)
+    const { store, ledger } = setup({ local: script.runner })
+
+    const first = await ledger.request(request())
+    assert.equal(first.build.status, 'cancelled', 'no verdict was reached, so none is recorded')
+
+    const second = await ledger.request(request())
+    assert.equal(script.runs(), 2, 'the key is not answered, so the next request tries again')
+    assert.equal(second.deduped, false)
+    assert.equal(second.build.status, 'succeeded')
+    assert.equal(second.build.buildId, first.build.buildId, 'the retry reclaims the same row')
+    assert.equal(store.ofType('build.requested').length, 2)
+
+    const third = await ledger.request(request())
+    assert.equal(third.deduped, true, 'a real answer is final')
+    assert.equal(script.runs(), 2)
+  })
+
+  it('treats a runner that reports cancelled the same way (an ssh that never connected)', async () => {
+    const script = scripted({ status: 'cancelled', durationMs: 3, exitCode: 255 }, ok)
+    const { ledger } = setup({ local: script.runner })
+
+    assert.equal((await ledger.request(request())).build.status, 'cancelled')
+    assert.equal((await ledger.request(request())).build.status, 'succeeded')
+    assert.equal(script.runs(), 2)
+  })
+
+  it('still caches a build that ran and failed: that is a verdict', async () => {
+    const script = scripted({ status: 'failed', durationMs: 9, exitCode: 1 }, ok)
+    const { ledger } = setup({ local: script.runner })
+
+    assert.equal((await ledger.request(request())).build.status, 'failed')
+    const again = await ledger.request(request())
+    assert.equal(again.deduped, true)
+    assert.equal(script.runs(), 1)
+  })
+
+  it('still caches a build that timed out: it ran, and it was too slow', async () => {
+    const timeout = Object.assign(new Error('timeout: process exceeded 100ms'), { name: 'BuildTimeoutError' })
+    const script = scripted(timeout, ok)
+    const { ledger } = setup({ local: script.runner })
+
+    assert.equal((await ledger.request(request())).build.status, 'failed')
+    assert.equal((await ledger.request(request())).deduped, true)
+    assert.equal(script.runs(), 1)
   })
 })

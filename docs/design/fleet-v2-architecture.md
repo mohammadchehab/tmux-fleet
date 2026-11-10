@@ -679,13 +679,20 @@ The Worktree manager is the only thing that creates or deletes worktrees; peers 
 or runs it once. Heavy tasks route to the remote host (hetzner) by task class in the profile; light ones run locally.
 The same SHA+task never runs twice and results are shared by all peers.
 
-A build keeps two files under `artifacts/builds/`. `<sha>-<task>.log` is everything the build said — both streams, in
-order — which is the only account of a build that ran on another host. `<sha>-<task>.out` is stdout alone, for a caller
+A build keeps two files under `artifacts/builds/`, named `<sha>-<task>-<hash>` where the hash is of the whole
+`(repo, sha, task)` key, so two different builds never share a file however their slugs read. A run starts both files
+empty: a build the ledger reclaims after a crash replaces its first attempt's output rather than appending to it.
+`<sha>-<task>-<hash>.log` is everything the build said — both streams, in
+order — which is the only account of a build that ran on another host. `….out` is stdout alone, for a caller
 that asked for an answer and not for narration; `fleet evals run` is the first such caller, and the path is derived from
 `logPath` so a reader needs the one path the ledger already sends (`buildStdoutPath`, in `foundation` beside `buildKey`
 — a client may import foundation and nothing else, §1.1). A remote build checks the sha out and then puts that
 checkout's `node_modules/.bin` ahead of the host's PATH: a workspace bin is on no PATH but its own tree's, and a build
 should run the tools its lockfile pins rather than whatever the box happens to have.
+
+A build the infrastructure could not carry out — no such binary, a broken stream, an `ssh` that never connected (its exit
+code 255) — reached no verdict on the commit, so it is recorded `cancelled` and is not an answer: the next request for the
+key runs it again, under the same build id. A build that ran and failed, or ran past its limit, is `failed` and final.
 
 ## 12. Contracts before work
 

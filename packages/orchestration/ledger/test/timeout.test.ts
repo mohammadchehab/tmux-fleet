@@ -100,7 +100,7 @@ describe('a hung build', () => {
     await new Promise((resolve) => setTimeout(resolve, 200))
     assert.equal(alive(grandchild), false, 'the process group is killed, not only its leader')
 
-    const log = await readFile(join(dir, 'logs', `${request.sha}-test-hang.log`), 'utf8')
+    const log = await readFile(outcomes[0]?.build.logPath ?? '', 'utf8')
     assert.match(log, /timed out after 400ms/, 'the log says why the build ended')
   })
 })
