@@ -125,8 +125,10 @@ All of it, in one `AsyncIterable<SDKMessage>`. Observed types and subtypes:
 
 Notes that matter for the adapter:
 
-- **`system/init` is re-emitted at the start of every turn**, carrying the current model and permission mode. `model()`
-  and the permission check should read the *latest* init, not the first.
+- **`system/init` is re-emitted at the start of every turn**, carrying the current model and permission mode. Read them
+  in opposite directions: **`model()` follows the latest init** (that is how a `setModel()` shows up), while the
+  **launch-mode check follows the first init** (see the correction in §5) — a capture variable that just keeps
+  overwriting itself silently reports a later turn's state.
 - Compaction was forced with the local command `/compact` (a plain user message on the stream). Auto-compaction cannot
   be forced cheaply — the auto-compact window clamps to a **minimum of 100 000** tokens even when
   `CLAUDE_CODE_AUTO_COMPACT_WINDOW=12000` is set in the child env (`results/*-compaction.log` records
@@ -179,12 +181,12 @@ wants to branch rather than continue.
 
 ### Permission mode
 
-- Mode is set at start with `permissionMode` in `options`.
-- **`init.permissionMode` does not reliably echo what was asked for.** A session launched with
-  `permissionMode: 'default'` reported `init.permissionMode = 'acceptEdits'` on both providers — the same value the
-  probe saw on the re-emitted inits of sessions that had genuinely switched. So the field is a report of the CLI's
-  internal state, not a confirmation of the request: §4's "confirm the session came up in the mode we asked for" has to
-  be checked behaviourally (does a write reach `canUseTool`?), not by comparing strings.
+- Mode is set at start with `permissionMode` in `options`, and **`init.permissionMode` echoes it faithfully** — the
+  first init is a usable confirmation of the mode the process came up in. The earlier draft of this doc said otherwise;
+  that was wrong, and the correction matters because the wrong claim would have pushed §4 into a behavioural check it
+  does not need. See *Correction* at the end of this section.
+- **`system/init` is re-emitted every turn with the *current* mode**, so a capture variable must keep the **first** init
+  and never the last. That is the trap the first draft fell into.
 - `bypassPermissions` requires `allowDangerouslySkipPermissions: true` **at launch**. Setting it later fails:
   `setPermissionMode('bypassPermissions')` → `Error: Cannot set permission mode to bypassPermissions because the
   session was not launched with --dangerously-skip-permissions`. Switching to `acceptEdits` mid-session succeeded, and
@@ -195,6 +197,36 @@ wants to branch rather than continue.
 `results/*-permission.log`. Consequence for §4: **a session that must be able to switch into bypass has to be launched
 with the bypass flag**, so `SessionSpec.permissionMode` is mostly a start-time decision. The supervisor's
 "wrong mode → stop and restart" rule (§4) is therefore the normal path, not an edge case.
+
+#### Correction: the mode echo is reliable; the first draft misread its own probe
+
+The claim that `init.permissionMode` reported `acceptEdits` for a session launched with `default` is not reproducible,
+and the cause was in the harness, not the CLI. The permission probe stored the mode from **every** init it saw
+(`if (m.type === 'system' && m.subtype === 'init') modeAtStart = m.permissionMode`), and the probe calls
+`setPermissionMode('acceptEdits')` on the same query — so the re-emitted init of the *later* turn overwrote the launch
+value before it was printed. Recording every init in order around a mid-session switch makes it unmistakable:
+
+```
+requested: 'default'   mid-session setPermissionMode('acceptEdits') -> ok
+  init at turn 0: 'default'        <- the launch mode, correct
+  init at turn 1: 'acceptEdits'    <- re-emitted after the switch
+```
+
+A matrix of isolated runs confirms the echo tracks the request every time — `default`, `plan` and `acceptEdits` each
+came back as themselves, on both providers, with `settingSources: []` and without it, and with an explicit `settings`
+object on top (`t-mode.mjs` below). So:
+
+- **Settings do not override the requested mode** — the specific hypothesis (a `permissions.defaultMode` in
+  `~/.claude/settings*.json`) was tested and is not the cause. That file does set `permissions.defaultMode: 'auto'` on
+  this machine, and the echo was still correct with settings loaded *and* with them isolated.
+- **`settingSources: []` is still the right adapter default**, for the reasons it was already chosen — it stops the
+  developer's hooks, plugins and `env` from shaping a peer session (`cli-stream-json.log` shows 13 hook frames firing in
+  a bare CLI run from unrelated user settings). But it is isolation of *behaviour*, not of *mode echo*.
+- A CI conformance check is still cheap insurance, but it should assert what actually varies: that the first init
+  carries the requested mode, and that a write in `default` reaches `canUseTool`.
+
+Reproduction: `spikes/agent-sdk/t-mode.mjs` (the matrix) and `spikes/agent-sdk/t-mode2.mjs` (the init sequence), with
+output in `results/mode-echo-matrix.log` and `results/claude-init-sequence.log`.
 
 ---
 
