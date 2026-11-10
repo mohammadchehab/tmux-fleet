@@ -24,6 +24,7 @@ import {
   profilePaths,
   type BriefId,
   type DecisionId,
+  type MessageId,
   type PeerId,
   type Repo,
   type Seq,
@@ -159,6 +160,17 @@ const mergedWhileDown = (): readonly AppendEvent[] => {
     { ts, type: 'pr.checks_changed', subject: `${repo}#9`, actor: 'scheduler', data: { pr, headSha, state: 'passing', failing: [] } },
     { ts, type: 'pr.review_changed', subject: `${repo}#9`, actor: 'scheduler', data: { pr, headSha, state: 'approved' } },
     { ts, type: 'pr.merged', subject: `${repo}#9`, actor: 'scheduler', data: { pr, headSha } },
+  ]
+}
+
+/** A message that was sent before the daemon started and is already acknowledged: history, not a pending box. */
+const ackedWhileDown = (): readonly AppendEvent[] => {
+  const msgId = 'msg_0000000000000001' as MessageId
+  const ts = '2026-11-10T09:00:00.000Z'
+  const to = 'engineer-1' as PeerId
+  return [
+    { ts, type: 'message.sent', subject: msgId, actor: 'pm', data: { msgId, to, from: 'pm', kind: 'info', briefVersion: 1, body: 'already answered' } },
+    { ts, type: 'message.acked', subject: msgId, actor: 'peer:engineer-1', data: { msgId, to } },
   ]
 }
 
@@ -402,6 +414,33 @@ test('peek refuses a peer this fleet does not have, rather than calling it an em
     () => daemon.peek({ peer: 'nobdoy' as PeerId }),
     (error: unknown) => error instanceof FleetError && error.code === 'not_found' && /no peer nobdoy/.test(error.message),
   )
+  await daemon.down()
+})
+
+test('peek with limit 0 returns nothing, rather than the whole pending box', async () => {
+  // `count()` allows 0, and `slice(-0)` is `slice(0)` — the whole box. A limit of
+  // zero asks for nothing, and "nothing" is an empty list, not everything there is.
+  const { daemon } = await harness({ reachable: false })
+  await daemon.up()
+  await daemon.send({ to: 'engineer-1' as PeerId, kind: 'info', body: 'take #14' })
+
+  const none = await daemon.peek({ peer: 'engineer-1' as PeerId, limit: 0 })
+  assert.deepEqual(none.messages, [], 'limit 0 is an empty answer, not the pending box')
+
+  // The same call with a limit still means "the last n" — the fix narrows 0, nothing else.
+  const one = await daemon.peek({ peer: 'engineer-1' as PeerId, limit: 1 })
+  assert.deepEqual(one.messages.map((message) => message.body), ['take #14'])
+  await daemon.down()
+})
+
+test('peek with limit 0 returns nothing from the history fallback either', async () => {
+  // The box is empty, so `peek` reads the projection instead; that slice is the
+  // second place `-0` would have turned "nothing" into "everything".
+  const { daemon } = await harness({ seed: ackedWhileDown() })
+  await daemon.up()
+
+  const { messages } = await daemon.peek({ peer: 'engineer-1' as PeerId, limit: 0 })
+  assert.deepEqual(messages, [])
   await daemon.down()
 })
 
