@@ -234,6 +234,9 @@ export const createGate = (deps: GateDeps): Gate => {
       const merged = await deps.pullRequests.merge(action.pr.repo, action.pr.number, {
         method: action.method,
         deleteBranch,
+        // §10's pin goes to the forge as well as being checked above: a push that lands between the read and this
+        // call makes the merge fail, rather than merging a commit the gate never saw green.
+        headSha: action.headSha,
       })
       mergeSha = merged.mergeSha
     } catch (thrown) {

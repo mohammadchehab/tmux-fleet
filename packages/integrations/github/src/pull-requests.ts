@@ -61,6 +61,15 @@ export interface GitHubOptions {
 const isMissing = (result: GhResult): boolean =>
   /no pull requests? found|could not resolve to a pullrequest/i.test(result.stderr)
 
+/**
+ * `gh`'s way of saying the head is not the sha we pinned. GitHub refuses the
+ * merge when `--match-head-commit` no longer matches, and that refusal is a fact
+ * about the PR rather than a failed call: the caller pinned a sha and the head
+ * moved out from under it (§10, `head_moved`). "Base branch was modified" is a
+ * different refusal and deliberately not matched here.
+ */
+const isHeadMoved = (result: GhResult): boolean => /head branch was (?:modified|updated)/i.test(result.stderr)
+
 export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPullRequests => {
   const gh = options.gh ?? createGh()
   const limit = options.limit ?? DEFAULT_LIMIT
@@ -182,11 +191,25 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
         '-R',
         String(repo),
         flag,
+        // §10's pin, enforced by GitHub rather than by us: if the head moved between the caller's read and this
+        // call, `gh` refuses the merge instead of merging a commit nobody checked.
+        '--match-head-commit',
+        String(mergeOptions.headSha),
         ...(mergeOptions.deleteBranch ? ['--delete-branch'] : []),
       ])
       if (result.code !== 0) {
+        const details = { repo: String(repo), number, method: mergeOptions.method }
+        // The head moving is an answer, not a transport failure: the caller pinned a sha and it is gone, so it is
+        // reported with its own code and nothing was merged (§10).
+        if (isHeadMoved(result)) {
+          throw fleetError(
+            'head_moved',
+            `${String(repo)}#${String(number)} moved off ${String(mergeOptions.headSha)} before the merge; nothing was merged (§10)`,
+            { details: { ...details, headSha: mergeOptions.headSha } },
+          )
+        }
         throw fleetError('external_failed', `gh pr merge ${String(number)} exited ${result.code}: ${result.stderr.trim() || 'no output'}`, {
-          details: { repo: String(repo), number, method: mergeOptions.method },
+          details,
         })
       }
       // The merge commit is a nicety, not the merge: a second call that fails leaves `mergeSha` absent, and the
