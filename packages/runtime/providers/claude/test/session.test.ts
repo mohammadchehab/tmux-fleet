@@ -87,5 +87,15 @@ test('a session that simply never answers is still the timeout (§4)', async () 
     }),
   })
 
-  await assert.rejects(provider.start(spec()), /did not initialise in 50ms/)
+  // The session's own timeout timer is unref'd on purpose — a provider that never
+  // answers must not keep the process alive — so this test has to hold the loop
+  // itself. Without it the runner finds nothing pending, cancels the test with
+  // "Promise resolution is still pending but the event loop has already resolved"
+  // and the timeout never gets to fire.
+  const holding = setInterval(() => undefined, 1_000)
+  try {
+    await assert.rejects(provider.start(spec()), /did not initialise in 50ms/)
+  } finally {
+    clearInterval(holding)
+  }
 })
