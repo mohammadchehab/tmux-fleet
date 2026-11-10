@@ -180,7 +180,7 @@ describe('footers: the two fields GitLab cannot know', () => {
 
 describe('pullRequestFrom: one merge request as the contract shape', () => {
   it('maps the fields the port speaks in, with iid as the number', () => {
-    const pr = pullRequestFrom(mrJson(), where, [pipeline(1, 'success')])
+    const pr = pullRequestFrom(mrJson(), where, { pipelines: [pipeline(1, 'success')] })
     assert.equal(pr.repo, where)
     assert.equal(pr.number, 7)
     assert.equal(pr.base, 'main')
@@ -199,6 +199,19 @@ describe('pullRequestFrom: one merge request as the contract shape', () => {
     assert.equal(pullRequestFrom(mrJson({ merged_at: '2026-11-03T00:00:00.000Z' }), where).merged, true)
   })
 
+  it('reads the review from the approvals endpoint, which is the only place GitLab says it', () => {
+    // `approved` is not a field of the merge request: it lives at `/approvals`, so a
+    // row read without that call is `pending` by omission, not by GitLab's answer.
+    const approved = pullRequestFrom(mrJson(), where, { approvals: { approved: true } })
+    assert.equal(approved.review, 'approved')
+    assert.equal(pullRequestFrom(mrJson(), where, { approvals: { approved: false } }).review, 'pending')
+    // The row's own copy is a fallback for a caller that had one, and the endpoint's answer wins over it.
+    assert.equal(
+      pullRequestFrom(mrJson({ approvals: { approved: true } }), where, { approvals: { approved: false } }).review,
+      'pending',
+    )
+  })
+
   it('falls back to the embedded head_pipeline when the caller passed no pipelines', () => {
     const pr = pullRequestFrom(mrJson({ head_pipeline: { id: 5, status: 'failed', sha: 'abc1234' } }), where)
     assert.equal(pr.checks, 'failing')
@@ -206,7 +219,7 @@ describe('pullRequestFrom: one merge request as the contract shape', () => {
   })
 
   it('reads pending when the merged pipelines are green but ran on an older commit', () => {
-    const pr = pullRequestFrom(mrJson(), where, [pipeline(7, 'success', { sha: '0ld0000' })])
+    const pr = pullRequestFrom(mrJson(), where, { pipelines: [pipeline(7, 'success', { sha: '0ld0000' })] })
     assert.equal(pr.checks, 'pending')
     assert.equal(pr.headSha, 'abc1234')
   })
