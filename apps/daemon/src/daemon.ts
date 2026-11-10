@@ -52,6 +52,7 @@ import type { BuildLedger } from '@fleet/orchestration-ledger'
 import type { Profile, PeerProfile } from './profile.ts'
 import type { Scheduler } from '@fleet/orchestration-routines'
 import type { Supervisor } from './sessions.ts'
+import { catchUpWork } from './work-sync.ts'
 
 export interface DaemonDeps {
   readonly profile: Profile
@@ -122,10 +123,20 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     await registerPeers()
     await deps.supervisor.start()
     const ran = await deps.scheduler.start()
+    // After `scheduler.start()`, never before: the waking sink's scheduler is
+    // late-bound, so a write made while the scheduler is still coming up would be
+    // committed and never woken (`wake.ts`) — which is the same stuck Work this is
+    // here to clear, only harder to see. Before `running = true`, so a failed
+    // catch-up leaves the daemon down and a second `up` retries it, rather than
+    // reporting a fleet that is caught up when it is not.
+    const caughtUp = await catchUpWork({ read, append, clock })
     running = true
     if (ran.length > 0) {
       // The scheduler's own events say what ran; this line is for the log a human reads.
       console.error(`fleetd: caught up ${ran.length} routine run(s) on start`)
+    }
+    if (caughtUp.length > 0) {
+      console.error(`fleetd: caught up ${caughtUp.length} work transition(s) on start`)
     }
     return status
   }

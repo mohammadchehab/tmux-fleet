@@ -22,7 +22,7 @@ import type { AppendEvent, WorkId } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 
 import { createWakingSink } from '../src/wake.ts'
-import { syncWork, type WorkSyncDeps } from '../src/work-sync.ts'
+import { catchUpWork, syncWork, type WorkSyncDeps } from '../src/work-sync.ts'
 
 const roots = await mkdtemp(join(tmpdir(), 'fleet-work-sync-'))
 after(async () => {
@@ -238,6 +238,113 @@ test('a PR that names a Work nobody assigned is not reviewable', async () => {
   await append([opened()])
 
   assert.equal(await stateOf(store), 'proposed')
+})
+
+/**
+ * A store with no listener attached: what fleetd leaves behind while it is down.
+ * Events land in the log and in the projections, and nothing translates them.
+ */
+const detached = async (): Promise<{
+  readonly store: EventStore
+  readonly off: (batch: readonly AppendEvent[]) => Promise<readonly unknown[]>
+  readonly catchUp: () => ReturnType<typeof catchUpWork>
+}> => {
+  const store = await openSqliteStore({ path: join(roots, `detached-${(counter += 1)}.sqlite`), clock })
+  await store.migrate()
+  const deps: WorkSyncDeps = { read: store.reader(), append: (batch) => store.append(batch), clock }
+  return {
+    store,
+    off: (batch) => store.append(batch),
+    catchUp: () => catchUpWork(deps),
+  }
+}
+
+/** Another store's log, as this one would have received it: `append` assigns the seq. */
+const copyOf = async (store: EventStore): Promise<readonly AppendEvent[]> =>
+  (await store.read(0, 10_000)).map(({ seq: _seq, ...event }) => event)
+
+test('§5.2: a `pr.merged` that landed while fleetd was down is caught up at start', async () => {
+  const { store, catchUp } = await detached()
+  // Everything up to the merge happened with the fleet watching, so the Work is
+  // `mergeable`; then the daemon is down for the one event that finishes it.
+  const live = await harness()
+  await live.append(assign())
+  await live.append([opened(), checks('passing'), review('approved')])
+  assert.equal(await stateOf(live.store), 'mergeable')
+  await live.store.append([merged()])
+
+  // Replay the same log into a store nobody is listening to: this is the state a
+  // restart finds — a Work at `mergeable` whose PR is already merged, and no wake
+  // left that will ever mention it.
+  await store.append(await copyOf(live.store))
+  assert.equal(await stateOf(store), 'mergeable')
+  assert.equal((await store.reader().pullRequests.all()).find((pr) => pr.number === 7)?.merged, true)
+
+  const batch = await catchUp()
+  assert.deepEqual(
+    batch.map((event) => event.type),
+    ['work.merged'],
+    'only the missing transition, not a replay of the ones that happened',
+  )
+  assert.equal(await stateOf(store), 'merged')
+})
+
+test('§5.2: the catch-up appends nothing when the translation already happened', async () => {
+  const { store, catchUp } = await detached()
+  const live = await harness()
+  await live.append(assign())
+  // The listener was attached for the merge, so `work.merged` is already written.
+  await live.append([opened(), checks('passing'), review('approved'), merged()])
+  assert.equal(await stateOf(live.store), 'merged')
+  await store.append(await copyOf(live.store))
+
+  const batch = await catchUp()
+
+  assert.deepEqual(batch, [], 'a restart after the fact is a no-op')
+  const all = (await store.read(0, 10_000)).map((event) => event.type)
+  assert.equal(all.filter((type) => type === 'work.merged').length, 1, 'exactly one, still')
+})
+
+test('the catch-up is idempotent against its own write', async () => {
+  const { store, catchUp } = await detached()
+  await store.append(assign())
+  await store.append([opened(), checks('passing'), review('approved'), merged()])
+
+  const first = await catchUp()
+  const second = await catchUp()
+
+  assert.ok(first.length > 0, 'the first pass has work to do')
+  assert.deepEqual(second, [], 'the second finds the Work caught up')
+  const all = (await store.read(0, 10_000)).map((event) => event.type)
+  assert.equal(all.filter((type) => type === 'work.merged').length, 1)
+})
+
+test('the catch-up carries a Work that never saw a checks/review event forward to mergeable', async () => {
+  const { store, catchUp } = await detached()
+  // A PR that went green and merged inside one downtime: the Work never left
+  // `assigned`, and one pass has to walk it the whole way.
+  await store.append(assign())
+  await store.append([opened(), checks('passing'), review('approved'), merged()])
+
+  const batch = await catchUp()
+
+  assert.deepEqual(
+    batch.map((event) => event.type),
+    ['work.review_requested', 'work.mergeable', 'work.merged'],
+    'the same three the listener would have written, in the same order',
+  )
+  assert.equal(await stateOf(store), 'merged')
+})
+
+test('a PR the projection does not say merged is not evidence a Work merged', async () => {
+  const { store, catchUp } = await detached()
+  await store.append(assign())
+  await store.append([opened(), checks('passing'), review('approved')])
+
+  const batch = await catchUp()
+
+  assert.deepEqual(batch.map((event) => event.type), ['work.review_requested', 'work.mergeable'])
+  assert.equal(await stateOf(store), 'mergeable')
 })
 
 test('a cancelled Work is not advanced by later PR events', async () => {
