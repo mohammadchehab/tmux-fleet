@@ -70,6 +70,20 @@ const statusOf = (fields: Record<string, unknown>): string => {
 }
 
 /**
+ * The column an issue sits in now, or `undefined` when the answer did not say.
+ * Nothing here is worth a second error: it only ever refines one the caller
+ * already has, so a body it cannot read is the same as no answer at all.
+ */
+export const currentStatusOf = (raw: unknown): string | undefined => {
+  try {
+    const issue = asObject(raw, 'issue')
+    return statusOf(asObject(issue['fields'], 'issue fields'))
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * One issue as the contract's item. `pull` and `get` map through this one
  * function, because a search result and a fetched issue carry the same fields
  * when the same `fields` are asked for.

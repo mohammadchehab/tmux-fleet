@@ -280,6 +280,34 @@ describe('transition', () => {
     assert.deepEqual(fake.calls[1]?.body, { transition: { id: '11' } })
   })
 
+  it('sends nothing when the card is already in the target status', async () => {
+    // A workflow does not offer a transition into the column the issue already
+    // sits in, so "move to In Progress" comes back as a list without it — the
+    // same shape as a workflow that genuinely cannot make the move.
+    const fake = fakeFetch((call) => {
+      if (urlOf(call).pathname.endsWith('/transitions')) {
+        return { body: { transitions: [{ id: '21', name: 'Done', to: { name: 'Done' } }] } }
+      }
+      return { body: { key: 'FLEET-1', fields: { status: { name: 'In Progress' } } } }
+    })
+    await createJiraTracker({
+      baseUrl: BASE,
+      auth: cloud,
+      fetch: fake.fetch,
+      clock,
+      statuses: { in_progress: 'In Progress' },
+    }).transition('FLEET-1', 'in_progress')
+
+    assert.deepEqual(
+      fake.calls.map((call) => [call.method, urlOf(call).pathname]),
+      [
+        ['GET', '/rest/api/3/issue/FLEET-1/transitions'],
+        ['GET', '/rest/api/3/issue/FLEET-1'],
+      ],
+      'a card already there is a no-op, not a second move',
+    )
+  })
+
   it('refuses a state the workflow does not offer, naming what it does', async () => {
     const fake = fakeFetch(() => ({ body: transitions }))
     const error = await threw(() =>
