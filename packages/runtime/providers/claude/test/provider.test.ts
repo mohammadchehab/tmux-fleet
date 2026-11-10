@@ -62,6 +62,7 @@ test('the session table is empty until a session starts, and a stranger handle i
       providerId: 'claude',
       model: 'claude-opus-5-5',
       permissionMode: 'default',
+      briefTurnId: 'trn_0123456789abcdef' as TurnId,
     }),
     (thrown: unknown) => (thrown as { code?: string }).code === 'not_found',
   )
@@ -76,6 +77,7 @@ test('an answer with no open question is not_found rather than a silent drop', a
     providerId: 'claude',
     model: 'claude-opus-5-5',
     permissionMode: 'default',
+    briefTurnId: 'trn_0123456789abcdef' as TurnId,
   }
   await assert.rejects(
     fresh.answer(handle, 'qst_0123456789abcdef' as QuestionId, ['yes']),
@@ -93,6 +95,7 @@ test('interrupting a stranger handle is not_found, not a crash', async () => {
     providerId: 'claude',
     model: 'claude-opus-5-5',
     permissionMode: 'default',
+    briefTurnId: 'trn_0123456789abcdef' as TurnId,
   }
   await assert.rejects(fresh.interrupt(handle, 'trn_0123456789abcdef' as TurnId), (thrown: unknown) => {
     return (thrown as { code?: string }).code === 'not_found'
