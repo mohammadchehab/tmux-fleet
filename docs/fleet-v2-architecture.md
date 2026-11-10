@@ -17,6 +17,119 @@ v2 inverts both:
 
 Non-goals: parity with v1 commands or output text; porting any bash; keeping tmux as the control plane.
 
+## 1.1 Repository layout
+
+One pnpm-style workspace of TypeScript packages in the existing tmux-fleet repo (`@fleet/*`; Node >=22.18 runs the
+TypeScript directly, no build step; no runtime dependency outside `node:` builtins plus `better-sqlite3` or
+`node:sqlite`, and each provider's own SDK inside its package). Section numbers are this document's.
+
+```
+tmux-fleet/
+├─ packages/
+│  ├─ core/            # @fleet/core: ids, event envelope, commands, domain types, pure helpers, Result/Error types (§3)
+│  ├─ store/           # @fleet/store: append-only SQLite event store, projections, migrations, replay (§3, §5.4)
+│  ├─ providers/
+│  │  ├─ sdk/          # @fleet/provider-sdk: the Provider interface, SessionSpec, ProviderEvent, conformance tests (§4)
+│  │  ├─ claude/       # Claude Agent SDK (CLI fallback); also the base for deepinfra (§4)
+│  │  ├─ deepinfra/    # claude provider with per-session DeepInfra env, model read from the process (§4)
+│  │  ├─ opencode/     # OpenCode server/SDK mode (§4)
+│  │  └─ cursor/       # Cursor headless agent, turn-count purge fallback (§4)
+│  ├─ pm/              # @fleet/pm: the work state machine, decide(), rules, Judge client, Decision log (§5)
+│  ├─ routines/        # @fleet/routines: scheduler and the routine definitions: dispatch, keep-busy, pr-babysit, standup, reconcile (§6)
+│  ├─ notify/          # @fleet/notify: notification projection, Notifier interface, macOS notifier, decision inbox (§6.1)
+│  ├─ security/        # @fleet/security: Scanner adapters (semgrep, gitleaks, osv, trivy, claude-security), finding lifecycle (§6.2)
+│  ├─ codegraph/       # @fleet/codegraph: ensure-index, MCP wiring, PreToolUse guard policy, token-report projection (§6.2)
+│  ├─ mailbox/         # @fleet/mailbox: addressing by peerId, briefs, versions, acks, resume-then-deliver (§7)
+│  ├─ supervisor/      # @fleet/supervisor: session lifecycle, restart, permission-mode check, self-purge wrapper (§2, §8)
+│  ├─ worktree/        # @fleet/worktree: create, classify, holders, GC, link check (§9)
+│  ├─ gate/            # @fleet/gate: PR gate, stack retarget, merge ownership policy; gh adapter (§10)
+│  ├─ ledger/          # @fleet/ledger: Build ledger and the remote (hetzner) runner (§11)
+│  ├─ contracts/       # @fleet/contracts: Contract and Brief publishing, dependency gating, staleness (§12)
+│  └─ adapters/        # @fleet/adapters: sinks and sources: Backlog.md, Jira, GitHub issues (§3)
+├─ apps/
+│  ├─ fleetd/          # the daemon: wires the packages, owns the store, serves the local API on a Unix socket (§2)
+│  ├─ cli/             # `fleet`: thin API client: up, down, ls, send, peek, decide, replay, view (§2, §6.1)
+│  ├─ hooks/           # entry points the providers call: PreToolUse guard, Stop/usage reporter; tiny import graphs (§6.2, §8)
+│  └─ view/            # optional tmux view: read-only panes fed from transcripts (§2)
+├─ config/
+│  ├─ roles/           # one file per role: brief, default provider/model/effort, permission mode, tools (replaces skills/fleet/roles + models)
+│  ├─ squads/          # peer lists per squad (replaces skills/fleet/squads)
+│  ├─ policies/        # merge ownership, PR cap, scanner set, codegraph mode, notify classes, limits (§5, §6, §10)
+│  └─ profiles/        # example profiles (`example.yaml`); real ones live in the user's home, below
+├─ tests/
+│  ├─ unit/            # per package, beside it as `*.test.ts`; this folder holds cross-package unit suites only
+│  ├─ integration/     # fleetd + a fake provider, in-process, no network: the phase exit tests run here
+│  ├─ conformance/     # one suite every Provider must pass, run against each provider package (§4)
+│  └─ fixtures/        # recorded provider event streams, gh/git sandboxes, golden event logs for replay (§5.4)
+├─ docs/               # this design, ADRs, the idea map for E13 (§14.1), runbook
+├─ legacy/             # v1, frozen during the transition (see below)
+│  ├─ skills/  bin/  dev-tasks/  profiles/  hooks/
+├─ package.json  tsconfig.json  Taskfile.yaml   # workspace root, `task test` and `task lint` run both worlds until v1 is removed
+└─ AGENTS.md  README.md
+```
+
+### Dependency direction
+
+Imports point one way, enforced by a lint rule over the workspace graph:
+
+```
+core  <-  store  <-  { pm, mailbox, notify, security, codegraph, worktree, gate, ledger, contracts, adapters, routines, supervisor }
+core  <-  providers/sdk  <-  providers/{claude, deepinfra, opencode, cursor}
+{ the feature packages, providers/* }  <-  apps/fleetd  (the only place that wires them together)
+apps/cli, apps/view  ->  the daemon's API only (no package imports except core types)
+apps/hooks  ->  core + providers/sdk types only
+```
+
+- `core` imports nothing. Feature packages import `core` and `store` (and `providers/sdk` types where needed), never each
+  other; if two need to talk, they do it through events in the store or through `fleetd`. `pm` is pure: it imports `core`
+  only, takes state as input and returns actions, so it cannot reach a provider or the disk (§5).
+- A provider package imports `providers/sdk` and `core`, never the store; the supervisor adapts its events into the store.
+- `apps/*` never import each other. `apps/cli` and `apps/view` talk to `fleetd` over the socket; that is what keeps
+  tmux and the CLI a view, not the control plane.
+
+### On disk
+
+Nothing the fleet writes at runtime lives in the repo or in a worktree.
+
+```
+~/.config/fleet/profiles/<profile>.yaml     # the user's profile: target repos, policies overrides, notify, limits (was ~/.config/fleet/profiles/*.env)
+~/.fleet/<profile>/
+   store.sqlite   store.sqlite-wal          # the event store and its projections (§3)
+   fleetd.sock    fleetd.pid  fleetd.log    # the daemon's API socket, pid, log
+   peers/<peerId>/state.md                  # human copy of each peer's latest typed state file (§8)
+   transcripts/<peerId>/<sessionId>.jsonl   # provider event streams, source for the optional view
+   findings/  builds/<sha>-<task>.log       # scanner raw output, build logs (§6.2, §11)
+   notify/                                  # delivered-notification receipts (§6.1)
+   backup/                                  # nightly copy of store.sqlite
+~/.fleet/<profile>/worktrees.json           # not used: worktree state is events; the git worktrees live under each repo's own .claude/worktrees/<topic> (§9)
+```
+
+Role and peer *definitions* are config in the repo (`config/roles`, `config/squads`) and per-profile overrides in the
+user's profile file; the *live* peers (ids, sessions, briefs) exist only in the store. v1's `$FLEET_STATE`
+(`~/.fleet-state/<profile>`) is left untouched; `fleet migrate` (phase 3) imports its roster and board once, read-only.
+
+### What happens to the old bash
+
+| v1 path | transition | removed |
+| :- | :- | :- |
+| `skills/`, `bin/`, `dev-tasks/`, `profiles/`, `hooks/` | moved under `legacy/` in phase 0 by one mechanical commit, kept working, **deprecated** (no new features, fixes only); `task install` links from there; the live fleet keeps running on it | **phase 3**, after `fleet migrate` and a week of the v2 fleet running a real squad |
+| `skills/fleet/roles/*.md`, `squads/*`, `models` | their content is copied into `config/roles`, `config/squads` in phase 1 (the role text is reused, the model/effort table becomes fields) | with the rest, phase 3 |
+| PRs #12 (dispatch/judge) and #13 (context-guard) | stay as the interim fleet's stopgap until phase 1's exit test passes; not extended | phase 3 (their rules are in `pm` and `supervisor`) |
+| `skills/*/SKILL.md` for Claude Code skill loading | a thin v2 `fleet` skill stays (it tells a peer how to talk to the daemon through the CLI) | kept |
+
+### What each phase adds to the tree
+
+| phase | adds |
+| :- | :- |
+| 0 contracts | `packages/core`, `packages/providers/sdk`, the event/projection/command schemas in `core` and `store` (types only), `tests/conformance` skeleton, `docs/`, the workspace root files; v1 moves to `legacy/` |
+| 1 vertical slice | `store`, `providers/claude` (+ `deepinfra` as config), `supervisor` (incl. self-purge), `mailbox`, `pm`, `routines` (dispatch, keep-busy, pr-babysit, reconcile, standup), `notify` (macOS, decision inbox), `gate` (merge only), `apps/fleetd`, `apps/cli`, `apps/hooks` (usage reporter), `config/roles`, `config/squads`, `config/policies`, `tests/integration`, `tests/fixtures` |
+| 2 hygiene | `worktree`, `ledger`, `contracts`, `security` and `codegraph` (scanners, guard, token report), stack retarget in `gate`, `fleet replay` |
+| 3 providers and sinks | `providers/opencode`, `providers/cursor`, `adapters`, `apps/view`, `fleet migrate`; `legacy/` deleted |
+| 4 hand-off | docs only: the idea map and measured lessons |
+
+Note: §6.2 (scanners, codegraph) is scheduled in phase 2 here, but the security routine can start earlier on the
+interim fleet; the exit test of phase 1 does not depend on it.
+
 ## 2. Components
 
 ```
