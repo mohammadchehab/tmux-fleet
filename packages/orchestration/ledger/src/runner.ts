@@ -36,6 +36,15 @@ export interface BuildRun {
   readonly command: BuildCommand
   /** Where stdout and stderr are kept: `artifacts/builds/<sha>-<task>.log` (§1.1). */
   readonly logPath: string
+  /**
+   * Where stdout is kept *beside* the log: `artifacts/builds/<sha>-<task>.out`.
+   *
+   * A build that answers with data — an eval run's JSON (§17) — needs its answer
+   * apart from its narration, and the log carries both streams interleaved. The
+   * log stays whole, because it is what a person tails; this is the same stdout
+   * without the stderr a reader would otherwise have to strip.
+   */
+  readonly stdoutPath: string
 }
 
 export interface BuildRunResult {
@@ -57,6 +66,8 @@ export interface ProcessInvocation {
   readonly cwd?: string
   /** Both streams are appended here, so a build is readable while it runs. */
   readonly logPath: string
+  /** Stdout alone is appended here as well, when a caller wants the answer without the narration. */
+  readonly stdoutPath?: string
 }
 
 export interface ProcessOutcome {
@@ -93,6 +104,10 @@ export const spawnToLog: RunProcess = (invocation) => {
     void mkdir(dirname(invocation.logPath), { recursive: true })
       .then(() => {
         const log = createWriteStream(invocation.logPath, { flags: 'a' })
+        // The answer file is a copy of stdout, not a replacement for it: the log
+        // stays the whole build, in order, for whoever reads it afterwards.
+        const answer =
+          invocation.stdoutPath === undefined ? undefined : createWriteStream(invocation.stdoutPath, { flags: 'a' })
         const env: NodeJS.ProcessEnv = { ...process.env }
         for (const [key, value] of Object.entries(invocation.env ?? {})) {
           if (value === undefined) delete env[key]
@@ -103,14 +118,19 @@ export const spawnToLog: RunProcess = (invocation) => {
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
         })
-        child.stdout?.pipe(log, { end: false })
+        child.stdout?.on('data', (chunk: Buffer) => {
+          log.write(chunk)
+          answer?.write(chunk)
+        })
         child.stderr?.pipe(log, { end: false })
         child.once('error', (error) => {
           log.end(`${String(error)}\n`)
+          answer?.end()
           reject(error)
         })
         child.once('close', (code) => {
           log.end()
+          answer?.end()
           resolve({ code, durationMs: Date.now() - startedAt })
         })
       })

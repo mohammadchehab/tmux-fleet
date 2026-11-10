@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it } from 'node:test'
+
 
 import {
   FleetError,
@@ -10,6 +14,7 @@ import {
   type SessionId,
   type Sha,
 } from '@fleet/foundation-core'
+import { buildStdoutPath } from '@fleet/foundation-contracts'
 import type { BuildsResult, DaemonMethod, EvalRunWithCases, LsResult } from '@fleet/foundation-contracts'
 import type { DaemonCaller } from '../src/client.ts'
 import { run, type RunDeps } from '../src/run.ts'
@@ -378,7 +383,13 @@ describe('run: a profile that is not there', () => {
 })
 
 describe('run: evals run', () => {
-  /** The runner's stdout: one object, of the shape `packages/evals/suites/judge` writes. */
+  const sha = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
+  const repo = 'backbase/me-services-fleet'
+  /** All four options a run needs, in the order a person types them. */
+  const judge = (...extra: readonly string[]): readonly string[] =>
+    argv('evals', 'run', 'judge', '--provider', 'deepinfra', '--model', 'a-model', '--repo', repo, '--sha', sha, ...extra)
+
+  /** The suite's stdout: one object, of the shape `packages/evals/suites/judge` writes. */
   const evalAnswer = (gate: unknown, over: Record<string, unknown> = {}): string =>
     JSON.stringify({
       runId: 'evr_0123456789abcdef',
@@ -405,19 +416,62 @@ describe('run: evals run', () => {
       ...over,
     })
 
-  /** A harness with the daemon answering `events.append` and the suite answering on stdout. */
-  const evals = (
-    answer: { readonly stdout: string; readonly stderr?: string; readonly exitCode: number },
-    over: Partial<RunDeps> = {},
-  ): Harness =>
+  /** The build row the ledger answers with, and the answer file it left beside the log. */
+  const built = async (
+    body: string | undefined,
+    over: Partial<BuildsResult['build']> = {},
+    deduped = false,
+  ): Promise<BuildsResult> => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-cli-evals-'))
+    const logPath = join(dir, `${sha}-evals-judge-deepinfra-a-model.log`)
+    if (body !== undefined) await writeFile(buildStdoutPath(logPath), body)
+    return {
+      build: {
+        buildId: 'bld_0123456789abcdef',
+        repo: repo as Repo,
+        sha: sha as Sha,
+        task: 'evals:judge:deepinfra:a-model',
+        host: 'remote',
+        status: 'succeeded',
+        logPath,
+        durationMs: 4200,
+        startedAt: now,
+        finishedAt: now,
+        ...over,
+      },
+      deduped,
+    }
+  }
+
+  /** A harness with the daemon answering `builds` and `events.append`. */
+  const evals = (result: BuildsResult, over: Partial<RunDeps> = {}): Harness =>
     harness(
-      { 'events.append': (params) => ({ seqs: (params as { events: unknown[] }).events.map((_, i) => i + 1) }) },
-      { runEvals: () => Promise.resolve({ stderr: '', ...answer }), ...over },
+      {
+        builds: () => result,
+        'events.append': (params) => ({ seqs: (params as { events: unknown[] }).events.map((_, i) => i + 1) }),
+      },
+      over,
     )
 
-  it('runs the suite, prints through the report formatter, and passes', async () => {
-    const { deps, out, err } = evals({ stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), exitCode: 0 })
-    assert.equal(await run(argv('evals', 'run', 'judge'), deps), 0)
+  it('asks the ledger for the run, and prints the answer it finds beside the log', async () => {
+    const { deps, calls, out, err } = evals(await built(evalAnswer({ kind: 'pass', exitCode: 0 })))
+    assert.equal(await run(judge(), deps), 0)
+    assert.deepEqual(calls[0], {
+      method: 'builds',
+      params: {
+        repo,
+        sha,
+        task: 'evals:judge:deepinfra:a-model',
+        command: {
+          bin: 'fleet-evals-judge',
+          args: [],
+          // Only the two variables the suite reads: the rest of this process's
+          // environment is not the ledger's business, and it would be exported on
+          // the remote host.
+          env: { FLEET_EVAL_PROVIDER: 'deepinfra', FLEET_EVAL_MODEL: 'a-model' },
+        },
+      },
+    })
     const text = out[0] ?? ''
     assert.match(text, /judge: deepinfra\/a-model at a1b2c3d/)
     assert.match(text, /1 of 2 cases passed/)
@@ -425,14 +479,22 @@ describe('run: evals run', () => {
     assert.deepEqual(err, [])
   })
 
+  it('passes --save-baseline through to the build', async () => {
+    const { deps, calls } = evals(await built(evalAnswer({ kind: 'saved', exitCode: 0 })))
+    assert.equal(await run(judge('--save-baseline'), deps), 0)
+    assert.deepEqual((calls[0]?.params as { command: { args: string[] } }).command.args, ['--save-baseline'])
+  })
+
   it('sends the rows through events.append in the two batches the citation rule asks for', async () => {
-    const { deps, calls } = evals({ stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), exitCode: 0 })
-    assert.equal(await run(argv('evals', 'run', 'judge'), deps), 0)
+    const { deps, calls } = evals(await built(evalAnswer({ kind: 'pass', exitCode: 0 })))
+    assert.equal(await run(judge(), deps), 0)
     assert.deepEqual(
       calls.map((c) => c.method),
-      ['events.append', 'events.append'],
+      ['builds', 'events.append', 'events.append'],
     )
-    const [start, rest] = calls.map((c) => (c.params as { events: { type: string; causedBy?: number[] }[] }).events)
+    const [start, rest] = calls
+      .slice(1)
+      .map((c) => (c.params as { events: { type: string; causedBy?: number[] }[] }).events)
     assert.deepEqual(
       start?.map((e) => e.type),
       ['eval.run_started'],
@@ -449,60 +511,82 @@ describe('run: evals run', () => {
     assert.equal(start?.[0]?.causedBy, undefined)
   })
 
-  it('exits with the suite\'s code when the run fell below its baseline', async () => {
+  it("exits with the run's own code when it fell below its baseline", async () => {
     const gate = {
       kind: 'regressed',
       exitCode: 1,
       regressions: [{ caseId: 'case-b', passes: 1, attempts: 3, baselinePasses: 3, baselineAttempts: 3 }],
     }
-    const { deps, out } = evals({ stdout: evalAnswer(gate), exitCode: 1 })
-    assert.equal(await run(argv('evals', 'run', 'judge'), deps), 1)
+    const { deps, out } = evals(await built(evalAnswer(gate)))
+    assert.equal(await run(judge(), deps), 1)
     assert.match(out[0] ?? '', /below the baseline:/)
     assert.match(out[0] ?? '', /case-b: 1\/3 attempts, baseline 3\/3/)
   })
 
   it('says there is no baseline yet, and passes, on a first run', async () => {
-    const { deps, out } = evals({ stdout: evalAnswer({ kind: 'no-baseline', exitCode: 0 }), exitCode: 0 })
-    assert.equal(await run(argv('evals', 'run', 'judge'), deps), 0)
+    const { deps, out } = evals(await built(evalAnswer({ kind: 'no-baseline', exitCode: 0 })))
+    assert.equal(await run(judge(), deps), 0)
     assert.match(out[0] ?? '', /no baseline yet; run with --save-baseline/)
   })
 
   it('reports where the baseline went when it was asked to save one', async () => {
-    const stdout = evalAnswer({ kind: 'saved', exitCode: 0 }, { baselinePath: 'tests/evals/baselines/judge.json' })
-    const { deps, out } = evals({ stdout, exitCode: 0 })
-    assert.equal(await run(argv('evals', 'run', 'judge', '--save-baseline'), deps), 0)
+    const { deps, out } = evals(
+      await built(evalAnswer({ kind: 'saved', exitCode: 0 }, { baselinePath: 'tests/evals/baselines/judge.json' })),
+    )
+    assert.equal(await run(judge('--save-baseline'), deps), 0)
     assert.match(out[0] ?? '', /baseline written to tests\/evals\/baselines\/judge\.json/)
   })
 
-  it('hands the suite the provider and model it was given', async () => {
-    const seen: unknown[] = []
-    const { deps } = evals(
-      { stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), exitCode: 0 },
-      { runEvals: (options) => {
-        seen.push(options)
-        return Promise.resolve({ stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), stderr: '', exitCode: 0 })
-      } },
-    )
-    assert.equal(await run(argv('evals', 'run', 'judge', '--provider', 'claude', '--model', 'a-model'), deps), 0)
-    assert.deepEqual(seen, [
-      { suite: 'judge', saveBaseline: false, provider: 'claude', model: 'a-model', env: { FLEET_PROFILE: 'squad' } },
-    ])
+  it("says an identical run was reused, because the numbers are an older run's", async () => {
+    const { deps, out } = evals(await built(evalAnswer({ kind: 'pass', exitCode: 0 }), {}, true))
+    assert.equal(await run(judge(), deps), 0)
+    assert.match(out[0] ?? '', /reused: evals:judge:deepinfra:a-model at a1b2c3d4e5f6 had already run/)
   })
 
-  it('forwards the run\'s own narration, and keeps the answer when the ledger refuses the rows', async () => {
-    const { deps, out, err } = evals({ stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), stderr: 'judge: case-a\n', exitCode: 0 })
-    const refused: RunDeps = {
+  it('exits 2 when the build did not finish, naming the log and appending nothing', async () => {
+    const { deps, out, err, calls } = evals(await built(undefined, { status: 'failed' }))
+    assert.equal(await run(judge(), deps), 2)
+    // The log is the whole account of a run that never printed an answer.
+    assert.match(err.join('\n'), /did not finish \(failed\)/)
+    assert.match(out[0] ?? '', /log .*evals-judge-deepinfra-a-model\.log/)
+    assert.deepEqual(
+      calls.map((c) => c.method),
+      ['builds'],
+    )
+  })
+
+  it('exits 2 when the build finished but left no answer to read', async () => {
+    const { deps, err } = evals(await built(undefined))
+    assert.equal(await run(judge(), deps), 2)
+    assert.match(err.join('\n'), /left no answer in .*\.out/)
+  })
+
+  it('keeps the answer when the ledger refuses the rows', async () => {
+    const { deps, out, err } = evals(await built(evalAnswer({ kind: 'pass', exitCode: 0 })))
+    const withRefusal: RunDeps = {
       ...deps,
-      call: () => () => {
-        throw new FleetError('store_failed', 'the store is at its row limit')
+      call: (socket: string) => {
+        const inner = deps.call(socket) as unknown as (method: DaemonMethod, params: unknown) => Promise<unknown>
+        return ((method: DaemonMethod, params: unknown) =>
+          method === 'events.append'
+            ? Promise.reject(new FleetError('store_failed', 'the store is at its row limit'))
+            : inner(method, params)) as unknown as DaemonCaller
       },
     }
-    // the answer still prints, and the suite's code still decides the exit: losing a
+    // the answer still prints, and the run's code still decides the exit: losing a
     // ledger row is a fleet problem, not a verdict on the model
-    assert.equal(await run(argv('evals', 'run', 'judge'), refused), 0)
+    assert.equal(await run(judge(), withRefusal), 0)
     assert.match(out[0] ?? '', /1 of 2 cases passed/)
-    assert.match(err.join('\n'), /judge: case-a/)
     assert.match(err.join('\n'), /did not reach the ledger: the store is at its row limit/)
+  })
+
+  it('refuses a run that does not name all five parts of its identity', async () => {
+    const { deps, err, calls } = harness({})
+    assert.equal(await run(argv('evals', 'run', 'judge'), deps), 2)
+    // A default for any of them would be a *different* key: a second row for the same
+    // work, or an older row's answer for something it never measured.
+    assert.match(err.join('\n'), /--provider <name>, --model <id>, --repo <owner\/name>, --sha <sha>/)
+    assert.deepEqual(calls, [])
   })
 
   it('refuses a suite with no runner, and a `evals` with no subcommand', async () => {

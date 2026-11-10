@@ -5,8 +5,12 @@
  */
 
 import assert from 'node:assert/strict'
+import { mkdtemp, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it } from 'node:test'
-import { buildLogPath, statusOf } from '../src/runner.ts'
+import { buildStdoutPath } from '@fleet/foundation-contracts'
+import { buildLogPath, spawnToLog, statusOf } from '../src/runner.ts'
 import { sha } from './support/fakes.ts'
 
 const SHA = sha()
@@ -29,6 +33,37 @@ describe('buildLogPath', () => {
 
   it('answers a path for a task that slugs to nothing', () => {
     assert.equal(buildLogPath('/logs', SHA, '///'), `/logs/${SHA}-x.log`)
+  })
+})
+
+describe('spawnToLog', () => {
+  it('keeps stdout whole in the log and alone in the answer file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
+    const logPath = join(dir, 'build.log')
+    const stdoutPath = buildStdoutPath(logPath)
+
+    const outcome = await spawnToLog({
+      file: process.execPath,
+      args: ['-e', "process.stderr.write('narration\\n'); process.stdout.write('{\"answer\":1}\\n')"],
+      logPath,
+      stdoutPath,
+    })
+
+    assert.equal(outcome.code, 0)
+    // The log is the whole build, in one file, for a person reading it.
+    const log = await readFile(logPath, 'utf8')
+    assert.match(log, /narration/)
+    assert.match(log, /\{"answer":1\}/)
+    // The answer file is the same stdout with no narration in it: an eval run's
+    // JSON is not something a reader should have to strip stderr out of (§17).
+    assert.equal(await readFile(stdoutPath, 'utf8'), '{"answer":1}\n')
+  })
+
+  it('writes no answer file when none was asked for', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
+    const logPath = join(dir, 'build.log')
+    await spawnToLog({ file: process.execPath, args: ['-e', "process.stdout.write('hi\\n')"], logPath })
+    await assert.rejects(() => readFile(buildStdoutPath(logPath), 'utf8'), /ENOENT/)
   })
 })
 

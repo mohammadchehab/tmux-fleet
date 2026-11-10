@@ -26,6 +26,7 @@ export const createLocalRunner = (options: LocalRunnerOptions = {}): BuildRunner
         env: build.command.env,
         cwd: build.command.cwd,
         logPath: build.logPath,
+        stdoutPath: build.stdoutPath,
       })
       return { status: statusOf(outcome.code), durationMs: outcome.durationMs, exitCode: outcome.code }
     },

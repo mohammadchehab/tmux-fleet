@@ -20,6 +20,11 @@
  * 3. **The checkout pins the sha.** The ledger's uniqueness is on
  *    `(repo, sha, task)` (§11); a runner that built the branch head instead
  *    would make that key a lie.
+ * 4. **The checkout's own bins are on PATH.** A workspace bin — `fleet-evals-judge`
+ *    for one — is only on PATH inside the checkout that installed it, so a build
+ *    that runs one would otherwise fail on the remote host for a reason that has
+ *    nothing to do with the build. Prepending `node_modules/.bin` also means a
+ *    build runs the tools its lockfile pins rather than the host's.
  */
 
 import type { BuildRunner } from './runner.ts'
@@ -67,6 +72,9 @@ export const remoteScript = (
     // not bring it. The fallback covers a server that refuses a sha fetch.
     `git fetch --quiet ${shellQuote(remote)} ${shellQuote(build.sha)} 2>/dev/null || git fetch --quiet ${shellQuote(remote)}`,
     `git checkout --quiet --detach ${shellQuote(build.sha)}`,
+    // After the checkout, so a build sees the bins of the tree it is building; the
+    // host's PATH stays behind them as a fallback for `git`, `ssh` and a shell.
+    `export PATH=${shellQuote(`${dir}/node_modules/.bin`)}:"$PATH"`,
     ...exports,
     `exec ${argv.join(' ')}`,
   ].join('\n')
@@ -93,6 +101,10 @@ export const createRemoteRunner = (options: RemoteRunnerOptions): BuildRunner =>
         file: 'ssh',
         args: remoteArgv(options.target, remoteScript(options, build)),
         logPath: build.logPath,
+        // `ssh` keeps the remote's streams apart — its stdout is the command's
+        // stdout and its stderr the command's stderr — so the answer file is
+        // filled in on this side, by the same rule a local build follows.
+        stdoutPath: build.stdoutPath,
       })
       return { status: statusOf(outcome.code), durationMs: outcome.durationMs, exitCode: outcome.code }
     },

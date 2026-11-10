@@ -54,7 +54,7 @@ import type {
   BuildReader,
   EventSink,
 } from '@fleet/foundation-contracts'
-import { buildKey } from '@fleet/foundation-contracts'
+import { buildKey, buildStdoutPath } from '@fleet/foundation-contracts'
 
 import { routeBuildHost, validateRouting, type BuildRouting } from './host.ts'
 import type { BuildCommand, BuildRunResult, BuildRunner } from './runner.ts'
@@ -138,6 +138,7 @@ export const createBuildLedger = (deps: BuildLedgerDeps): BuildLedger => {
 
     const buildId = existing?.buildId ?? mint()
     const logPath = buildLogPath(deps.logDir, request.sha, request.task)
+    const stdoutPath = buildStdoutPath(logPath)
     // A peer's request is the peer's act; a routine's (a nightly eval on `main`)
     // is the scheduler's. §3 keeps the two distinguishable in the log.
     const actor: Actor =
@@ -168,6 +169,7 @@ export const createBuildLedger = (deps: BuildLedgerDeps): BuildLedger => {
         task: request.task,
         command: request.command,
         logPath,
+        stdoutPath,
       })
     } catch {
       // A runner that could not start is a failed build, not a lost one: the

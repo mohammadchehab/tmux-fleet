@@ -1,23 +1,24 @@
 /**
- * `fleet evals run <suite>`: spawn the suite, and print what it says (§17).
+ * `fleet evals run <suite>`: ask the ledger for the run, and print what came back (§17).
  *
- * The CLI does not import `evals` — nothing outside it may (§1.1) — so the run is
- * a process, started the same way `fleet up` starts `fleetd`: by the bin name the
- * suite's own `package.json` declares, from `PATH`, with `FLEET_EVALS_BIN` naming
- * an absolute one for a checkout that is not linked.
+ * The suite runs as a *build* — the same ledger that runs tests runs evals, keyed on
+ * `(repo, sha, task)` with `task` formed by `evalBuildTask` — which is what makes an
+ * eval a heavy task that routes to the remote host by its class, and what makes an
+ * identical run reuse the answer instead of paying for it twice. The CLI does not
+ * spawn the suite and does not hold the ledger: it names the command, the daemon routes
+ * and runs it, and the answer it reads afterwards is the file the ledger wrote.
  *
- * The contract is one JSON object on stdout and an exit code. `0` is a run that is
- * not worse than its baseline, `1` is one that is, `2` is a run that could not be
- * made — and the CLI passes all three through untouched, because a caller that
- * scripted this cares about the difference and the CLI has nothing to add to it.
+ * The contract with the suite is unchanged: one JSON object on stdout and an exit code.
+ * What is new is that only stdout is the answer — the narration on stderr stays in the
+ * build's log, which is also the only account of a run that never got as far as printing
+ * anything.
  *
  * What the CLI *does* own is the printing: the shape comes back as JSON, is decoded
- * here (a child process's output is not trusted more than a socket's), and goes out
- * through `evals-report.ts`, which is where the "no percentage under twenty cases"
- * rule lives.
+ * here (a file is not trusted more than a socket's), and goes out through
+ * `evals-report.ts`, which is where the "no percentage under twenty cases" rule lives.
  */
 
-import { spawn } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 
 import type { AppendEvent } from '@fleet/foundation-contracts'
 import { fleetError, type EvalRunId } from '@fleet/foundation-core'
@@ -79,105 +80,67 @@ export interface EvalsOutput {
 
 export interface EvalsRunOptions {
   readonly suite: string
-  /** `claude` | `deepinfra`; the suite's own default when absent. */
-  readonly provider?: string
-  readonly model?: string
+  readonly provider: string
+  readonly model: string
   /** Write this run as the new baseline instead of comparing against one. */
-  readonly saveBaseline?: boolean
+  readonly saveBaseline: boolean
   /** `FLEET_EVALS_BIN`, else `fleet-evals-judge` from `PATH`. */
   readonly bin?: string
   readonly env?: Readonly<Record<string, string | undefined>>
-  readonly timeoutMs?: number
 }
 
-export interface EvalsProcessResult {
-  readonly stdout: string
-  readonly stderr: string
-  readonly exitCode: number
+/** What the ledger runs: argv, never a shell line (§11's `BuildCommand`). */
+export interface EvalsBuildCommand {
+  readonly bin: string
+  readonly args: readonly string[]
+  readonly env: Readonly<Record<string, string>>
 }
 
 /**
- * The command `fleet evals run` runs, split out so a test can assert on it without
- * spawning anything. The provider and the model travel as environment, which is the
+ * The command `fleet evals run` asks the ledger to run, split out so a test can assert
+ * on it without a daemon. The provider and the model travel as environment, which is the
  * contract the suite's promptfoo config already documents — one spelling, two drivers.
+ *
+ * Only those two variables cross the socket. The environment of the machine that typed
+ * the command is none of the ledger's business, and a build's env on the remote host is
+ * exported into a `sh` script, so copying `process.env` would ship whatever the caller
+ * happens to have set — a token included.
  *
  * The bin is named for the suite — `fleet-evals-judge` for `judge` — so a suite says
  * what it can do in its own `package.json` and this file never grows a table of them.
  * `FLEET_EVALS_BIN` overrides that name for a checkout whose bins are not linked,
  * exactly as `FLEET_DAEMON_BIN` does for `fleetd`; it names the binary for the suite
- * being run.
+ * being run, on whichever host runs it.
  */
-export const evalsCommand = (
-  options: EvalsRunOptions,
-): { readonly command: string; readonly args: readonly string[]; readonly env: NodeJS.ProcessEnv } => {
-  // `spawn` replaces the environment rather than extending it, so the PATH the bin
-  // is looked up on has to be carried over by hand.
-  const env: NodeJS.ProcessEnv = {}
-  for (const [key, value] of Object.entries(options.env ?? process.env)) {
-    if (value !== undefined) env[key] = value
-  }
-  if (options.provider !== undefined) env['FLEET_EVAL_PROVIDER'] = options.provider
-  if (options.model !== undefined) env['FLEET_EVAL_MODEL'] = options.model
+export const evalsBuildCommand = (options: EvalsRunOptions): EvalsBuildCommand => {
+  const env: Record<string, string> = { FLEET_EVAL_PROVIDER: options.provider, FLEET_EVAL_MODEL: options.model }
   return {
-    command: options.bin ?? options.env?.['FLEET_EVALS_BIN'] ?? `fleet-evals-${options.suite}`,
-    args: options.saveBaseline === true ? ['--save-baseline'] : [],
+    bin: options.bin ?? options.env?.['FLEET_EVALS_BIN'] ?? `fleet-evals-${options.suite}`,
+    args: options.saveBaseline ? ['--save-baseline'] : [],
     env,
   }
 }
 
 /**
- * Run one suite and collect what it said. The whole of stdout and stderr is kept:
- * stdout is the JSON the caller decodes, and stderr is the run's own narration,
- * which the CLI forwards rather than swallows — a baseline that was written, or the
- * cases that fell, are the lines a person reads.
+ * Read the answer the ledger kept beside the build's log.
+ *
+ * A run that produced no answer file never got as far as printing one; the log is where
+ * its narration and its error are, so the failure names the log rather than reporting a
+ * missing file with nothing to look at.
  */
-export const runEvals = (options: EvalsRunOptions): Promise<EvalsProcessResult> =>
-  new Promise<EvalsProcessResult>((resolve, reject) => {
-    const { command, args, env } = evalsCommand(options)
-    const timeoutMs = options.timeoutMs ?? 60 * 60 * 1000
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-
-    const child = spawn(command, [...args], { env, stdio: ['ignore', 'pipe', 'pipe'] })
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM')
-      reject(
-        fleetError('timeout', `the ${options.suite} eval run did not finish within ${String(timeoutMs)} ms`, {
-          details: { command, timeoutMs },
-        }),
-      )
-    }, timeoutMs)
-
-    child.stdout?.setEncoding('utf8')
-    child.stderr?.setEncoding('utf8')
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk
-    })
-    child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk
-    })
-    child.once('error', (error: NodeJS.ErrnoException) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      reject(
-        fleetError(
-          'external_failed',
-          error.code === 'ENOENT'
-            ? `cannot run the ${options.suite} eval suite: "${command}" is not on PATH; run pnpm install in the fleet checkout, or set FLEET_EVALS_BIN`
-            : `cannot run the ${options.suite} eval suite: ${error.message}`,
-          { cause: error, details: { command } },
-        ),
-      )
-    })
-    child.once('close', (code: number | null) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve({ stdout, stderr, exitCode: code ?? 1 })
-    })
-  })
+export const readEvalsAnswer = async (answerPath: string, logPath: string): Promise<string> => {
+  try {
+    return await readFile(answerPath, 'utf8')
+  } catch (cause) {
+    throw fleetError(
+      'external_failed',
+      (cause as NodeJS.ErrnoException).code === 'ENOENT'
+        ? `the eval run left no answer in ${answerPath}; its log is at ${logPath}`
+        : `cannot read the eval run's answer at ${answerPath}: ${(cause as Error).message}`,
+      { cause, details: { answerPath, logPath } },
+    )
+  }
+}
 
 const record = (value: unknown, path: string): Record<string, unknown> => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
