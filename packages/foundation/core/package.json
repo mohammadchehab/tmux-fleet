@@ -1,0 +1,13 @@
+{
+  "name": "@fleet/foundation-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ids, the event envelope, PeerState, Result/Error and the schema combinators. No domain logic.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

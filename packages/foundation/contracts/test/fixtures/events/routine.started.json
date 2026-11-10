@@ -1,0 +1,16 @@
+{
+  "seq": 33,
+  "ts": "2026-11-10T09:33:00.000Z",
+  "type": "routine.started",
+  "subject": "dispatch",
+  "actor": "scheduler",
+  "causedBy": [
+    9
+  ],
+  "data": {
+    "routineId": "dispatch",
+    "kind": "dispatch",
+    "trigger": "event",
+    "causedBySeq": 9
+  }
+}

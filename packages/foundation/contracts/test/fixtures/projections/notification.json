@@ -1,0 +1,14 @@
+{
+  "key": "decision:dec_6f708192a3b4c5d6",
+  "class": "decision",
+  "state": "resolved",
+  "title": "Needs your decision: same feature?",
+  "body": "Is \"retarget stacked PRs\" the same feature as FLEET-14?",
+  "channel": "macos",
+  "deliveryFailed": false,
+  "occurrences": 1,
+  "createdAt": "2026-11-10T09:47:00.000Z",
+  "sentAt": "2026-11-10T09:47:00.000Z",
+  "remindedAt": "2026-11-10T09:48:00.000Z",
+  "resolvedAt": "2026-11-10T09:49:00.000Z"
+}

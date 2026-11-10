@@ -1,0 +1,13 @@
+{
+  "peerId": "engineer-1",
+  "role": "engineer",
+  "providerId": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "permissionMode": "acceptEdits",
+  "worktreeId": "wtr_5e6f708192a3b4c5",
+  "currentSessionId": "ses_1a2b3c4d5e6f7081",
+  "briefVersion": 1,
+  "state": "waiting_input",
+  "registeredAt": "2026-11-10T09:01:00.000Z",
+  "updatedAt": "2026-11-10T09:56:00.000Z"
+}

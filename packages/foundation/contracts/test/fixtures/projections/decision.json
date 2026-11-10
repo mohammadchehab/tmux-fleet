@@ -1,0 +1,18 @@
+{
+  "decisionId": "dec_6f708192a3b4c5d6",
+  "kind": "same_feature",
+  "state": "answered",
+  "question": "Is \"retarget stacked PRs\" the same feature as FLEET-14?",
+  "options": [
+    "yes",
+    "no"
+  ],
+  "option": "yes",
+  "text": "Both change the gate merge order for stacked PRs; one work item.",
+  "source": "judge",
+  "inputsHash": "sha256:6f1c2d3e4f5061728394a5b6c7d8e9f0",
+  "judgeModel": "claude-sonnet-5-5",
+  "workId": "wrk_7f3a91c2d84b0e56",
+  "requestedAt": "2026-11-10T09:45:00.000Z",
+  "answeredAt": "2026-11-10T09:46:00.000Z"
+}

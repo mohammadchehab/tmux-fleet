@@ -1,0 +1,36 @@
+{
+  "seq": 40,
+  "ts": "2026-11-10T09:40:00.000Z",
+  "type": "purge.saved",
+  "subject": "engineer-1",
+  "actor": "peer:engineer-1",
+  "causedBy": [
+    39
+  ],
+  "data": {
+    "peerId": "engineer-1",
+    "sessionId": "ses_1a2b3c4d5e6f7081",
+    "stateFile": {
+      "peerId": "engineer-1",
+      "goal": "Retarget stacked PRs before merging",
+      "done": [
+        "gate reads stackParent",
+        "retarget on parent merge"
+      ],
+      "inFlight": [
+        "integration test for a three-PR stack"
+      ],
+      "next": [
+        "reply to the review thread",
+        "request review"
+      ],
+      "decisions": [
+        "retarget before merge, not after"
+      ],
+      "openQuestions": [
+        "does the gate merge a two-deep stack at once?"
+      ],
+      "briefVersion": 1
+    }
+  }
+}

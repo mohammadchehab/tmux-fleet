@@ -1,0 +1,12 @@
+{
+  "buildId": "backbase/me-services-fleet@3ee0e67a1b2c3d4e5f60718293a4b5c6d7e8f901/test",
+  "repo": "backbase/me-services-fleet",
+  "sha": "3ee0e67a1b2c3d4e5f60718293a4b5c6d7e8f901",
+  "task": "test",
+  "host": "remote",
+  "status": "succeeded",
+  "logPath": ".fleet/builds/3ee0e67-test.log",
+  "durationMs": 184000,
+  "startedAt": "2026-11-10T09:27:00.000Z",
+  "finishedAt": "2026-11-10T09:28:00.000Z"
+}

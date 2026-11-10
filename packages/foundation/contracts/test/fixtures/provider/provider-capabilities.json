@@ -1,0 +1,7 @@
+{
+  "resume": true,
+  "modelSwitch": false,
+  "usageTokens": true,
+  "structuredOutput": true,
+  "permissionModes": ["default", "acceptEdits", "bypassPermissions", "plan"]
+}

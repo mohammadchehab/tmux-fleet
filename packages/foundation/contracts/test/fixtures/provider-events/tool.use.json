@@ -1,0 +1,6 @@
+{
+  "type": "tool.use",
+  "turnId": "trn_8192a3b4c5d6e7f8",
+  "tool": "mcp__codegraph__codegraph_explore",
+  "summary": "Provider interface (§4) in packages/runtime/providers/sdk"
+}

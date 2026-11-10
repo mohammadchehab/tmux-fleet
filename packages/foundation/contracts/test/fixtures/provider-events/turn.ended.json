@@ -1,0 +1,10 @@
+{
+  "type": "turn.ended",
+  "turnId": "trn_8192a3b4c5d6e7f8",
+  "at": "2026-11-10T09:04:12.000Z",
+  "usage": {
+    "contextTokens": 172400,
+    "contextLimit": 200000,
+    "costUsd": 0.42
+  }
+}

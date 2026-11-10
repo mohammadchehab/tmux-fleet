@@ -1,0 +1,16 @@
+{
+  "seq": 48,
+  "ts": "2026-11-10T09:48:00.000Z",
+  "type": "notify.failed",
+  "subject": "failure:engineer-1:provider",
+  "actor": "scheduler",
+  "causedBy": [
+    3
+  ],
+  "data": {
+    "key": "failure:engineer-1:provider",
+    "class": "failure",
+    "channel": "macos",
+    "error": "osascript exited 1: notification permission denied"
+  }
+}

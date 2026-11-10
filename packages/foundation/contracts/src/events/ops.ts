@@ -1,0 +1,165 @@
+/**
+ * The running machinery: routines (§6), worktrees (§9), self-purge (§8) and
+ * the codegraph index (§6.2). A silent routine is a visible bug only if its
+ * runs are events, so every one of them writes started and then finished or
+ * failed.
+ */
+
+import {
+  array,
+  boolean,
+  count,
+  event,
+  object,
+  oneOf,
+  optional,
+  positiveInt,
+  string,
+  text,
+} from '@fleet/foundation-core'
+import { peerId, sessionId, worktreeId } from '@fleet/foundation-core'
+import { repo, sha } from '@fleet/foundation-core'
+import { branchName } from '../shapes.ts'
+import { stateFile } from '../provider.ts'
+import { worktreeClasses } from '../projections/delivery.ts'
+
+// ------------------------------------------------------------------- routines
+
+export const routineKinds = [
+  'dispatch',
+  'keep-busy',
+  'pr-babysit',
+  'standup',
+  'worktree-gc',
+  'reconcile',
+  'security-scan',
+  'notify',
+] as const
+export type RoutineKind = (typeof routineKinds)[number]
+
+export const routineTriggers = ['event', 'heartbeat', 'schedule', 'startup', 'request'] as const
+export type RoutineTrigger = (typeof routineTriggers)[number]
+
+export const routineStarted = event(
+  'routine.started',
+  object({
+    routineId: string({ minLength: 1, maxLength: 80 }),
+    kind: oneOf(routineKinds),
+    trigger: oneOf(routineTriggers),
+    /** The event seq that woke it, for the heartbeat `undefined`. */
+    causedBySeq: optional(positiveInt()),
+  }),
+)
+
+export const routineFinished = event(
+  'routine.finished',
+  object({
+    routineId: string({ minLength: 1, maxLength: 80 }),
+    kind: oneOf(routineKinds),
+    durationMs: count(),
+    /** How many actions the run produced; zero is a legitimate, visible outcome. */
+    actions: count(),
+  }),
+)
+
+export const routineFailed = event(
+  'routine.failed',
+  object({
+    routineId: string({ minLength: 1, maxLength: 80 }),
+    kind: oneOf(routineKinds),
+    error: text(2000),
+  }),
+)
+
+// ------------------------------------------------------------------ worktrees
+
+/** A checkout was created for a topic, with its owner recorded at creation (§9). */
+export const worktreeCreated = event(
+  'worktree.created',
+  object({
+    worktreeId: worktreeId(),
+    repo: repo(),
+    branch: branchName(),
+    path: string({ minLength: 1, maxLength: 1000 }),
+    ownerPeerId: optional(peerId()),
+    class: oneOf(worktreeClasses),
+  }),
+)
+
+/**
+ * Classification from git/gh facts on events, not scanned on demand. `holders`
+ * are the processes whose cwd is inside the worktree; `gc` reports them and
+ * never kills them (§9).
+ */
+export const worktreeClassified = event(
+  'worktree.classified',
+  object({
+    worktreeId: worktreeId(),
+    class: oneOf(worktreeClasses),
+    dirty: optional(boolean()),
+    unpushed: optional(boolean()),
+    holders: array(object({ pid: positiveInt(), command: string({ maxLength: 200 }) })),
+  }),
+)
+
+export const worktreeRemoved = event(
+  'worktree.removed',
+  object({ worktreeId: worktreeId(), reason: text(500) }),
+)
+
+// ---------------------------------------------------------------- self-purge
+
+/** The trigger fired at a turn boundary: context is past the model's limit (§8). */
+export const purgeStarted = event(
+  'purge.started',
+  object({
+    peerId: peerId(),
+    sessionId: sessionId(),
+    contextTokens: count(),
+    contextLimit: positiveInt(),
+  }),
+)
+
+/** The peer wrote a valid state file; it is the single handoff into the next session. */
+export const purgeSaved = event(
+  'purge.saved',
+  object({ peerId: peerId(), sessionId: sessionId(), stateFile: stateFile() }),
+)
+
+/** The peer wrote nothing valid after two asks: the mechanical summary is the fallback (§8). */
+export const purgeDegraded = event(
+  'purge.degraded',
+  object({ peerId: peerId(), sessionId: sessionId(), reason: text(1000) }),
+)
+
+/** A fresh session is running from role + brief + state file, with newer messages replayed. */
+export const purgeCompleted = event(
+  'purge.completed',
+  object({
+    peerId: peerId(),
+    fromSessionId: sessionId(),
+    toSessionId: sessionId(),
+    /** Messages newer than the state file, replayed in order (§8). */
+    replayedMessages: count(),
+  }),
+)
+
+// ------------------------------------------------------------------- codegraph
+
+/** The index for a worktree is present and fresh enough to guard on (§6.2). */
+export const indexReady = event(
+  'index.ready',
+  object({
+    worktreeId: worktreeId(),
+    repo: repo(),
+    sha: optional(sha()),
+    symbols: count(),
+    ageSec: count(),
+  }),
+)
+
+/** Indexing failed: the session starts unguarded and this is raised as a failure (§6.2). */
+export const indexFailed = event(
+  'index.failed',
+  object({ worktreeId: worktreeId(), repo: repo(), message: text(2000) }),
+)

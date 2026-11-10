@@ -1,0 +1,40 @@
+/**
+ * The `Message` projection (architecture §3, §7). Its `ack` is a small state
+ * machine of its own: pending → delivered → acked, or rejected when the sender
+ * cited an older brief.
+ */
+
+import { object, oneOf, optional, positiveInt, text, timestamp, type Schema } from '@fleet/foundation-core'
+import { actor, messageId, peerId, type Actor, type MessageId, type PeerId } from '@fleet/foundation-core'
+import { turnKinds, type TurnKind } from '../provider.ts'
+import { messageAckStates, type MessageAckState } from '../events/messages.ts'
+
+export interface Message {
+  readonly msgId: MessageId
+  readonly to: PeerId
+  readonly from: Actor
+  readonly kind: TurnKind
+  readonly briefVersion: number
+  readonly body: string
+  readonly state: MessageAckState
+  readonly sentAt: string
+  readonly deliveredAt?: string
+  readonly ackedAt?: string
+  /** Set when rejected: the version that was current, so a re-send can cite it (§7). */
+  readonly currentBriefVersion?: number
+}
+
+export const message = (): Schema<Message> =>
+  object({
+    msgId: messageId(),
+    to: peerId(),
+    from: actor(),
+    kind: oneOf(turnKinds),
+    briefVersion: positiveInt(),
+    body: text(100_000),
+    state: oneOf(messageAckStates),
+    sentAt: timestamp(),
+    deliveredAt: optional(timestamp()),
+    ackedAt: optional(timestamp()),
+    currentBriefVersion: optional(positiveInt()),
+  }) as Schema<Message>

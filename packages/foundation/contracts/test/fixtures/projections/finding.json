@@ -1,0 +1,19 @@
+{
+  "findingId": "fnd_708192a3b4c5d6e7",
+  "fingerprint": "sha256:9a8b7c6d5e4f3021",
+  "tool": "semgrep",
+  "ruleId": "typescript.lang.security.audit.hardcoded-secret",
+  "severity": "high",
+  "path": "packages/foundation/store/src/ddl.ts",
+  "line": 118,
+  "message": "Hardcoded credential in a DDL default value.",
+  "sha": "3ee0e67a1b2c3d4e5f60718293a4b5c6d7e8f901",
+  "state": "dismissed",
+  "seenCount": 2,
+  "reason": "The value is a fixture placeholder, not a credential.",
+  "workId": "wrk_8a4b02d3e95c1f67",
+  "decisionId": "dec_6f708192a3b4c5d6",
+  "raisedAt": "2026-11-10T09:52:00.000Z",
+  "verifiedBy": "security-architect",
+  "verifiedAt": "2026-11-10T09:54:00.000Z"
+}

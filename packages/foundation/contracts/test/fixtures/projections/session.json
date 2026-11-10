@@ -1,0 +1,12 @@
+{
+  "sessionId": "ses_1a2b3c4d5e6f7081",
+  "peerId": "engineer-1",
+  "providerId": "claude-code",
+  "providerSessionRef": "sess_9f8e7d6c5b4a39281706",
+  "model": "claude-sonnet-5-5",
+  "permissionMode": "acceptEdits",
+  "resumed": true,
+  "startedAt": "2026-11-10T09:04:00.000Z",
+  "endedAt": "2026-11-10T09:05:00.000Z",
+  "endReason": "purged"
+}
