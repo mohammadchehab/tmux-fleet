@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/orchestration-gate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The PR gate and stack retarget (architecture §10): merges only a head sha whose checks it saw green, retargets dependents first, never deletes a branch a dependent sits on.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
