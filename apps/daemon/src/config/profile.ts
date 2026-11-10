@@ -153,6 +153,33 @@ export interface ProvidersProfile {
   readonly cursor?: CursorProfile
 }
 
+/**
+ * §5.3: who answers the Judge's questions.
+ *
+ * The Judge is a *provider path*, not a peer (§4 of the §5.3 spike): one
+ * schema-constrained call, same child-env allowlist as a session, same model
+ * ids. Before this block existed the daemon built that call with no env at all,
+ * so it ran on fleetd's ambient identity — a machine with no Claude login
+ * answered `subtype: success` with no structured output and every `thin_card`
+ * escalated forever, and a machine *with* one silently ran as whoever that
+ * login was (§14.1's env drift, inside the Judge).
+ *
+ * Naming it here is what makes the answering model a decision instead of an
+ * accident. `provider` decides where the call goes and therefore which env it
+ * is given; `model` must be an id that provider serves — a DeepSeek id on
+ * `claude` is refused at `fleet up` by the adapter, and a `deepinfra` block
+ * with no key is a startup error rather than a quiet fall back to the machine.
+ *
+ * Absent, the Judge keeps its old behaviour: the cheap default model on
+ * whatever identity fleetd happens to have. That is the honest default for a
+ * machine that *is* logged in, and `fleet doctor`'s job to warn about — but a
+ * fleet that cares which model judges its work should say so.
+ */
+export interface JudgeProfile {
+  readonly provider: ProfileProvider
+  readonly model: string
+}
+
 /** §10: the forges this build has a `PullRequests` adapter for. */
 export const profileForges = ['github', 'gitlab'] as const
 export type ProfileForge = (typeof profileForges)[number]
@@ -325,6 +352,8 @@ export interface Profile {
    * to decide what to construct.
    */
   readonly providers?: ProvidersProfile
+  /** §5.3: who answers the Judge's questions. Absent, the cheap default on fleetd's own identity. */
+  readonly judge?: JudgeProfile
   /** §10: which forge the fleet's repos live on, and its host. Absent means `github.com`. */
   readonly forge?: ForgeProfile
   /** §6.1: where a notification goes. `none` keeps the ledger and sends nothing. */
@@ -466,6 +495,18 @@ const deepInfraBlock = (): Schema<DeepInfraProfile> =>
 const cursorBlock = (): Schema<CursorProfile> =>
   objectAs<CursorProfile>()({
     contextLimits: optional(record(positiveInt())),
+  })
+
+/**
+ * Both fields are required: a `judge:` block that names a provider and leaves
+ * the model to the default is the failure this block exists to prevent — the
+ * default is a Claude id, and a fleet whose peers are on DeepInfra would then
+ * send a Claude id to DeepInfra and get a model-not-found back per question.
+ */
+const judgeBlock = (): Schema<JudgeProfile> =>
+  objectAs<JudgeProfile>()({
+    provider: oneOf(profileProviders),
+    model: text(80),
   })
 
 const providersBlock = (): Schema<ProvidersProfile> =>
@@ -665,6 +706,7 @@ export const profileSchema = (): Schema<Profile> =>
     peers: array(peerProfile(), { maxItems: 50 }),
     routines: optional(routinesBlock()),
     providers: optional(providersBlock()),
+    judge: optional(judgeBlock()),
     forge: optional(forgeBlock()),
     notify: optional(notifyBlock()),
     security: optional(securityBlock()),

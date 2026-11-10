@@ -29,7 +29,7 @@ import { join } from 'node:path'
 import { fleetError } from '@fleet/foundation-core'
 import { deepInfraEnv } from '@fleet/runtime-provider-deepinfra'
 
-import type { Profile, PeerProfile } from '../config/profile.ts'
+import type { Profile, PeerProfile, ProfileProvider, JudgeProfile } from '../config/profile.ts'
 
 /** The variable `tokenEnv` means when a profile does not name one. */
 export const DEFAULT_DEEPINFRA_TOKEN_ENV = 'DEEPINFRA_API_KEY'
@@ -95,20 +95,51 @@ export const readDeepInfraToken = async (options: DeepInfraEnvOptions): Promise<
 }
 
 /**
- * The env a peer needs beyond its identity: the endpoint, the key, and every
- * model key pinned to the model the profile gave it.
+ * The env a model on `provider` needs beyond a process: the endpoint, the key,
+ * and the model pinned to the id it was given.
  *
- * Returns an empty fragment for a peer on another provider — this is the only
- * provider whose session needs more than a process to run.
+ * Keyed by provider and model rather than by a peer because §5.3's Judge call is
+ * not a peer's session — and that is exactly the hole this closes. The Judge's
+ * one-shot call used to be built with no env, so the allowlist fell back to
+ * fleetd's own identity: on a machine with no Claude login it answered
+ * `subtype: success` with no structured output, and on one that had a login it
+ * silently ran as that login (§14.1's env drift). Nothing about the call needs a
+ * peer, so nothing about the fragment should have required one.
+ *
+ * A provider whose auth is the machine's own (`claude`, `cursor`) gets an empty
+ * fragment: there is no credential to hand over, and pretending otherwise would
+ * be a token that does not exist. `deepinfra` is the one provider whose session
+ * — and therefore whose Judge call — needs anything more than a process.
  */
-export const createProviderEnv =
+export const providerEnvFor =
   (options: DeepInfraEnvOptions) =>
-  async (peer: PeerProfile): Promise<Readonly<Record<string, string>>> => {
-    if (peer.provider !== DEEP_INFRA) return {}
+  async (provider: ProfileProvider, model: string): Promise<Readonly<Record<string, string>>> => {
+    if (provider !== DEEP_INFRA) return {}
     const block = options.profile.providers?.deepinfra
     const token = await readDeepInfraToken(options)
     return deepInfraEnv(token, {
-      model: peer.model,
+      model,
       ...(block?.baseUrl === undefined ? {} : { baseUrl: block.baseUrl }),
     })
   }
+
+/** The fragment a peer's session gets: the peer's own provider and model. */
+export const createProviderEnv = (options: DeepInfraEnvOptions) => {
+  const envFor = providerEnvFor(options)
+  return async (peer: PeerProfile): Promise<Readonly<Record<string, string>>> =>
+    envFor(peer.provider, peer.model)
+}
+
+/**
+ * The `env` §5.3's Judge transport is built with.
+ *
+ * A profile with no `judge:` block gets an empty fragment, which is the old
+ * behaviour kept on purpose: that machine answers on its own login. A profile
+ * that names one gets exactly what a peer on that provider would get, including
+ * the refusal when the key is missing — so a `judge:` block is never silently
+ * ignored, which was the whole failure this block exists to end.
+ */
+export const judgeEnvFor =
+  (options: DeepInfraEnvOptions) =>
+  async (judge: JudgeProfile | undefined): Promise<Readonly<Record<string, string>>> =>
+    judge === undefined ? {} : providerEnvFor(options)(judge.provider, judge.model)
