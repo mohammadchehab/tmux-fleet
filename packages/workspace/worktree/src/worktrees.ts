@@ -47,7 +47,56 @@ const registered = async (runner: GitRunner, root: string): Promise<readonly str
     .map((line) => line.slice('worktree '.length).trim())
 }
 
+const TOPIC_PATTERN = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/
+
 export const createWorktrees = (runner: GitRunner = execFileGit): Worktrees => ({
+  async create(input) {
+    const { repo, checkoutPath, topic, workId } = input
+
+    // Validate topic: lowercase alphanumeric + hyphens, 1-40 chars
+    if (!TOPIC_PATTERN.test(topic)) {
+      throw new Error(
+        `invalid topic "${topic}": must be 1-40 characters, lowercase alphanumeric and hyphens, start and end with alphanumeric`,
+      )
+    }
+
+    // Worktree path: <checkout>/.claude/worktrees/<topic>
+    const path = `${checkoutPath.replace(/\/+$/, '')}/.claude/worktrees/${topic}`
+
+    // Get default branch from remote
+    const defaultBranch = await runner(['rev-parse', '--abbrev-ref', 'origin/HEAD'], checkoutPath)
+    if (defaultBranch.code !== 0) {
+      throw refused(`could not determine default branch for ${repo}`, defaultBranch)
+    }
+    const base = defaultBranch.stdout.trim().replace(/^origin\//, '')
+
+    // Branch name for the worktree: work-<topic>-<first-8-chars-of-workid>
+    // Ensure it's a valid ref name
+    const branch = `work-${topic}`
+
+    // Create the worktree: git worktree add --detach <path> <base>
+    const created = await runner(['worktree', 'add', '--detach', path, `origin/${base}`], checkoutPath)
+    if (created.code !== 0) throw refused(`git refused to create worktree at ${path}`, created)
+
+    // Create and check out the work branch
+    const branchCreated = await runner(['checkout', '-b', branch, `origin/${base}`], path)
+    if (branchCreated.code !== 0) {
+      // Clean up the worktree if branch creation fails
+      await runner(['worktree', 'remove', path], checkoutPath).catch(() => {})
+      throw refused(`git refused to create branch ${branch}`, branchCreated)
+    }
+
+    // Push the branch to make it remote-tracking
+    const pushed = await runner(['push', '-u', 'origin', branch], path)
+    if (pushed.code !== 0) {
+      // Clean up if push fails
+      await runner(['worktree', 'remove', path], checkoutPath).catch(() => {})
+      throw refused(`git refused to push branch ${branch}`, pushed)
+    }
+
+    return { path, branch }
+  },
+
   async remove(path) {
     // A relative path is resolved against whatever the daemon's cwd happens to be,
     // which is a second, silent answer to "which checkout". Only an absolute one.

@@ -256,6 +256,10 @@ const fakeWorktrees = (): FakeWorktrees => {
   const manager: FakeWorktrees = {
     removed,
     refuse: false,
+    create: async () => ({
+      path: '/repo/.claude/worktrees/work-test',
+      branch: 'work-test',
+    }),
     remove: async (path) => {
       if (manager.refuse) throw new Error(`git refused to remove the worktree at ${path}`)
       removed.push(path)
