@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/orchestration-briefs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Briefs (architecture §12): what a brief is, publishing it, and the executors for assign and supersede_brief; delivery goes through the Mailbox.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
