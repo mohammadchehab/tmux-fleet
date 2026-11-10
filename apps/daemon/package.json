@@ -26,6 +26,7 @@
     "@fleet/orchestration-routines": "workspace:*",
     "@fleet/runtime-mailbox": "workspace:*",
     "@fleet/runtime-provider-claude": "workspace:*",
+    "@fleet/runtime-provider-cursor": "workspace:*",
     "@fleet/runtime-provider-deepinfra": "workspace:*",
     "@fleet/runtime-provider-sdk": "workspace:*",
     "@fleet/runtime-supervisor": "workspace:*",

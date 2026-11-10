@@ -53,7 +53,6 @@ export const PACKAGE_ORDER: Readonly<Record<string, readonly string[]>> = {
     'providers/sdk',
     'providers/claude',
     'providers/deepinfra',
-    'providers/opencode',
     'providers/cursor',
     'supervisor',
     'mailbox',

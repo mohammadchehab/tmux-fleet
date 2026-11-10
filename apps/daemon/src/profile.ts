@@ -24,6 +24,7 @@ import {
   parseStrict,
   peerId,
   positiveInt,
+  record,
   refine,
   SchemaError,
   text,
@@ -127,9 +128,29 @@ export interface DeepInfraProfile {
   readonly tokenFile?: string
 }
 
+/**
+ * The `cursor` block. It exists for one reason: the CLI reports no context
+ * window, so a fleet has to state one before a cursor peer can run (§8). A peer
+ * whose model is not here is refused at `fleet up` by the adapter, rather than
+ * handed a guessed window and purged at a fraction of the context it had.
+ *
+ * There is nothing else to configure. Cursor authenticates the CLI on the
+ * machine (`cursor-agent login`), so there is no key here — not even the name of
+ * one; and being read-only is not a setting: the adapter honours `plan` mode
+ * only, whatever a peer's profile says.
+ */
+export interface CursorProfile {
+  /**
+   * The context window per cursor model id, in tokens. Keys are the ids
+   * `cursor-agent models` prints, which is what a peer's `model` must name too.
+   */
+  readonly contextLimits?: Readonly<Record<string, number>>
+}
+
 /** The provider blocks this build reads; a provider with no block uses its defaults. */
 export interface ProvidersProfile {
   readonly deepinfra?: DeepInfraProfile
+  readonly cursor?: CursorProfile
 }
 
 /** §10: the forges this build has a `PullRequests` adapter for. */
@@ -400,8 +421,13 @@ const deepInfraBlock = (): Schema<DeepInfraProfile> =>
     tokenFile: optional(text(400)),
   })
 
+const cursorBlock = (): Schema<CursorProfile> =>
+  objectAs<CursorProfile>()({
+    contextLimits: optional(record(positiveInt())),
+  })
+
 const providersBlock = (): Schema<ProvidersProfile> =>
-  objectAs<ProvidersProfile>()({ deepinfra: optional(deepInfraBlock()) })
+  objectAs<ProvidersProfile>()({ deepinfra: optional(deepInfraBlock()), cursor: optional(cursorBlock()) })
 
 const forgeBlock = (): Schema<ForgeProfile> =>
   objectAs<ForgeProfile>()({

@@ -94,6 +94,9 @@ importers:
       '@fleet/runtime-provider-claude':
         specifier: workspace:*
         version: link:../../packages/runtime/providers/claude
+      '@fleet/runtime-provider-cursor':
+        specifier: workspace:*
+        version: link:../../packages/runtime/providers/cursor
       '@fleet/runtime-provider-deepinfra':
         specifier: workspace:*
         version: link:../../packages/runtime/providers/deepinfra
@@ -300,6 +303,18 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.322
         version: 0.3.322(@anthropic-ai/sdk@1.7.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(zod@4.6.7)
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../../foundation/core
+      '@fleet/runtime-provider-sdk':
+        specifier: workspace:*
+        version: link:../sdk
+
+  packages/runtime/providers/cursor:
+    dependencies:
       '@fleet/foundation-contracts':
         specifier: workspace:*
         version: link:../../../foundation/contracts
