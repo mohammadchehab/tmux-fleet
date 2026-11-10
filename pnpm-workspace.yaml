@@ -1,7 +1,9 @@
-# The workspace is only what lives under packages/ (§1.1): foundation/* and
-# runtime/providers/*. `@fleet/*` imports resolve to the sibling package's
-# `src/index.ts`, so `pnpm install` is all a clean checkout needs before
-# `task test`.
+# Every @fleet/* package lives under packages/<group>/<...>/ and every app under apps/ (§1.1).
+# A package is found by its package.json, so a deeper nesting (packages/runtime/providers/sdk) needs nothing here.
+#
+# spikes/ is deliberately outside the globs: a spike is an experiment with its own toolchain (spikes/agent-sdk is a
+# plain .mjs probe against the Agent SDK), not a workspace package. It is not installed, not type-checked and not
+# tested. Promote what a spike proves into a package; leave the spike behind.
 packages:
-  - 'packages/foundation/*'
-  - 'packages/runtime/providers/*'
+  - 'packages/**'
+  - 'apps/**'

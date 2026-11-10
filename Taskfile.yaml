@@ -1,6 +1,12 @@
 version: '3'
 
-# Every task runs one script in dev-tasks/scripts/<group>/<script>.sh.
+# Two worlds live in this checkout during the v2 rebuild:
+#   v2 — the TypeScript workspace under packages/ and apps/, checked by `pnpm typecheck` and `pnpm test`;
+#   v1 — the bash fleet in legacy/v1/, still what is installed and running until phase 3.
+#
+# The v1 targets are delegated with `task -t legacy/v1/Taskfile.yaml <target>`, which runs the v1 Taskfile with the
+# working directory set to legacy/v1/ — so every v1 script keeps resolving its own root the way it always has.
+
 tasks:
   default:
     desc: List the tasks
@@ -8,80 +14,79 @@ tasks:
     cmds:
       - task --list
 
-  install:claude:
-    desc: Symlink every skills/<name> into ~/.claude/skills (real folders are left alone and reported)
-    cmds:
-      - dev-tasks/scripts/install/link.sh "${CLAUDE_SKILLS:-$HOME/.claude/skills}"
-
-  install:cursor:
-    desc: Symlink every skills/<name> into ~/.cursor/skills (a Cursor chat loads the fleet skill and reads roles/<role>.md)
-    cmds:
-      - dev-tasks/scripts/install/link.sh "${CURSOR_SKILLS:-$HOME/.cursor/skills}"
-
-  install:backlog:
-    desc: Install the board CLI (Backlog.md, npm -g) at the version the fleet pins in skills/fleet/scripts/lib/backlog.sh
-    cmds:
-      - dev-tasks/scripts/install/backlog.sh
-
-  install:bin:
-    desc: Put the fleet command on PATH (a symlink ~/.local/bin/fleet -> bin/fleet, or FLEET_BIN); see `fleet help`
-    cmds:
-      - dev-tasks/scripts/install/bin.sh
+  # ---- v2 ---------------------------------------------------------------------------------------------------------
 
   install:node:
     desc: Install the TypeScript packages' dev dependencies (pnpm) and link @fleet/* to the sibling packages
     cmds:
       - pnpm install --frozen-lockfile
 
-  install:
-    desc: Run install:node, install:claude, install:cursor, install:backlog and install:bin
-    cmds:
-      - task: install:node
-      - task: install:claude
-      - task: install:cursor
-      - task: install:backlog
-      - task: install:bin
-
-  uninstall:
-    desc: Remove the fleet's symlinks from ~/.claude/skills and ~/.cursor/skills, and the fleet command from ~/.local/bin
-    cmds:
-      - dev-tasks/scripts/install/uninstall.sh
-
-  update:
-    desc: Fast-forward main in this checkout (main only, clean tree), link any new skills and install the pinned board CLI
-    cmds:
-      - dev-tasks/scripts/install/update.sh
-
-  profile:init:
-    desc: Create ~/.config/fleet/profiles/<NAME>.env for a repo (task profile:init NAME=<name> REPO=<path> [SQUAD=<squad>]); never overwrites
-    cmds:
-      - dev-tasks/scripts/profile/init.sh "{{.NAME}}" "{{.REPO}}" {{.SQUAD}}
-
-  lint:
-    desc: shellcheck every script, check skill frontmatter (name equals folder name), that profiles repeat no AGENTS.md fact
-    cmds:
-      - dev-tasks/scripts/lint/shell.sh
-      - dev-tasks/scripts/lint/skills.sh
-      - dev-tasks/scripts/lint/profile.sh
-
   typecheck:
-    desc: Typecheck every TypeScript package (strict, no emit, erasable syntax only) — the gate `node --experimental-strip-types` cannot give
+    desc: Typecheck every TypeScript package and the cross-package tests (strict, no emit, erasable syntax only) — the gate node --experimental-strip-types cannot give
     cmds:
       - pnpm typecheck
 
   test:node:
-    desc: Run the TypeScript packages' tests with the built-in runner (no network, no tmux)
+    desc: Run the TypeScript tests with the built-in runner — tests/ (the §1.1 architecture rules) and every package's own test/
     cmds:
       - pnpm test
 
+  # ---- v1 (delegated; still the live fleet until phase 3) ---------------------------------------------------------
+
   test:
-    desc: Smoke-test the scripts with a fake tmux and a fake backlog CLI, then test and typecheck the TypeScript packages
+    desc: Smoke-test the v1 scripts with a fake tmux and a fake backlog CLI, then run the v2 tests and typecheck
     cmds:
-      - dev-tasks/scripts/test/smoke.sh
+      - task -t legacy/v1/Taskfile.yaml test
       - task: test:node
       - task: typecheck
+
+  lint:
+    desc: shellcheck every v1 script, check skill frontmatter (name equals folder name), that profiles repeat no AGENTS.md fact
+    cmds:
+      - task -t legacy/v1/Taskfile.yaml lint
+
+  install:
+    desc: Install the node workspace and the v1 fleet — the skills, the fleet command and the pinned board CLI — from legacy/v1
+    cmds:
+      - task: install:node
+      - task -t legacy/v1/Taskfile.yaml install
+
+  install:claude:
+    desc: Symlink every legacy/v1/skills/<name> into ~/.claude/skills (real folders are left alone and reported)
+    cmds:
+      - task -t legacy/v1/Taskfile.yaml install:claude
+
+  install:cursor:
+    desc: Symlink every legacy/v1/skills/<name> into ~/.cursor/skills (a Cursor chat loads the fleet skill and reads roles/<role>.md)
+    cmds:
+      - task -t legacy/v1/Taskfile.yaml install:cursor
+
+  install:backlog:
+    desc: Install the board CLI (Backlog.md, npm -g) at the version the v1 fleet pins
+    cmds:
+      - task -t legacy/v1/Taskfile.yaml install:backlog
+
+  install:bin:
+    desc: Put the fleet command on PATH (~/.local/bin/fleet -> legacy/v1/bin/fleet, or FLEET_BIN); see `fleet help`
+    cmds:
+      - task -t legacy/v1/Taskfile.yaml install:bin
+
+  uninstall:
+    desc: Remove the v1 fleet's symlinks from ~/.claude/skills and ~/.cursor/skills, and the fleet command from ~/.local/bin
+    cmds:
+      - task -t legacy/v1/Taskfile.yaml uninstall
+
+  update:
+    desc: Fast-forward main in this checkout (main only, clean tree), link any new skills and install the pinned board CLI
+    cmds:
+      - task -t legacy/v1/Taskfile.yaml update
+
+  profile:init:
+    desc: Create ~/.config/fleet/profiles/<NAME>.env for a repo (task profile:init NAME=<name> REPO=<path> [SQUAD=<squad>]); never overwrites
+    cmds:
+      - task -t legacy/v1/Taskfile.yaml profile:init NAME="{{.NAME}}" REPO="{{.REPO}}" SQUAD="{{.SQUAD}}"
 
   clean:
     desc: List stale fleet worktrees (fleet wt prune) and tmux sessions; "-- --force" removes worktrees, "-- --force --sessions" also kills sessions
     cmds:
-      - dev-tasks/scripts/clean/clean.sh {{.CLI_ARGS}}
+      - task -t legacy/v1/Taskfile.yaml clean -- {{.CLI_ARGS}}

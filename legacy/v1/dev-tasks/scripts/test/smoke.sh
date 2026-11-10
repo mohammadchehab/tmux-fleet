@@ -47,6 +47,11 @@ ln -s "$ROOT/skills/cursor/engineer" "$CURSOR_SKILLS/fleet-engineer"
 check dev-tasks/scripts/install/link.sh "$CURSOR_SKILLS"
 check test "$(readlink "$CURSOR_SKILLS/fleet-rca")" = "$ROOT/skills/fleet-rca"
 check test ! -L "$CURSOR_SKILLS/fleet-engineer"
+# a pre-v2-move install points at the checkout's old root-level skills/, gone since the move to legacy/v1: relinked, not skipped
+check test -n "$FLEET_PRE_MOVE_ROOT"
+rm "$CURSOR_SKILLS/fleet-next"; ln -s "$FLEET_PRE_MOVE_ROOT/skills/fleet-next" "$CURSOR_SKILLS/fleet-next"
+check dev-tasks/scripts/install/link.sh "$CURSOR_SKILLS"
+check test "$(readlink "$CURSOR_SKILLS/fleet-next")" = "$ROOT/skills/fleet-next"
 ln -s /elsewhere "$CURSOR_SKILLS/foreign"
 check dev-tasks/scripts/install/uninstall.sh
 check test ! -e "$CURSOR_SKILLS/fleet"
