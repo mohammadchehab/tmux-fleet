@@ -324,7 +324,9 @@ describe('createWorktrees', () => {
       const remoteDir = join(tmpDir, 'remote.git')
       const repoDir = join(tmpDir, 'repo')
 
-      execSync(`git init --bare ${remoteDir}`)
+      // Pin the branch: the runner's git defaults to `master`, so a fixture that relies on the
+      // ambient init.defaultBranch names no branch the test can check out or push.
+      execSync(`git init --bare --initial-branch=main ${remoteDir}`)
       execSync(`git clone ${remoteDir} ${repoDir}`)
 
       // Create a commit so HEAD is valid
