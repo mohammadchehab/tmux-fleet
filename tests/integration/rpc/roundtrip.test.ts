@@ -202,8 +202,23 @@ test('every method of the port round-trips: the CLI decodes what the daemon answ
   const rebuilt = await call('replay', {})
   assert.equal(rebuilt.mode, 'rebuild')
   if (rebuilt.mode === 'rebuild' && window.mode === 'window') {
-    assert.equal(rebuilt.events, window.events.length, 'the rebuild replayed the whole log')
-    assert.equal(rebuilt.latestSeq, window.events.at(-1)?.seq, 'and the log did not move')
+    // The count is the rebuild's own — how far into the log it got is its
+    // `latestSeq` — and the log read back to that seq is what it replayed. It is
+    // read that way rather than compared with the window above because the
+    // daemon is live: anything that writes between two calls (a routine's tick,
+    // a turn finishing) lands in one count and not the other, and a healthy
+    // daemon writing between two reads is not a rebuild that missed an event.
+    const asOf = await call('replay', { from: 1, to: rebuilt.latestSeq })
+    assert.equal(asOf.mode, 'window')
+    if (asOf.mode === 'window') {
+      assert.equal(asOf.events.length, rebuilt.events, 'the rebuild replayed every event it reports')
+      assert.deepEqual(
+        asOf.events.map((event) => event.seq),
+        asOf.events.map((_, index) => index + 1),
+        'and it replayed them from seq 1 without a gap',
+      )
+    }
+    assert.ok(rebuilt.latestSeq >= (window.events.at(-1)?.seq ?? 0), 'the rebuild saw everything the window did')
   }
   // The projections were dropped and derived again: the run above still reads.
   assert.equal((await call('evals', { runId })).run.passed, 1)
