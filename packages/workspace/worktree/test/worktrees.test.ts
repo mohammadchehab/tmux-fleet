@@ -330,7 +330,7 @@ describe('createWorktrees', () => {
       // Create a commit so HEAD is valid
       execSync(`cd ${repoDir} && git config user.email "test@example.com" && git config user.name "Test"`)
       execSync(`cd ${repoDir} && echo "test" > file.txt && git add file.txt && git commit -m "test commit"`)
-      execSync(`cd ${repoDir} && git push -u origin main`, { stdio: 'pipe' })
+      execSync(`cd ${repoDir} && git push -u origin HEAD:refs/heads/main`, { stdio: 'pipe' })
 
       // Create a worktree
       const worktreeDir = join(repoDir, '.claude', 'worktrees', 'task-59')
