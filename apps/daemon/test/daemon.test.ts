@@ -232,6 +232,16 @@ test('up starts the supervisor before the scheduler, and down stops them the oth
   assert.equal(daemon.running, false)
 })
 
+test('two up calls in flight start the supervisor and the scheduler once', async () => {
+  const { daemon, supervisor, scheduler } = await harness()
+
+  const [first, second] = await Promise.all([daemon.up(), daemon.up()])
+  assert.deepEqual(supervisor.log, ['supervisor.start'], 'a second `up` while the first is starting must not start peers again')
+  assert.deepEqual(scheduler.log, ['scheduler.start'])
+  assert.deepEqual(second, first)
+  await daemon.down()
+})
+
 test('up catches up a Work whose PR merged while fleetd was down, after the scheduler starts', async () => {
   const order: string[] = []
   const { daemon, store } = await harness({ seed: mergedWhileDown(), order })

@@ -101,6 +101,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
   }
   let running = false
   let stopping: Promise<void> | undefined
+  let starting: Promise<DaemonStatus> | undefined
 
   /**
    * §3: a peer exists because `peer.registered` says so, not because a file
@@ -118,8 +119,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     return pending.length === 0 ? [] : append(pending)
   }
 
-  const start = async (): Promise<DaemonStatus> => {
-    if (running) return status
+  const startOnce = async (): Promise<DaemonStatus> => {
     await registerPeers()
     await deps.supervisor.start()
     const ran = await deps.scheduler.start()
@@ -139,6 +139,19 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       console.error(`fleetd: caught up ${caughtUp.length} work transition(s) on start`)
     }
     return status
+  }
+
+  /**
+   * A second `up` while the first is still coming up joins it: `running` only
+   * flips once catch-up is done, so without this both calls would start every
+   * peer's session. A failed start clears the slot, so the next `up` retries.
+   */
+  const start = async (): Promise<DaemonStatus> => {
+    if (running) return status
+    starting ??= startOnce().finally(() => {
+      starting = undefined
+    })
+    return starting
   }
 
   const stop = async (): Promise<void> => {
