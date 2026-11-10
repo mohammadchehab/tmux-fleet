@@ -13,6 +13,7 @@ import { test } from 'node:test'
 import {
   appKind,
   checkEdge,
+  checkEvalTooling,
   checkPackageShape,
   checkWorkspace,
   formatViolation,
@@ -22,7 +23,7 @@ import {
   type PackageRef,
   type Violation,
 } from './rules.ts'
-import { readEdges, readPackages, REPO_ROOT, specifiersOf } from './workspace.ts'
+import { readEdges, readManifests, readPackages, REPO_ROOT, specifiersOf } from './workspace.ts'
 
 function pkg(name: string, dir: string): PackageRef {
   const where = locate(dir)
@@ -40,14 +41,18 @@ const WORKSPACE = [
   pkg('@fleet/foundation-store', 'packages/foundation/store'),
   pkg('@fleet/runtime-provider-sdk', 'packages/runtime/providers/sdk'),
   pkg('@fleet/runtime-providers-claude', 'packages/runtime/providers/claude'),
+  pkg('@fleet/runtime-provider-deepinfra', 'packages/runtime/providers/deepinfra'),
   pkg('@fleet/runtime-supervisor', 'packages/runtime/supervisor'),
   pkg('@fleet/runtime-mailbox', 'packages/runtime/mailbox'),
   pkg('@fleet/orchestration-pm', 'packages/orchestration/pm'),
   pkg('@fleet/orchestration-routines', 'packages/orchestration/routines'),
   pkg('@fleet/orchestration-gate', 'packages/orchestration/gate'),
+  pkg('@fleet/orchestration-judge', 'packages/orchestration/judge'),
   pkg('@fleet/integrations-github', 'packages/integrations/github'),
   pkg('@fleet/notify-core', 'packages/notify/core'),
   pkg('@fleet/notify-macos', 'packages/notify/channels/macos'),
+  pkg('@fleet/evals-adapter', 'packages/evals/adapter'),
+  pkg('@fleet/evals-suites-judge', 'packages/evals/suites/judge'),
   pkg('@fleet/daemon', 'apps/daemon'),
   pkg('@fleet/cli', 'apps/clients/cli'),
   pkg('@fleet/tool-guard', 'apps/hooks/tool-guard'),
@@ -158,10 +163,54 @@ test('pm stays pure: foundation only', () => {
 })
 
 test('the daemon is the only wiring point', () => {
-  for (const p of WORKSPACE.filter((p) => p.group !== 'apps')) {
+  // evals is the other package §17 lets reach across groups, so it is excluded here rather than allowed twice
+  for (const p of WORKSPACE.filter((p) => p.group !== 'apps' && p.group !== 'evals')) {
     allows('@fleet/daemon', p.name)
   }
   allows('@fleet/daemon', '@fleet/foundation-store')
+})
+
+test('evals is a leaf consumer: it imports any group, and nothing imports evals', () => {
+  // §17: a suite calls the real Judge and Provider path, which crosses groups on purpose
+  allows('@fleet/evals-suites-judge', '@fleet/orchestration-judge')
+  allows('@fleet/evals-suites-judge', '@fleet/runtime-providers-claude')
+  allows('@fleet/evals-suites-judge', '@fleet/runtime-provider-deepinfra')
+  allows('@fleet/evals-suites-judge', '@fleet/evals-adapter')
+  allows('@fleet/evals-adapter', '@fleet/foundation-contracts')
+  // and the edge back is refused: a product package that imported a suite would ship the eval harness to a peer
+  assert.match(denies('@fleet/runtime-supervisor', '@fleet/evals-adapter'), /nothing imports evals/)
+  assert.match(denies('@fleet/orchestration-judge', '@fleet/evals-suites-judge'), /nothing imports evals/)
+  assert.match(denies('@fleet/daemon', '@fleet/evals-adapter'), /nothing imports evals/)
+})
+
+test('the eval tools are dev dependencies of packages/evals and of nothing else (§17)', async () => {
+  const manifests = await readManifests(REPO_ROOT)
+  assert.ok(manifests.length > 0, 'no manifests found; the scan is broken, not the tree')
+  const problems = manifests.flatMap(({ pkg: manifestPkg, manifest }) => checkEvalTooling(manifestPkg, manifest))
+  assert.equal(
+    problems.join('\n'),
+    '',
+    `\n${problems.join('\n')}\n\n§17: promptfoo and the openevals libraries are dev tooling under packages/evals only.`,
+  )
+})
+
+test('the eval tooling rule fires in both directions', () => {
+  const suite = pkg('@fleet/evals-suites-judge', 'packages/evals/suites/judge')
+  const runtime = pkg('@fleet/runtime-supervisor', 'packages/runtime/supervisor')
+  // a suite may install it, as a dev dependency
+  assert.deepEqual(checkEvalTooling(suite, { devDependencies: { promptfoo: '^0.125.1' } }), [])
+  // never at runtime, not even in evals
+  assert.match(
+    checkEvalTooling(suite, { dependencies: { promptfoo: '^0.125.1' } }).join('\n'),
+    /is a runtime dependency/,
+  )
+  // and not at all outside evals
+  assert.match(
+    checkEvalTooling(runtime, { devDependencies: { openevals: '^0.1.0' } }).join('\n'),
+    /dev dependency outside packages\/evals/,
+  )
+  // an ordinary dev dependency is none of this rule's business
+  assert.deepEqual(checkEvalTooling(runtime, { devDependencies: { typescript: '^5.9.3' } }), [])
 })
 
 test('clients and hooks reach foundation only, and apps never import apps', () => {
@@ -204,6 +253,7 @@ test('the layout tables cover every group §1.1 names', () => {
     'security',
     'notify',
     'integrations',
+    'evals',
   ])
   assert.equal(appKind(pkg('@fleet/daemon', 'apps/daemon')), 'daemon')
   assert.equal(appKind(pkg('@fleet/cli', 'apps/clients/cli')), 'clients')

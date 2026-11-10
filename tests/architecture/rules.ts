@@ -8,6 +8,7 @@
 //   apps/clients, apps/hooks -> foundation types, and the daemon API over its socket
 //   groups never import each other sideways; they declare a port in foundation/contracts and the daemon injects it
 //   a package that speaks to a provider (supervisor, mailbox, routines) reaches providers/sdk and no concrete one
+//   evals -> any group (it calls the real Judge and Provider path), and nothing may import evals (§17)
 
 /** A package of the workspace, identified by its package.json name and its directory. */
 export type PackageRef = {
@@ -15,7 +16,7 @@ export type PackageRef = {
   readonly name: string
   /** Path from the repo root, POSIX separators, e.g. `packages/runtime/providers/sdk`. */
   readonly dir: string
-  /** `foundation | runtime | orchestration | workspace | security | notify | integrations | apps`. */
+  /** `foundation | runtime | orchestration | workspace | security | notify | integrations | evals | apps`. */
   readonly group: string
   /** Path inside the group: `core`, `providers/sdk`, `daemon`, `clients/cli`. */
   readonly key: string
@@ -62,6 +63,9 @@ export const PACKAGE_ORDER: Readonly<Record<string, readonly string[]>> = {
   security: ['findings', 'scanners'],
   notify: ['core', 'channels/macos'],
   integrations: ['github', 'gitlab', 'trackers'],
+  // §17: the eval suites are dev tooling, not a product surface. Within the group a suite may use the adapter that
+  // turns its results into events, which is the only edge there is.
+  evals: ['adapter', 'suites/judge'],
 }
 
 export const APP_KINDS = ['daemon', 'clients', 'hooks'] as const
@@ -140,6 +144,15 @@ export function checkEdge(edge: ImportEdge, packages: ReadonlyMap<string, Packag
     return `imports the app ${to.name}; nothing imports an app (§1.1)`
   }
 
+  // §17: evals is a leaf consumer. Its suites call the real Judge and Provider path, so it may import any group, and
+  // a suite is the only thing that may import it — a product package that imported an eval suite would ship the eval
+  // harness to a peer. Checked before the group rules so the message is always about evals, whatever imports it.
+  if (to.group === 'evals' && from.group !== 'evals') {
+    return `imports ${to.name}; evals is a leaf consumer like an app — nothing imports evals (§17)`
+  }
+  // From evals outward any group is in reach; inside the group the order rule below still applies.
+  if (from.group === 'evals' && to.group !== 'evals') return null
+
   // foundation is the floor: it may not reach up into a group.
   if (from.group === 'foundation' && to.group !== 'foundation') {
     return `foundation imports ${to.group}; foundation is what everything else may import, never the reverse`
@@ -197,6 +210,38 @@ export function checkPackageShape(pkg: PackageRef): string | null {
     return `${pkg.dir}: ${pkg.key} is not a package of ${pkg.group} in §1.1; add it to PACKAGE_ORDER in tests/architecture/rules.ts`
   }
   return null
+}
+
+/**
+ * §17's hygiene rule, which the import graph cannot see: `promptfoo` and the `openevals`/`agentevals` libraries are
+ * dev tooling. They are a **dev dependency** of a package under `packages/evals` and of nothing else — a runtime
+ * dependency on one would put an eval harness on a peer's import path, and a dev dependency anywhere else would make
+ * some other package's test run need it.
+ */
+export const EVAL_TOOLS: readonly string[] = ['promptfoo', 'openevals', 'agentevals']
+
+/** The part of a package.json this rule reads: where a dependency is listed, not what version it is. */
+export type PackageManifest = {
+  readonly dependencies?: Readonly<Record<string, string>>
+  readonly devDependencies?: Readonly<Record<string, string>>
+}
+
+/** Every reason `pkg` may not install the eval tools as this manifest lists them. Empty means it may. */
+export function checkEvalTooling(pkg: PackageRef, manifest: PackageManifest): string[] {
+  const problems: string[] = []
+  for (const tool of EVAL_TOOLS) {
+    if (Object.hasOwn(manifest.dependencies ?? {}, tool)) {
+      problems.push(
+        `${pkg.dir}: ${tool} is a runtime dependency; §17 makes the eval tools dev dependencies, and only under packages/evals`,
+      )
+    }
+    if (Object.hasOwn(manifest.devDependencies ?? {}, tool) && pkg.group !== 'evals') {
+      problems.push(
+        `${pkg.dir}: ${tool} is a dev dependency outside packages/evals; §17 keeps the eval tools there so no other package's install or test run needs them`,
+      )
+    }
+  }
+  return problems
 }
 
 export function formatViolation(v: Violation): string {

@@ -1,0 +1,130 @@
+{
+  "evalId": "eval-Pse-2026-11-10T10:54:09",
+  "results": {
+    "results": [
+      {
+        "testIdx": 0,
+        "repeatIndex": 0,
+        "repeatGroupId": "test-0-vars-0",
+        "provider": {
+          "id": "fleet-judge:claude:claude-haiku-4-5",
+          "label": ""
+        },
+        "success": true,
+        "score": 1,
+        "latencyMs": 2,
+        "cost": 0,
+        "vars": {
+          "caseId": "route-ambiguity",
+          "expectedText": "{\"kind\":\"route_question\",\"peerId\":\"engineer-3\"}",
+          "case": {
+            "id": "route-ambiguity",
+            "suite": "judge"
+          }
+        },
+        "response": {
+          "output": "{\"kind\":\"route_question\",\"peerId\":\"engineer-3\"}",
+          "metadata": {}
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed"
+        },
+        "tokenUsage": {
+          "prompt": 30,
+          "completion": 12,
+          "cached": 0,
+          "total": 42
+        },
+        "failureReason": 0
+      },
+      {
+        "testIdx": 1,
+        "repeatIndex": 1,
+        "repeatGroupId": "test-0-vars-0",
+        "provider": {
+          "id": "fleet-judge:claude:claude-haiku-4-5",
+          "label": ""
+        },
+        "success": true,
+        "score": 1,
+        "latencyMs": 1,
+        "cost": 0,
+        "vars": {
+          "caseId": "route-ambiguity",
+          "expectedText": "{\"kind\":\"route_question\",\"peerId\":\"engineer-3\"}",
+          "case": {
+            "id": "route-ambiguity",
+            "suite": "judge"
+          }
+        },
+        "response": {
+          "output": "{\"kind\":\"route_question\",\"peerId\":\"engineer-3\"}",
+          "metadata": {}
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed"
+        },
+        "tokenUsage": {
+          "prompt": 30,
+          "completion": 12,
+          "cached": 0,
+          "total": 42
+        },
+        "failureReason": 0
+      },
+      {
+        "testIdx": 2,
+        "repeatIndex": 2,
+        "repeatGroupId": "test-0-vars-0",
+        "provider": {
+          "id": "fleet-judge:claude:claude-haiku-4-5",
+          "label": ""
+        },
+        "success": true,
+        "score": 1,
+        "latencyMs": 1,
+        "cost": 0,
+        "vars": {
+          "caseId": "route-ambiguity",
+          "expectedText": "{\"kind\":\"route_question\",\"peerId\":\"engineer-3\"}",
+          "case": {
+            "id": "route-ambiguity",
+            "suite": "judge"
+          }
+        },
+        "response": {
+          "output": "{\"kind\":\"route_question\",\"peerId\":\"engineer-3\"}",
+          "metadata": {}
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed"
+        },
+        "tokenUsage": {
+          "prompt": 30,
+          "completion": 12,
+          "cached": 0,
+          "total": 42
+        },
+        "failureReason": 0
+      }
+    ],
+    "stats": {
+      "successes": 3,
+      "failures": 0,
+      "errors": 0,
+      "durationMs": 23,
+      "tokenUsage": {
+        "prompt": 90,
+        "completion": 36,
+        "cached": 0,
+        "total": 126
+      }
+    }
+  }
+}
