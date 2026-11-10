@@ -271,4 +271,26 @@ describe('the build ledger', () => {
     await assert.rejects(ledger.request(request()), /disk full/)
     assert.equal(local.runs.length, 0)
   })
+
+  it('settles coalesced promises when a runner timeout occurs', async () => {
+    // Verify that a timed-out build settles the inFlight promise,
+    // so later requests waiting on it are freed, not stuck forever.
+    // When spawnToLog times out, it rejects; the ledger catches that and records
+    // a failed build. Both coalesced requests should receive the failed build,
+    // not hang indefinitely.
+    const timedOut: BuildRunner = {
+      host: 'local',
+      async run() {
+        throw new Error('timeout: process exceeded 100ms')
+      },
+    }
+    const { ledger } = setup({ local: timedOut })
+    // Send two requests for the same triple; the second waits on the first
+    // via inFlight coalescing. When the timeout occurs and the promise settles,
+    // both requests get the same failed build.
+    const [a, b] = await Promise.all([ledger.request(request()), ledger.request(request())])
+    assert.equal(a.build.status, 'failed')
+    assert.equal(b.build.status, 'failed')
+    assert.equal(a.build.buildId, b.build.buildId)
+  })
 })
