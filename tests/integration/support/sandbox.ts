@@ -14,39 +14,60 @@
  *
  * Every routine is disabled: §6's routines are real behaviour tested elsewhere,
  * and a timer firing mid-assertion would make these tests flaky in a way that
- * says nothing about the lifecycle.
+ * says nothing about the lifecycle. The profile says so kind by kind, from
+ * `routineKinds` rather than from a list kept here by hand — a profile that does
+ * not name a routine leaves it *on*, so a hand-kept list is one routine away
+ * from a timer nobody asked for. It was: `branch-cleanup` arrived after this
+ * file and ran on every tick, calling `gh pr list` against a repository that
+ * does not exist and appending `routine.started`/`routine.failed` whenever it
+ * finished — sometimes between two calls of a test that counts the log.
  */
 
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type {
-  BranchHead,
-  DaemonMethod,
-  DaemonResponse,
-  PullRequests,
-  RoutineKind,
+import {
+  routineKinds,
+  type BranchHead,
+  type DaemonMethod,
+  type DaemonResponse,
+  type PullRequests,
+  type RoutineKind,
 } from '../../../packages/foundation/contracts/src/index.ts'
 import { profilePaths, type ProfilePaths } from '../../../packages/foundation/core/src/index.ts'
 import { compose, type Composed } from '../../../apps/daemon/src/compose.ts'
 import { stateFilePathOf } from '../../../apps/daemon/src/sessions.ts'
 import { rpcCall } from '../../../apps/daemon/src/server.ts'
 import type { Notifier } from '../../../packages/notify/core/src/index.ts'
+import type { RoutinesConfig } from '../../../packages/orchestration/routines/src/index.ts'
 import type { ToolIo } from '../../../packages/security/scanners/src/index.ts'
 import { createScriptedProvider, type ScriptedOptions, type ScriptedProvider } from './scripted-provider.ts'
 
-/** §6's routines, all off; a lifecycle test asserts about turns, not timers. */
-const allRoutinesOff = {
-  dispatch: { enabled: false },
-  'keep-busy': { enabled: false },
-  'pr-babysit': { enabled: false },
-  standup: { enabled: false },
-  'worktree-gc': { enabled: false },
-  reconcile: { enabled: false },
-  'security-scan': { enabled: false },
-  notify: { enabled: false },
-} as const
+/**
+ * §6's routines, all off but the ones a test asks for; a lifecycle test asserts
+ * about turns, not timers. Every kind is named explicitly, because a kind a
+ * profile leaves out is a kind that runs (§6's silence means on).
+ */
+export const sandboxRoutines = (
+  routines: readonly RoutineKind[] = [],
+  notify?: 'macos' | 'none',
+  security?: readonly string[],
+): RoutinesConfig => {
+  const config: Partial<Record<RoutineKind, { readonly enabled: false }>> = {}
+  for (const kind of routineKinds) {
+    // `notify` and `security-scan` are the two routines a test may want switched
+    // on; without their profile block the daemon installs no body for them, so
+    // they stay off with the rest. A routine a test asked for is named with no
+    // settings at all, so §6's defaults apply to it — including the heartbeat,
+    // which is what makes a poller poll.
+    if (kind === 'notify' && notify === 'macos') continue
+    if (kind === 'security-scan' && security !== undefined) continue
+    if (routines.includes(kind)) continue
+    config[kind] = { enabled: false }
+  }
+  return config
+}
 
 export interface SandboxPeer {
   readonly id: string
@@ -135,15 +156,7 @@ const profileYaml = (
   if (notify !== undefined) lines.push('notify:', `  channel: ${notify}`)
   if (security !== undefined) lines.push('security:', '  scanners:', ...security.map((scanner) => `    - ${scanner}`))
   lines.push('tickIntervalMs: 50', 'routines:')
-  for (const [kind, settings] of Object.entries(allRoutinesOff)) {
-    // `notify` and `security-scan` are the two routines a test may want switched
-    // on; without their profile block the daemon installs no body for them, so
-    // they stay off with the rest.
-    if (kind === 'notify' && notify === 'macos') continue
-    if (kind === 'security-scan' && security !== undefined) continue
-    // A routine a test asked for is named with no settings at all, so §6's defaults
-    // apply to it — including the heartbeat, which is what makes a poller poll.
-    if (routines.includes(kind as RoutineKind)) continue
+  for (const [kind, settings] of Object.entries(sandboxRoutines(routines, notify, security))) {
     lines.push(`    ${kind}: { enabled: ${String(settings.enabled)} }`)
   }
   return `${lines.join('\n')}\n`
