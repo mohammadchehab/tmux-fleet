@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { fixedClock, profilePaths, type PeerId, type Seq, type TurnId } from '@fleet/foundation-core'
-import type { AppendEvent, EventSink, ProviderEvent, SessionSpec, Turn, Worktree } from '@fleet/foundation-contracts'
+import type { AppendEvent, EventSink, ProviderEvent, SessionSpec, Turn, Worktree, WorktreeProvisioner } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
 
 import { decodeProfile, type Profile } from '../src/config/profile.ts'
@@ -87,7 +87,11 @@ interface Rig {
  */
 const rig = async (
   profile: Profile,
-  options: { readonly providerId?: string; readonly worktrees?: readonly Worktree[] } = {},
+  options: {
+    readonly providerId?: string
+    readonly worktrees?: readonly Worktree[]
+    readonly provisioner?: WorktreeProvisioner
+  } = {},
 ): Promise<Rig> => {
   const providerId = options.providerId ?? 'claude'
   const records: AppendEvent[] = []
@@ -156,7 +160,21 @@ const rig = async (
     paths,
     store,
     providers: new Map([[providerId, provider]]),
-    read: { worktrees: { all: async () => options.worktrees ?? [] } },
+    // What the store would project: the rows a test seeded, plus every
+    // `worktree.created` the supervisor itself appended.
+    read: {
+      worktrees: {
+        all: async () => [
+          ...(options.worktrees ?? []),
+          ...records.flatMap((record) =>
+            record.type === 'worktree.created'
+              ? [{ ...record.data, class: 'active', dirty: false, unpushed: false, holders: [] } as unknown as Worktree]
+              : [],
+          ),
+        ],
+      },
+    },
+    ...(options.provisioner === undefined ? {} : { worktrees: options.provisioner }),
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
   })
   return { stateDir: paths.stateDir, supervisor, records, starts }
@@ -357,4 +375,76 @@ test('a checkout for a repo the profile does not list is refused at load', () =>
     /acme\/other.*not in repos/s,
   )
   assert.throws(() => twoPeers({}, { checkouts: { 'acme/widgets': 'relative/path' } }))
+})
+
+/** A provisioner that records what it was asked and makes `<root>/.claude/worktrees/<topic>` up. */
+const fakeProvisioner = (): { provisioner: WorktreeProvisioner; asked: { root: string; topic: string; branch: string }[] } => {
+  const asked: { root: string; topic: string; branch: string }[] = []
+  const known = new Set<string>()
+  return {
+    asked,
+    provisioner: {
+      ensure: async ({ root, topic, branch }) => {
+        asked.push({ root, topic, branch })
+        const path = `${root}/.claude/worktrees/${topic}`
+        const created = !known.has(path)
+        known.add(path)
+        return { path, created }
+      },
+    },
+  }
+}
+
+test('two writing peers each get their own worktree under the checkout, so neither is refused', async (t) => {
+  const { provisioner, asked } = fakeProvisioner()
+  const r = await rig(twoPeers({}), { provisioner })
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+
+  assert.deepEqual(r.starts.map((spec) => spec.cwd), [
+    `${checkout}/.claude/worktrees/peer-engineer-1`,
+    `${checkout}/.claude/worktrees/peer-architect-1`,
+  ])
+  assert.deepEqual(asked.map((ask) => ask.branch), ['peer/engineer-1', 'peer/architect-1'])
+  // Owner recorded at creation, as an event (§9), so the next start finds it.
+  const created = r.records.filter((record) => record.type === 'worktree.created')
+  assert.deepEqual(
+    created.map((record) => ({ owner: record.data.ownerPeerId, path: record.data.path, repo: record.data.repo, class: record.data.class })),
+    [
+      { owner: 'engineer-1', path: `${checkout}/.claude/worktrees/peer-engineer-1`, repo: 'acme/widgets', class: 'active' },
+      { owner: 'architect-1', path: `${checkout}/.claude/worktrees/peer-architect-1`, repo: 'acme/widgets', class: 'active' },
+    ],
+  )
+})
+
+test('a read-only peer keeps the shared checkout and is never given a worktree', async (t) => {
+  const { provisioner, asked } = fakeProvisioner()
+  const r = await rig(twoPeers({ permissionMode: 'plan' }), { provisioner })
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+
+  assert.equal(r.starts[1]?.cwd, checkout)
+  assert.deepEqual(asked.map((ask) => ask.topic), ['peer-engineer-1'])
+})
+
+test('a peer that already owns an active worktree is not given a second one, across a purge restart', async (t) => {
+  const { provisioner, asked } = fakeProvisioner()
+  const r = await rig(profileWith({ purge: { maxTurns: 1 } }), { provisioner })
+  t.after(() => r.supervisor.stop())
+  await oneTurn(r)
+  await until(() => r.starts.length === 2, 'the replacement session')
+
+  assert.equal(asked.length, 1, 'the restart found the row the first start wrote')
+  assert.equal(r.records.filter((record) => record.type === 'worktree.created').length, 1)
+  assert.equal(r.starts[1]?.cwd, r.starts[0]?.cwd)
+})
+
+test('a provisioner that cannot make the worktree refuses the peer, not falls back to a shared checkout', async (t) => {
+  const r = await rig(profileWith(undefined), {
+    provisioner: { ensure: async () => Promise.reject(new Error('git refused to make the worktree')) },
+  })
+  t.after(() => r.supervisor.stop())
+
+  await assert.rejects(r.supervisor.start(), /git refused to make the worktree/)
+  assert.equal(r.starts.length, 0)
 })

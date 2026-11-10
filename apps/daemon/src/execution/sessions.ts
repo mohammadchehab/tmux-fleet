@@ -18,12 +18,14 @@ import {
   err,
   fleetError,
   newBriefId,
+  newWorktreeId,
   ok,
   systemClock,
   type Clock,
   type FleetError,
   type ProfilePaths,
   type PeerId,
+  type Repo,
   type Result,
   type SessionId,
   type TurnId,
@@ -36,6 +38,7 @@ import type {
   ReadModel,
   SessionSpec,
   StateFile,
+  WorktreeProvisioner,
   Turn,
 } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
@@ -58,6 +61,12 @@ export interface SupervisorDeps {
    * worktree it owns (§9). Absent, a peer starts in its repo's profile checkout.
    */
   readonly read?: Pick<ReadModel, 'worktrees'>
+  /**
+   * §9's creator. A peer that can write and owns no worktree is given one, under
+   * its repo's checkout, so engineers each work in their own tree and the
+   * shared-checkout guard is only what is left for a fleet that wires none.
+   */
+  readonly worktrees?: WorktreeProvisioner
   /** The append-only sink, waking as it goes (§5.2): this is where `session.started` comes from. */
   readonly store: EventSink
   /** Concrete providers, by the profile's `provider` name. Built in `compose.ts`, never here. */
@@ -182,6 +191,39 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
   }
 
   /**
+   * §9: a writing peer with no worktree of its own gets one, made under its repo's
+   * checkout and recorded with the peer as owner. A peer that only reads keeps the
+   * shared checkout (it cannot switch anything under anyone), and a fleet with no
+   * provisioner falls through to the checkout and the guard.
+   */
+  const provisionFor = async (
+    peer: PeerProfile,
+    repo: string | undefined,
+    checkout: string | undefined,
+  ): Promise<string | undefined> => {
+    if (deps.worktrees === undefined || repo === undefined || checkout === undefined || !canWrite(peer)) return undefined
+    const topic = `peer-${String(peer.id)}`
+    const made = await deps.worktrees.ensure({ root: checkout, topic, branch: `peer/${String(peer.id)}` })
+    await deps.store.append([
+      {
+        type: 'worktree.created',
+        ts: clock.now(),
+        subject: repo,
+        actor: 'pm',
+        data: {
+          worktreeId: newWorktreeId(),
+          repo: repo as Repo,
+          branch: `peer/${String(peer.id)}`,
+          path: made.path,
+          ownerPeerId: peer.id,
+          class: 'active',
+        },
+      },
+    ])
+    return made.path
+  }
+
+  /**
    * Where this peer's session runs: the active worktree it owns, else its
    * repo's checkout — never the fleet's state directory, which holds the store
    * and the socket and none of the repo's instructions. Asked at every start,
@@ -197,7 +239,8 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       (worktree) => worktree.ownerPeerId === peer.id && worktree.class === 'active',
     )
     const repo = peer.repo ?? deps.profile.repos[0]
-    const path = owned?.path ?? (repo === undefined ? undefined : deps.profile.checkouts?.[repo])
+    const checkout = repo === undefined ? undefined : deps.profile.checkouts?.[repo]
+    const path = owned?.path ?? (await provisionFor(peer, repo, checkout)) ?? checkout
     if (path === undefined) {
       throw fleetError(
         'config_mismatch',

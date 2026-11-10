@@ -221,6 +221,31 @@ export interface Worktrees {
 }
 
 /**
+ * §9's creation half: make a checkout for a peer under the repo's own
+ * `.claude/worktrees/<topic>`. Kept apart from `Worktrees` (removal) so a fake of
+ * the one need not grow the other, and because the two have different callers:
+ * the supervisor creates, `branch-cleanup` and `worktree-gc` remove.
+ *
+ * Idempotent, because a daemon restart asks again for a peer whose checkout is
+ * already there.
+ */
+export interface WorktreeProvisioner {
+  /**
+   * A checkout of the repository at `root` at `<root>/.claude/worktrees/<topic>`,
+   * on `branch` (created from `base` when it does not exist yet). `created` is
+   * false when git already listed that path, so the caller can tell a reuse from
+   * a new checkout. A branch another checkout holds, or a path git refuses, throws.
+   */
+  ensure(input: {
+    readonly root: string
+    readonly topic: string
+    readonly branch: string
+    /** Defaults to the remote's default branch, else `origin/main`, else `HEAD`. */
+    readonly base?: string
+  }): Promise<{ readonly path: string; readonly created: boolean }>
+}
+
+/**
  * The providers that exist, by id. `supervisor` and `reconcile` resolve a
  * peer's provider through this; nothing else holds a provider instance (§2).
  *

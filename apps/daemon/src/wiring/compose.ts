@@ -46,6 +46,7 @@ import type {
   RoutineKind,
   Tracker,
   Worktrees,
+  WorktreeProvisioner,
 } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import { createGitHubPullRequests } from '@fleet/integrations-github'
@@ -65,7 +66,7 @@ import { createCursorProvider } from '@fleet/runtime-provider-cursor'
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
 import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
-import { createBranchHead, createWorktrees } from '@fleet/workspace-worktree'
+import { createBranchHead, createWorktreeProvisioner, createWorktrees } from '@fleet/workspace-worktree'
 import { createBranchCleanupFactory } from '../routines/branch-cleanup.ts'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createDaemonBuilds } from './builds.ts'
@@ -158,6 +159,8 @@ export interface ComposeDeps {
    * suite never removes a directory on the machine it runs on.
    */
   readonly worktrees?: Worktrees
+  /** §9's creator; absent, the real `git`. A test supplies one so no repository is touched. */
+  readonly worktreeProvisioner?: WorktreeProvisioner
   /**
    * The board `tracker-sync` reads and writes (§3). Defaults to the adapter the
    * profile's `trackers.system` names — `@fleet/integrations-trackers-backlog`
@@ -348,7 +351,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // it is built first and the Mailbox reaches peers through it (§7). It appends
   // through the waking sink, because `session.started` is the event that wakes
   // the delivery of whatever is waiting for that peer.
-  const supervisor = createSupervisor({ profile, paths, read: store.reader(), store: wake, providers, clock, providerEnv })
+  const supervisor = createSupervisor({ profile, paths, read: store.reader(), worktrees: deps.worktreeProvisioner ?? createWorktreeProvisioner(), store: wake, providers, clock, providerEnv })
 
   const mailbox = createMailbox({
     store: { append: wake.append, messages: store.reader().messages },
