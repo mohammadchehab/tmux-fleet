@@ -941,6 +941,23 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       raiseNotification(db, notificationKeyOf('failure', peerId, reason), 'failure', ts)
       return
     }
+    case 'peer.compacted': {
+      const { peerId, trigger, preTokens } = event.data
+      db.run(
+        'INSERT OR REPLACE INTO peer_compactions (seq, peer_id, trigger, pre_tokens, ts) VALUES (?, ?, ?, ?, ?)',
+        event.seq,
+        peerId,
+        trigger,
+        preTokens,
+        ts,
+      )
+      // §6.1 `failure`: a compaction is not a routine step. It rewrites the peer's
+      // context and bills for re-reading it, and the whole point of the alert is
+      // that nobody would otherwise notice. Keyed by the event, not the peer, so
+      // two compactions are two notifications rather than one that deduped away.
+      raiseNotification(db, notificationKeyOf('failure', peerId, 'compacted', String(event.seq)), 'failure', ts)
+      return
+    }
     case 'session.started': {
       const { peerId, sessionId, providerId, providerSessionRef, model, permissionMode, resumed } = event.data
       writeSession(
@@ -1870,6 +1887,42 @@ export const readers = (db: Sqlite): ReadModel => {
         const cases = rows<EvalCase>(PROJECTION_SCHEMAS.evalCase, 'SELECT data FROM eval_cases WHERE run_id = ? ORDER BY case_id', runId)
         return { run, cases }
       },
+    },
+    compactions: {
+      // Grouped in SQL rather than by the caller: `fleet ls` wants a count per
+      // peer and a fleet-wide total, and the log holds every compaction, not
+      // just the latest (§8).
+      all: async () =>
+        db
+          .all<{
+            peer_id: string
+            count: number
+            last_at: string
+            last_trigger: string
+            last_pre_tokens: number
+          }>(
+            `SELECT peer_id,
+                    COUNT(*)                                       AS count,
+                    MAX(ts)                                        AS last_at,
+                    (SELECT last_q.trigger FROM peer_compactions last_q
+                      WHERE last_q.peer_id = grouped.peer_id
+                      ORDER BY last_q.ts DESC, last_q.seq DESC LIMIT 1)    AS last_trigger,
+                    (SELECT last_q.pre_tokens FROM peer_compactions last_q
+                      WHERE last_q.peer_id = grouped.peer_id
+                      ORDER BY last_q.ts DESC, last_q.seq DESC LIMIT 1)    AS last_pre_tokens
+               FROM peer_compactions grouped
+              GROUP BY peer_id
+              ORDER BY peer_id`,
+          )
+          .map((row) =>
+            parse(PROJECTION_SCHEMAS.peerCompactions, {
+              peerId: row.peer_id,
+              count: Number(row.count),
+              lastAt: row.last_at,
+              lastTrigger: row.last_trigger,
+              lastPreTokens: Number(row.last_pre_tokens),
+            }),
+          ),
     },
   }
 }

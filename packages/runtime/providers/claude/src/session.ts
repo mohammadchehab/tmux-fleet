@@ -61,7 +61,7 @@ import { isContractEvent, type AdapterEvent } from './events.ts'
 import { mapMessage, questionAnswers, readQuestions, type TurnState } from './messages.ts'
 import { PendingRequests } from './pending.ts'
 import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy } from './policy.ts'
-import { fallbackTokensFrom, usageFrom, type ContextLimits } from './usage.ts'
+import { fallbackTokensFrom, usageFrom, type ContextLimits, type ContextUsageAnswer } from './usage.ts'
 
 /** Everything about *how* a Claude session runs that is not part of a `SessionSpec`. */
 export interface ClaudeSessionConfig {
@@ -502,12 +502,35 @@ export class ClaudeSession {
     return first
   }
 
-  async #contextUsage(): Promise<{ totalTokens?: number } | undefined> {
+  async #contextUsage(): Promise<ContextUsageAnswer | undefined> {
     if (!isLive(this.#state)) return undefined
     try {
       const answer = await this.#query.getContextUsage({ detail: this.#config.contextDetail })
-      const total = (answer as { totalTokens?: unknown }).totalTokens
-      return typeof total === 'number' ? { totalTokens: total } : undefined
+      const record = answer as {
+        totalTokens?: unknown
+        rawMaxTokens?: unknown
+        autoCompactThreshold?: unknown
+        isAutoCompactEnabled?: unknown
+        categories?: readonly { id?: unknown; tokens?: unknown }[]
+      }
+      const total = typeof record.totalTokens === 'number' ? record.totalTokens : undefined
+      const window = typeof record.rawMaxTokens === 'number' ? record.rawMaxTokens : undefined
+      const threshold = typeof record.autoCompactThreshold === 'number' ? record.autoCompactThreshold : undefined
+      const categories = Array.isArray(record.categories)
+        ? record.categories.map((row) => ({
+            ...(typeof row?.id === 'string' ? { id: row.id } : {}),
+            ...(typeof row?.tokens === 'number' ? { tokens: row.tokens } : {}),
+          }))
+        : undefined
+      return {
+        ...(total === undefined ? {} : { totalTokens: total }),
+        ...(window === undefined ? {} : { rawMaxTokens: window }),
+        ...(threshold === undefined ? {} : { autoCompactThreshold: threshold }),
+        ...(typeof record.isAutoCompactEnabled === 'boolean'
+          ? { autoCompactEnabled: record.isAutoCompactEnabled }
+          : {}),
+        ...(categories === undefined ? {} : { categories }),
+      }
     } catch {
       // The control call needs a live CLI; a session that just exited has no
       // measurement, and the caller's fallback is the last one we saw.

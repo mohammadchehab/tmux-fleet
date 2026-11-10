@@ -33,7 +33,7 @@ const cases: readonly { readonly event: ProviderEvent; readonly expected: Return
   { event: { type: 'session.ended', reason: 'crash', code: 1 }, expected: 'failed' },
   { event: { type: 'error', message: 'rate limited', retryable: true }, expected: 'failed' },
   {
-    event: { type: 'compaction', turnId, contextTokensBefore: 900, contextTokensAfter: 300 },
+    event: { type: 'compaction', turnId, trigger: 'auto', contextTokensBefore: 900, contextTokensAfter: 300 },
     expected: undefined,
   },
 ]
@@ -49,5 +49,5 @@ test('an interrupt is a decision, not a failure: nobody is paged for it', () => 
 })
 
 test('compaction changes no state: the session is alive and smaller', () => {
-  assert.equal(peerStateOf({ type: 'compaction', turnId, contextTokensBefore: 10, contextTokensAfter: 2 }), undefined)
+  assert.equal(peerStateOf({ type: 'compaction', turnId, trigger: 'manual', contextTokensBefore: 10, contextTokensAfter: 2 }), undefined)
 })

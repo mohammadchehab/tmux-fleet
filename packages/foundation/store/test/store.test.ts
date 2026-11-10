@@ -38,7 +38,7 @@ test('health reports the log it holds, and works on the read-only handle', async
   const store = await open({ path })
   assert.deepEqual(
     await store.health(),
-    { latestSeq: 0, events: 0, anomalies: 0 },
+    { latestSeq: 0, events: 0, anomalies: 0, compactions: 0 },
     'an empty store is healthy and at seq 0, like `latestSeq`',
   )
   await store.append(threeEvents())
@@ -46,7 +46,7 @@ test('health reports the log it holds, and works on the read-only handle', async
 
   // `fleet status` opens the live daemon's store read-only; a health read has to work there
   const reader = await open({ path, readOnly: true })
-  assert.deepEqual(await reader.health(), { latestSeq: 3, events: 3, anomalies: 0 })
+  assert.deepEqual(await reader.health(), { latestSeq: 3, events: 3, anomalies: 0, compactions: 0 })
   await reader.close()
 })
 

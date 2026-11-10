@@ -56,6 +56,11 @@ import type { PeerProfile, Profile } from './profile.ts'
  */
 export const defaultPurgeLimits: PurgeLimits = Object.freeze({
   contextRatio: 0.8,
+  /**
+   * Below 1 on purpose: the purge itself has to run a turn to write the handoff,
+   * and that turn needs headroom under the point the provider would compact at.
+   */
+  autoCompactRatio: 0.9,
   maxTurns: 400,
   maxSessionMillis: 6 * 60 * 60 * 1000,
 })
@@ -233,6 +238,15 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
         // no session must be visible, not silently idle.
         return provider.start(stateFile === undefined ? spec : { ...spec, stateFile })
       },
+      // §8: a compaction's price is the context the provider had to read again,
+      // at the model's published rate. A peer with no `pricing` reports no cost
+      // at all rather than a zero that would read as free.
+      ...(peer.pricing === undefined
+        ? {}
+        : {
+            estimateCompactionCost: (preTokens: number): number =>
+              (preTokens / 1_000_000) * (peer.pricing?.inputUsdPerMillion ?? 0),
+          }),
     })
 
     const running: Running = { handle, session, peer }

@@ -181,6 +181,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
         peers: await read.peers.all(),
         routines: await read.routines.all(),
         decisions: await read.decisions.open(),
+        compactions: await read.compactions.all(),
       }
     },
 

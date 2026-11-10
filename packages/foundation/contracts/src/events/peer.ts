@@ -6,6 +6,7 @@
 
 import {
   boolean,
+  count,
   event,
   number,
   object,
@@ -21,7 +22,7 @@ import {
 } from '@fleet/foundation-core'
 import { peerId, providerSessionRef, sessionId, worktreeId } from '@fleet/foundation-core'
 import { peerState } from '@fleet/foundation-core'
-import { permissionMode, providerId } from '../provider.ts'
+import { compactionTriggers, permissionMode, providerId } from '../provider.ts'
 
 /** A peer exists. Written once per peer, from the profile's squad (§6, §1.1 config). */
 export const peerRegistered = event(
@@ -106,8 +107,33 @@ export const peerFailed = event(
 )
 
 /**
- * A session came up. `resumed` is true when it continued a `ProviderSessionRef`.
- * `model`, `permissionMode` and `endpoint` are what the session is *running*,
+ * A provider compacted a peer's context on its own or on a person's say-so (§8).
+ *
+ * Recorded because a compaction is money: the conversation is re-sent to a
+ * summarizer, and the peer comes back with less of what it knew. It is not a
+ * failure — the session carries on — so it is its own event rather than a
+ * `peer.failed`, and it is written for compactions that happened *between*
+ * turns, which is where they mostly happen.
+ */
+export const peerCompacted = event(
+  'peer.compacted',
+  object({
+    peerId: peerId(),
+    trigger: oneOf(compactionTriggers),
+    /** Context tokens the provider compacted: the number that sizes the bill. */
+    preTokens: count(),
+    /** What the context held afterwards; absent when the provider did not say. */
+    postTokens: optional(count()),
+    /**
+     * What the re-send cost at the model's configured price, when one is
+     * configured. Absent means "not priced here", never "free" (§11).
+     */
+    estimatedCostUsd: optional(number({ min: 0 })),
+  }),
+)
+
+/**
+ * A session came up. `resumed` is true when it continued a `ProviderSessionRef`. * `model`, `permissionMode` and `endpoint` are what the session is *running*,
  * read from its first init and the adapter's own record, never echoed from the
  * request: a spec can be wrong and a leaked environment can silently change the
  * endpoint (§4, §13). `endpoint` is present only when the adapter recorded the

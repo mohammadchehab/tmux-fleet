@@ -56,5 +56,6 @@ export const readAll = async (store: EventStore): Promise<Readonly<Record<string
     pullRequests: await reader.pullRequests.all(),
     worktrees: await reader.worktrees.all(),
     routines: await reader.routines.all(),
+    compactions: await reader.compactions.all(),
   }
 }

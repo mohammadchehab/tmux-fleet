@@ -65,8 +65,8 @@ import { decision, routine } from './projections/ops.ts'
 import type { Decision, Routine } from './projections/ops.ts'
 import { message } from './projections/mailbox.ts'
 import type { Message } from './projections/mailbox.ts'
-import { peer } from './projections/peers.ts'
-import type { Peer } from './projections/peers.ts'
+import { peer, peerCompactions } from './projections/peers.ts'
+import type { Peer, PeerCompactions } from './projections/peers.ts'
 import { turnKinds } from './provider.ts'
 import type { TurnKind } from './provider.ts'
 
@@ -368,6 +368,12 @@ export interface LsResult {
   readonly peers: readonly Peer[]
   readonly routines: readonly Routine[]
   readonly decisions: readonly Decision[]
+  /**
+   * One row per peer that has compacted, so `ls` can show a peer losing its
+   * context (§8). A peer with no row has never compacted — the same fact as a
+   * count of zero, without a row for every peer that is behaving.
+   */
+  readonly compactions: readonly PeerCompactions[]
 }
 
 export const lsResult = (): Schema<LsResult> =>
@@ -376,6 +382,7 @@ export const lsResult = (): Schema<LsResult> =>
     peers: array(peer()),
     routines: array(routine()),
     decisions: array(decision()),
+    compactions: array(peerCompactions()),
   })
 
 /** `send`: the id the Mailbox minted, so the client can find it in `peek`. */

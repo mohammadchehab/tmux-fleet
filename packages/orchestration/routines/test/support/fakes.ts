@@ -141,6 +141,9 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
     // No evals are seeded: no routine compares two runs, and the CLI's `evals
     // compare` reads the real store, not this fake.
     evals: { get: async () => undefined },
+    // No compactions are seeded: no routine reads them yet, and an empty read is
+    // what the daemon's `ls` would get from a fleet that has never compacted.
+    compactions: { all: async () => [] },
     put: (next) => {
       Object.assign(current, next)
     },

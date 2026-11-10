@@ -17,6 +17,7 @@ import {
   array,
   boolean,
   fleetError,
+  number,
   objectAs,
   oneOf,
   optional,
@@ -69,6 +70,18 @@ export interface PeerProfile {
   readonly permissionMode?: PermissionModeName
   /** Where the peer's worktrees are made (§9). Defaults to the profile's first repo. */
   readonly repo?: string
+  /**
+   * What this model costs to read a token, so a compaction can be reported with
+   * a number instead of a shrug (§8). Absent, a compaction is still recorded and
+   * flagged — the cost is simply left out, because a vendor's price list is not
+   * the fleet's to invent and an estimate of zero would read as free.
+   */
+  readonly pricing?: PeerPricing
+}
+
+/** A price, in the unit a vendor publishes it: US dollars per million input tokens. */
+export interface PeerPricing {
+  readonly inputUsdPerMillion: number
 }
 
 /** What the PR gate and the tracker integration point at (§10). */
@@ -280,6 +293,17 @@ export interface Profile {
   readonly deleteMergedBranches?: boolean
 }
 
+/**
+ * A price above zero. Zero is refused because it is almost certainly a typo and
+ * it would report every compaction as costing nothing. A fraction is allowed:
+ * vendors publish per-million prices like 0.27.
+ */
+const pricePerMillion = (): Schema<number> =>
+  refine(number({ min: 0 }), (value) => value > 0, 'expected a price above zero')
+
+const peerPricing = (): Schema<PeerPricing> =>
+  objectAs<PeerPricing>()({ inputUsdPerMillion: pricePerMillion() })
+
 const peerProfile = (): Schema<PeerProfile> =>
   objectAs<PeerProfile>()({
     id: peerId(),
@@ -288,6 +312,7 @@ const peerProfile = (): Schema<PeerProfile> =>
     model: text(80),
     permissionMode: optional(oneOf(permissionModes)),
     repo: optional(text(200)),
+    pricing: optional(peerPricing()),
   })
 
 /**

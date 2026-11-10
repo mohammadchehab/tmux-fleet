@@ -11,7 +11,7 @@
  * prose: two vocabularies for one field is how a client drifts from the store.
  */
 
-import type { Decision, Message, Peer, Routine } from '@fleet/foundation-contracts'
+import type { Decision, Message, Peer, PeerCompactions, Routine } from '@fleet/foundation-contracts'
 import type { DownResult, LsResult, PeekResult, SendResult, UpResult } from '@fleet/foundation-contracts'
 
 const indent = (lines: readonly string[], by: number): readonly string[] =>
@@ -57,6 +57,20 @@ const routineRow = (routine: Routine): readonly string[] => [
 ]
 
 /**
+ * A compaction is the one row in `fleet ls` that is a warning rather than a
+ * status: it means a peer's context was rewritten and its bill grew (§8). The
+ * last trigger and the tokens it compacted are on the row so the reader can
+ * tell a person's `/compact` from the provider doing it on its own.
+ */
+const compactionRow = (row: PeerCompactions): readonly string[] => [
+  row.peerId,
+  `${String(row.count)}x`,
+  `last ${row.lastTrigger}`,
+  `pre ${String(row.lastPreTokens)}`,
+  row.lastAt,
+]
+
+/**
  * A decision is three lines: the row, the closed set the answer must come
  * from, and the command that answers it — so `fleet ls` is enough to act on
  * without going back to the docs (§6.1).
@@ -79,6 +93,7 @@ export const formatLs = (result: LsResult): string => {
   const decisionRows = result.decisions.flatMap((row, index) =>
     index === 0 ? decisionLines(row) : ['', ...decisionLines(row)],
   )
+  const total = result.compactions.reduce((sum, row) => sum + row.count, 0)
   const lines = [
     `${status.profile}  pid ${String(status.pid)}  up since ${status.startedAt}`,
     `socket  ${status.socketPath}`,
@@ -87,6 +102,15 @@ export const formatLs = (result: LsResult): string => {
     ...section('peers', result.peers.length, columns(result.peers.map(peerRow)), 'none registered'),
     '',
     ...section('routines', result.routines.length, columns(result.routines.map(routineRow)), 'none'),
+    '',
+    ...section(
+      // The count is in the heading, not only on the rows: a fleet whose peers
+      // are all quietly compacting should say so in one number (§8).
+      `compactions (${String(total)} total)`,
+      result.compactions.length,
+      columns(result.compactions.map(compactionRow)),
+      'none: no peer has compacted',
+    ),
     '',
     ...section('decisions', result.decisions.length, decisionRows, 'nothing waiting on the user'),
   ]

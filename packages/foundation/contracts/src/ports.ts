@@ -27,7 +27,7 @@ import type { MessageAckState } from './events/messages.ts'
 import type { ProviderHandle, Turn } from './provider.ts'
 import type { PullRequest, Worktree } from './projections/delivery.ts'
 import type { Decision, Finding, Notification, Routine } from './projections/ops.ts'
-import type { Peer, Session } from './projections/peers.ts'
+import type { Peer, PeerCompactions, Session } from './projections/peers.ts'
 import type { Work } from './projections/work.ts'
 import type { ExternalItem } from './shapes.ts'
 import type { WorkState } from './work-state.ts'
@@ -262,6 +262,14 @@ export interface ReadModel {
   readonly evals: {
     /** One run with its cases, or `undefined` if the log has no such run. */
     get(runId: EvalRunId): Promise<EvalRunWithCases | undefined>
+  }
+  /**
+   * One row per peer that has ever compacted, and nothing for a peer that has
+   * not — so a caller reads "never compacted" from the absence of a row rather
+   * than from a zero it has to know to interpret (§8).
+   */
+  readonly compactions: {
+    all(): Promise<readonly PeerCompactions[]>
   }
 }
 

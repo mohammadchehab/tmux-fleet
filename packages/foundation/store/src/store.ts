@@ -60,6 +60,13 @@ export interface StoreHealth {
   readonly events: number
   /** Rows in `projection_anomalies`; zero is healthy for any store. */
   readonly anomalies: number
+  /**
+   * Rows in `peer_compactions`: every context the fleet has paid to have
+   * rewritten (§8). Not a fault like `anomalies` — a store with none is simply a
+   * fleet that has not compacted yet — but it belongs in the same report,
+   * because it is the one number here that is a bill.
+   */
+  readonly compactions: number
 }
 
 /**

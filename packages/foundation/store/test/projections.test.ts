@@ -448,12 +448,66 @@ test('`strictProjection` turns a miss into a throw, and keeps none of the batch'
     'the message names the miss, so a test does not have to go and read the table to find it',
   )
 
-  assert.deepEqual(await store.health(), { latestSeq: 0, events: 0, anomalies: 0 }, 'the whole batch rolled back')
+  assert.deepEqual(await store.health(), { latestSeq: 0, events: 0, anomalies: 0, compactions: 0 }, 'the whole batch rolled back')
   assert.equal(await store.reader().peers.get('engineer-1' as PeerId), undefined, 'including the event that did project')
 
   // Strict about misses, not about logs: an event every projection can follow still lands.
   await store.append([appendable('peer.registered.json')])
   await store.rebuild()
-  assert.deepEqual(await store.health(), { latestSeq: 1, events: 1, anomalies: 0 })
+  assert.deepEqual(await store.health(), { latestSeq: 1, events: 1, anomalies: 0, compactions: 0 })
+  await store.close()
+})
+
+test('a compaction is one row a peer, and every one of them raises its own notification', async () => {
+  const store = await open()
+  await store.append([appendable('peer.registered.json')])
+  await store.append([
+    event('peer.compacted', 'engineer-1', { peerId: 'engineer-1', trigger: 'auto', preTokens: 180_000 }),
+  ])
+  await store.append([
+    event(
+      'peer.compacted',
+      'engineer-1',
+      { peerId: 'engineer-1', trigger: 'manual', preTokens: 90_000, estimatedCostUsd: 0.27 },
+      '2026-11-10T11:00:00.000Z',
+    ),
+  ])
+  await store.append([
+    event('peer.compacted', 'architect-1', { peerId: 'architect-1', trigger: 'auto', preTokens: 40_000 }),
+  ])
+
+  const rows = await store.reader().compactions.all()
+  assert.deepEqual(rows, [
+    {
+      peerId: 'architect-1',
+      count: 1,
+      lastAt: '2026-11-10T10:00:00.000Z',
+      lastTrigger: 'auto',
+      lastPreTokens: 40_000,
+    },
+    {
+      peerId: 'engineer-1',
+      count: 2,
+      lastAt: '2026-11-10T11:00:00.000Z',
+      lastTrigger: 'manual',
+      lastPreTokens: 90_000,
+    },
+  ])
+
+  // §6.1 `failure`: one notification per compaction, not one per peer. A key
+  // built from the peer alone would have deduped the second one away, which is
+  // the exact silence the alert exists to break.
+  const raised = (await store.reader().notifications.all()).filter((row) => String(row.key).includes('compacted'))
+  assert.equal(raised.length, 3)
+  assert.deepEqual(
+    raised.map((row) => row.class),
+    ['failure', 'failure', 'failure'],
+  )
+
+  // The same rows after a replay: the table is a projection of the log, not state
+  // `append` kept on the side.
+  await store.rebuild()
+  assert.deepEqual(await store.reader().compactions.all(), rows)
+  assert.equal((await store.health()).compactions, 3, 'health counts them too, which is what `fleet status` reads')
   await store.close()
 })

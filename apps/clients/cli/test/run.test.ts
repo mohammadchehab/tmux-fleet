@@ -44,7 +44,17 @@ const decision = {
   requestedAt: now,
 }
 
-const listing: LsResult = { status, peers: [peer], routines: [routine], decisions: [decision] }
+const compactions = [
+  { peerId: 'engineer-1' as PeerId, count: 2, lastAt: now, lastTrigger: 'manual' as const, lastPreTokens: 90000 },
+]
+
+const listing: LsResult = {
+  status,
+  peers: [peer],
+  routines: [routine],
+  decisions: [decision],
+  compactions,
+}
 
 type Answer = (params: unknown) => unknown
 
@@ -150,13 +160,18 @@ describe('run: ls', () => {
     assert.match(text, /Which repo does the checkout belong to\?/)
     assert.match(text, /options: me-services \| other/)
     assert.match(text, /answer: fleet decide dec_0123456789abcdef <option>/)
+    // The fleet-wide count is in the heading, so a fleet whose peers are all
+    // quietly compacting says so in one number rather than in rows nobody reads.
+    assert.match(text, /compactions \(2 total\) \(1\)/)
+    assert.match(text, /engineer-1 {2}2x {2}last manual {2}pre 90000/)
   })
 
   it('says so in each section that is empty rather than printing a bare heading', async () => {
-    const empty: LsResult = { status, peers: [], routines: [], decisions: [] }
+    const empty: LsResult = { status, peers: [], routines: [], decisions: [], compactions: [] }
     const { deps, out } = harness({ ls: () => empty })
     assert.equal(await run(argv('ls'), deps), 0)
     assert.match(out[0] ?? '', /none registered/)
+    assert.match(out[0] ?? '', /none: no peer has compacted/)
     assert.match(out[0] ?? '', /nothing waiting on the user/)
   })
 

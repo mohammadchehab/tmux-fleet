@@ -8,7 +8,7 @@ import { test } from 'node:test'
 
 import { checkPurgeLimits, defaultPurgeLimits, purgeTrigger, type PurgeObservation } from '../src/index.ts'
 
-const limits = { contextRatio: 0.8, maxTurns: 10, maxSessionMillis: 60_000 }
+const limits = { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 }
 const observation = (overrides: Partial<PurgeObservation> = {}): PurgeObservation => ({
   usage: { contextTokens: 0, contextLimit: 1_000 },
   usageTokens: true,
@@ -79,4 +79,38 @@ test('limits are checked at load, so a typo cannot silence the trigger', () => {
   ]) {
     assert.throws(() => checkPurgeLimits(bad), (thrown: unknown) => (thrown as { code?: string }).code === 'invalid_input')
   }
+})
+
+/**
+ * The purge that protects against a compaction is the one that reads the point
+ * the *session* says it will compact at, not the window the profile configured.
+ * The two can differ by a factor of five — a 1M-token model whose CLI compacts at
+ * 200K — and a ratio against the window would never fire before the provider.
+ */
+test('the provider\'s own compaction point triggers first, below the configured window', () => {
+  const usage = { contextTokens: 180_000, contextLimit: 1_000_000, autoCompactAt: 200_000 }
+  assert.equal(purgeTrigger(observation({ usage })), 'auto_compact')
+  // 90% of the compaction point, not of the window: 180K of 200K.
+  assert.equal(purgeTrigger(observation({ usage: { ...usage, contextTokens: 179_999 } })), undefined)
+})
+
+test('a session the provider will not compact keeps the window ratio as its trigger', () => {
+  const usage = { contextTokens: 850, contextLimit: 1_000 }
+  assert.equal(purgeTrigger(observation({ usage })), 'context', 'no autoCompactAt means the window is all there is')
+  assert.equal(purgeTrigger(observation({ usage: { ...usage, autoCompactAt: 0 } })), 'context', 'a bogus point is ignored')
+})
+
+test('the compaction point is only read when the provider reports tokens', () => {
+  const usage = { contextTokens: 180_000, contextLimit: 1_000_000, autoCompactAt: 200_000 }
+  assert.equal(
+    purgeTrigger(observation({ usage, usageTokens: false, turns: 1, limits: { ...limits, maxTurns: 40 } })),
+    undefined,
+    'an agent with no usage numbers falls back to turns, not to a ratio it cannot measure',
+  )
+})
+
+test('the auto-compact ratio is validated like every other limit', () => {
+  assert.throws(() => checkPurgeLimits({ ...limits, autoCompactRatio: 0 }), /autoCompactRatio must be in \(0, 1\]/)
+  assert.throws(() => checkPurgeLimits({ ...limits, autoCompactRatio: 1.5 }), /autoCompactRatio must be in \(0, 1\]/)
+  assert.ok(defaultPurgeLimits.autoCompactRatio < 1, 'the handoff turn needs headroom under the compaction point')
 })

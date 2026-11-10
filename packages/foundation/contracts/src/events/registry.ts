@@ -6,7 +6,15 @@
  */
 
 import { decodeStrict, object, unionAs, type DistributiveOmit, type Infer, type Issue, type Schema } from '@fleet/foundation-core'
-import { peerFailed, peerRegistered, peerStateChanged, providerError, sessionEnded, sessionStarted } from './peer.ts'
+import {
+  peerCompacted,
+  peerFailed,
+  peerRegistered,
+  peerStateChanged,
+  providerError,
+  sessionEnded,
+  sessionStarted,
+} from './peer.ts'
 import {
   workAssigned,
   workBlocked,
@@ -71,6 +79,7 @@ export const EVENT_SCHEMAS = {
   'peer.registered': peerRegistered,
   'peer.state_changed': peerStateChanged,
   'peer.failed': peerFailed,
+  'peer.compacted': peerCompacted,
   'session.started': sessionStarted,
   'session.ended': sessionEnded,
   'provider.errored': providerError,

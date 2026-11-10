@@ -45,6 +45,7 @@ test('every table the design names exists', () => {
     'findings',
     'messages',
     'notifications',
+    'peer_compactions',
     'peer_failures',
     'peers',
     'projection_anomalies',

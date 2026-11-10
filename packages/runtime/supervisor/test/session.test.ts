@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { fixedClock, type PeerId, type QuestionId, type TurnId } from '@fleet/foundation-core'
-import { appendIssues, type ProviderEvent } from '@fleet/foundation-contracts'
+import { appendIssues, type ProviderEvent, type Usage } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
 
 import { PeerSession, PurgeRestartFailed, type PurgeOutcome, type SessionRecord } from '../src/index.ts'
@@ -108,7 +108,7 @@ interface Rig {
   ) => Promise<SessionHandle>
 }
 
-const rig = (usage: (h: SessionHandle) => { contextTokens: number; contextLimit: number } = () => ({
+const rig = (usage: (h: SessionHandle) => Usage = () => ({
   contextTokens: 100,
   contextLimit: 1_000,
 })): Rig => {
@@ -204,7 +204,7 @@ test('events become peer states, and a completed turn that is under the limit ke
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.8, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -247,7 +247,7 @@ test('at the limit the session purges, comes back on the new handle, and keeps r
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -302,7 +302,7 @@ test('a session that ends while the purge waits for its answer does not hang the
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -341,7 +341,7 @@ test('a purge whose restart fails recovers the peer, rather than leaving it with
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -381,7 +381,7 @@ test('a peer that fails again after a recovery is reported, not restarted foreve
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -411,7 +411,7 @@ test('a recovery that fails too rejects run(): no session must be visible, not i
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -447,7 +447,7 @@ test('no mail is delivered into a session while it is being purged', async () =>
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -510,7 +510,7 @@ test('a question answered inside its turn does not hold the purge off: the turn 
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -548,7 +548,7 @@ test('a stream that throws ends the session in the store before the peer is reco
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.8, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -589,7 +589,7 @@ test('a question left pending by a stream that died still holds the purge off on
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       if (record.type === 'peer.state_changed' && record.data.state === 'waiting_input') {
@@ -638,7 +638,7 @@ test('a turn still in flight at a turn boundary does not trigger a purge', async
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
       r.records.push(record)
@@ -672,7 +672,7 @@ test('records are appended in order and awaited before the next event is read', 
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
     peerId,
     briefVersion: 1,
-    limits: { contextRatio: 0.8, maxTurns: 10, maxSessionMillis: 60_000 },
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: async (record) => {
       inFlight += 1
@@ -695,4 +695,122 @@ test('records are appended in order and awaited before the next event is read', 
   // appends never overlap, which is what keeps the store's order the stream's.
   assert.deepEqual(appended, ['working', 'idle', 'ended', 'session.ended'])
   assert.equal(overlapped, false)
+})
+
+test('a compaction on the stream is one peer.compacted, priced when the profile prices it', async () => {
+  const r = rig()
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+    estimateCompactionCost: (preTokens) => (preTokens / 1_000_000) * 3,
+  })
+
+  const run = session.run()
+  r.feeds
+    .get('ses_aaaaaaaaaaaaaaaa')
+    ?.push(
+      started(),
+      { type: 'compaction', turnId, trigger: 'auto', contextTokensBefore: 200_000, contextTokensAfter: 12_000 },
+      ended(),
+      { type: 'session.ended', reason: 'exit', code: 0 },
+    )
+  await run
+
+  const compacted = r.records.filter((record) => record.type === 'peer.compacted')
+  assert.equal(compacted.length, 1, 'one compaction on the stream is one record, not one per turn')
+  const record = compacted[0]
+  assert.ok(record !== undefined && record.type === 'peer.compacted')
+  assert.deepEqual(record.data, {
+    peerId,
+    trigger: 'auto',
+    preTokens: 200_000,
+    postTokens: 12_000,
+    estimatedCostUsd: 0.6,
+  })
+  // The same records the store is asked to append are the ones the registry validates.
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
+})
+
+test('a compaction between turns is recorded, and one with no price carries no cost', async () => {
+  const r = rig()
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  // A person typed `/compact`: there is no turn open, and that is exactly the
+  // compaction that would otherwise go unseen.
+  r.feeds
+    .get('ses_aaaaaaaaaaaaaaaa')
+    ?.push(
+      { type: 'compaction', trigger: 'manual', contextTokensBefore: 90_000 },
+      { type: 'session.ended', reason: 'exit', code: 0 },
+    )
+  await run
+
+  const compacted = r.records.filter((record) => record.type === 'peer.compacted')
+  assert.equal(compacted.length, 1)
+  const record = compacted[0]
+  assert.ok(record !== undefined && record.type === 'peer.compacted')
+  assert.deepEqual(record.data, { peerId, trigger: 'manual', preTokens: 90_000 })
+  assert.equal('estimatedCostUsd' in record.data, false, 'no price is not a price of zero')
+})
+
+test('the session hands off before the provider compacts, not after', async () => {
+  // The model holds a million tokens but the CLI compacts at 200K. A ratio
+  // against the configured window is at 18% here, so only the session's own
+  // compaction point can fire — and it has to, because past it the provider
+  // summarises the peer's context away and bills for the summarising (§8).
+  const r = rig((h) =>
+    h.sessionId === 'ses_aaaaaaaaaaaaaaaa'
+      ? { contextTokens: 181_000, contextLimit: 1_000_000, autoCompactAt: 200_000 }
+      : { contextTokens: 1_000, contextLimit: 1_000_000, autoCompactAt: 200_000 },
+  )
+  const stub = stubPurge(r.provider)
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: stub.purge,
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  await wait()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended())
+  await until(() => stub.calls.length === 1, 'the purge to fire below the window')
+
+  assert.deepEqual(stub.calls, [{ sessionId: 'ses_aaaaaaaaaaaaaaaa', asked: ['write your state file'] }])
+  await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  await run
 })
