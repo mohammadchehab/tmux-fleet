@@ -15,6 +15,7 @@
     "@fleet/foundation-core": "workspace:*",
     "@fleet/foundation-store": "workspace:*",
     "@fleet/integrations-github": "workspace:*",
+    "@fleet/integrations-gitlab": "workspace:*",
     "@fleet/notify-core": "workspace:*",
     "@fleet/notify-macos": "workspace:*",
     "@fleet/orchestration-gate": "workspace:*",

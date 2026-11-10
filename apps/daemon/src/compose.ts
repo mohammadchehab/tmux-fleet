@@ -19,9 +19,10 @@
  * One thing a profile may ask for but this build cannot yet deliver is named as
  * such rather than silently replaced: `orchestration/briefs` (the `assign` and
  * `supersede_brief` executors). The gate's port is real — `integrations/github`
- * over `gh` — so every composed daemon has a `merge` executor; it shells out
- * only when a merge or retarget action actually runs, so a fleet that never
- * merges never starts a `gh`.
+ * over `gh`, or `integrations/gitlab` over `glab` when the profile names that
+ * forge — so every composed daemon has a `merge` executor; it shells out only
+ * when a merge or retarget action actually runs, so a fleet that never merges
+ * never starts either CLI.
  */
 
 import { mkdir } from 'node:fs/promises'
@@ -46,6 +47,7 @@ import type {
 } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import { createGitHubPullRequests } from '@fleet/integrations-github'
+import { createGitLabPullRequests } from '@fleet/integrations-gitlab'
 import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
 import type { JudgeService } from '@fleet/orchestration-judge'
@@ -160,6 +162,23 @@ export interface Composed {
 }
 
 /**
+ * §10's port for the profile's forge. Both adapters answer the same interface,
+ * so the gate and the retarget sweep never learn which one they hold; only this
+ * function does. GitHub is the default because a profile without a `forge` block
+ * is a fleet that predates the choice.
+ *
+ * A GitLab host is passed to the adapter rather than to the process: `glab`
+ * resolves a host from the working directory's git remote or its own config, and
+ * neither describes where the daemon runs, so a self-hosted forge would otherwise
+ * be reached only when someone happened to be standing in the right checkout.
+ */
+export const createPullRequests = (profile: Profile): PullRequests => {
+  const forge = profile.forge
+  if (forge?.kind !== 'gitlab') return createGitHubPullRequests()
+  return createGitLabPullRequests(forge.host === undefined ? {} : { host: forge.host })
+}
+
+/**
  * The providers a profile may name, constructed here and nowhere else (§2).
  * Only the ones a peer actually uses are built: a provider that starts a
  * process or reads a key on construction must not exist because a different
@@ -253,10 +272,10 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // to have started — a listener added later cannot see an event before an earlier one.
   wake.listen(syncWork({ read: store.reader(), append: wake.append, clock }))
 
-  // §10: the gate is the only executor that merges, and it needs the GitHub port.
-  // Building the port runs nothing: `gh` starts only when a merge or retarget
+  // §10: the gate is the only executor that merges, and it needs the forge's port.
+  // Building one runs nothing: `gh`/`glab` start only when a merge or retarget
   // action gets that far, so a fleet that never merges never shells out.
-  const pullRequests: PullRequests = deps.pullRequests ?? createGitHubPullRequests()
+  const pullRequests: PullRequests = deps.pullRequests ?? createPullRequests(profile)
   const gate = createGate({
     pullRequests,
     store: { append: wake.append },

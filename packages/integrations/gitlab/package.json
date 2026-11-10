@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/integrations-gitlab",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "GitLab over `glab` (architecture §10): the PullRequests port over merge requests, pipelines as checks and approvals as the review, with the same head-sha pin the gate merges on.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

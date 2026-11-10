@@ -69,6 +69,7 @@ tmux-fleet/
 │  │     └─ model-choice/         # the same cases across providers/models, a comparison not a gate (§17)
 │  └─ integrations/
 │     ├─ github/                  # `gh`/git adapters behind the contracts' ports: PRs, checks, retarget (§10)
+│     ├─ gitlab/                  # the same port over `glab`, for a self-hosted GitLab: MRs, pipelines, approvals (§10)
 │     └─ trackers/                # Backlog.md, Jira sinks and sources (§3)
 ├─ apps/
 │  ├─ daemon/                     # `fleetd`: the only place the groups are wired together; store owner; local API on a Unix socket (§2)

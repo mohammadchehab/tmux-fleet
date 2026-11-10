@@ -61,7 +61,7 @@ export const PACKAGE_ORDER: Readonly<Record<string, readonly string[]>> = {
   workspace: ['worktree', 'codegraph'],
   security: ['findings', 'scanners'],
   notify: ['core', 'channels/macos'],
-  integrations: ['github', 'trackers'],
+  integrations: ['github', 'gitlab', 'trackers'],
 }
 
 export const APP_KINDS = ['daemon', 'clients', 'hooks'] as const
