@@ -197,17 +197,22 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
   const words = separator === -1 ? argv : argv.slice(0, separator)
   const commandWords = separator === -1 ? [] : argv.slice(separator + 1)
 
+  let parseOptions = true
   for (let index = 2; index < words.length; index += 1) {
     const arg = words[index] ?? ''
-    if (arg === '--help' || arg === '-h') return { command: { kind: 'help' }, how: { json } }
-    if (arg === '--json') {
-      json = true
-      continue
+    if (parseOptions) {
+      // Only check help and json when still parsing options (before/at command level)
+      if (arg === '--help' || arg === '-h') return { command: { kind: 'help' }, how: { json } }
+      if (arg === '--json') {
+        json = true
+        continue
+      }
+      if (arg === '--save-baseline') {
+        saveBaseline = true
+        continue
+      }
     }
-    if (arg === '--save-baseline') {
-      saveBaseline = true
-      continue
-    }
+    // Options that can appear even after send/decide starts collecting args
     if (arg === '--socket' || arg.startsWith('--socket=')) {
       const read = optionValue(words, index, '--socket')
       socket = read.value
@@ -232,44 +237,60 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       index = read.next
       continue
     }
-    if (arg === '--provider' || arg.startsWith('--provider=')) {
-      const read = optionValue(words, index, '--provider')
-      provider = read.value
-      index = read.next
+    if (parseOptions) {
+      if (arg === '--provider' || arg.startsWith('--provider=')) {
+        const read = optionValue(words, index, '--provider')
+        provider = read.value
+        index = read.next
+        continue
+      }
+      if (arg === '--model' || arg.startsWith('--model=')) {
+        const read = optionValue(words, index, '--model')
+        model = read.value
+        index = read.next
+        continue
+      }
+      if (arg === '--from' || arg.startsWith('--from=')) {
+        const read = optionValue(words, index, '--from')
+        from = read.value
+        index = read.next
+        continue
+      }
+      if (arg === '--to' || arg.startsWith('--to=')) {
+        const read = optionValue(words, index, '--to')
+        to = read.value
+        index = read.next
+        continue
+      }
+      if (arg === '--repo' || arg.startsWith('--repo=')) {
+        const read = optionValue(words, index, '--repo')
+        repo = read.value
+        index = read.next
+        continue
+      }
+      if (arg === '--sha' || arg.startsWith('--sha=')) {
+        const read = optionValue(words, index, '--sha')
+        sha = read.value
+        index = read.next
+        continue
+      }
+    }
+    if (parseOptions && arg.startsWith('-')) throw usageError(`unknown option ${arg}`)
+    if (!parseOptions && arg.startsWith('-') && !(arg === '--socket' || arg.startsWith('--socket=') || arg === '--profile' || arg.startsWith('--profile=') || arg === '--limit' || arg.startsWith('--limit=') || arg === '--note' || arg.startsWith('--note='))) {
+      // In send/decide free-text context, treat unknown options as part of text
+      positional.push(arg)
       continue
     }
-    if (arg === '--model' || arg.startsWith('--model=')) {
-      const read = optionValue(words, index, '--model')
-      model = read.value
-      index = read.next
-      continue
-    }
-    if (arg === '--from' || arg.startsWith('--from=')) {
-      const read = optionValue(words, index, '--from')
-      from = read.value
-      index = read.next
-      continue
-    }
-    if (arg === '--to' || arg.startsWith('--to=')) {
-      const read = optionValue(words, index, '--to')
-      to = read.value
-      index = read.next
-      continue
-    }
-    if (arg === '--repo' || arg.startsWith('--repo=')) {
-      const read = optionValue(words, index, '--repo')
-      repo = read.value
-      index = read.next
-      continue
-    }
-    if (arg === '--sha' || arg.startsWith('--sha=')) {
-      const read = optionValue(words, index, '--sha')
-      sha = read.value
-      index = read.next
-      continue
-    }
-    if (arg.startsWith('-')) throw usageError(`unknown option ${arg}`)
     positional.push(arg)
+    // For send and decide, once we have enough positionals, stop parsing general options.
+    // But --note, --limit, --socket, --profile continue to be parsed.
+    const commandName = positional[0]
+    if (commandName === 'send' && positional.length >= 3) {
+      parseOptions = false
+    }
+    if (commandName === 'decide' && positional.length >= 2) {
+      parseOptions = false
+    }
   }
 
   const [name, ...rest] = positional

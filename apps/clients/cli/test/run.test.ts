@@ -895,4 +895,40 @@ describe('run: build', () => {
     assert.match(err[0] ?? '', /sha: expected/)
     assert.deepEqual(calls, [])
   })
+
+  it('send body can contain words starting with - (e.g., "-1" or "-fix")', async () => {
+    const { deps, out, calls } = harness({ send: () => ({ msgId: 'msg_0123456789abcdef' }) })
+    const code = await run(argv('send', 'engineer-1', 'info', '-fix', 'the', 'build'), deps)
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      { method: 'send', params: { to: 'engineer-1', kind: 'info', body: '-fix the build' } },
+    ])
+  })
+
+  it('send body can contain --option-like words', async () => {
+    const { deps, out, calls } = harness({ send: () => ({ msgId: 'msg_0123456789abcdef' }) })
+    const code = await run(argv('send', 'engineer-1', 'info', '--help', 'me'), deps)
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      { method: 'send', params: { to: 'engineer-1', kind: 'info', body: '--help me' } },
+    ])
+  })
+
+  it('decide answer can contain words starting with - (e.g., "-1")', async () => {
+    const { deps, out, calls } = harness({ decide: () => ({}) })
+    const code = await run(argv('decide', 'dec_0123456789abcdef', '-1'), deps)
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      { method: 'decide', params: { id: 'dec_0123456789abcdef', decision: '-1' } },
+    ])
+  })
+
+  it('decide answer can contain --option-like words', async () => {
+    const { deps, out, calls } = harness({ decide: () => ({}) })
+    const code = await run(argv('decide', 'dec_0123456789abcdef', '--help', 'option'), deps)
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      { method: 'decide', params: { id: 'dec_0123456789abcdef', decision: '--help option' } },
+    ])
+  })
 })
