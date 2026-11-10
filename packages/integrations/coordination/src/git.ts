@@ -45,5 +45,9 @@ export const execFileGit: GitRunner = (args, call) =>
         resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') || error.message })
       },
     )
-    child.stdin?.end(call.input ?? '')
+    // A git that exits before reading its input (`cat-file -e`, a refused push)
+    // closes the pipe under the write. Its exit code already says what happened,
+    // so the EPIPE is not a second failure — and unhandled it would crash fleetd.
+    child.stdin?.on('error', () => {})
+    child.stdin?.end(call.input)
   })

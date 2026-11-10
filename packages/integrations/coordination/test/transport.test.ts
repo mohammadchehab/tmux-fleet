@@ -235,3 +235,13 @@ describe('names', () => {
     })
   }
 })
+
+describe('the git runner', () => {
+  it('reports a git that exits without reading its input by its exit code, not an EPIPE', async () => {
+    // Larger than any pipe buffer, so the write is still pending when git exits.
+    const result = await execFileGit(['--version'], { cwd: root, input: 'x'.repeat(4 << 20) })
+
+    assert.equal(result.code, 0)
+    assert.match(result.stdout, /^git version /)
+  })
+})
