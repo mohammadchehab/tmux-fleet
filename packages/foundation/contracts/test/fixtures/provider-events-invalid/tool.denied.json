@@ -1,0 +1,9 @@
+{
+  "input": {
+    "type": "tool.denied",
+    "turnId": 42,
+    "tool": "Write",
+    "summary": "/srv/prod/config.yaml"
+  },
+  "path": "turnId"
+}

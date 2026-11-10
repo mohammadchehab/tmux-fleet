@@ -51,6 +51,12 @@ export interface SessionHandle {
   /** The model the *process* is actually running, as `model()` reports it (§4). */
   readonly model: string
   readonly permissionMode: string
+  /**
+   * The turn the brief was delivered as. Some providers say nothing until a
+   * first user message arrives, so `start()` sends the brief as a real turn and
+   * the first `turn.started` event refers to this id (§4, §7).
+   */
+  readonly briefTurnId: TurnId
 }
 
 /**
@@ -105,6 +111,16 @@ export interface Provider extends ProviderHandle {
 
   /** Turn started/ended{reason}, tool use, questions, approvals, session end, error, compaction (§4). */
   events(handle: SessionHandle): AsyncIterable<ProviderEvent>
+
+  /**
+   * Change the model of a live session. Always callable, like `resume()`:
+   * when `capabilities.modelSwitch` is false it rejects `FleetError('unsupported')`.
+   * Confirmation may arrive one turn late (the new model shows in the next init
+   * the provider reports), so the supervisor treats a switch it has not seen
+   * confirmed as pending, not failed; `model()` then reports the requested model
+   * and `config_mismatch` is judged against it, not the one the session left (§4).
+   */
+  setModel(handle: SessionHandle, model: string): Promise<void>
 
   /** Resume a session from a vendor ref. Present when `capabilities.resume` is true. */
   resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle>

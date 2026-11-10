@@ -1,0 +1,20 @@
+{
+  "defaultAction": "allow",
+  "rules": [
+    {
+      "tool": "Bash",
+      "pattern": "kubectl .*prod",
+      "action": "deny"
+    },
+    {
+      "tool": "Bash",
+      "pattern": "^git status$",
+      "action": "allow"
+    },
+    {
+      "tool": "Write",
+      "pattern": "^/etc/",
+      "action": "ask"
+    }
+  ]
+}

@@ -19,6 +19,7 @@ const handle = (providerId = 'stub'): SessionHandle => ({
   providerId,
   model: 'stub-model',
   permissionMode: 'default',
+  briefTurnId: 'trn_0123456789abcdef' as TurnId,
 })
 
 const spec = (): SessionSpec =>
@@ -32,7 +33,9 @@ const spec = (): SessionSpec =>
     brief: {},
   }) as unknown as SessionSpec
 
-const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider => ({
+const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider => {
+  let switchedTo: string | undefined
+  return {
   id,
   capabilities: {
     resume: true,
@@ -54,7 +57,11 @@ const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider
     capabilities.usageCost === false
       ? { contextTokens: 0, contextLimit: 200_000 }
       : { contextTokens: 0, contextLimit: 200_000, costUsd: 0 },
-  model: async () => ({ id: 'stub-model' }),
+  model: async () => ({ id: switchedTo ?? 'stub-model' }),
+  setModel: async (_handle, model) => {
+    if (capabilities.modelSwitch === false) throw fleetError('unsupported', 'stub cannot switch models')
+    switchedTo = model
+  },
   events: async function* () {
     return
   },
@@ -63,7 +70,8 @@ const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider
     if (capabilities.resume === false) throw fleetError('unsupported', 'stub cannot resume')
     return handle(id)
   },
-})
+  }
+}
 
 const failures = async (provider: Provider): Promise<string[]> => {
   const results = await Promise.all(capabilityChecks().map(async (check) => ({ check, failure: await check.run(provider) })))
@@ -172,4 +180,38 @@ test('a provider that refuses with the wrong code is caught', async () => {
   const caught = await resumeFailures(sloppy)
   assert.equal(caught.length, 1)
   assert.match(caught[0] ?? '', /must reject FleetError\('unsupported'\)/)
+})
+
+test('a provider that switches models as declared passes the setModel check', async () => {
+  assert.deepEqual(await resumeFailures(stub('claude-code', { modelSwitch: true })), [])
+})
+
+test('a provider that cannot switch models and rejects unsupported passes', async () => {
+  assert.deepEqual(await resumeFailures(stub('plain-cli', { modelSwitch: false })), [])
+})
+
+test('a provider that switches although it declared it cannot is caught', async () => {
+  const liar = { ...stub('liar', { modelSwitch: false }), setModel: async () => {} }
+  const caught = await resumeFailures(liar)
+  assert.equal(caught.length, 1)
+  assert.match(caught[0] ?? '', /succeeded although capabilities\.modelSwitch is false/)
+})
+
+test('a provider that refuses a switch it declared is caught', async () => {
+  const broken = {
+    ...stub('broken', { modelSwitch: true }),
+    setModel: async () => {
+      throw fleetError('provider_failed', 'the vendor refused')
+    },
+  }
+  const caught = await resumeFailures(broken)
+  assert.equal(caught.length, 1)
+  assert.match(caught[0] ?? '', /rejected with provider_failed although capabilities\.modelSwitch is true/)
+})
+
+test('a provider whose model() ignores the switch is caught', async () => {
+  const stale = { ...stub('stale', { modelSwitch: true }), setModel: async () => {}, model: async () => ({ id: 'stub-model' }) }
+  const caught = await resumeFailures(stale)
+  assert.equal(caught.length, 1)
+  assert.match(caught[0] ?? '', /it must report the requested model/)
 })
