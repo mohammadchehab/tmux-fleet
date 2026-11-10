@@ -51,8 +51,10 @@ describe('the starter profile', () => {
     const text = starterProfile('squad')
     assert.match(text, /repos:/)
     assert.match(text, /peers:/)
-    // The one field a starter cannot know, and the only one it leaves wrong.
-    assert.match(text, /\/path\/to\/a\/repo/)
+    // The one field a starter cannot know. It is a placeholder, but a *valid*
+    // one: `repos` are parsed as `owner/name` when the daemon composes, so a
+    // path here is refused by the first `fleet up` rather than by a later edit.
+    assert.match(text, / {2}- owner\/name/)
   })
 })
 

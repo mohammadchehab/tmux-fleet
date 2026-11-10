@@ -43,8 +43,10 @@ pnpm fleet up me       # starts fleetd and registers the profile's peers
 ```
 
 `fleet init` writes a comment-rich starter: every routine kind, every model id this repo knows, and a profile that
-`fleet up` accepts as written. Edit the one thing it cannot know — `repos` — then `fleet up me`. Everything after that
-is a client of the daemon it started: `pnpm fleet ls`, `pnpm fleet send pm info "..."`, `pnpm fleet down`.
+`fleet up` accepts as written. Edit the one thing it cannot know — `repos`, one `owner/name` per repository — then
+`fleet up me`. Everything after that is a client of the daemon it started: `pnpm fleet ls`,
+`pnpm fleet send pm info "..."`, `pnpm fleet down`, and `pnpm fleet-view me` for the tmux view — one read-only pane
+per peer, redrawn from the same API; `pnpm fleet-view me --once` prints it without tmux.
 
 ## Tool policy
 

@@ -1,0 +1,20 @@
+{
+  "name": "@fleet/app-view",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "`fleet-view`: a read-only tmux view of the fleet, one pane per peer, fed from fleetd's local API (architecture §2). Imports foundation and the daemon's socket only.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "fleet-view": "./src/main.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

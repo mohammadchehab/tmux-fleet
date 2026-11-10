@@ -29,6 +29,15 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/foundation/core
 
+  apps/clients/view:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../../packages/foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../../packages/foundation/core
+
   apps/daemon:
     dependencies:
       '@fleet/foundation-contracts':
