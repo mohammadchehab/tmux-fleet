@@ -4,8 +4,8 @@
  * Contracts E widened `ProviderEvent` to carry what this adapter used to project
  * away, so the question is no longer "what does the projection lose" but "does
  * every event `events()` hands over actually validate as a `ProviderEvent`,
- * and are the two internal ones the only thing held back". `parse` is the
- * arbiter, not a second hand-written shape in this file.
+ * and is `session.started` the only thing held back". `parse` is the arbiter,
+ * not a second hand-written shape in this file.
  */
 
 import assert from 'node:assert/strict'
@@ -40,15 +40,15 @@ const everyEvent: readonly AdapterEvent[] = [
 
 test('every event events() hands over validates as a ProviderEvent', () => {
   const handed = everyEvent.filter(isContractEvent)
-  assert.equal(handed.length, everyEvent.length - 2)
+  assert.equal(handed.length, everyEvent.length - 1, 'only session.started is internal now')
   for (const event of handed) {
     assert.doesNotThrow(() => parse(providerEvent(), event), `contract rejects ${event.type}`)
   }
 })
 
-test('the only events held back are the two the contract has no member for', () => {
+test('the only event held back is the one the contract has no member for', () => {
   const held = everyEvent.filter((event) => !isContractEvent(event)).map((event) => event.type)
-  assert.deepEqual(held, ['session.started', 'tool.denied'])
+  assert.deepEqual(held, ['session.started'])
 })
 
 test('a question is answered by the id on the event, so the id must be a contract QuestionId', () => {

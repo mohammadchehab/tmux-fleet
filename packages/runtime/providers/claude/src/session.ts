@@ -59,7 +59,7 @@ import { buildChildEnv, recordedEndpoint } from './env.ts'
 import { isContractEvent, type AdapterEvent } from './events.ts'
 import { mapMessage, questionAnswers, readQuestions, type TurnState } from './messages.ts'
 import { PendingRequests } from './pending.ts'
-import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy, type ToolPolicy } from './policy.ts'
+import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy } from './policy.ts'
 import { fallbackTokensFrom, usageFrom, type ContextLimits } from './usage.ts'
 
 /** Everything about *how* a Claude session runs that is not part of a `SessionSpec`. */
@@ -129,13 +129,11 @@ export class ClaudeSession {
     this.peerId = spec.peerId
     this.providerId = config.providerId
     this.#requestedModel = spec.model
-    // `SessionSpec.toolPolicy` is held locally until the contracts PR adds it
-    // (`policy.ts`); absent means ask-about-everything, which is what §4 did
-    // before the field existed. The spec's cwd is what relative path rules are
-    // resolved against, so a rule and the tool agree on the file.
-    this.#policy = compilePolicy((spec as SessionSpec & { readonly toolPolicy?: ToolPolicy }).toolPolicy, {
-      cwd: spec.cwd,
-    })
+    // `SessionSpec.toolPolicy` is the contract's now; absent means
+    // ask-about-everything, which is what §4 did before the field existed. The
+    // spec's cwd is what relative path rules are resolved against, so a rule and
+    // the tool agree on the file.
+    this.#policy = compilePolicy(spec.toolPolicy, { cwd: spec.cwd })
     this.#pending = new PendingRequests(() => config.clock.now())
     this.#input = new InputQueue()
 

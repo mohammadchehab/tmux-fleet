@@ -37,8 +37,9 @@ so a new package needs no task of its own.
 
 A session's `toolPolicy` is a guard rail, not a sandbox; no-production is enforced by environment. An `allow` rule
 covers one whole command and never one carrying `;`, `&`, `|`, a backtick, `$(`, `<`, `>` or a newline — those go to a
-person, as does anything over 64 KB. `deny` and `ask` rules match anywhere, so a command hidden in a chain is still
-caught. File paths are resolved against the session's cwd before a rule sees them.
+person, as does any subject over 64 KB. Nothing is truncated: `deny` and `ask` rules are searches over the whole
+input, so a command hidden in a chain is still caught. File paths are resolved against the session's cwd before a rule
+sees them.
 
 ## Layout (§1.1)
 

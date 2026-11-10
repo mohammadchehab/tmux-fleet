@@ -15,7 +15,7 @@ import {
   compilePolicy,
   defaultToolPolicy,
   evaluatePolicy,
-  MAX_COMMAND_LENGTH,
+  MAX_SUBJECT_LENGTH,
   primaryString,
   QUESTION_TOOL,
   type PolicyOptions,
@@ -92,7 +92,7 @@ test('a pattern sees the file path for the file tools, whichever key the SDK use
   assert.equal(decide(policy, 'Read', { file_path: '/Users/me/.ssh/id_ed25519' }), 'deny')
 })
 
-test('every other tool is matched against its input as JSON, bounded at 500 characters', () => {
+test('every other tool is matched against its whole input as JSON, never a prefix', () => {
   const policy = {
     defaultAction: 'deny' as const,
     rules: [{ tool: 'WebFetch', pattern: '.*example\\.com.*$', action: 'allow' as const }],
@@ -100,15 +100,12 @@ test('every other tool is matched against its input as JSON, bounded at 500 char
   assert.equal(decide(policy, 'WebFetch', { url: 'https://example.com/x' }), 'allow')
   assert.equal(decide(policy, 'WebFetch', { url: 'https://elsewhere.test/x' }), 'deny')
 
-  // Inside the window: visible to the pattern.
-  const early = { tool: 'Grep', pattern: '.*needle.*$', action: 'allow' as const }
-  assert.equal(decide({ defaultAction: 'deny', rules: [early] }, 'Grep', { query: 'needle' }), 'allow')
-
-  // Past the 500-character window: not matched, because the subject is truncated.
-  const far = { tool: 'Grep', pattern: '.*needle.*$', action: 'allow' as const }
+  // A deny rule is a search, so a subject far past the old 500-character
+  // window is still searched: truncation is how a deny gets hidden past.
+  const deny = { tool: 'Grep', pattern: 'needle', action: 'deny' as const }
   const padded = { padding: 'x'.repeat(600), note: 'needle' }
-  assert.equal(primaryString('Grep', padded).length, 500)
-  assert.equal(decide({ defaultAction: 'deny', rules: [far] }, 'Grep', padded), 'deny')
+  assert.equal(primaryString('Grep', padded), JSON.stringify(padded))
+  assert.equal(decide({ defaultAction: 'allow', rules: [deny] }, 'Grep', padded), 'deny')
 })
 
 test('a question is never allowed or denied by policy: it always takes the question path', () => {
@@ -179,18 +176,23 @@ test('a deny rule still matches anywhere in a chain, and beats an allow rule tha
   assert.equal(decide(policy, 'Bash', { command: 'echo x; rm -rf /' }), 'allow', 'no deny for it: the chain only loses the allow rule')
 })
 
-test('a command too long to examine goes to a person, whatever the policy says', () => {
+test('a subject too long to examine goes to a person, whatever the policy says', () => {
   const policy = {
     defaultAction: 'deny' as const,
     rules: [{ tool: 'Bash', pattern: '^echo .*$', action: 'allow' as const }],
   }
-  const justUnder = `echo ${'x'.repeat(MAX_COMMAND_LENGTH - 'echo '.length)}`
-  assert.equal(justUnder.length, MAX_COMMAND_LENGTH)
+  const justUnder = `echo ${'x'.repeat(MAX_SUBJECT_LENGTH - 'echo '.length)}`
+  assert.equal(justUnder.length, MAX_SUBJECT_LENGTH)
   assert.equal(decide(policy, 'Bash', { command: justUnder }), 'allow', 'at the limit the pattern is still consulted')
   assert.equal(decide(policy, 'Bash', { command: `${justUnder}x` }), 'ask', 'one byte past it, nobody looks')
 
   const oversized = { defaultAction: 'allow' as const, rules: [] }
-  assert.equal(decide(oversized, 'Bash', { command: 'x'.repeat(MAX_COMMAND_LENGTH + 1) }), 'ask', 'not even a permissive default')
+  assert.equal(decide(oversized, 'Bash', { command: 'x'.repeat(MAX_SUBJECT_LENGTH + 1) }), 'ask', 'not even a permissive default')
+
+  // The limit is the subject's, not Bash's: a subject that is a whole input as
+  // JSON is handed over unexamined rather than matched on a prefix of itself.
+  const other = { defaultAction: 'allow' as const, rules: [] }
+  assert.equal(decide(other, 'Grep', { padding: 'x'.repeat(MAX_SUBJECT_LENGTH) }), 'ask')
 })
 
 test('a file path is resolved against the session cwd before a rule sees it', () => {
