@@ -75,6 +75,19 @@ the reason lives next to it:
 Dismissing an alert in code scanning hides it from the list but does **not** make the gate pass — the next run reads the
 report again. Two places that disagree about what is acceptable is worse than one that is strict.
 
+### When the finding is a transitive dependency
+
+Sometimes the vulnerable package is not one we chose and no version inside the dependent's own range is patched — the
+dependent has to move, and it hasn't. `pnpm.overrides` in the root `package.json` is the fix then: it is a real fix, not
+a suppression, so nothing is hidden from the next run.
+
+The cost is that it moves a dependency across a major the dependent did not choose, so the PR that adds one runs the
+thing that depends on it and says what it saw. Today's set:
+
+| override | why |
+| :- | :- |
+| `glob@^13` → 14, `minimatch@^10` → 11, `basic-ftp@^5` → 6 | promptfoo 0.125.1 (dev-only, in `packages/evals`) declares `glob@^13`, `minimatch@^10` and pulls `basic-ftp@5` through `get-uri`; every patched version is a major it does not allow yet. Verified by running `promptfoo eval` over the judge suite after the bump. |
+
 ## Merging
 
 Branch protection on `main` requires `checks`, does **not** require an up-to-date branch, requires no reviews, and does
