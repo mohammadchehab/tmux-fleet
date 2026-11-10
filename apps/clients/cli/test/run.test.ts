@@ -644,6 +644,16 @@ describe('run: up', () => {
     assert.match(out[0] ?? '', /squad up, pid 4242/)
   })
 
+  it('says what it started despite, after the addresses it gives (TASK-12)', async () => {
+    // The fleet is up: a warning is not a failure, so it comes after the socket
+    // and the store rather than replacing them, and it names the peer — the one
+    // thing a person can go and change in the profile.
+    const warned = { ...status, warnings: ["peer 'reviewer-1' asks for effort 'high', but provider 'cursor' cannot honour it"] }
+    const { deps, out } = harness({ up: () => warned })
+    assert.equal(await run(argv('up', 'squad'), deps), 0)
+    assert.match(out[0] ?? '', /^squad up, pid 4242\nsocket .*\nstore .*\nwarn {4}peer 'reviewer-1' asks for effort 'high'/)
+  })
+
   it('starts fleetd when the socket is dead, then waits for it to answer', async () => {
     let attempts = 0
     const { deps, out, started } = harness({

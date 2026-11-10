@@ -80,6 +80,13 @@ export interface ProviderCapabilities {
   readonly usageCost: boolean
   /** The provider can answer a `Judge`-style call against a schema. */
   readonly structuredOutput: boolean
+  /**
+   * `SessionSpec.effort` reaches the model as a reasoning level. When false the
+   * spec's effort is a request the provider cannot honour, so `fleet up` says so
+   * rather than starting a session whose effort is quietly not what the profile
+   * asked for (TASK-12).
+   */
+  readonly effort: boolean
   /** The permission modes this provider honours; `SessionSpec.permissionMode` must be one. */
   readonly permissionModes: readonly PermissionMode[]
 }
@@ -88,6 +95,7 @@ export const providerCapabilities = (): Schema<ProviderCapabilities> =>
   objectAs<ProviderCapabilities>()({
     resume: boolean(),
     modelSwitch: boolean(),
+    effort: boolean(),
     usageTokens: boolean(),
     usageCost: boolean(),
     structuredOutput: boolean(),

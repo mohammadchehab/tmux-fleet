@@ -191,6 +191,13 @@ export interface DaemonStatus {
   readonly startedAt: string
   readonly socketPath: string
   readonly storePath: string
+  /**
+   * Things the fleet started despite, in the user's words (TASK-12). The fleet is
+   * up — a warning is not a refusal — but the profile asked for something the
+   * provider cannot honour, and silence would let it look honoured. Omitted when
+   * there is nothing to say, so an ordinary `fleet up` prints what it always did.
+   */
+  readonly warnings?: readonly string[]
 }
 
 export const daemonStatus = (): Schema<DaemonStatus> =>
@@ -200,6 +207,7 @@ export const daemonStatus = (): Schema<DaemonStatus> =>
     startedAt: string({ minLength: 1, maxLength: 40 }),
     socketPath: string({ minLength: 1, maxLength: 500 }),
     storePath: string({ minLength: 1, maxLength: 500 }),
+    warnings: optional(array(string({ minLength: 1, maxLength: 500 }), { maxItems: 50 })),
   })
 
 // -------------------------------------------------------------------- params

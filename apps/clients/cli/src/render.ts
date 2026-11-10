@@ -182,10 +182,17 @@ export const formatLs = (result: LsResult): string => {
   return lines.join('\n')
 }
 
-export const formatUp = (result: UpResult): string =>
-  [`${result.profile} up, pid ${String(result.pid)}`, `socket  ${result.socketPath}`, `store   ${result.storePath}`].join(
-    '\n',
-  )
+export const formatUp = (result: UpResult): string => {
+  const lines = [
+    `${result.profile} up, pid ${String(result.pid)}`,
+    `socket  ${result.socketPath}`,
+    `store   ${result.storePath}`,
+  ]
+  // The fleet is up; these are the things it started *despite* (TASK-12), so they
+  // come after the addresses and are prefixed rather than reworded as a failure.
+  for (const warning of result.warnings ?? []) lines.push(`warn    ${warning}`)
+  return lines.join('\n')
+}
 
 export const formatDown = (_result: DownResult): string => 'fleetd stopped'
 

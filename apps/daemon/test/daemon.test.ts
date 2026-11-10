@@ -169,8 +169,13 @@ const harness = async (
     readonly seed?: readonly AppendEvent[]
     /** Every write the daemon makes, in the order the scheduler's own calls allow it. */
     readonly order?: string[]
+    /** The profile `fleet up` reads, when a test's answer is in the profile itself (TASK-12). */
+    readonly profile?: Profile
+    /** What the providers `compose.ts` would have built can do. */
+    readonly providerCapabilities?: (provider: string) => { readonly effort: boolean } | undefined
   } = {},
 ) => {
+  const declared = options.profile ?? profile()
   const paths = pathsFor()
   for (const dir of persistentDirs(paths)) await mkdir(dir, { recursive: true })
   const store: EventStore = await openSqliteStore({ path: paths.storePath })
@@ -193,13 +198,26 @@ const harness = async (
   // about what the API writes, and a build that actually spawned `pnpm` would
   // be testing the machine it runs on.
   const ledger = createDaemonBuilds({
-    profile: profile(),
+    profile: declared,
     sink: { append: (batch) => store.append(batch) },
     builds: store.reader().builds,
     logDir: join(paths.artifactsDir, 'builds'),
     process: async () => ({ code: 0, durationMs: 1 }),
   })
-  const daemon = createDaemon({ profile: profile(), paths, store, append, supervisor, mailbox, scheduler, ledger, pid: 99 })
+  const daemon = createDaemon({
+    profile: declared,
+    paths,
+    store,
+    append,
+    supervisor,
+    mailbox,
+    scheduler,
+    ledger,
+    pid: 99,
+    ...(options.providerCapabilities === undefined
+      ? {}
+      : { providerCapabilities: options.providerCapabilities }),
+  })
   return { daemon, store, supervisor, scheduler, paths }
 }
 
@@ -537,4 +555,47 @@ test('replay refuses a `to` with no `from` rather than reading it as a rebuild',
     () => daemon.replay({ to: 5 }),
     (thrown: unknown) => thrown instanceof FleetError && thrown.code === 'invalid_input',
   )
+})
+
+/**
+ * TASK-12: a profile may ask for a reasoning level, and a provider that cannot
+ * honour one must not let the fleet look as if it had.
+ *
+ * The warning is on the status `fleet up` prints, not on the store: it is about
+ * this machine's providers, which is a fact about the daemon and not about the
+ * fleet's work, and a stored event would outlive the provider that caused it.
+ */
+test('up warns, naming the peer, when the profile asks for an effort the provider cannot honour', async () => {
+  const asked: Profile = {
+    profile: 'test',
+    repos: [],
+    roles: { reviewer: { effort: 'high' } },
+    peers: [
+      // The role supplies the effort; cursor cannot honour it.
+      { id: 'reviewer-1' as PeerId, role: 'reviewer', provider: 'cursor', model: 'gpt-5.2' },
+      // The same effort on claude, which can: no warning, because there is
+      // nothing to warn about.
+      { id: 'engineer-1' as PeerId, role: 'engineer', provider: 'claude', model: 'claude-opus-5-5', effort: 'high' },
+    ],
+  }
+  const { daemon } = await harness({
+    profile: asked,
+    providerCapabilities: (provider) => (provider === 'cursor' ? { effort: false } : { effort: true }),
+  })
+  await daemon.up()
+
+  assert.deepEqual(daemon.status.warnings, [
+    "peer 'reviewer-1' asks for effort 'high', but provider 'cursor' cannot honour it: the session starts at that provider's own default",
+  ])
+  await daemon.down()
+})
+
+test('a fleet that asked for no effort carries no warnings, even on a provider that could not honour one', async () => {
+  const { daemon } = await harness({ providerCapabilities: () => ({ effort: false }) })
+  await daemon.up()
+  // Absent on the status rather than an empty list: `fleet up` prints warnings
+  // it has, and a field that is always there invites a reader to think it means
+  // something when it is empty.
+  assert.equal(daemon.status.warnings, undefined)
+  await daemon.down()
 })

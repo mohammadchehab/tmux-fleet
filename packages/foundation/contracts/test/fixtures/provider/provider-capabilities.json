@@ -1,6 +1,7 @@
 {
   "resume": true,
   "modelSwitch": false,
+  "effort": true,
   "usageTokens": true,
   "usageCost": false,
   "structuredOutput": true,

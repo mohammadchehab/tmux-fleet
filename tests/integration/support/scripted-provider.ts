@@ -230,6 +230,9 @@ export const createScriptedProvider = (options: ScriptedOptions = {}): ScriptedP
       usageTokens: true,
       usageCost: false,
       structuredOutput: true,
+      // The scripted provider stands in for a claude-shaped one throughout the
+      // integration tests, so it claims what claude claims (TASK-12).
+      effort: true,
       permissionModes: Object.freeze(['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const),
     }),
 

@@ -580,7 +580,20 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     ...(deps.buildProcess === undefined ? {} : { process: deps.buildProcess }),
   })
 
-  const daemon = createDaemon({ profile, paths, store, append: wake.append, supervisor, mailbox, scheduler, ledger, clock })
+  const daemon = createDaemon({
+    profile,
+    paths,
+    store,
+    append: wake.append,
+    supervisor,
+    mailbox,
+    scheduler,
+    ledger,
+    clock,
+    // So `fleet up` can say when a profile asked for an effort the provider it
+    // named cannot honour (TASK-12): the map here is the one the sessions run on.
+    providerCapabilities: (name) => providers.get(name)?.capabilities,
+  })
   const server = await createDaemonServer({
     api: daemon,
     socketPath: paths.socketPath,

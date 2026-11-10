@@ -54,6 +54,7 @@ test('declares cost as unknown and everything else as the Agent SDK measured it'
   assert.deepEqual(provider.capabilities, {
     resume: true,
     modelSwitch: true,
+    effort: true,
     usageTokens: true,
     usageCost: false,
     structuredOutput: true,
@@ -74,6 +75,9 @@ test('capabilities may be narrowed, never widened', () => {
   assert.deepEqual(narrowed.capabilities, {
     resume: true,
     modelSwitch: true,
+    // DeepInfra forwards `effort` like claude does, so narrowing the schema
+    // answer does not narrow it (TASK-12).
+    effort: true,
     usageTokens: true,
     usageCost: false,
     structuredOutput: false,

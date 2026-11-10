@@ -33,9 +33,11 @@ import {
 } from '@fleet/foundation-core'
 import type { PeerId } from '@fleet/foundation-core'
 import {
+  effort as effortSchema,
   profileProviders,
   routineKinds,
   workStates,
+  type Effort,
   type ProfileProvider,
   type WorkState,
 } from '@fleet/foundation-contracts'
@@ -64,10 +66,19 @@ export interface PeerProfile {
   readonly provider: ProfileProvider
   /**
    * The model the session starts on; the PM may switch it later (§4 `setModel`).
-   * Required, because `peer.registered` carries it and a default would be the
-   * daemon inventing a policy for how much this peer is allowed to think.
+   * Either this or the peer's role must declare one (see `roles`) — refused at
+   * load when neither does, because `peer.registered` carries a concrete model
+   * and a fallback would be the daemon inventing a policy for how much this peer
+   * is allowed to think. Naming it here wins over the role's (TASK-12).
    */
-  readonly model: string
+  readonly model?: string
+  /**
+   * The reasoning level the session starts on (TASK-12). Peer first, then the
+   * role's; absent in both means the provider's own default, unsaid. A provider
+   * whose `capabilities.effort` is false cannot honour this, and `fleet up` warns
+   * naming the peer rather than starting a session that quietly is not it.
+   */
+  readonly effort?: Effort
   /** Defaults to `default`: the safe mode, never `bypassPermissions` by omission (§13). */
   readonly permissionMode?: PermissionModeName
   /** Where the peer's worktrees are made (§9). Defaults to the profile's first repo. */
@@ -79,6 +90,22 @@ export interface PeerProfile {
    * the fleet's to invent and an estimate of zero would read as free.
    */
   readonly pricing?: PeerPricing
+}
+
+/**
+ * What a role declares for the peers that fill it (TASK-12): the model and the
+ * reasoning level they start on. Both optional, so a role can set a house model
+ * without having an opinion about effort.
+ *
+ * This is a *profile* default, not a daemon one: it is written down by the user
+ * in the same file, which is what keeps `PeerProfile.model`'s precedent — that
+ * nothing invents how much a peer may think — intact. A peer that names its own
+ * model or effort wins over its role's; what is refused is a peer whose model
+ * nothing names (see `modelFor`).
+ */
+export interface RoleProfile {
+  readonly model?: string
+  readonly effort?: Effort
 }
 
 /** A price, in the unit a vendor publishes it: US dollars per million input tokens. */
@@ -370,6 +397,12 @@ export interface Profile {
   /** §12.1: the standards every peer's brief carries. Absent, a peer gets the role statement alone. */
   readonly standards?: StandardsProfile
   readonly peers: readonly PeerProfile[]
+  /**
+   * TASK-12: model and effort by role, the defaults every peer of that role
+   * starts on. A peer's own `model`/`effort` wins; this is what stops a profile
+   * repeating the same model on five engineers.
+   */
+  readonly roles?: Readonly<Record<string, RoleProfile>>
   /** §6's per-routine settings, handed to `planRoutines` unchanged. */
   readonly routines?: RoutinesConfig
   /**
@@ -434,12 +467,28 @@ const pricePerMillion = (): Schema<number> =>
 const peerPricing = (): Schema<PeerPricing> =>
   objectAs<PeerPricing>()({ inputUsdPerMillion: pricePerMillion() })
 
+/**
+ * The `roles` block (TASK-12), decoded the way it is written: one entry per role
+ * name. Role names are not a closed set — `role` on a peer is free text, because
+ * a fleet's org chart is its own — so the key is a name, and a `roles` entry no
+ * peer fills is simply unused rather than an error (a profile may plan ahead for
+ * a role it has not hired yet).
+ */
+const rolesBlock = (): Schema<Readonly<Record<string, RoleProfile>>> =>
+  record(
+    objectAs<RoleProfile>()({
+      model: optional(text(80)),
+      effort: optional(effortSchema()),
+    }),
+  )
+
 const peerProfile = (): Schema<PeerProfile> =>
   objectAs<PeerProfile>()({
     id: peerId(),
     role: text(60),
     provider: oneOf(profileProviders),
-    model: text(80),
+    model: optional(text(80)),
+    effort: optional(effortSchema()),
     permissionMode: optional(oneOf(permissionModes)),
     repo: optional(text(200)),
     pricing: optional(peerPricing()),
@@ -737,6 +786,7 @@ export const profileSchema = (): Schema<Profile> =>
     checkouts: optional(record(refine(text(400), (value) => value.startsWith('/'), 'an absolute path'))),
     standards: optional(standardsBlock()),
     peers: array(peerProfile(), { maxItems: 50 }),
+    roles: optional(rolesBlock()),
     routines: optional(routinesBlock()),
     providers: optional(providersBlock()),
     judge: optional(judgeBlock()),
@@ -749,6 +799,44 @@ export const profileSchema = (): Schema<Profile> =>
     tickIntervalMs: optional(positiveInt()),
     deleteMergedBranches: optional(boolean()),
   })
+
+/** The `roles` entry a peer's role names, if the profile has one (TASK-12). */
+const roleOf = (
+  profile: Pick<Profile, 'roles'>,
+  peer: { readonly role: string },
+): RoleProfile | undefined => profile.roles?.[peer.role]
+
+/**
+ * The model a peer starts on: its own, then its role's (TASK-12's precedence
+ * `peer > role > refuse`). Refused rather than defaulted, because a model is the
+ * one thing `peer.registered` cannot be allowed to leave unsaid.
+ *
+ * The refusal names *both* places the model could have been written, because a
+ * message that says only "peer engineer-3 has no model" leaves the reader to
+ * guess whether the fix was the peer or a `roles` block they may not have heard of.
+ */
+export const modelFor = (
+  profile: Pick<Profile, 'roles'>,
+  peer: { readonly id: PeerId; readonly role: string; readonly model?: string },
+): string => {
+  const model = peer.model ?? roleOf(profile, peer)?.model
+  if (model === undefined) {
+    throw fleetError(
+      'invalid_input',
+      `peer '${peer.id}' declares no model and its role '${peer.role}' declares none: add \`model\` to that peer, or a \`roles: { ${peer.role}: { model: … } }\` block`,
+    )
+  }
+  return model
+}
+
+/**
+ * The reasoning level a peer starts on: its own, then its role's, then none —
+ * absent means the provider's default, which is a real answer and not a gap
+ * (TASK-12). Whether the provider can honour it is not this function's business;
+ * see `effortWarnings`.
+ */
+export const effortFor = (profile: Profile, peer: PeerProfile): Effort | undefined =>
+  peer.effort ?? roleOf(profile, peer)?.effort
 
 /**
  * Decode a parsed YAML value. Strict: an unknown key is refused here, because a
@@ -766,7 +854,37 @@ export const decodeProfile = (value: unknown): Profile => {
       throw fleetError('invalid_input', `checkouts names '${repo}', which is not in repos: ${profile.repos.join(', ')}`)
     }
   }
+  // Every peer's model resolves here, not at the first session: a `roles` block
+  // that forgot a role is a profile mistake, and finding it at `fleet up` is the
+  // difference between a refused profile and a peer that dies on start (TASK-12).
+  for (const peer of profile.peers) modelFor(profile, peer)
   return profile
+}
+
+/**
+ * What the profile asked for that a peer's provider cannot honour (TASK-12).
+ *
+ * Effort is the whole set today, and it stays a warning rather than a refusal:
+ * the peer is otherwise perfectly startable, the model is right, and a fleet
+ * that refuses to start over a reasoning level would be stricter than the
+ * profile's own author. But it must not be silent — a session that quietly runs
+ * at the provider's default is the profile lying to the person who wrote it.
+ */
+export const effortWarnings = (
+  profile: Profile,
+  capabilitiesOf: (provider: ProfileProvider) => { readonly effort: boolean } | undefined,
+): readonly string[] => {
+  const warnings: string[] = []
+  for (const peer of profile.peers) {
+    const effort = effortFor(profile, peer)
+    if (effort === undefined) continue
+    const capabilities = capabilitiesOf(peer.provider)
+    if (capabilities === undefined || capabilities.effort) continue
+    warnings.push(
+      `peer '${peer.id}' asks for effort '${effort}', but provider '${peer.provider}' cannot honour it: the session starts at that provider's own default`,
+    )
+  }
+  return warnings
 }
 
 /**

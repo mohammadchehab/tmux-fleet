@@ -203,6 +203,8 @@ describe('the env a peer’s session is started with', () => {
     )
     assert.equal(env.ANTHROPIC_AUTH_TOKEN, TOKEN, 'the key is in the env this refusal is handed with')
     const peer = peerOf(profile)
+    // The peer names its own model here, so there is no role fallback to resolve (TASK-12).
+    assert.ok(peer.model !== undefined, 'the peer under test declares its model')
     await assert.rejects(
       provider.start({
         peerId: peer.id,
