@@ -308,6 +308,14 @@ export interface Profile {
   readonly profile: string
   /** Repos the fleet may assign work in; the first is the default (§5.2). */
   readonly repos: readonly string[]
+  /**
+   * Where each repo is checked out on this machine, as an absolute path. A peer
+   * with no worktree of its own starts in its repo's checkout, so a peer's
+   * session sees that repo's AGENTS.md, CLAUDE.md and skills and not the
+   * fleet's state directory. Keys must be in `repos`; a repo with no entry has
+   * no checkout, and a peer on it is refused at start rather than started blind.
+   */
+  readonly checkouts?: Readonly<Record<string, string>>
   readonly peers: readonly PeerProfile[]
   /** §6's per-routine settings, handed to `planRoutines` unchanged. */
   readonly routines?: RoutinesConfig
@@ -653,6 +661,7 @@ export const profileSchema = (): Schema<Profile> =>
   objectAs<Profile>()({
     profile: text(60),
     repos: array(text(200), { maxItems: 50 }),
+    checkouts: optional(record(refine(text(400), (value) => value.startsWith('/'), 'an absolute path'))),
     peers: array(peerProfile(), { maxItems: 50 }),
     routines: optional(routinesBlock()),
     providers: optional(providersBlock()),
@@ -675,6 +684,13 @@ export const decodeProfile = (value: unknown): Profile => {
   // Decoded here rather than at the first session: a purge threshold out of
   // range is a profile mistake, and the profile is what this function is for.
   purgeLimitsOf(profile)
+  // A checkout for a repo the profile does not list is a typo, and a typo here
+  // would leave the peer on the real repo refused with no hint why.
+  for (const repo of Object.keys(profile.checkouts ?? {})) {
+    if (!profile.repos.includes(repo)) {
+      throw fleetError('invalid_input', `checkouts names '${repo}', which is not in repos: ${profile.repos.join(', ')}`)
+    }
+  }
   return profile
 }
 

@@ -348,7 +348,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // it is built first and the Mailbox reaches peers through it (§7). It appends
   // through the waking sink, because `session.started` is the event that wakes
   // the delivery of whatever is waiting for that peer.
-  const supervisor = createSupervisor({ profile, paths, store: wake, providers, clock, providerEnv })
+  const supervisor = createSupervisor({ profile, paths, read: store.reader(), store: wake, providers, clock, providerEnv })
 
   const mailbox = createMailbox({
     store: { append: wake.append, messages: store.reader().messages },

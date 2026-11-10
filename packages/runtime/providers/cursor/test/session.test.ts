@@ -5,7 +5,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -267,4 +267,17 @@ test('a ref that is not a chat id is refused before anything resumes', async () 
     () => provider.resume('not-a-chat' as ProviderSessionRef, spec()),
     (thrown: unknown) => (thrown as { code?: string }).code === 'invalid_input',
   )
+})
+
+test('the spawned cursor-agent runs in spec.cwd, so it reads that checkout’s own instructions', async () => {
+  const { provider, spec } = harness()
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), 'fleet-cursor-checkout-')))
+  const cwdLog = join(checkout, '..', `${checkout.split('/').pop()}.cwd`)
+  const handle = await provider.start(spec({ cwd: checkout, env: { FAKE_CURSOR_CWD_LOG: cwdLog } }))
+  const seen = watch(provider, handle)
+  await seen.until(ended(handle.briefTurnId))
+
+  // create-chat and the opening turn are both spawned: neither may start anywhere else.
+  const where = readFileSync(cwdLog, 'utf8').split('\n').filter((line) => line !== '')
+  assert.deepEqual(where.map((dir) => realpathSync(dir)), [checkout, checkout])
 })

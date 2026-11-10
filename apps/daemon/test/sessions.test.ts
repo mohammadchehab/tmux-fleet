@@ -19,13 +19,14 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { fixedClock, profilePaths, type PeerId, type Seq, type TurnId } from '@fleet/foundation-core'
-import type { AppendEvent, EventSink, ProviderEvent, SessionSpec, Turn } from '@fleet/foundation-contracts'
+import type { AppendEvent, EventSink, ProviderEvent, SessionSpec, Turn, Worktree } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
 
 import { decodeProfile, type Profile } from '../src/config/profile.ts'
 import { createSupervisor, type Supervisor } from '../src/execution/sessions.ts'
 
 const peerId = 'engineer-1' as PeerId
+const checkout = '/work/widgets'
 const turnId = 'trn_0123456789abcdef' as TurnId
 
 /** A stream a test pushes into, so no session ever waits on a real process. */
@@ -71,6 +72,7 @@ class Feed {
 }
 
 interface Rig {
+  readonly stateDir: string
   readonly supervisor: Supervisor
   /** Every record the daemon wrote to the store, in order. */
   readonly records: AppendEvent[]
@@ -83,20 +85,24 @@ interface Rig {
  * including the purge's ask, ends on the stream the wrapper is reading, which
  * is the only way a turn boundary is reached at all.
  */
-const rig = async (profile: Profile): Promise<Rig> => {
+const rig = async (
+  profile: Profile,
+  options: { readonly providerId?: string; readonly worktrees?: readonly Worktree[] } = {},
+): Promise<Rig> => {
+  const providerId = options.providerId ?? 'claude'
   const records: AppendEvent[] = []
   const starts: SessionSpec[] = []
   const feeds = new Map<string, Feed>()
 
   const provider = {
-    id: 'claude',
+    id: providerId,
     capabilities: {
       resume: true,
       modelSwitch: true,
       usageTokens: true,
       usageCost: true,
       structuredOutput: true,
-      permissionModes: ['default'],
+      permissionModes: ['default', 'plan'],
     },
     start: async (spec: SessionSpec): Promise<SessionHandle> => {
       starts.push(spec)
@@ -106,7 +112,7 @@ const rig = async (profile: Profile): Promise<Rig> => {
         sessionId,
         sessionRef: 'sess_x' as SessionHandle['sessionRef'],
         peerId: spec.peerId,
-        providerId: 'claude',
+        providerId,
         model: spec.model,
         permissionMode: spec.permissionMode,
         briefTurnId: turnId,
@@ -144,20 +150,23 @@ const rig = async (profile: Profile): Promise<Rig> => {
     },
   }
 
+  const paths = profilePaths('test', { home: await mkdtemp(join(tmpdir(), 'fleet-sessions-')) })
   const supervisor = createSupervisor({
     profile,
-    paths: profilePaths('test', { home: await mkdtemp(join(tmpdir(), 'fleet-sessions-')) }),
+    paths,
     store,
-    providers: new Map([['claude', provider]]),
+    providers: new Map([[providerId, provider]]),
+    read: { worktrees: { all: async () => options.worktrees ?? [] } },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
   })
-  return { supervisor, records, starts }
+  return { stateDir: paths.stateDir, supervisor, records, starts }
 }
 
 const profileWith = (limits: Record<string, unknown> | undefined): Profile =>
   decodeProfile({
     profile: 'test',
     repos: ['acme/widgets'],
+    checkouts: { 'acme/widgets': checkout },
     peers: [{ id: peerId, role: 'engineer', provider: 'claude', model: 'claude-sonnet-5-5' }],
     ...(limits === undefined ? {} : { limits }),
   })
@@ -215,4 +224,137 @@ test('a profile with no purge block leaves the supervisor’s defaults in place'
     [],
   )
   assert.equal(r.starts.length, 1)
+})
+
+const twoPeers = (second: Record<string, unknown>, extra: Record<string, unknown> = {}): Profile =>
+  decodeProfile({
+    profile: 'test',
+    repos: ['acme/widgets'],
+    checkouts: { 'acme/widgets': checkout },
+    peers: [
+      { id: peerId, role: 'engineer', provider: 'claude', model: 'claude-sonnet-5-5' },
+      { id: 'architect-1', role: 'architect', provider: 'claude', model: 'claude-sonnet-5-5', ...second },
+    ],
+    ...extra,
+  })
+
+test('a peer’s session starts in its repo’s checkout, never the fleet’s state directory', async (t) => {
+  const r = await rig(profileWith(undefined))
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+
+  // `stateDir` holds the store, socket and transcripts. A peer whose cwd is
+  // there sees none of the repo's AGENTS.md, CLAUDE.md or skills.
+  assert.notEqual(r.starts[0]?.cwd, r.stateDir)
+  assert.equal(r.starts[0]?.cwd, checkout)
+})
+
+test('a cursor peer starts in the checkout too, and read-only peers may share one', async (t) => {
+  const profile = decodeProfile({
+    profile: 'test',
+    repos: ['acme/widgets'],
+    checkouts: { 'acme/widgets': checkout },
+    providers: { cursor: { contextLimits: { 'gpt-5': 200_000 } } },
+    peers: [
+      { id: 'cursor-1', role: 'reviewer', provider: 'cursor', model: 'gpt-5', permissionMode: 'plan' },
+      { id: 'cursor-2', role: 'reviewer', provider: 'cursor', model: 'gpt-5', permissionMode: 'plan' },
+    ],
+  })
+  const r = await rig(profile, { providerId: 'cursor' })
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+
+  assert.deepEqual(r.starts.map((spec) => spec.cwd), [checkout, checkout])
+  assert.notEqual(r.starts[0]?.cwd, r.stateDir)
+})
+
+test('a peer’s own active worktree is preferred over the repo checkout', async (t) => {
+  const worktree = {
+    worktreeId: 'wt_0123456789abcdef',
+    repo: 'acme/widgets',
+    branch: 'feat/x',
+    path: '/work/widgets/.claude/worktrees/x',
+    ownerPeerId: peerId,
+    class: 'active',
+    dirty: false,
+    unpushed: false,
+    holders: [],
+    createdAt: '2026-11-10T09:00:00.000Z',
+    updatedAt: '2026-11-10T09:00:00.000Z',
+  } as unknown as Worktree
+  const other = { ...worktree, worktreeId: 'wt_fedcba9876543210', path: '/elsewhere', ownerPeerId: 'architect-1' } as unknown as Worktree
+  const r = await rig(profileWith(undefined), { worktrees: [other, { ...worktree, class: 'merged', path: '/old' } as Worktree, worktree] })
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+
+  assert.equal(r.starts[0]?.cwd, worktree.path)
+})
+
+test('a second peer that can write is refused a checkout another already writes in', async (t) => {
+  const r = await rig(twoPeers({}))
+  t.after(() => r.supervisor.stop())
+
+  await assert.rejects(r.supervisor.start(), (error: Error) => {
+    assert.match(error.message, /architect-1.*engineer-1/s)
+    assert.match(error.message, new RegExp(checkout))
+    return true
+  })
+  assert.deepEqual(r.supervisor.running(), [peerId])
+})
+
+test('a read-only peer may share a checkout with a writer, in either order', async (t) => {
+  const r = await rig(twoPeers({ permissionMode: 'plan' }))
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+  assert.deepEqual(r.starts.map((spec) => spec.cwd), [checkout, checkout])
+})
+
+test('a peer with no worktree and no checkout is refused, not started in the state directory', async (t) => {
+  const r = await rig(
+    decodeProfile({
+      profile: 'test',
+      repos: ['acme/widgets'],
+      peers: [{ id: peerId, role: 'engineer', provider: 'claude', model: 'claude-sonnet-5-5' }],
+    }),
+  )
+  t.after(() => r.supervisor.stop())
+
+  await assert.rejects(r.supervisor.start(), /no worktree and no checkout.*checkouts\.acme\/widgets/s)
+  assert.equal(r.starts.length, 0)
+})
+
+test('a purge restart asks for the working directory again', async (t) => {
+  const rows: Worktree[] = []
+  const r = await rig(profileWith({ purge: { maxTurns: 1 } }), { worktrees: rows })
+  t.after(() => r.supervisor.stop())
+  rows.push({
+    worktreeId: 'wt_0123456789abcdef',
+    repo: 'acme/widgets',
+    branch: 'feat/x',
+    path: '/work/widgets/.claude/worktrees/x',
+    ownerPeerId: peerId,
+    class: 'active',
+    dirty: false,
+    unpushed: false,
+    holders: [],
+    createdAt: '2026-11-10T09:00:00.000Z',
+    updatedAt: '2026-11-10T09:00:00.000Z',
+  } as unknown as Worktree)
+  await r.supervisor.start()
+  assert.equal(r.starts[0]?.cwd, rows[0]?.path)
+  rows.length = 0
+  const lease = await r.supervisor.acquire(peerId)
+  if (!lease.ok) throw lease.error
+  await lease.value.send({ text: 'status?', kind: 'info', briefVersion: 1 })
+  await until(() => r.starts.length === 2, 'the replacement session')
+
+  assert.equal(r.starts[1]?.cwd, checkout)
+})
+
+test('a checkout for a repo the profile does not list is refused at load', () => {
+  assert.throws(
+    () => twoPeers({ permissionMode: 'plan' }, { checkouts: { 'acme/other': '/work/other' } }),
+    /acme\/other.*not in repos/s,
+  )
+  assert.throws(() => twoPeers({}, { checkouts: { 'acme/widgets': 'relative/path' } }))
 })

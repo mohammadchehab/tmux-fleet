@@ -31,6 +31,7 @@ const profileWith = (overrides: Record<string, unknown> = {}): Profile =>
   decodeProfile({
     profile: 'engineer',
     repos: ['backbase/me-services-fleet'],
+    checkouts: { 'backbase/me-services-fleet': '/work/me-services-fleet' },
     peers: [{ id: 'engineer-1', role: 'engineer', provider: 'deepinfra', model: MODEL }],
     ...overrides,
   })

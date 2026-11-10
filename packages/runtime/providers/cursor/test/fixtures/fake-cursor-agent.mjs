@@ -16,6 +16,9 @@ const args = process.argv.slice(2)
 const record = () => {
   const log = process.env.FAKE_CURSOR_LOG
   if (log) appendFileSync(log, `${JSON.stringify(args)}\n`)
+  // Where the process was started, for a test that asserts the session's cwd.
+  const cwdLog = process.env.FAKE_CURSOR_CWD_LOG
+  if (cwdLog) appendFileSync(cwdLog, `${process.cwd()}\n`)
 }
 
 const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)

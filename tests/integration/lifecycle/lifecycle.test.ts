@@ -15,6 +15,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { test } from 'node:test'
 
 import type { LsResult, PeekResult } from '../../../packages/foundation/contracts/src/index.ts'
@@ -64,12 +65,13 @@ test('§15: a fleet comes up from a profile, and every peer is a real session', 
   // §6.1's inbox: nothing is waiting on the user in a fleet that just came up.
   assert.deepEqual(ls.decisions, [])
 
-  // The spec is what a real provider would be handed: the peer's own directory,
+  // The spec is what a real provider would be handed: the peer's own worktree,
   // the brief at version 1, and a permission mode that is not bypass (§13).
   const architect = sandbox.scripted.sessions[0]
   assert.ok(architect)
   assert.equal(architect.spec.role, 'architect')
-  assert.equal(architect.spec.cwd, sandbox.paths.stateDir)
+  assert.equal(architect.spec.cwd, join(sandbox.home, 'worktrees', 'architect'))
+  assert.notEqual(architect.spec.cwd, sandbox.paths.stateDir)
   assert.equal(architect.spec.brief.version, 1)
   assert.ok(architect.spec.brief.text.length > 0, 'the brief has text, not just a version')
   assert.equal(architect.spec.permissionMode, 'default')
@@ -127,7 +129,7 @@ test('§15: a peer killed mid-turn is recovered on a fresh session', async (t) =
   )
   assert.equal(String(recovered.spec.peerId), 'engineer-1')
   assert.equal(recovered.spec.stateFile, undefined)
-  assert.equal(recovered.spec.cwd, sandbox.paths.stateDir)
+  assert.equal(recovered.spec.cwd, join(sandbox.home, 'worktrees', 'engineer-1'))
 
   const after = await sandbox.call<LsLike>('ls')
   const engineer = after.peers.find((peer) => peer.peerId === 'engineer-1')
