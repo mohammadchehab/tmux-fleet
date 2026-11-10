@@ -407,6 +407,26 @@ CREATE TABLE IF NOT EXISTS judge_questions (
 CREATE INDEX IF NOT EXISTS judge_questions_work ON judge_questions (work_id);
 `
 
+// The month a turn falls in is its event's `ts` in UTC; `strftime` normalises an
+// offset the same way the reducer's `toISOString()` does, so the backfill and a
+// replay agree on every row.
+const SPEND_BY_MONTH = `
+CREATE TABLE IF NOT EXISTS spend_by_month (
+  month          TEXT PRIMARY KEY,
+  cost_usd       REAL NOT NULL,
+  turns          INTEGER NOT NULL,
+  unpriced_turns INTEGER NOT NULL
+) STRICT;
+INSERT OR IGNORE INTO spend_by_month (month, cost_usd, turns, unpriced_turns)
+  SELECT strftime('%Y-%m', ts),
+         SUM(COALESCE(json_extract(data, '$.costUsd'), 0)),
+         COUNT(*),
+         SUM(json_extract(data, '$.costUsd') IS NULL)
+    FROM events
+   WHERE type = 'turn.usage_recorded'
+   GROUP BY 1;
+`
+
 /**
  * Migrations, in order. A store records the highest applied version in
  * `store_meta` and applies everything above it; version 1 is the initial
@@ -476,6 +496,16 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 8,
     name: 'judge_questions',
     statements: [JUDGE_QUESTIONS],
+  },
+  {
+    // additive, and backfilled: `turn.usage_recorded` has been in the log since
+    // version 1, and `migrate()` does not replay it. Without the INSERT an upgraded
+    // store would report this month as unspent until its next rebuild — and a fleet
+    // that reads itself as under pace bids for work it cannot pay for
+    // (shared-fleet.md §3).
+    version: 9,
+    name: 'spend_by_month',
+    statements: [SPEND_BY_MONTH],
   },
 ]
 

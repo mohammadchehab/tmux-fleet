@@ -27,7 +27,7 @@ import type { Message } from './projections/mailbox.ts'
 import type { MessageAckState } from './events/messages.ts'
 import type { ProviderHandle, Turn } from './provider.ts'
 import type { Build, PullRequest, Worktree } from './projections/delivery.ts'
-import type { Decision, Finding, JudgeQuestionRecord, Notification, Routine, TokenReport } from './projections/ops.ts'
+import type { Decision, Finding, JudgeQuestionRecord, MonthSpend, Notification, Routine, TokenReport } from './projections/ops.ts'
 import type { Peer, PeerActivity, PeerCompactions, Session } from './projections/peers.ts'
 import type { Work } from './projections/work.ts'
 import type { ExternalItem } from './shapes.ts'
@@ -410,6 +410,11 @@ export interface ReadModel {
    */
   readonly tokens: {
     all(): Promise<readonly TokenReport[]>
+    /**
+     * The fleet's spend in `month` (`YYYY-MM`, UTC): zeros for a month with no
+     * turns, never `undefined`, because "spent nothing" is the answer.
+     */
+    month(month: string): Promise<MonthSpend>
   }
 
   /**

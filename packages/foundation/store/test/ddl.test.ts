@@ -71,6 +71,7 @@ test('every table the design names exists', () => {
     'pull_requests',
     'routines',
     'sessions',
+    'spend_by_month',
     'store_meta',
     'token_report',
     'work',
