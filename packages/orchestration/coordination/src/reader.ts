@@ -1,6 +1,6 @@
 /**
  * Reading the other fleets' pace (shared-fleet.md §2.2, §3). One `refs` call
- * finds every fleet branch in the engagement; each is read through the port,
+ * finds every fleet branch in the project's repository; each is read through the port,
  * which fetches only what moved since the last poll.
  *
  * Every document is someone else's bytes. It is decoded strictly against the
@@ -21,14 +21,12 @@ export type PeerFleet =
 
 export const readFleetPaces = async (input: {
   readonly coordination: Coordination
-  /** The engagement code name: `eng-07`. */
-  readonly namespace: string
   /** This fleet's own GitHub user, which is not a peer of itself. */
   readonly self: string
   readonly clock: Clock
   readonly offlineAfterMs?: number
 }): Promise<readonly PeerFleet[]> => {
-  const prefix = `${input.namespace}/fleet/`
+  const prefix = 'fleet/'
   const offlineAfterMs = input.offlineAfterMs ?? OFFLINE_AFTER_MS
   const now = Date.parse(input.clock.now())
   const fleets: PeerFleet[] = []

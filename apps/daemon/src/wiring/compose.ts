@@ -627,7 +627,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     ...(deps.buildProcess === undefined ? {} : { process: deps.buildProcess }),
   })
 
-  // shared-fleet.md §3: a profile in an engagement publishes its pace. `loadProfile`
+  // shared-fleet.md §3: a profile in a shared project publishes its pace. `loadProfile`
   // has refused a `coord` block without a `budget`, so the cap is there. Built
   // before the daemon and started by `up`, so `fleet up` is where a missing `gh`
   // login is refused rather than a log line an hour later.

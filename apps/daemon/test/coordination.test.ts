@@ -60,12 +60,12 @@ const manualTimers = () => {
   }
 }
 
-describe('a fleet in an engagement', () => {
-  it('publishes its pace on <engagement>/fleet/<user> in the coordination repository', async () => {
+describe('a fleet in a shared project', () => {
+  it('publishes its pace on fleet/<user> in the project’s repository', async () => {
     const remote = join(root, 'fleet-coord.git')
     execFileSync('git', ['init', '--bare', '--quiet', remote])
     const loop = await coordinationFor({
-      coord: { engagement: 'eng-07', team: 'backbase-se/eng-07', repo: 'backbase-se/fleet-coord' },
+      coord: { repo: 'backbase-se/fleet-project', team: 'backbase-se/project' },
       capUsd: 300,
       paths: { stateDir: join(root, 'state') },
       read: read(150),
@@ -81,7 +81,7 @@ describe('a fleet in an engagement', () => {
 
     await loop.tick()
 
-    assert.equal(loop.ref, 'eng-07/fleet/mohammads_backbase')
+    assert.equal(loop.ref, 'fleet/mohammads_backbase')
     const published = JSON.parse(
       execFileSync('git', ['--git-dir', remote, 'show', `refs/heads/${loop.ref}:${FLEET_PACE_FILE}`], { encoding: 'utf8' }),
     ) as Record<string, unknown>
@@ -91,14 +91,14 @@ describe('a fleet in an engagement', () => {
 
   it('takes the branch name from `coord.user` without asking gh', async () => {
     const loop = await coordinationFor({
-      coord: { engagement: 'eng-07', team: 'o/t', repo: 'o/r', user: 'alice' },
+      coord: { repo: 'o/r', team: 'o/t', user: 'alice' },
       capUsd: 300,
       paths: { stateDir: join(root, 'unused') },
       read: read(0),
       clock,
       login: async () => assert.fail('a profile that names its user is not asked again'),
     })
-    assert.equal(loop.ref, 'eng-07/fleet/alice')
+    assert.equal(loop.ref, 'fleet/alice')
   })
 })
 
@@ -135,7 +135,7 @@ describe('the loop', () => {
   it('looks once at start and then on every interval, until it is stopped', async () => {
     const p = publisher(async () => {})
     const { callbacks, timers } = manualTimers()
-    const loop = createCoordinationLoop({ ref: 'eng-07/fleet/alice', publisher: p, timers })
+    const loop = createCoordinationLoop({ ref: 'fleet/alice', publisher: p, timers })
 
     loop.start()
     await loop.tick()

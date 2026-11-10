@@ -49,7 +49,7 @@ export const COORDINATION_TICK_MS = 60_000
 export const KEY_CHECK_MS = 10 * 60_000
 
 export interface CoordinationLoop {
-  /** The branch this fleet publishes on: `<engagement>/fleet/<user>`. */
+  /** The branch this fleet publishes on: `fleet/<user>`. */
   readonly ref: string
   start(): void
   stop(): void
@@ -193,7 +193,7 @@ export const keyOutcomeLine = (ref: string, outcome: KeyOutcome): string | undef
 
 export const coordinationFor = async (wiring: CoordinationWiring): Promise<CoordinationLoop> => {
   const user = wiring.coord.user ?? (await (wiring.login ?? githubLogin)())
-  const ref = `${wiring.coord.engagement}/fleet/${user}`
+  const ref = `fleet/${user}`
   const coordination =
     wiring.coordination ??
     createGitCoordination({
