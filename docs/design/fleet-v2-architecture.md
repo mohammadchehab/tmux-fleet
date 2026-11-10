@@ -38,8 +38,7 @@ tmux-fleet/
 │  │  │  ├─ sdk/                  # the Provider interface, SessionSpec, ProviderEvent, conformance helpers (§4)
 │  │  │  ├─ claude/               # Claude Agent SDK (CLI fallback); base for deepinfra (§4)
 │  │  │  ├─ deepinfra/            # claude with per-session DeepInfra env; model read from the process (§4)
-│  │  │  ├─ opencode/             # OpenCode server/SDK mode (§4)
-│  │  │  └─ cursor/               # Cursor headless agent, turn-count purge fallback (§4)
+│  │  │  └─ cursor/               # `cursor-agent`, one process per turn; read-only plan mode, usage as a proxy (§4)
 │  │  ├─ supervisor/              # session lifecycle, restart, permission-mode check, self-purge wrapper (§2, §8)
 │  │  └─ mailbox/                 # addressing by peerId, briefs, versions, acks, resume-then-deliver (§7)
 │  ├─ orchestration/              # deciding and moving work
@@ -178,7 +177,7 @@ the user's profile; the *live* peers (ids, sessions, briefs) exist only in the s
 | 0 contracts | `packages/foundation/{core,contracts,store}` (types and schemas only), `packages/runtime/providers/sdk`, `tests/{architecture,conformance}` skeleton, `docs/`, workspace root files; v1 moves to `legacy/v1/` |
 | 1 vertical slice | `foundation/store` (working), `runtime/providers/{claude,deepinfra}`, `runtime/{supervisor,mailbox}`, `orchestration/{pm,routines,gate}`, `notify/{core,channels/macos}`, `integrations/github`, `apps/daemon`, `apps/clients/cli`, `apps/hooks/usage-report`, `config/{definitions,policies}`, `tests/{integration/{lifecycle,self-purge,delivery},fixtures}` |
 | 2 hygiene | `workspace/{worktree,codegraph}`, `orchestration/{briefs,ledger}`, `security/{scanners,findings}`, `apps/hooks/tool-guard`, `tests/integration/security`, stack retarget in `gate`, `fleet replay` |
-| 3 providers and sinks | `runtime/providers/{opencode,cursor}`, `integrations/trackers`, `apps/clients/{view,board}`, `fleet migrate`; `legacy/` deleted |
+| 3 providers and sinks | `runtime/providers/cursor`, `integrations/trackers`, `apps/clients/{view,board}`, `fleet migrate`; `legacy/` deleted |
 | 2 evals (with 2 hygiene) | `packages/evals/{adapter,suites/judge}`, `tests/evals/{cases/judge,baselines,promptfoo}`; the eval event contracts can land in phase 1 (§17) |
 | 4 hand-off | docs only: `docs/ideas` with measured lessons |
 
@@ -193,7 +192,7 @@ The security routine can start earlier than phase 2 on the interim fleet; phase 
    (thin clients,      │  Registry ── Mailbox ── Worktree manager ── PR gate ── Build ledger           │
     API only)          │      │             │                                                           │
                        │  ┌───┴──────── Provider interface ─────────┐        ┌── Judge (typed LLM call) ┐│
-                       │  │ claude │ deepinfra │ opencode │ cursor  │        └──────────────────────────┘│
+                       │  │ claude │ deepinfra │ cursor             │        └──────────────────────────┘│
                        │  └─────────────────────────────────────────┘                                    │
                        │  Event store (append-only SQLite) + projections                                 │
                        └─────────────────────────────────────────────────────────────────────────────────┘
@@ -279,7 +278,7 @@ method that returns text meant to be parsed.
 
 ```ts
 interface Provider {
-  readonly id: string                                    // "claude", "deepinfra", "opencode", "cursor"
+  readonly id: string                                    // "claude", "deepinfra", "cursor"
   readonly capabilities: { resume: boolean; modelSwitch: boolean; usageTokens: boolean; usageCost: boolean;
                            structuredOutput: boolean; permissionModes: PermissionMode[] }
   start(spec: SessionSpec): Promise<SessionHandle>       // spec carries cwd, env, model, permissionMode, role brief, resume ref
@@ -348,11 +347,23 @@ The shared types (`SessionSpec`, `Turn`, `ProviderEvent`, `PermissionMode`, `Pro
     carries this interface for both claude and deepinfra.
   - `deepinfra`: the same Claude implementation with `ANTHROPIC_BASE_URL`/key/model set in `SessionSpec.env` of
     *that one process*. No shared tmux server seeds env, so there is no drift.
-  - `opencode`: its server/SDK mode (`opencode serve`) rather than a pane.
-  - `cursor`: Cursor's headless agent with `--resume <chatId>`; if it exposes no usage, `capabilities.usageTokens =
-    false` and the self-purge trigger falls back to turn count (§6).
+  - `cursor`: the `cursor-agent` CLI, one process per turn, resumed by chat id — **read-only, plan mode only**, and
+    the exception to the paragraph above about peers running in `default` with a tool policy. This CLI has no
+    per-call hook for a policy to ride on, so the guarantee is the mode itself: `capabilities.permissionModes` is
+    `['plan']`, and a `start` in any other mode is refused `unsupported` before a process spawns. A `toolPolicy` is
+    accepted and ignored; `answer()`/`respond()` reject `unsupported`, because a mode that asks nobody cannot raise
+    a question. Four things it does not do as well as the SDK providers, each deliberate:
+    `model()` reports the id the session was started with (*requested, not confirmed* — the CLI's `init` names a
+    display name, so nothing here can raise `config_mismatch`); `usageTokens` is a turn-measured proxy (the prompt
+    side of the last turn — input + cache read + cache write — because a turn is a process and no call reports the
+    conversation's own size); `usageCost` and `structuredOutput` are false (Cursor bills by subscription, and the
+    CLI takes no schema); and a session with MCP servers is refused rather than wired. The window still comes from
+    config (`providers.cursor.contextLimits`), and a model without one is refused at `start`. A turn's process
+    exiting is *not* `session.ended`: only `stop()`, or an executable that could not run at all, ends the session,
+    or the supervisor would restart a healthy session after every message.
 - A provider that cannot do something says so in `capabilities`; the supervisor adapts, it does not guess.
-- **Untested path:** the `resume()` `unsupported` branch has no evidence behind it, since claude and deepinfra both report `resume: true`. The first non-SDK provider (opencode or cursor) is where it will first be exercised; its conformance case is written then, not assumed.
+- **Untested path:** the `resume()` `unsupported` branch has no evidence behind it, since claude, deepinfra and
+  cursor all report `resume: true`. It is written when a provider that cannot resume exists, not assumed.
 
 ## 5. The deterministic project manager
 
@@ -750,8 +761,14 @@ purges and resumes one engineer at its limit.
 **Phase 2: hygiene.** Worktree manager and GC; holder tracking; PR stacking/retarget; Build ledger and the hetzner
 runner; contract gating (§12); replay tool.
 
-**Phase 3: providers and sinks.** `opencode` and `cursor` providers; the Backlog/Jira adapters; tmux view; a web
-board on the daemon API; cut over from v1, delete the bash.
+**Phase 3: providers and sinks.** The `cursor` provider (read-only, plan mode only — see §4); the Backlog/Jira
+adapters; tmux view; a web board on the daemon API; cut over from v1, delete the bash.
+
+What phase 3 does **not** deliver for cursor, so nobody plans around it: a writing peer (refused by design), a
+confirmed model (the CLI names a display name, so `model()` reports what was requested), a measured context (§8's
+trigger runs on a per-turn proxy), a priced turn (`usageCost` is false, so the ledger records null), structured output,
+MCP, questions or approvals. `opencode` is dropped from this plan: it was the second non-SDK provider to prove the
+provider shape against, and `cursor` is now that provider.
 
 **Phase 4: hand the ideas to IsnadiBot.** The lessons and measured results go into the E13 idea map (§14.1). No code is ported.
 

@@ -29,7 +29,7 @@ import {
 import type { PeerState } from '@fleet/foundation-core'
 
 /** The providers a profile can name today (§4). A profile names one per peer. */
-export const profileProviders = ['claude', 'deepinfra'] as const
+export const profileProviders = ['claude', 'deepinfra', 'cursor'] as const
 export type ProfileProvider = (typeof profileProviders)[number]
 
 /**
@@ -44,6 +44,11 @@ export type ProfileProvider = (typeof profileProviders)[number]
 export const providerModels: Readonly<Record<ProfileProvider, readonly string[]>> = {
   claude: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001', 'claude-fable-5-1'],
   deepinfra: ['anthropic/claude-sonnet-5-5'],
+  // A hint, and a shorter one than the CLI serves: `cursor-agent models` lists
+  // them and changes without a fleet commit. `auto` is deliberately absent —
+  // cursor resolves it itself, so a session started with it could not say what
+  // model it runs and the adapter refuses it.
+  cursor: ['composer-2.5', 'claude-4.5-sonnet', 'gpt-5.2'],
 }
 
 /** The permission modes a session can come up in. A provider declares a subset (§4). */

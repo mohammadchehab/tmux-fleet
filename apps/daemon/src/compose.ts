@@ -60,6 +60,7 @@ import { createProjectManager } from '@fleet/orchestration-pm'
 import { createScheduler, installedFactories, type RoutineFactory, type Scheduler } from '@fleet/orchestration-routines'
 import { createMailbox } from '@fleet/runtime-mailbox'
 import { ClaudeProvider, createStructuredCompletion } from '@fleet/runtime-provider-claude'
+import { createCursorProvider } from '@fleet/runtime-provider-cursor'
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
 import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
@@ -238,6 +239,19 @@ export const buildProviders = (profile: Profile): ReadonlyMap<string, Provider> 
       createDeepInfraProvider({
         ...(block?.baseUrl === undefined ? {} : { baseUrl: block.baseUrl }),
         ...(block?.allowedModels === undefined ? {} : { allowedModels: block.allowedModels }),
+      }),
+    )
+  }
+  if (needed.has('cursor')) {
+    // Read-only, plan-mode only: the adapter refuses any other permission mode,
+    // so a profile that listed a cursor peer cannot make it a writing one. The
+    // block carries context windows and nothing else — cursor is authenticated by
+    // the CLI on this machine, and there is no key for a profile to name.
+    const block = profile.providers?.cursor
+    providers.set(
+      'cursor',
+      createCursorProvider({
+        ...(block?.contextLimits === undefined ? {} : { contextLimits: block.contextLimits }),
       }),
     )
   }

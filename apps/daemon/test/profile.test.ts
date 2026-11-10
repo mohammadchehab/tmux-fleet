@@ -225,7 +225,22 @@ describe('decoding a profile', () => {
     // were dropped, which is the one outcome an allowlist must not have.
     assert.throws(() => decodeProfile(minimal({ providers: { deepinfra: { allowedModel: ['m'] } } })), /unknown field/)
     assert.throws(() => decodeProfile(minimal({ providers: { deepinfra: { allowedModels: [] } } })), /at least one model/)
-    assert.throws(() => decodeProfile(minimal({ providers: { opencode: {} } })), /unknown field/)
+    assert.throws(() => decodeProfile(minimal({ providers: { codex: {} } })), /unknown field/)
+  })
+
+  it('reads a cursor peer’s context windows, and refuses a window that could not hold a turn', () => {
+    // The only thing a cursor block may say: the CLI reports no window, so this is
+    // the sole source for the limit a purge is measured against.
+    const profile = decodeProfile(
+      minimal({ providers: { cursor: { contextLimits: { 'composer-2.5': 200_000, 'gpt-5.2': 272_000 } } } }),
+    )
+    assert.deepEqual(profile.providers?.cursor?.contextLimits, { 'composer-2.5': 200_000, 'gpt-5.2': 272_000 })
+    assert.throws(
+      () => decodeProfile(minimal({ providers: { cursor: { contextLimits: { 'composer-2.5': 0 } } } })),
+      /positive|at least|0/,
+    )
+    // Being read-only is not a setting: a profile cannot ask for a writing peer.
+    assert.throws(() => decodeProfile(minimal({ providers: { cursor: { permissionMode: 'default' } } })), /unknown field/)
   })
 
   it('reads where the key is, never the key: a variable name and a file path', () => {
@@ -253,8 +268,8 @@ describe('decoding a profile', () => {
       /PeerId|peer/i,
     )
     assert.throws(
-      () => decodeProfile(minimal({ peers: [{ id: 'engineer-1', role: 'e', provider: 'opencode', model: 'm' }] })),
-      /claude|deepinfra/,
+      () => decodeProfile(minimal({ peers: [{ id: 'engineer-1', role: 'e', provider: 'codex', model: 'm' }] })),
+      /claude|deepinfra|cursor/,
     )
   })
 })

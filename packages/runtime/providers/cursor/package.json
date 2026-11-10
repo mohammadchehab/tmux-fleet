@@ -1,0 +1,18 @@
+{
+  "name": "@fleet/runtime-provider-cursor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "cursor-agent as a provider: read-only plan-mode sessions over the CLI's stream-json output, with the model reported as requested and the context measured per turn (§4).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*",
+    "@fleet/runtime-provider-sdk": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
