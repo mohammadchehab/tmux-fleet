@@ -308,6 +308,10 @@ model, usage numbers and resume would be identical.
 
 \* `bypassPermissions` only for a process launched with `allowDangerouslySkipPermissions`; others switchable at runtime.
 
+Read the two ✅s in the usage rows narrowly: they say the SDK's number *agrees with config* on Claude in this run, not
+that the SDK is the source of truth. The contract takes the limit from config for **every** provider, so the purge can
+never key on a window the SDK guessed, and cost is recorded only where `capabilities.usageCost` is true.
+
 ### Proposed `capabilities` for both
 
 ```ts
