@@ -18,7 +18,9 @@ import {
   DEEP_INFRA_CONTEXT_LIMITS,
   DeepInfraProvider,
   createDeepInfraProvider,
+  deepInfraCapabilities,
   deepInfraEnv,
+  narrowCapabilities,
 } from '../src/index.ts'
 
 const provider = new DeepInfraProvider()
@@ -55,6 +57,42 @@ test('declares cost as unknown and everything else as the Agent SDK measured it'
   })
   assert.ok(Object.isFrozen(provider.capabilities))
   assert.equal(provider.id, 'deepinfra')
+})
+
+test('capabilities may be narrowed, never widened', () => {
+  // A capability is what the supervisor plans around: `usageCost: true` would
+  // put SDK-priced dollars in the §11 ledger as if the vendor had priced them,
+  // which is exactly the number this provider exists to refuse. So narrowing is
+  // honoured and widening is refused at construction, not silently merged.
+  const narrowed = new DeepInfraProvider({
+    capabilities: { structuredOutput: false, permissionModes: ['default'] },
+  })
+  assert.deepEqual(narrowed.capabilities, {
+    resume: true,
+    modelSwitch: true,
+    usageTokens: true,
+    usageCost: false,
+    structuredOutput: false,
+    permissionModes: ['default'],
+  })
+  assert.ok(Object.isFrozen(narrowed.capabilities))
+  assert.ok(Object.isFrozen(narrowed.capabilities.permissionModes))
+
+  assert.throws(
+    () => new DeepInfraProvider({ capabilities: { usageCost: true } }),
+    (thrown: unknown) => code(thrown) === 'invalid_input',
+  )
+  // A mode can only be taken away, never added back: the base honours all four,
+  // so the case is only reachable once something has narrowed them.
+  const narrowedModes = narrowCapabilities(deepInfraCapabilities, { permissionModes: ['default'] })
+  assert.throws(
+    () => narrowCapabilities(narrowedModes, { permissionModes: ['default', 'plan'] }),
+    (thrown: unknown) => code(thrown) === 'invalid_input',
+  )
+  assert.deepEqual(
+    narrowCapabilities(narrowedModes, { permissionModes: ['default'] }).permissionModes,
+    ['default'],
+  )
 })
 
 test('the context limit is the vendor’s window, not the 200 000 the SDK guesses', () => {

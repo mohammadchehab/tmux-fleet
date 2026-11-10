@@ -76,8 +76,9 @@ export interface DeepInfraProviderConfig extends Omit<ClaudeProviderConfig, 'id'
   /** Extra models and their real windows; merged over `DEEP_INFRA_CONTEXT_LIMITS`. */
   readonly contextLimits?: Readonly<Record<string, number>>
   /**
-   * Overrides for `deepInfraCapabilities`. Narrowing one is honoured; the
-   * matching method then rejects `unsupported` (see `ClaudeProvider`).
+   * Overrides for `deepInfraCapabilities`, narrowing only. A narrowed capability
+   * makes the matching method reject `unsupported` (see `ClaudeProvider`); a
+   * widening one is refused at construction (see `narrowCapabilities`).
    */
   readonly capabilities?: Partial<ProviderCapabilities>
 }
@@ -102,6 +103,45 @@ export const deepInfraEnv = (
   })
 }
 
+/**
+ * The capabilities a config may ask for: the base set, narrowed.
+ *
+ * A capability is a promise the supervisor plans around (§4) — whether it may
+ * resume, whether `usage()` is measured enough to purge on (§8), whether the
+ * spend ledger gets a number or null (§11) — so widening one makes this adapter
+ * promise what it was measured not to do. `usageCost: true` is the sharpest
+ * case: it would put SDK-priced dollars into the ledger as if the vendor had
+ * priced them, which is the number this provider exists to refuse. A widening is
+ * therefore refused at construction rather than honoured, and so is a permission
+ * mode the endpoint does not honour.
+ */
+export const narrowCapabilities = (
+  base: ProviderCapabilities,
+  overrides: Partial<ProviderCapabilities> | undefined,
+): ProviderCapabilities => {
+  if (overrides === undefined) return base
+  const widened = capabilityFlags.filter((flag) => overrides[flag] === true && !base[flag])
+  if (widened.length > 0) {
+    throw fleetError('invalid_input', `capabilities cannot be widened: ${widened.join(', ')}`, {
+      details: { providerId: 'deepinfra', widened },
+    })
+  }
+  const added = (overrides.permissionModes ?? []).filter((mode) => !base.permissionModes.includes(mode))
+  if (added.length > 0) {
+    throw fleetError('invalid_input', `permission modes cannot be added: ${added.join(', ')}`, {
+      details: { providerId: 'deepinfra', permissionModes: added },
+    })
+  }
+  return Object.freeze({
+    ...base,
+    ...overrides,
+    permissionModes: Object.freeze(overrides.permissionModes ?? base.permissionModes),
+  })
+}
+
+/** The capabilities that are a yes/no, so "narrowing" means one direction only. */
+const capabilityFlags = ['resume', 'modelSwitch', 'usageTokens', 'usageCost', 'structuredOutput'] as const
+
 export class DeepInfraProvider implements Provider {
   readonly id = 'deepinfra'
   readonly capabilities: ProviderCapabilities
@@ -112,7 +152,7 @@ export class DeepInfraProvider implements Provider {
 
   constructor(config: DeepInfraProviderConfig = {}) {
     const { baseUrl, contextLimits, capabilities, ...sessionConfig } = config
-    this.capabilities = Object.freeze({ ...deepInfraCapabilities, ...capabilities })
+    this.capabilities = narrowCapabilities(deepInfraCapabilities, capabilities)
     this.#baseUrl = baseUrl ?? DEEP_INFRA_BASE_URL
     this.#limits = Object.freeze({ ...DEEP_INFRA_CONTEXT_LIMITS, ...contextLimits })
     // No `fallback`: an unlisted model has no measured window, so it is refused
