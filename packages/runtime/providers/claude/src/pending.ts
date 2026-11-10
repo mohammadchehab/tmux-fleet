@@ -5,15 +5,14 @@
  * both block the turn until the host answers, with no deadline:
  *
  * - `AskUserQuestion`, which is the peer asking its supervisor something;
- * - every other tool that the permission mode made ask, which is an approval.
+ * - every other tool that the permission mode or the session's own tool policy
+ *   made ask, which is an approval.
  *
  * The adapter mints an id for each, keeps them in one map, and hands the caller
- * a promise it resolves through `answer()` / `respond()`. The ids are minted
- * here rather than read off the SDK because the SDK's control-request id is an
- * implementation detail on the wire; when the §4 contract change lands these
- * ids travel on the events and the supervisor answers by id. Until then
- * `answer()` and `respond()` accept the oldest open item of that kind, which is
- * all the current `question.asked` projection can support.
+ * a promise it resolves through `answer()` / `respond()` — by id, which is why
+ * the ids travel on `question.asked` / `approval.requested` (contracts E).
+ * Answering by id rather than "the oldest" is what makes a stale answer a
+ * `not_found` instead of an answer to somebody else's question.
  *
  * An unanswered item is abandoned, never left dangling: a turn that is
  * interrupted or a session that stops resolves it as `deny` and reports
@@ -22,13 +21,12 @@
 
 import { randomUUID } from 'node:crypto'
 
-import { fleetError, type Timestamp, type TurnId } from '@fleet/foundation-core'
+import { fleetError, newQuestionId, type QuestionId, type Timestamp, type TurnId } from '@fleet/foundation-core'
+import type { ApprovalDecision, QuestionAnswer } from '@fleet/runtime-provider-sdk'
 
 import type { AskedQuestion } from './events.ts'
 
-/** `qst_<16 hex>`, the same opaque shape `foundation/core` mints (§3). */
-export type QuestionId = string
-/** `apr_<16 hex>`. */
+/** `apr_<16 hex>`; the contract types this as an opaque string, not a branded id. */
 export type RequestId = string
 
 export interface OpenQuestion {
@@ -46,8 +44,8 @@ export interface OpenApproval {
   readonly summary?: string
 }
 
-/** What a person decided about a blocked tool call. */
-export type ApprovalDecision = 'allow' | 'deny'
+/** The labels chosen, one per question, in the order the questions were asked. */
+export type { ApprovalDecision, QuestionAnswer }
 
 export type AbandonReason = 'interrupted' | 'ended'
 
@@ -56,10 +54,10 @@ interface Waiter<T> {
   abandon(reason: AbandonReason): void
 }
 
-const mint = (prefix: string): string => `${prefix}_${randomUUID().replaceAll('-', '').slice(0, 16)}`
+const mintRequestId = (): string => `apr_${randomUUID().replaceAll('-', '').slice(0, 16)}`
 
 export class PendingRequests {
-  readonly #questions = new Map<QuestionId, { open: OpenQuestion; waiter: Waiter<string> }>()
+  readonly #questions = new Map<QuestionId, { open: OpenQuestion; waiter: Waiter<QuestionAnswer> }>()
   readonly #approvals = new Map<RequestId, { open: OpenApproval; waiter: Waiter<ApprovalDecision> }>()
   readonly #now: () => Timestamp
 
@@ -68,20 +66,17 @@ export class PendingRequests {
   }
 
   /** Register a question and hand back the promise the turn is blocked on. */
-  ask(
-    turnId: TurnId,
-    questions: readonly AskedQuestion[],
-  ): { open: OpenQuestion; wait: Promise<string> } {
+  ask(turnId: TurnId, questions: readonly AskedQuestion[]): { open: OpenQuestion; wait: Promise<QuestionAnswer> } {
     const open: OpenQuestion = Object.freeze({
-      questionId: mint('qst'),
+      questionId: newQuestionId(),
       turnId,
       askedAt: this.#now(),
       questions: Object.freeze(questions.map(freezeQuestion)),
     })
-    const wait = new Promise<string>((resolve) => {
+    const wait = new Promise<QuestionAnswer>((resolve) => {
       this.#questions.set(open.questionId, {
         open,
-        waiter: { settle: (answer) => resolve(answer), abandon: () => resolve('') },
+        waiter: { settle: (answer) => resolve(answer), abandon: () => resolve([]) },
       })
     })
     return { open, wait }
@@ -94,7 +89,7 @@ export class PendingRequests {
     summary: string | undefined,
   ): { open: OpenApproval; wait: Promise<ApprovalDecision> } {
     const open: OpenApproval = Object.freeze({
-      requestId: mint('apr'),
+      requestId: mintRequestId(),
       turnId,
       askedAt: this.#now(),
       tool,
@@ -110,37 +105,36 @@ export class PendingRequests {
   }
 
   /**
-   * Answer a question. Without an id this answers the oldest open one, which is
-   * what a supervisor can do while `question.asked` has no id on it.
+   * Answer a question by the id its `question.asked` carried.
    *
-   * @throws FleetError('not_found') when nothing is open — a stale answer, not a crash.
+   * @throws FleetError('not_found') when nothing is open under that id — a stale
+   * answer, or one for a session that has since ended. Not a crash.
    */
-  answer(text: string, questionId?: QuestionId): OpenQuestion {
-    const entry =
-      questionId === undefined ? this.#oldest(this.#questions) : this.#questions.get(questionId)
+  answer(questionId: QuestionId, answer: QuestionAnswer): OpenQuestion {
+    const entry = this.#questions.get(questionId)
     if (entry === undefined) {
-      throw fleetError('not_found', `no open question ${questionId ?? '(oldest)'} to answer`, {
+      throw fleetError('not_found', `no open question ${questionId}`, {
         details: { open: [...this.#questions.keys()] },
       })
     }
-    this.#questions.delete(entry.open.questionId)
-    entry.waiter.settle(text)
+    this.#questions.delete(questionId)
+    entry.waiter.settle(answer)
     return entry.open
   }
 
   /**
-   * Allow or deny a blocked tool call.
+   * Allow or deny a blocked tool call, by the id its `approval.requested` carried.
    *
-   * @throws FleetError('not_found') when nothing is open.
+   * @throws FleetError('not_found') when nothing is open under that id.
    */
-  respond(decision: ApprovalDecision, requestId?: RequestId): OpenApproval {
-    const entry = requestId === undefined ? this.#oldest(this.#approvals) : this.#approvals.get(requestId)
+  respond(requestId: RequestId, decision: ApprovalDecision): OpenApproval {
+    const entry = this.#approvals.get(requestId)
     if (entry === undefined) {
-      throw fleetError('not_found', `no open approval ${requestId ?? '(oldest)'} to answer`, {
+      throw fleetError('not_found', `no open approval ${requestId}`, {
         details: { open: [...this.#approvals.keys()] },
       })
     }
-    this.#approvals.delete(entry.open.requestId)
+    this.#approvals.delete(requestId)
     entry.waiter.settle(decision)
     return entry.open
   }
@@ -175,14 +169,6 @@ export class PendingRequests {
       questions: [...this.#questions.values()].map((e) => e.open),
       approvals: [...this.#approvals.values()].map((e) => e.open),
     }
-  }
-
-  #oldest<T extends { open: { askedAt: Timestamp } }>(map: Map<string, T>): T | undefined {
-    let oldest: T | undefined
-    for (const entry of map.values()) {
-      if (oldest === undefined || Date.parse(entry.open.askedAt) < Date.parse(oldest.open.askedAt)) oldest = entry
-    }
-    return oldest
   }
 }
 

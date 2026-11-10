@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import type { TurnId } from '@fleet/foundation-core'
+import { newQuestionId, type TurnId } from '@fleet/foundation-core'
 
 import { PendingRequests } from '../src/index.ts'
 
@@ -23,19 +23,19 @@ test('a question blocks until it is answered by id', async () => {
   assert.equal(pending.blocked, true)
   assert.match(open.questionId, /^qst_[0-9a-f]{16}$/)
 
-  pending.answer('Blue', open.questionId)
-  assert.equal(await wait, 'Blue')
+  pending.answer(open.questionId, ['Blue'])
+  assert.deepEqual(await wait, ['Blue'])
   assert.equal(pending.blocked, false)
 })
 
-test('without an id the oldest open question is answered, which is all a flat event allows', async () => {
+test('an answer addresses one question by id and leaves the others alone', async () => {
   const pending = new PendingRequests(now)
   const first = pending.ask(turnA, [{ question: 'First?' }])
   const second = pending.ask(turnB, [{ question: 'Second?' }])
 
-  pending.answer('to the first')
-  assert.equal(await first.wait, 'to the first')
-  assert.equal(pending.snapshot().questions[0]?.questionId, second.open.questionId)
+  pending.answer(second.open.questionId, ['to the second'])
+  assert.deepEqual(await second.wait, ['to the second'])
+  assert.equal(pending.snapshot().questions[0]?.questionId, first.open.questionId)
 })
 
 test('an approval resolves to allow or deny and reports which', async () => {
@@ -44,8 +44,8 @@ test('an approval resolves to allow or deny and reports which', async () => {
   const denied = pending.askApproval(turnA, 'Write', '/etc/hosts')
   assert.match(allowed.open.requestId, /^apr_[0-9a-f]{16}$/)
 
-  pending.respond('allow', allowed.open.requestId)
-  pending.respond('deny', denied.open.requestId)
+  pending.respond(allowed.open.requestId, 'allow')
+  pending.respond(denied.open.requestId, 'deny')
   assert.equal(await allowed.wait, 'allow')
   assert.equal(await denied.wait, 'deny')
   assert.equal(pending.blocked, false)
@@ -61,7 +61,7 @@ test('abandoning one turn leaves the other turn’s questions alone', async () =
     abandoned.questions.map((q) => q.questionId),
     [a.open.questionId],
   )
-  assert.equal(await a.wait, '')
+  assert.deepEqual(await a.wait, [])
   assert.equal(pending.snapshot().questions.length, 1)
   assert.equal(pending.snapshot().questions[0]?.questionId, b.open.questionId)
 })
@@ -77,11 +77,11 @@ test('abandoning an approval resolves it as deny: no tool runs unanswered', asyn
 test('answering something that is not open is not_found, not a crash', () => {
   const pending = new PendingRequests(now)
   assert.throws(
-    () => pending.answer('too late'),
+    () => pending.answer(newQuestionId(), ['too late']),
     (thrown: unknown) => (thrown as { code?: string }).code === 'not_found',
   )
   assert.throws(
-    () => pending.respond('allow'),
+    () => pending.respond('apr_0000000000000000', 'allow'),
     (thrown: unknown) => (thrown as { code?: string }).code === 'not_found',
   )
 })
@@ -91,6 +91,6 @@ test('the snapshot is frozen so a caller cannot resolve a waiter by editing it',
   pending.ask(turnA, [{ question: 'Which?', options: [{ label: 'x' }] }])
   const question = pending.ask(turnA, [{ question: 'Which?' }]).open
   assert.throws(() => {
-    ;(question as { questionId: string }).questionId = 'qst_0000000000000000'
+    ;(question as { questionId: string }).questionId = newQuestionId()
   })
 })

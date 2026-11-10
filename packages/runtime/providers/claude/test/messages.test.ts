@@ -151,9 +151,19 @@ test('AskUserQuestion input is read into typed questions', () => {
   assert.equal(readQuestions({ not: 'a question' }), undefined)
 })
 
-test('an answer is keyed by the question text and keeps an option label intact', () => {
-  assert.deepEqual(questionAnswers([{ question: 'Which channel?', options: [{ label: 'Blue' }] }], 'Blue'), {
+test('an answer is keyed by the question text, one label per question, in the order asked', () => {
+  assert.deepEqual(questionAnswers([{ question: 'Which channel?', options: [{ label: 'Blue' }] }], ['Blue']), {
     'Which channel?': 'Blue',
   })
-  assert.deepEqual(questionAnswers([{ question: 'Why?' }], 'because'), { 'Why?': 'because' })
+  assert.deepEqual(questionAnswers([{ question: 'Why?' }], ['because']), { 'Why?': 'because' })
+  assert.deepEqual(
+    questionAnswers([{ question: 'Which?' }, { question: 'When?' }], ['Blue', 'tomorrow']),
+    { 'Which?': 'Blue', 'When?': 'tomorrow' },
+  )
+  // A short answer narrows to the question it reaches and falls back to the
+  // first option for the rest: it can never invent a choice.
+  assert.deepEqual(questionAnswers([{ question: 'Which?', options: [{ label: 'Blue' }] }, { question: 'When?' }], ['Blue']), {
+    'Which?': 'Blue',
+    'When?': '',
+  })
 })

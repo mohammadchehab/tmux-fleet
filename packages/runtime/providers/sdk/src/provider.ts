@@ -32,6 +32,7 @@ export type {
   QuestionAnswer,
   SessionSpec,
   Turn,
+  TurnEndReason,
   Usage,
 } from '@fleet/foundation-contracts'
 

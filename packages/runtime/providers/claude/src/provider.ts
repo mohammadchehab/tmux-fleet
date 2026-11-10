@@ -16,6 +16,7 @@
  * | `resume`          | `Options.resume = <session id>` reloads the history across processes, same id |
  * | `modelSwitch`     | `query.setModel()` on a live streaming-input session                        |
  * | `usageTokens`     | `getContextUsage({detail})` reports real context tokens                     |
+ * | `usageCost`       | `result.total_cost_usd` is priced by the vendor that ran the turn           |
  * | `structuredOutput`| a schema-constrained call (`outputFormat`) answers against a schema          |
  * | `permissionModes` | all four echo back on `init`, and can be changed mid-session                 |
  *
@@ -23,18 +24,20 @@
  * a mode that asks. `bypassPermissions` shadows `canUseTool`, so a peer in that
  * mode cannot ask its supervisor anything (`session.ts`).
  *
- * `usageCost` is not in `ProviderCapabilities` yet (architect's §4 fold); this
- * provider reports `costUsd` when its config says the endpoint's numbers are
- * comparable, which for Claude they are and for DeepInfra the spike found they
- * are not.
+ * `capabilities.usageCost` is the one source of truth for cost reporting: the
+ * session reads it through its config, so a provider that says `false` cannot
+ * still report a number the ledger would record (§4, §11).
  */
 
 import { fleetError, toFleetError, type PeerState, type TurnId } from '@fleet/foundation-core'
 import type {
+  ApprovalDecision,
   Provider,
   ProviderCapabilities,
   ProviderEvent,
   ProviderSessionRef,
+  QuestionAnswer,
+  QuestionId,
   SessionHandle,
   SessionSpec,
   Turn,
@@ -42,18 +45,20 @@ import type {
 } from '@fleet/runtime-provider-sdk'
 
 import { openingMessage } from './brief.ts'
-import type { AdapterEvent } from './events.ts'
 import { ClaudeSession, defaultSessionConfig, type ClaudeSessionConfig } from './session.ts'
 
-export interface ClaudeProviderConfig extends Partial<ClaudeSessionConfig> {
+export interface ClaudeProviderConfig extends Omit<Partial<ClaudeSessionConfig>, 'usageCost'> {
   /** Defaults to `claude`. The DeepInfra provider sets `deepinfra` and passes its own limits. */
   readonly id?: string
   /**
    * Overrides for `claudeCapabilities`. A capability is a promise the supervisor
-   * plans around, so a provider states what it can actually do: DeepInfra will
-   * say `usageCost: false` and any provider whose SDK cannot resume says
+   * plans around, so a provider states what it can actually do: DeepInfra says
+   * `usageCost: false`, and a provider whose SDK cannot resume says
    * `resume: false`. An override the adapter would contradict by doing the thing
    * anyway is rejected at the call, not quietly honoured (see `setModel`, `start`).
+   *
+   * `usageCost` is not overridable in the session config for the same reason: it
+   * comes from here, so the capability and the behaviour cannot disagree.
    */
   readonly capabilities?: Partial<ProviderCapabilities>
 }
@@ -63,6 +68,7 @@ export const claudeCapabilities: ProviderCapabilities = Object.freeze({
   resume: true,
   modelSwitch: true,
   usageTokens: true,
+  usageCost: true,
   structuredOutput: true,
   permissionModes: Object.freeze([
     'default',
@@ -93,7 +99,13 @@ export class ClaudeProvider implements Provider {
       ...capabilities,
       permissionModes: Object.freeze(capabilities?.permissionModes ?? claudeCapabilities.permissionModes),
     })
-    this.#config = { ...defaultSessionConfig, ...sessionConfig, providerId: this.id }
+    this.#config = {
+      ...defaultSessionConfig,
+      ...sessionConfig,
+      providerId: this.id,
+      // From the capability, never from the config: see `ClaudeProviderConfig`.
+      usageCost: this.capabilities.usageCost,
+    }
   }
 
   /**
@@ -163,21 +175,18 @@ export class ClaudeProvider implements Provider {
     return this.#session(handle).events()
   }
 
-  // ------------------------------------------------- below the interface
-  //
-  // These are the §4 fold's `answer()` / `respond()` and the model switch, which
-  // `Provider` does not declare yet. They are real methods on the concrete
-  // provider so the supervisor can call them today; when the contract lands
-  // they move onto the interface and this section loses its comment.
-
-  /** Answer the peer's question, by id or (while the id is not on the event) the oldest open one. */
-  answer(handle: SessionHandle, text: string, questionId?: string): void {
-    this.#session(handle).answer(text, questionId)
+  /**
+   * Answer a pending `question.asked` by the id it carried (§4). The answer is
+   * the contract's `QuestionAnswer` — one label per question, in order — so a
+   * multi-question ask is answered as a unit rather than one text blob.
+   */
+  async answer(handle: SessionHandle, questionId: QuestionId, answer: QuestionAnswer): Promise<void> {
+    this.#session(handle).answer(questionId, answer)
   }
 
-  /** Allow or deny a tool call the permission mode blocked. */
-  respond(handle: SessionHandle, decision: 'allow' | 'deny', requestId?: string): void {
-    this.#session(handle).respond(decision, requestId)
+  /** Allow or deny a tool call blocked on a person, by the id its event carried (§4). */
+  async respond(handle: SessionHandle, requestId: string, decision: ApprovalDecision): Promise<void> {
+    this.#session(handle).respond(requestId, decision)
   }
 
   /** What the peer is blocked on, with the ids `answer()` and `respond()` take. */
@@ -197,18 +206,6 @@ export class ClaudeProvider implements Provider {
       })
     }
     return this.#session(handle).setModel(model)
-  }
-
-  /**
-   * The adapter's own stream, including the events the current contract cannot
-   * carry yet.
-   *
-   * @deprecated Stopgap until the contracts PR lands; `events()` then carries
-   * question/approval ids and reasons itself, and this goes away. See the
-   * package's contract delta — nothing should depend on it.
-   */
-  detailEvents(handle: SessionHandle): AsyncIterable<AdapterEvent> {
-    return this.#session(handle).detailEvents()
   }
 
   #session(handle: SessionHandle): ClaudeSession {

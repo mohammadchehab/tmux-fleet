@@ -155,21 +155,20 @@ const truncate = (value: string, max: number): string =>
 
 /**
  * The `answers` payload the `AskUserQuestion` tool expects on an allowed call:
- * one entry per question, keyed by the question text. A free-text answer goes
- * to the first question, which is what a supervisor sending one line means.
+ * one entry per question, keyed by the question text. `answer` is the contract's
+ * `QuestionAnswer` — one label per question, in the order asked. A question the
+ * answer does not reach falls back to its first option, so a partial answer can
+ * only ever narrow a choice, never invent one.
  */
 export const questionAnswers = (
   questions: readonly { readonly question: string; readonly options?: readonly { readonly label: string }[] }[],
-  answer: string,
+  answer: readonly string[],
 ): Record<string, string> => {
   const answers: Record<string, string> = {}
   questions.forEach((question, index) => {
-    if (index === 0) {
-      const literal = question.options?.find((o) => o.label === answer)
-      answers[question.question] = literal?.label ?? answer
-    } else {
-      answers[question.question] = question.options?.[0]?.label ?? answer
-    }
+    const chosen = answer[index]
+    const literal = question.options?.find((o) => o.label === chosen)
+    answers[question.question] = literal?.label ?? chosen ?? question.options?.[0]?.label ?? ''
   })
   return answers
 }

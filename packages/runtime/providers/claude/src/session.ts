@@ -40,20 +40,23 @@ import {
   type Clock,
   type FleetError,
   type PeerState,
+  type QuestionId,
   type SessionId,
   type Timestamp,
   type TurnId,
 } from '@fleet/foundation-core'
 import type {
+  ApprovalDecision,
   ProviderEvent,
   ProviderSessionRef,
+  QuestionAnswer,
   SessionSpec,
   Turn,
   Usage,
 } from '@fleet/runtime-provider-sdk'
 
 import { buildChildEnv, recordedEndpoint } from './env.ts'
-import { toContract, type AdapterEvent } from './events.ts'
+import { isContractEvent, type AdapterEvent } from './events.ts'
 import { mapMessage, questionAnswers, readQuestions, type TurnState } from './messages.ts'
 import { PendingRequests } from './pending.ts'
 import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy, type ToolPolicy } from './policy.ts'
@@ -198,7 +201,7 @@ export class ClaudeSession {
     // only thing that distinguishes it from a failure is that we knew it was coming.
     this.#turnState = { ...this.#turnState, interrupted: true }
     for (const abandoned of this.#pending.abandon('interrupted', turn).questions) {
-      this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId, reason: 'interrupted' })
+      this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId })
     }
     try {
       await this.#query.interrupt()
@@ -213,9 +216,9 @@ export class ClaudeSession {
     this.#state = 'ended'
     const { questions } = this.#pending.abandon('ended')
     for (const abandoned of questions) {
-      this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId, reason: 'ended' })
+      this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId })
     }
-    this.#emit({ type: 'session.ended', at: this.#now(), reason: 'stopped' })
+    this.#emit({ type: 'session.ended', reason: 'stopped' })
     this.#input.end()
     try {
       this.#query.close()
@@ -282,14 +285,17 @@ export class ClaudeSession {
     return this.#pending.snapshot()
   }
 
-  /** Answering unblocks the turn that asked; it does not start a new one. */
-  answer(text: string, questionId?: string): void {
-    this.#pending.answer(text, questionId)
+  /**
+   * Answering unblocks the turn that asked; it does not start a new one. The id
+   * is the one its `question.asked` carried, so a stale answer is `not_found`
+   * rather than an answer to somebody else's question.
+   */
+  answer(questionId: QuestionId, answer: QuestionAnswer): void {
+    this.#pending.answer(questionId, answer)
   }
 
-  respond(decision: 'allow' | 'deny', requestId?: string): void {
-    const resolved = this.#pending.respond(decision, requestId)
-    this.#emit({ type: 'approval.resolved', requestId: resolved.requestId, decision })
+  respond(requestId: string, decision: ApprovalDecision): void {
+    this.#pending.respond(requestId, decision)
   }
 
   /**
@@ -323,23 +329,14 @@ export class ClaudeSession {
     }
   }
 
-  /** The contract's event stream: the adapter's events, projected (§4). */
-  events(): AsyncIterable<ProviderEvent> {
-    return this.#events.project(toContract)
-  }
-
   /**
-   * The richer stream `events()` will carry once the contracts PR lands.
-   *
-   * @deprecated Stopgap, not a second interface. `events()` carries all of this
-   * (question ids, `approval.requested`/`resolved`, `turn.ended.reason`,
-   * `session.ended`) as soon as the event union grows; then this method and the
-   * lossy `toContract` projection both go, and `events()` is the adapter's own
-   * stream. Do not build a consumer on it — the supervisor's decision inbox is
-   * the reason it exists, and it should read `events()`.
+   * The contract's event stream: question ids, approvals, the turn's end
+   * reason, and the synthesised `session.ended`. The two internal events the
+   * contract has no member for yet — `session.started` and `tool.denied` — are
+   * filtered out here and stay inside the adapter (§4).
    */
-  detailEvents(): AsyncIterable<AdapterEvent> {
-    return this.#events
+  events(): AsyncIterable<ProviderEvent> {
+    return this.#events.filter(isContractEvent)
   }
 
   // ---------------------------------------------------------------- internals
@@ -372,11 +369,9 @@ export class ClaudeSession {
   async #run(): Promise<void> {
     try {
       for await (const message of this.#query) this.#onMessage(message)
-      this.#finish('exited', undefined)
+      this.#finish('exit', undefined)
     } catch (thrown) {
-      const message = describe(thrown)
-      this.#emit({ type: 'error', message, retryable: true })
-      this.#finish('failed', message)
+      this.#finish('crash', describe(thrown))
     }
   }
 
@@ -430,13 +425,7 @@ export class ClaudeSession {
       const questions = readQuestions(input) ?? [{ question: 'The peer asked a question it did not spell out.' }]
       const { open, wait } = this.#pending.ask(turnId, questions)
       this.#state = 'waiting_input'
-      this.#emit({
-        type: 'question.asked',
-        turnId,
-        questionId: open.questionId,
-        at: open.askedAt,
-        questions: open.questions,
-      })
+      this.#emit({ type: 'question.asked', turnId, questionId: open.questionId, questions: open.questions })
       return Promise.race([wait, aborted]).then((answer) => {
         if (answer === 'aborted') return { behavior: 'deny', message: 'the turn was interrupted' } as PermissionResult
         this.#state = 'working'
@@ -473,14 +462,12 @@ export class ClaudeSession {
       type: 'approval.requested',
       turnId,
       requestId: open.requestId,
-      at: open.askedAt,
       tool: toolName,
       ...(summary === undefined ? {} : { summary }),
     })
     return Promise.race([wait, aborted]).then((decision) => {
       if (decision === 'aborted') return { behavior: 'deny', message: 'the turn was interrupted' } as PermissionResult
       this.#state = 'working'
-      this.#emit({ type: 'approval.resolved', requestId: open.requestId, decision })
       return decision === 'allow'
         ? ({ behavior: 'allow', updatedInput: input } as PermissionResult)
         : ({ behavior: 'deny', message: 'the supervisor denied this tool call' } as PermissionResult)
@@ -526,14 +513,21 @@ export class ClaudeSession {
     this.#emit({ type: 'error', message: this.#mismatch(what, expected, observed).message, retryable: false })
   }
 
-  #finish(reason: 'exited' | 'failed', error: string | undefined): void {
+  /**
+   * The session stream ended on its own: the iterator finished (`exit`) or threw
+   * (`crash`). A stopped session never reaches here — `stop()` has already set
+   * the state and closed the stream. The failure message travels as an `error`
+   * event, because `session.ended` only names why the stream ended (§4).
+   */
+  #finish(reason: 'exit' | 'crash', error: string | undefined): void {
     if (this.#state === 'ended') return
-    this.#state = 'failed'
+    this.#state = reason === 'crash' ? 'failed' : 'ended'
     const { questions } = this.#pending.abandon('ended')
     for (const abandoned of questions) {
-      this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId, reason: 'ended' })
+      this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId })
     }
-    this.#emit({ type: 'session.ended', at: this.#now(), reason, ...(error === undefined ? {} : { error }) })
+    if (error !== undefined) this.#emit({ type: 'error', message: error, retryable: reason === 'crash' })
+    this.#emit({ type: 'session.ended', reason })
     this.#events.close()
   }
 
@@ -581,7 +575,7 @@ const summarise = (input: Record<string, unknown>): string | undefined => {
 
 const answersFor = (
   questions: readonly { readonly question: string }[],
-  answer: string,
+  answer: readonly string[],
 ): { answers: Record<string, string> } => ({ answers: questionAnswers(questions, answer) })
 
 const describe = (thrown: unknown): string => (thrown instanceof Error ? thrown.message : String(thrown))
@@ -672,11 +666,10 @@ class EventQueue implements AsyncIterable<AdapterEvent> {
     }
   }
 
-  /** The same queue, mapped and filtered — the contract's view (§4). */
-  async *project<T>(map: (event: AdapterEvent) => T | undefined): AsyncGenerator<T> {
+  /** The same queue, narrowed to the events `keep` admits — the contract's view (§4). */
+  async *filter<T extends AdapterEvent>(keep: (event: AdapterEvent) => event is T): AsyncGenerator<T> {
     for await (const event of this) {
-      const mapped = map(event)
-      if (mapped !== undefined) yield mapped
+      if (keep(event)) yield event
     }
   }
 }

@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { isFleetErrorCode, type TurnId } from '@fleet/foundation-core'
-import { capabilityChecks, type Provider } from '@fleet/runtime-provider-sdk'
+import { capabilityChecks, type Provider, type QuestionId } from '@fleet/runtime-provider-sdk'
 
 import { claudeCapabilities, ClaudeProvider } from '../src/index.ts'
 
@@ -28,6 +28,7 @@ test('declares the capabilities the spike measured, and no others', () => {
     resume: true,
     modelSwitch: true,
     usageTokens: true,
+    usageCost: true,
     structuredOutput: true,
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   })
@@ -37,10 +38,11 @@ test('a second provider on the same SDK is the same class with another id', () =
   const deepinfra = new ClaudeProvider({
     id: 'deepinfra',
     limits: { byModel: { 'deepseek-ai/DeepSeek-V4.1-Flash-1017': 1_048_576 }, fallback: 1_048_576 },
-    usageCost: false,
+    capabilities: { usageCost: false },
   })
   assert.equal(deepinfra.id, 'deepinfra')
   assert.equal(deepinfra.capabilities.usageTokens, true)
+  assert.equal(deepinfra.capabilities.usageCost, false)
 })
 
 test('the id must be provider-shaped or the registry cannot address it', () => {
@@ -75,8 +77,8 @@ test('an answer with no open question is not_found rather than a silent drop', a
     model: 'claude-opus-5-5',
     permissionMode: 'default',
   }
-  assert.throws(
-    () => fresh.answer(handle, 'yes', 'qst_0123456789abcdef'),
+  await assert.rejects(
+    fresh.answer(handle, 'qst_0123456789abcdef' as QuestionId, ['yes']),
     (thrown: unknown) => (thrown as { code?: string }).code === 'not_found',
   )
   assert.equal(await fresh.send(handle, { text: 'x', kind: 'nudge', briefVersion: 1 }).catch((e: { code?: string }) => e.code), 'not_found')
@@ -103,6 +105,7 @@ test('capabilities default to what the spike measured, frozen, and are a promise
     resume: true,
     modelSwitch: true,
     usageTokens: true,
+    usageCost: true,
     structuredOutput: true,
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   })
