@@ -5,6 +5,9 @@ description: Claude Code only; needs tmux peers started by fleet-up. Keeps fleet
 
 # Fleet Clear
 
+Peers now clear themselves: the `fleet-context-guard` Stop hook (fleet skill) makes a peer over `FLEET_CLEAR_LIMIT` write its state
+and hand off at the end of its turn. This skill stays for manual use: clear the whole fleet now, or check the peers' counts.
+
 Every peer re-reads its whole context on each turn, so a peer at 900k tokens costs about six times as much per message as one
 at 150k. Claude Code only warns near the limit, so the pane is not a usable signal. This skill reads each peer's real token
 count from its session log and clears early.
@@ -42,7 +45,7 @@ Set these in the environment, or in the profile (`~/.config/fleet/profiles/<name
 
 | Key | Default | What |
 | :- | :- | :- |
-| `FLEET_CLEAR_LIMIT` | `150000` | Tokens above which an idle peer is cleared |
+| `FLEET_CLEAR_LIMIT` | `150000` | Tokens above which a peer is cleared: at the end of its turn by the context-guard hook, or by `fleet-clear` when run by hand |
 | `FLEET_CLEAR_AFTER` | none | Commands sent after the role reloads, separated by `;` (for example `/i-have-adhd`) |
 | `FLEET_PM_LOOP` | `/keep-busy` (the keep-busy skill's 5-minute timer) | The line the project-manager gets back to restart its loop |
 | `FLEET_STATE` | `~/.fleet-state/<profile>` (`~/.fleet-state` with no profile) | Where state files and the handoff go |

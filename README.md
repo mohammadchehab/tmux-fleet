@@ -322,6 +322,7 @@ In Claude Code, `/fleet interrupt`, `/fleet clear`, `/fleet send`, `/fleet peek`
   card. Needs the `backlog` CLI.
 - `fleet-capacity`: who is busy, idle, asking, held or unknown, Claude Code and Cursor peers alike (pane states from `fleet/scripts/lib/pane.sh`). Needs tmux.
 - `fleet-handoff`: a peer writes its state file and clears its own session; a fresh copy reloads its role and carries on. Claude Code only; needs tmux.
+- `fleet-context-guard`: a Stop hook on every Claude Code peer. Over `FLEET_CLEAR_LIMIT` tokens (default 150000) at the end of a turn, the peer is told to write its state file, then `fleet-handoff` clears it and a fresh copy reloads. Peers clear themselves, so no peer reaches autocompact and nothing else has to run `fleet-clear`. A PreCompact hook logs any autocompact that still happens to `$FLEET_STATE/compactions.log`; misses go to `$FLEET_STATE/context-guard.log`.
 - `fleet-scale`: add or remove one peer. Needs tmux; its busy check is the shared one in `lib/pane.sh`.
 - `fleet-spinup`: start one more peer, the same way `fleet-up` starts every peer (it runs `fleet-scale add`): own session, worktree, tags and the board.
 - `fleet-standup`: status report from capacity, PR queue and blockers. Needs tmux and gh.

@@ -23,6 +23,23 @@
             "type": "command",
             "command": "~/.claude/skills/fleet/scripts/fleet-session-record",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/skills/fleet/scripts/fleet-context-guard",
+            "timeout": 40
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/skills/fleet/scripts/fleet-context-guard --compacted",
+            "timeout": 10
           }
         ]
       }

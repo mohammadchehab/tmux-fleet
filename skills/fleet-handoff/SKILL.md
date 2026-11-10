@@ -43,5 +43,5 @@ the loop it names). Log: `$FLEET_STATE/handoff-<peer>.log`.
 
 - Write the file before running the script; the script refuses without it.
 - Never hand off mid-change you cannot describe: finish the step, or write exactly where it stopped.
-- `fleet-clear` does the same for every idle peer over a token limit, from the outside. This skill is the peer's own
-  choice, any time.
+- `fleet-clear` does the same for every idle peer over a token limit, from the outside (manual use). The `fleet-context-guard`
+  Stop hook calls this script for a peer that is over `FLEET_CLEAR_LIMIT`. This skill is also the peer's own choice, any time.
