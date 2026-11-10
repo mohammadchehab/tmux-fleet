@@ -444,11 +444,12 @@ A routine declares `{id, trigger, run(ctx)}`; its runs are events (`routine.star
 silent routine is visible. Per-profile enable/disable lives in the profile; the defaults are all on. Peers never
 need to be told about any of them.
 
-**A failing routine is not retried on every tick.** Success is what moves `lastRun`, so a routine that fails is
-still due — which, left alone, means a broken routine hits its remote every tick, forever, in silence. The scheduler
-therefore records the failed attempt too and holds the next try off for a backoff: **double the tick interval**,
-capped at the routine's own period (a day for a scheduled routine; an hour for a heartbeat or event routine, whose
-"period" is too short to be a cap). `lastRun` itself stays a record of success — the backoff only spaces retries.
+**A failing routine is not retried on every tick.** A failed run is a run, so it moves `lastRun` and the routine is
+next due at its own period — that alone keeps a broken routine off the next tick. What it does not do is stop it:
+left alone, a heartbeat retries every period forever, in silence. The scheduler therefore records the failure count
+and holds the next try off until `last attempt + max(period, min(tick · 2^failures, 1 h))`. The doubling only ever
+*lengthens* a retry past the period, never shortens it: a broken daily routine still runs at most once a day, and a
+broken heartbeat backs off from its minute towards the hour rather than hammering its remote every 60 s.
 At the **third consecutive failure** the scheduler appends `routine.failing`, which §6.1 projects into a `failure`
 notification naming the routine, the error and the next retry; it says it again only when the error changes or the
 routine recovers, so a broken remote rings once, not once a retry.

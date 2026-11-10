@@ -156,9 +156,9 @@ const ESCALATE_AFTER = 3
 
 /**
  * One routine's run of failures, as the scheduler remembers it between ticks
- * (§6). `lastRun` only ever moves on success, which is what makes a routine due
- * *now*, and is also why a routine that kept failing used to be due on every
- * tick forever: nothing recorded the attempt that failed. This does.
+ * (§6). `lastRun` moves on a failure as well (`#134`), which is what keeps a
+ * broken routine off the very next tick; this is what says how many failures in
+ * a row it has had, and so how far the next retry is pushed out.
  */
 interface Attempt {
   /** Attempts in a row that ended in a failure, this one included. */
@@ -221,24 +221,33 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
   }
 
   /**
-   * The longest a retry may be spaced out: the routine's own period (§6). A
-   * routine with a daily schedule has that day; a heartbeat or event routine has
-   * no period worth waiting for, so an hour.
+   * The routine's own period, in millis — what its window already waits between
+   * runs, and so the shortest a retry may be spaced (§6). A `schedule` fires
+   * once a day; a heartbeat every `everyMs`; a routine that only listens for
+   * events has no period of its own, so nothing to wait out.
    */
-  const backoffCapMs = (routine: PlannedRoutine): number =>
-    routine.triggers.some((trigger) => trigger.kind === 'schedule') ? DAY_MS : HOUR_MS
+  const periodMs = (routine: PlannedRoutine): number => {
+    let period = 0
+    for (const trigger of routine.triggers) {
+      if (trigger.kind === 'schedule') period = Math.max(period, DAY_MS)
+      if (trigger.kind === 'heartbeat') period = Math.max(period, trigger.everyMs)
+    }
+    return period
+  }
 
   /**
-   * Double from the tick interval, capped at the routine's period (§6): 10 s, 20,
-   * 40, … so a broken routine costs one attempt per doubling instead of one per
-   * tick. `failures` is how many have already failed — the delay before the next
-   * try.
+   * How long a failing routine waits before its next attempt (§6): the doubling
+   * from the tick interval — `tick`, `2×tick`, `4×tick`, … capped at an hour —
+   * and never shorter than the routine's own period. So the backoff only ever
+   * *lengthens* a retry past the period: a broken daily routine still runs at
+   * most once a day, and a broken heartbeat backs off from its minute towards
+   * the hour instead of being retried every tick. `failures` is how many
+   * attempts in a row have failed — the delay before the next one.
    */
   const backoffMs = (routine: PlannedRoutine, failures: number): number => {
-    const cap = backoffCapMs(routine)
-    let delay = tickIntervalMs
-    for (let doubled = 0; doubled < failures && delay < cap; doubled += 1) delay *= 2
-    return Math.min(delay, cap)
+    let doubling = tickIntervalMs
+    for (let doubled = 0; doubled < failures && doubling < HOUR_MS; doubled += 1) doubling *= 2
+    return Math.max(periodMs(routine), Math.min(doubling, HOUR_MS))
   }
 
   /** Whether the last failed attempt still holds this routine's next try off (§6). */
@@ -442,17 +451,16 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
     const records: RunRecord[] = []
     for (const routine of installed) {
       // A routine runs at most once per tick, however many of its triggers are
-      // due — and a routine that just failed waits out its backoff first (§6).
+      // due — and a routine that just failed also waits out its backoff (§6).
       //
-      // The backoff is not an extra gate laid over the window, it *replaces* it
-      // for a routine that is failing: `lastRun` moves on a failure too (the
-      // projection stamps `lastRunAt` with it), so a daily routine that failed
-      // would otherwise wait a day for its retry and the backoff — 2×, 4×, 8× the
-      // tick, capped at the period — would never get to fire at all. Whichever
-      // comes first, the routine's own window or its retry, is the next attempt.
+      // Both gates are needed and neither subsumes the other: `lastRun` moves on
+      // a failure too (the projection stamps `lastRunAt` with it), so the window
+      // is what stops the next tick from being due; the backoff is what spaces
+      // the retries *beyond* the window once the failures pile up. The backoff is
+      // never shorter than the window, so the later of the two wins.
       const recurring = routine.triggers.find(isRecurring)
       if (recurring === undefined) continue
-      const due = isDue(recurring, windowOf(routine.id, now)) || attempts.has(routine.id)
+      const due = isDue(recurring, windowOf(routine.id, now))
       if (due && retryDue(routine, now)) records.push(await run(routine, recurring.kind))
     }
     return records
