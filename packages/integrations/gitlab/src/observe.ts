@@ -9,7 +9,12 @@
  * 1. **No pipeline is `pending`, not `passing`.** A merge request whose pipeline
  *    has not started has no `head_pipeline`, and a merge request with no pipeline
  *    is exactly what §10's "green on the head sha" is there to refuse. Reading
- *    "nothing ran" as "nothing failed" would merge unchecked code.
+ *    "nothing ran" as "nothing failed" would merge unchecked code. The rule is a
+ *    **pin on the sha**, not just a count: a pipeline that ran on an earlier
+ *    commit is not a verdict about this head, so it is never graded, and no
+ *    pipeline *on the head* is `pending` however green the commit behind it was.
+ *    `skipped` is that case in another spelling — `[skip ci]` completes a
+ *    pipeline that ran no jobs.
  * 2. **A status this package does not model is `pending`.** GitLab adds pipeline
  *    statuses (`waiting_for_resource`, `preparing`, `scheduled`, …); a verdict is
  *    only `passing` for the statuses that mean it, so an unknown one waits for a
@@ -109,8 +114,12 @@ const needText = (row: Readonly<Record<string, unknown>>, field: string): string
 
 /** Pipeline statuses that mean "do not merge". `canceled` is here: a pipeline that stopped is not a green one. */
 const failingStatuses: ReadonlySet<string> = new Set(['failed', 'canceled'])
-/** The two that mean "this commit was checked and nothing objected". `skipped` is a completed pipeline that ran no jobs. */
-const passingStatuses: ReadonlySet<string> = new Set(['success', 'skipped'])
+/**
+ * The one status that means "this commit was checked and nothing objected".
+ * `skipped` is deliberately not here: a pipeline that ran no jobs says nothing
+ * about the commit, and rule 1 makes "nothing ran" wait rather than merge.
+ */
+const passingStatuses: ReadonlySet<string> = new Set(['success'])
 
 const pipelineId = (row: Readonly<Record<string, unknown>>): number => {
   const id = row['id']
@@ -121,12 +130,50 @@ const pipelineId = (row: Readonly<Record<string, unknown>>): number => {
 const pipelineName = (row: Readonly<Record<string, unknown>>): string => `pipeline ${String(pipelineId(row))}`
 
 /**
- * The merge request's pipelines as §10 states it: **the newest one** decides. A
- * retried pipeline leaves the failed attempt behind, so grading every pipeline
- * for a commit would keep a merge request red after someone fixed it.
+ * The commit a verdict is about: the head the merge request is at now, and the
+ * branch it came from. Both come from the merge request rather than from the
+ * pipelines, because the pipelines are what is being judged.
  */
-export const checksFrom = (value: unknown): { readonly state: ChecksState; readonly failing: readonly string[] } => {
-  const pipelines = pipelinesIn(value)
+export interface ChecksAt {
+  readonly sha: Sha
+  readonly ref?: string
+}
+
+/**
+ * The rows that ran on `at` — rule 1's pin, as a filter over the pipelines. A row
+ * carrying no `sha` cannot be shown to describe `at`, so it is dropped: a verdict
+ * about a commit nobody identified is the one thing §10 must not act on. `ref` is
+ * compared only when the row has one, since GitLab leaves it off some pipeline
+ * rows and a missing ref is not a different branch.
+ */
+const ranOn = (
+  rows: readonly Readonly<Record<string, unknown>>[],
+  at: ChecksAt | undefined,
+): readonly Readonly<Record<string, unknown>>[] => {
+  if (at === undefined) return rows
+  return rows.filter((row) => {
+    if (text(row['sha']) !== at.sha) return false
+    const ref = text(row['ref'])
+    return at.ref === undefined || ref === undefined || ref === at.ref
+  })
+}
+
+/**
+ * The merge request's pipelines as §10 states it: **the newest one that ran on the
+ * head** decides. A retried pipeline leaves the failed attempt behind, so grading
+ * every pipeline for a commit would keep a merge request red after someone fixed
+ * it. With `at`, a pipeline for an older commit is dropped before the newest is
+ * picked, and none left means `pending` — the head itself was never checked, and
+ * an older pipeline being green is not evidence that it was.
+ *
+ * `at` is optional for the caller that has no head in hand and is grading a bare
+ * pipeline list; every path from a merge request passes it.
+ */
+export const checksFrom = (
+  value: unknown,
+  at?: ChecksAt,
+): { readonly state: ChecksState; readonly failing: readonly string[] } => {
+  const pipelines = ranOn(pipelinesIn(value), at)
   if (pipelines.length === 0) return { state: 'pending', failing: [] }
 
   let latest = pipelines[0]
@@ -231,7 +278,7 @@ export const pullRequestFrom = (raw: unknown, on: Repo, pipelines?: unknown): Fo
   const base = needText(row, 'target_branch')
   const head = needText(row, 'source_branch')
   const headSha = shape(shaShape(), row['sha'], 'sha')
-  const checks = checksFrom(pipelines ?? row['head_pipeline'])
+  const checks = checksFrom(pipelines ?? row['head_pipeline'], { sha: headSha, ref: head })
   const review = reviewFrom(row['approvals'] ?? row['approved_by'])
   const merged = row['state'] === 'merged' || (row['merged_at'] !== null && row['merged_at'] !== undefined)
   const state = stateFrom(row['state'])
@@ -255,12 +302,19 @@ export const pullRequestFrom = (raw: unknown, on: Repo, pipelines?: unknown): Fo
   }
 }
 
-/** `checks` on its own call: the sha the pipeline ran on travels with the verdict, so it can be matched (§10). */
+/**
+ * `checks` on its own call: the sha the pipeline ran on travels with the verdict,
+ * so it can be matched (§10). The verdict is graded only against pipelines at
+ * `headSha`, which is what keeps the pair from describing two commits — the sha
+ * that is reported is the sha that was asked about, so a green pipeline on an
+ * older commit can no longer travel as this one's.
+ */
 export const gradedChecksFrom = (raw: unknown, pipelines: unknown): GradedChecks => {
   const row = record(raw)
   if (row === undefined) throw fleetError('external_failed', 'glab reported a merge request that is not an object')
   const headSha = shape(shaShape(), row['sha'], 'sha')
-  return { ...checksFrom(pipelines), headSha }
+  const head = text(row['source_branch'])
+  return { ...checksFrom(pipelines, { sha: headSha, ...(head === undefined ? {} : { ref: head }) }), headSha }
 }
 
 /** The head sha a merge request is at, read on its own — what a refused merge is compared against (§10). */
