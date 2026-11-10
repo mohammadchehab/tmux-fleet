@@ -616,7 +616,8 @@ What is true today, and why a peer cannot use Figma, Atlassian or Delivery Facto
 3. **The daemon resolves at every session start**, including a resume, so a rotated token is picked up without a restart
    (as `envFor` already does). `SessionSpec.mcp` carries the resolved servers; a new `mcpServersFor(peer)` in
    `apps/daemon` does the resolving and is the only place a value is read. Codegraph is added here, for every provider
-   that takes MCP, with `CODEGRAPH_ROOT` set to the peer's checkout (which depends on engineer-1's finding on `spec.cwd`).
+   that takes MCP, with `CODEGRAPH_ROOT` set to `spec.cwd`. `spec.cwd` was the daemon's `stateDir` for every peer until #142 made it the peer's
+   owned worktree, else the repo's profile checkout, else a refusal; this section assumes #142 and re-reads it at every start.
 4. **What is stored.** `session.started` records `mcp: [{id, transport, host}]` and nothing else. A header value, an env
    value or a path to a secret file is never in an event, a notification, an error detail or a process argument; the
    errors name the secret's *name* and the variable or file an operator can act on, and quote neither (as `jira-env.ts`).

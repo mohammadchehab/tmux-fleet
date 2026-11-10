@@ -73,7 +73,6 @@ export const peerCompactions = (): Schema<PeerCompactions> =>
   })
 
 export interface Session {
-  readonly sessionId: SessionId
   readonly peerId: PeerId
   readonly providerId: string
   readonly providerSessionRef: ProviderSessionRef
