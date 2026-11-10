@@ -1,7 +1,7 @@
 /**
  * Stream messages → adapter events. The fixtures are the real message shapes the
- * spike recorded for both endpoints (`spikes/agent-sdk/results/*-evidence.jsonl`),
- * reduced to the fields the mapping reads.
+ * spike recorded for both endpoints (`docs/design/spikes/agent-sdk.md`), reduced to
+ * the fields the mapping reads.
  *
  * The turn boundary is the important one: `interrupt()` does not arrive as an
  * exception, it arrives as an ordinary `result` with `is_error: true`, so the

@@ -1,4 +1,0 @@
-
---- probe: resume-read / deepinfra ---
-elapsed_ms 2370
-PROBE_RESULT {"probe":"resume-read","provider":"deepinfra","evidence":{"requested_resume_id":"cdcc000d-0c53-49b8-a372-779cbfffc0e0","init":{"session_id":"cdcc000d-0c53-49b8-a372-779cbfffc0e0","model":"deepseek-ai/DeepSeek-V4.1-Flash-1017"},"context_intact":true,"answer":{"text":"PURPLE-OTTER-4417","is_error":false,"modelUsage":{"deepseek-ai/DeepSeek-V4.1-Flash-1017":{"inputTokens":290,"outputTokens":102,"thinkingTokens":0,"cacheReadInputTokens":16000,"cacheCreationInputTokens":0,"cacheCreationEphemeral5mInputTokens":0,"cacheCreationEphemeral1hInputTokens":0,"webSearchRequests":0,"costUSD":0.0064,"contextWindow":200000,"maxOutputTokens":32000,"canonicalModel":"deepseek-ai/deepseek-v4.1-flash-1017","provider":"firstParty","costBasis":"unknown"}}}}}

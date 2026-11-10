@@ -1,4 +1,0 @@
-
---- probe: switch / claude ---
-elapsed_ms 6608
-PROBE_RESULT {"probe":"switch","provider":"claude","evidence":{"turns":[{"at":2347,"assistant_model":"claude-sonnet-5-5"},{"at":5591,"assistant_model":"claude-haiku-4-5-20251001"},{"at":6076,"assistant_model":"claude-haiku-4-5-20251001"}],"switched_to":"claude-haiku-4-5-20251001","setModel":"ok","modelUsage_after_switch":["claude-haiku-5-5","claude-sonnet-5-5","claude-haiku-4-5-20251001"]}}

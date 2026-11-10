@@ -4,8 +4,3 @@
 # Format: <commit>:<path>:<rule>:<line>
 # Fingerprints come from the finding itself (JSON report "Fingerprint", or code scanning's alert). They survive a line
 # shift, since the commit and the rule are in them. See docs/runbook/ci.md.
-
-# A fixed phrase the resume probe tells a real session to remember (a word, a dash and four digits), matched by the
-# generic-api-key heuristic. It is test input in throwaway spike code (spikes/ is outside the workspace, §1.1), it is
-# quoted here no further so it does not match again, and it grants access to nothing.
-e257e145443d7baca9a919d26869d8d91c6271ec:spikes/agent-sdk/probe.mjs:generic-api-key:515

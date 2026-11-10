@@ -53,7 +53,6 @@ packages/notify/         core, channels/macos
 packages/integrations/   github, trackers
 apps/                    daemon (fleetd), clients/, hooks/
 tests/architecture/      the import-direction rules, enforced as a test
-spikes/                  experiments, outside the workspace (not installed, not tested)
 ```
 
 The dependency rules are not a convention, they are a test: `tests/architecture/` walks the real workspace, resolves

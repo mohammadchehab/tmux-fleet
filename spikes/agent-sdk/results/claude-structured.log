@@ -1,4 +1,0 @@
-
---- probe: structured / claude ---
-elapsed_ms 2613
-PROBE_RESULT {"probe":"structured","provider":"claude","evidence":{"result_keys":["duration_api_ms","stop_reason","session_id","total_cost_usd","usage","modelUsage","permission_denials","terminal_reason","fast_mode_state","fast_mode_disabled_reason","subagent_stats","safety_stops","is_error","num_turns","subtype","api_error_status","result","structured_output","ttft_ms","type","duration_ms","uuid","ttft_stream_ms","time_to_request_ms","first_content_frame_ms","queued_turn_count","result_index","model_usage_since_last_result","credential_expires_at"],"structured_output":{"status":"ok","count":3},"result_text":"{\"status\":\"ok\",\"count\":3}","message_sequence":["system/init","rate_limit_event","assistant","user","result/success"]}}

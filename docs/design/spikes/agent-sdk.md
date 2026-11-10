@@ -9,8 +9,10 @@ providers end up with the same `capabilities`; the differences are in what the a
 (context limit, cost, endpoint), and those are listed below as proposed contract changes for the architect — not
 decided here.
 
-Environment and how to reproduce are in [`spikes/agent-sdk/README.md`](../../../spikes/agent-sdk/README.md).
-Every claim below cites the captured run in `spikes/agent-sdk/results/`.
+**This document is the record.** The spike harness and its captured runs were deleted once the findings were promoted
+into packages; what a claim below cites is the *name of the log it came from* — `claude-usage.log`,
+`deepinfra-events.log` — kept so a reader can tell which run and which endpoint a number is from. The versions table is
+the environment those runs were taken in.
 
 | | |
 | :- | :- |
@@ -225,8 +227,8 @@ object on top (`t-mode.mjs` below). So:
 - A CI conformance check is still cheap insurance, but it should assert what actually varies: that the first init
   carries the requested mode, and that a write in `default` reaches `canUseTool`.
 
-Reproduction: `spikes/agent-sdk/t-mode.mjs` (the matrix) and `spikes/agent-sdk/t-mode2.mjs` (the init sequence), with
-output in `results/mode-echo-matrix.log` and `results/claude-init-sequence.log`.
+The probes that produced this (`t-mode.mjs` for the matrix, `t-mode2.mjs` for the init sequence) went with the spike;
+what they captured is named above — `mode-echo-matrix.log` and `claude-init-sequence.log`.
 
 ---
 
