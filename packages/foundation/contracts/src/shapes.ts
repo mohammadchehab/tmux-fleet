@@ -3,7 +3,7 @@
  * PR reference or a severity has exactly one spelling across the fleet.
  */
 
-import { number, object, oneOf, positiveInt, refine, string, text, type Schema } from '@fleet/foundation-core'
+import { number, object, objectAs, oneOf, positiveInt, refine, string, text, type Schema } from '@fleet/foundation-core'
 import { repo, type Repo } from '@fleet/foundation-core'
 
 /** A PR as everything refers to it: the repo and the number. */
@@ -13,7 +13,7 @@ export interface PullRequestRef {
 }
 
 export const pullRequestRef = (): Schema<PullRequestRef> =>
-  object({ repo: repo(), number: positiveInt() }) as Schema<PullRequestRef>
+  objectAs<PullRequestRef>()({ repo: repo(), number: positiveInt() })
 
 /** An external tracker key (Jira, Backlog.md); a sink and a source, not the state (§3). */
 export interface ExternalRef {
@@ -22,7 +22,7 @@ export interface ExternalRef {
 }
 
 export const externalRef = (): Schema<ExternalRef> =>
-  object({ system: string({ minLength: 1, maxLength: 40 }), key: string({ minLength: 1, maxLength: 80 }) }) as Schema<ExternalRef>
+  objectAs<ExternalRef>()({ system: string({ minLength: 1, maxLength: 40 }), key: string({ minLength: 1, maxLength: 80 }) })
 
 /** A findings severity. `critical` is profile-defined; this is the scanner's own rating (§6.2). */
 export const severities = ['info', 'low', 'medium', 'high', 'critical'] as const

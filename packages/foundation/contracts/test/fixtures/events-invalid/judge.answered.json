@@ -1,0 +1,25 @@
+{
+  "input": {
+    "seq": 45,
+    "ts": "2026-11-10T09:44:02.000Z",
+    "type": "judge.answered",
+    "subject": "wrk_7f3a91c2d84b0e56",
+    "actor": "judge:claude-sonnet-5-5",
+    "causedBy": [
+      44
+    ],
+    "data": {
+      "questionId": "qst_9a8b7c6d5e4f3021",
+      "kind": "review_verdict",
+      "answer": {
+        "kind": "review_verdict",
+        "verdict": "approve",
+        "why": "the finding is a nit; the retarget loop already stops on an unchanged base"
+      },
+      "model": "claude-sonnet-5-5",
+      "durationMs": 1840,
+      "retries": "not-a-number"
+    }
+  },
+  "path": "data.retries"
+}

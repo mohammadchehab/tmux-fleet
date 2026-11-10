@@ -1,0 +1,21 @@
+{
+  "input": {
+    "seq": 6,
+    "ts": "2026-11-10T09:06:00.000Z",
+    "type": "provider.errored",
+    "subject": "architect",
+    "actor": "pm",
+    "causedBy": [
+      5
+    ],
+    "data": {
+      "peerId": 42,
+      "sessionId": "ses_0b1c2d3e4f506172",
+      "providerId": "claude-code",
+      "code": "rate_limited",
+      "message": "429 from the provider; retry scheduled after 30s",
+      "retryable": true
+    }
+  },
+  "path": "data.peerId"
+}

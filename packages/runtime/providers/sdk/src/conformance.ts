@@ -7,8 +7,9 @@
  * (`tests/fixtures/provider-streams`) and the first providers.
  */
 
+import { toFleetError } from '@fleet/foundation-core'
 import type { ProviderCapabilities } from '@fleet/foundation-contracts'
-import type { Provider } from './provider.ts'
+import type { Provider, SessionHandle, SessionSpec } from './provider.ts'
 
 /** A recorded provider event stream, replayed against `events()` in a test. */
 export interface ProviderStreamFixture {
@@ -59,20 +60,69 @@ export const capabilityChecks = (): readonly ConformanceCheck[] => [
       return null
     },
   },
+]
+
+/**
+ * A check that needs a session actually running: it is handed a provider and a
+ * handle it started, and may drive that session (resume it, then stop it).
+ * `capabilityChecks` cannot observe this — a capability is a promise until the
+ * method behind it is called.
+ */
+export interface SessionCheck {
+  readonly name: string
+  readonly because: string
+  readonly run: (subject: SessionSubject) => Promise<string | null>
+}
+
+export interface SessionSubject {
+  readonly provider: Provider
+  readonly handle: SessionHandle
+  /** The spec `handle` was started from. */
+  readonly spec: SessionSpec
+}
+
+/**
+ * The checks that need a live session. Phase 1 providers run these in their own
+ * package (`tests/conformance/providers`); phase 0 defines the rule.
+ */
+export const resumeChecks = (): readonly SessionCheck[] => [
   {
-    name: 'predicts whether it can resume',
-    because: 'resume: false is a promise the supervisor plans around, not a hint (§4, §16)',
-    run: async (provider) =>
-      provider.capabilities.resume === true || provider.capabilities.resume === false
-        ? null
-        : 'capabilities.resume must be a boolean',
-  },
-  {
-    name: 'reports usage or says it cannot',
-    because: 'the self-purge trigger falls back to turn count when usageTokens is false (§8)',
-    run: async (provider) =>
-      provider.capabilities.usageTokens === true || provider.capabilities.usageTokens === false
-        ? null
-        : 'capabilities.usageTokens must be a boolean',
+    name: 'resume() does what capabilities.resume says',
+    because:
+      'the interface is uniform — resume() is always callable — so the capability must not lie: false rejects unsupported, true returns a usable session (§4, §13, §16)',
+    run: async ({ provider, handle, spec }) => {
+      const resumeSpec: SessionSpec = { ...spec, resumeRef: handle.sessionRef }
+      let resumed: SessionHandle
+      try {
+        resumed = await provider.resume(handle.sessionRef, resumeSpec)
+      } catch (thrown) {
+        const error = toFleetError(thrown, 'provider_failed')
+        if (provider.capabilities.resume) {
+          return `resume() rejected with ${error.code} although capabilities.resume is true: ${error.message}`
+        }
+        return error.code === 'unsupported'
+          ? null
+          : `resume() must reject FleetError('unsupported') when capabilities.resume is false, got ${error.code}: ${error.message}`
+      }
+
+      // It returned, so the session is real: stop it before reporting.
+      try {
+        await provider.stop(resumed)
+      } catch (thrown) {
+        const error = toFleetError(thrown, 'provider_failed')
+        return `resume() returned a session that stop() could not close: ${error.message}`
+      }
+
+      if (!provider.capabilities.resume) {
+        return 'resume() returned a session although capabilities.resume is false'
+      }
+      if (typeof resumed.sessionId !== 'string' || resumed.sessionId === '') {
+        return 'resume() returned a session with no sessionId'
+      }
+      if (resumed.peerId !== handle.peerId || resumed.providerId !== handle.providerId) {
+        return `resume() returned a foreign session (${resumed.providerId}/${resumed.peerId}, expected ${handle.providerId}/${handle.peerId})`
+      }
+      return null
+    },
   },
 ]

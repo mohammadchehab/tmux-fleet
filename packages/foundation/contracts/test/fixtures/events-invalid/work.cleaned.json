@@ -1,0 +1,17 @@
+{
+  "input": {
+    "seq": 15,
+    "ts": "2026-11-10T09:15:00.000Z",
+    "type": "work.cleaned",
+    "subject": "wrk_7f3a91c2d84b0e56",
+    "actor": "scheduler",
+    "causedBy": [
+      14
+    ],
+    "data": {
+      "workId": 42,
+      "worktreeId": "wtr_5e6f708192a3b4c5"
+    }
+  },
+  "path": "data.workId"
+}

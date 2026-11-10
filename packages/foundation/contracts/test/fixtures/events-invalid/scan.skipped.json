@@ -1,0 +1,16 @@
+{
+  "input": {
+    "seq": 51,
+    "ts": "2026-11-10T09:51:00.000Z",
+    "type": "scan.skipped",
+    "subject": "backbase/me-services-fleet@3ee0e67a1b2c3d4e5f60718293a4b5c6d7e8f901",
+    "actor": "scheduler",
+    "data": {
+      "repo": 42,
+      "sha": "3ee0e67a1b2c3d4e5f60718293a4b5c6d7e8f901",
+      "tool": "semgrep",
+      "reason": "no rules for the changed languages"
+    }
+  },
+  "path": "data.repo"
+}

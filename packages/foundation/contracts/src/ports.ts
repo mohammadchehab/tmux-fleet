@@ -24,7 +24,7 @@ export interface PullRequests {
   get(repo: Repo, number: number): Promise<PullRequest | undefined>
 
   /** `dedupe`: search open PRs for the same intent before assigning work (§5.2). */
-  search(repo: Repo, text: string): Promise<readonly PullRequest[]>
+  searchIntent(repo: Repo, text: string): Promise<readonly PullRequest[]>
 
   create(input: {
     readonly repo: Repo

@@ -4,17 +4,7 @@
  * can always be traced to the exact text it was given.
  */
 
-import {
-  array,
-  boolean,
-  object,
-  optional,
-  positiveInt,
-  string,
-  text,
-  timestamp,
-  type Schema,
-} from '@fleet/foundation-core'
+import { array, boolean, object, objectAs, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
 import { briefId, contractId, peerId, workId } from '@fleet/foundation-core'
 import { workState } from '../work-state.ts'
 import { externalRef, line, pullRequestRef } from '../shapes.ts'
@@ -44,7 +34,7 @@ export interface Work {
 }
 
 export const work = (): Schema<Work> =>
-  object({
+  objectAs<Work>()({
     workId: workId(),
     title: line(),
     state: workState(),
@@ -60,7 +50,7 @@ export const work = (): Schema<Work> =>
     blockedReason: optional(text(1000)),
     createdAt: timestamp(),
     updatedAt: timestamp(),
-  }) as Schema<Work>
+  })
 
 export interface Contract {
   readonly contractId: ContractId
@@ -74,7 +64,7 @@ export interface Contract {
 }
 
 export const contract = (): Schema<Contract> =>
-  object({
+  objectAs<Contract>()({
     contractId: contractId(),
     version: positiveInt(),
     published: boolean(),
@@ -82,7 +72,7 @@ export const contract = (): Schema<Contract> =>
     contentHash: line(64),
     workId: optional(workId()),
     updatedAt: timestamp(),
-  }) as Schema<Contract>
+  })
 
 export interface ContractVersionRef {
   readonly contractId: ContractId
@@ -90,7 +80,7 @@ export interface ContractVersionRef {
 }
 
 export const contractVersionRef = (): Schema<ContractVersionRef> =>
-  object({ contractId: contractId(), version: positiveInt() }) as Schema<ContractVersionRef>
+  objectAs<ContractVersionRef>()({ contractId: contractId(), version: positiveInt() })
 
 export interface Brief {
   readonly briefId: BriefId
@@ -105,7 +95,7 @@ export interface Brief {
 }
 
 export const brief = (): Schema<Brief> =>
-  object({
+  objectAs<Brief>()({
     briefId: briefId(),
     workId: workId(),
     peerId: peerId(),
@@ -114,4 +104,4 @@ export const brief = (): Schema<Brief> =>
     text: text(100_000),
     createdAt: timestamp(),
     supersededBy: optional(briefId()),
-  }) as Schema<Brief>
+  })

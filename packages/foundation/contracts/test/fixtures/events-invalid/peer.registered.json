@@ -1,0 +1,18 @@
+{
+  "input": {
+    "seq": 1,
+    "ts": "2026-11-10T09:01:00.000Z",
+    "type": "peer.registered",
+    "subject": "engineer-1",
+    "actor": "pm",
+    "data": {
+      "peerId": 42,
+      "role": "engineer",
+      "providerId": "claude-code",
+      "model": "claude-sonnet-5-5",
+      "permissionMode": "acceptEdits",
+      "worktreeId": "wtr_5e6f708192a3b4c5"
+    }
+  },
+  "path": "data.peerId"
+}

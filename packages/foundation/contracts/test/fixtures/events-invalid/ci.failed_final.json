@@ -1,0 +1,22 @@
+{
+  "input": {
+    "seq": 26,
+    "ts": "2026-11-10T09:26:00.000Z",
+    "type": "ci.failed_final",
+    "subject": "backbase/me-services-fleet#42",
+    "actor": "scheduler",
+    "causedBy": [
+      22
+    ],
+    "data": {
+      "pr": {
+        "repo": "backbase/me-services-fleet",
+        "number": 42
+      },
+      "headSha": 42,
+      "check": "integration/postgres",
+      "attempts": 3
+    }
+  },
+  "path": "data.headSha"
+}

@@ -10,13 +10,23 @@
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { test } from 'node:test'
-import { parse, SchemaError, type Schema } from '@fleet/foundation-core'
+import { decodeStrict, parse, SchemaError, type Schema } from '@fleet/foundation-core'
 import { EVENT_SCHEMAS, eventSchemaFor, eventTypes, fleetEvent, type FleetEventType } from '../src/index.ts'
 
 const fixturesDir = new URL('./fixtures/events/', import.meta.url)
 
 const fixtureFor = (type: string): unknown =>
   JSON.parse(readFileSync(new URL(`${type}.json`, fixturesDir), 'utf8'))
+
+const invalidDir = new URL('./fixtures/events-invalid/', import.meta.url)
+
+const invalidFor = (type: string): { input: unknown; path: string } =>
+  JSON.parse(readFileSync(new URL(`${type}.json`, invalidDir), 'utf8'))
+
+const invalidNames = readdirSync(invalidDir)
+  .filter((name) => name.endsWith('.json'))
+  .map((name) => name.slice(0, -'.json'.length))
+  .sort()
 
 const fixtureNames = readdirSync(fixturesDir)
   .filter((name) => name.endsWith('.json'))
@@ -80,4 +90,49 @@ test('an unknown key on a fixture is tolerated, so a newer writer cannot break a
 test('eventTypes has no duplicate and is the registry keys, untouched', () => {
   assert.equal(new Set(eventTypes).size, eventTypes.length)
   assert.deepEqual([...eventTypes], Object.keys(EVENT_SCHEMAS) as FleetEventType[])
+})
+
+/**
+ * The other half of the corpus: one input per event type that must be refused,
+ * and the exact path the refusal must name. A schema that starts accepting a
+ * value it used to refuse — a widened enum, an optional that became required
+ * nowhere, a brand that lost its pattern — fails here even though every golden
+ * fixture still round-trips.
+ *
+ * The corpus is generated from the goldens by `generate-invalid.ts` (one
+ * mutation per file), so regenerating it is how an intentional widening is
+ * recorded rather than silently absorbed.
+ */
+test('invalid fixtures cover the registry exactly', () => {
+  assert.deepEqual(invalidNames, [...eventTypes].sort(), 'one refused input per registered type')
+})
+
+for (const type of eventTypes) {
+  test(`refused: ${type}`, () => {
+    const { input, path } = invalidFor(type)
+    assert.notDeepEqual(input, fixtureFor(type), 'the invalid input is a mutation of the golden one')
+
+    const result = decodeStrict(EVENT_SCHEMAS[type] as Schema<unknown>, input)
+    assert.equal(result.ok, false, 'the store refuses it at the append boundary')
+    if (result.ok) return
+    assert.equal(result.error.issues.length, 1, `one mutation, one issue: ${result.error.message}`)
+    assert.equal(result.error.issues[0].path, path, 'the refusal names the field that was mutated')
+  })
+}
+
+test('an append with a misspelt optional field is refused, not silently stripped', () => {
+  // The tolerant reader drops `judgeModell` and keeps the event; the append
+  // boundary must not, or a producer's typo becomes data loss.
+  const fixture = fixtureFor('judge.answered') as { data: Record<string, unknown> }
+  const misspelt = { ...fixture, data: { ...fixture.data, judgeModell: 'claude-sonnet-5-5' } }
+
+  assert.deepEqual(parse(EVENT_SCHEMAS['judge.answered'], misspelt), fixture, 'a reader tolerates it')
+
+  const result = decodeStrict(EVENT_SCHEMAS['judge.answered'] as Schema<unknown>, misspelt)
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.deepEqual(
+    result.error.issues.map((issue) => issue.path),
+    ['data.judgeModell'],
+  )
 })

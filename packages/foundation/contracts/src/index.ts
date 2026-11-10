@@ -12,6 +12,9 @@ export * from './provider.ts'
 export * from './work-state.ts'
 export * from './shapes.ts'
 
+// the typed questions an LLM may be asked, and the port that answers them (§5.3)
+export * from './judge.ts'
+
 // the event registry: every type in §3, §5, §6, §7, §8
 export * from './events/registry.ts'
 export * from './events/peer.ts'
@@ -20,6 +23,7 @@ export * from './events/delivery.ts'
 export * from './events/messages.ts'
 export * from './events/ops.ts'
 export * from './events/decisions.ts'
+export * from './events/judge.ts'
 export * from './events/signals.ts'
 
 // projections (§3)

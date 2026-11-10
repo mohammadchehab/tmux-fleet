@@ -9,23 +9,7 @@
  * every provider signal below is a typed event.
  */
 
-import {
-  array,
-  boolean,
-  count,
-  literal,
-  number,
-  object,
-  oneOf,
-  optional,
-  positiveInt,
-  record,
-  refine,
-  string,
-  text,
-  union,
-  type Schema,
-} from '@fleet/foundation-core'
+import { array, boolean, count, literal, number, object, objectAs, oneOf, optional, positiveInt, record, refine, string, text, union, unionAs, type Schema } from '@fleet/foundation-core'
 import {
   briefId,
   contractId,
@@ -71,13 +55,13 @@ export interface ProviderCapabilities {
 }
 
 export const providerCapabilities = (): Schema<ProviderCapabilities> =>
-  object({
+  objectAs<ProviderCapabilities>()({
     resume: boolean(),
     modelSwitch: boolean(),
     usageTokens: boolean(),
     structuredOutput: boolean(),
     permissionModes: array(permissionMode(), { maxItems: permissionModes.length }),
-  }) as Schema<ProviderCapabilities>
+  })
 
 /**
  * The part of a provider anything outside `runtime` may see: its id and what it
@@ -103,12 +87,12 @@ export interface McpServer {
 }
 
 export const mcpServer = (): Schema<McpServer> =>
-  object({
+  objectAs<McpServer>()({
     id: string({ minLength: 1, maxLength: 80 }),
     command: string({ minLength: 1 }),
     args: optional(array(string())),
     env: optional(record(string())),
-  }) as Schema<McpServer>
+  })
 
 /** The brief a session starts from, resolved from the store at start (§7, §12). */
 export interface BriefHandoff {
@@ -120,12 +104,12 @@ export interface BriefHandoff {
 }
 
 export const briefHandoff = (): Schema<BriefHandoff> =>
-  object({
+  objectAs<BriefHandoff>()({
     briefId: briefId(),
     version: positiveInt(),
     contractVersions: array(object({ contractId: contractId(), version: positiveInt() })),
     text: text(),
-  }) as Schema<BriefHandoff>
+  })
 
 /**
  * A peer's typed handoff across a purge (§8). It is the single thing carried
@@ -143,7 +127,7 @@ export interface StateFile {
 }
 
 export const stateFile = (): Schema<StateFile> =>
-  object({
+  objectAs<StateFile>()({
     peerId: peerId(),
     goal: text(),
     done: array(text()),
@@ -152,7 +136,7 @@ export const stateFile = (): Schema<StateFile> =>
     decisions: array(text()),
     openQuestions: array(text()),
     briefVersion: positiveInt(),
-  }) as Schema<StateFile>
+  })
 
 /**
  * Everything a provider needs to start one session. Env and permission mode
@@ -179,7 +163,7 @@ export interface SessionSpec {
 }
 
 export const sessionSpec = (): Schema<SessionSpec> =>
-  object({
+  objectAs<SessionSpec>()({
     peerId: peerId(),
     role: string({ minLength: 1, maxLength: 80 }),
     cwd: string({ minLength: 1 }),
@@ -192,7 +176,7 @@ export const sessionSpec = (): Schema<SessionSpec> =>
     mcp: optional(array(mcpServer())),
     resumeRef: optional(providerSessionRef()),
     systemPromptAppend: optional(text()),
-  }) as Schema<SessionSpec>
+  })
 
 /** The kinds of message a turn can carry; they match `Message.kind` (§3, §7). */
 export const turnKinds = ['brief', 'answer', 'nudge', 'info'] as const
@@ -207,7 +191,7 @@ export interface Turn {
 }
 
 export const turn = (): Schema<Turn> =>
-  object({ text: text(), kind: oneOf(turnKinds), briefVersion: positiveInt() }) as Schema<Turn>
+  objectAs<Turn>()({ text: text(), kind: oneOf(turnKinds), briefVersion: positiveInt() })
 
 /** What `Provider.usage` reports; the self-purge trigger reads `contextTokens` (§8). */
 export interface Usage {
@@ -217,11 +201,11 @@ export interface Usage {
 }
 
 export const usage = (): Schema<Usage> =>
-  object({
+  objectAs<Usage>()({
     contextTokens: count(),
     contextLimit: positiveInt(),
     costUsd: optional(number({ min: 0 })),
-  }) as Schema<Usage>
+  })
 
 /**
  * The stream a provider pushes (§4). `waiting_input` is derived from
@@ -251,7 +235,7 @@ const isoInstant = (): Schema<string> =>
   refine(string({ minLength: 20, maxLength: 30 }), (v) => !Number.isNaN(Date.parse(v)), 'an ISO 8601 timestamp')
 
 export const providerEvent = (): Schema<ProviderEvent> =>
-  union([
+  unionAs<ProviderEvent>()([
     object({ type: literal('turn.started'), turnId: turnId(), at: isoInstant() }),
     object({ type: literal('turn.ended'), turnId: turnId(), at: isoInstant(), usage: optional(usage()) }),
     object({
@@ -268,7 +252,7 @@ export const providerEvent = (): Schema<ProviderEvent> =>
       contextTokensBefore: count(),
       contextTokensAfter: count(),
     }),
-  ]) as Schema<ProviderEvent>
+  ])
 
 export type ProviderStatus = PeerState
 

@@ -4,19 +4,7 @@
  * user-facing clients read: the decision inbox, the board and the report.
  */
 
-import {
-  array,
-  boolean,
-  count,
-  object,
-  oneOf,
-  optional,
-  positiveInt,
-  string,
-  text,
-  timestamp,
-  type Schema,
-} from '@fleet/foundation-core'
+import { array, boolean, count, object, objectAs, oneOf, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
 import { decisionId, findingId, notificationKey, peerId, workId } from '@fleet/foundation-core'
 import { severity } from '../shapes.ts'
 import { routineKinds, routineTriggers } from '../events/ops.ts'
@@ -55,7 +43,7 @@ export interface Decision {
 }
 
 export const decision = (): Schema<Decision> =>
-  object({
+  objectAs<Decision>()({
     decisionId: decisionId(),
     kind: string({ minLength: 1, maxLength: 60 }),
     state: oneOf(decisionStates),
@@ -69,7 +57,7 @@ export const decision = (): Schema<Decision> =>
     workId: optional(workId()),
     requestedAt: timestamp(),
     answeredAt: optional(timestamp()),
-  }) as Schema<Decision>
+  })
 
 // ------------------------------------------------------------------- routines
 
@@ -88,7 +76,7 @@ export interface Routine {
 }
 
 export const routine = (): Schema<Routine> =>
-  object({
+  objectAs<Routine>()({
     routineId: string({ minLength: 1, maxLength: 80 }),
     kind: oneOf(routineKinds),
     trigger: oneOf(routineTriggers),
@@ -96,7 +84,7 @@ export const routine = (): Schema<Routine> =>
     lastRunAt: optional(timestamp()),
     runs: count(),
     failures: count(),
-  }) as Schema<Routine>
+  })
 
 // --------------------------------------------------------------- notifications
 
@@ -122,7 +110,7 @@ export interface Notification {
 }
 
 export const notification = (): Schema<Notification> =>
-  object({
+  objectAs<Notification>()({
     key: notificationKey(),
     class: oneOf(notificationClasses),
     state: oneOf(notificationStates),
@@ -135,7 +123,7 @@ export const notification = (): Schema<Notification> =>
     sentAt: optional(timestamp()),
     remindedAt: optional(timestamp()),
     resolvedAt: optional(timestamp()),
-  }) as Schema<Notification>
+  })
 
 // -------------------------------------------------------------------- findings
 
@@ -166,7 +154,7 @@ export interface Finding {
 }
 
 export const finding = (): Schema<Finding> =>
-  object({
+  objectAs<Finding>()({
     findingId: findingId(),
     fingerprint: string({ minLength: 8, maxLength: 200 }),
     tool: string({ minLength: 1, maxLength: 60 }),
@@ -184,7 +172,7 @@ export const finding = (): Schema<Finding> =>
     raisedAt: timestamp(),
     verifiedBy: optional(peerId()),
     verifiedAt: optional(timestamp()),
-  }) as Schema<Finding>
+  })
 
 // ---------------------------------------------------------------- token report
 
@@ -212,7 +200,7 @@ export interface TokenReport {
 }
 
 export const tokenReport = (): Schema<TokenReport> =>
-  object({
+  objectAs<TokenReport>()({
     peerId: peerId(),
     role: string({ minLength: 1, maxLength: 80 }),
     workId: optional(workId()),
@@ -223,7 +211,7 @@ export const tokenReport = (): Schema<TokenReport> =>
     toolCalls: object({ grep: count(), glob: count(), read: count(), codegraph: count() }),
     redirects: count(),
     updatedAt: timestamp(),
-  }) as Schema<TokenReport>
+  })
 
 /** The share of exploration that went through codegraph, 0..1; `0` when there was none. */
 export const codegraphShare = (toolCalls: TokenReport['toolCalls']): number => {

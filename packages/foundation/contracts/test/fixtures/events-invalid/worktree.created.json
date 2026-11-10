@@ -1,0 +1,21 @@
+{
+  "input": {
+    "seq": 36,
+    "ts": "2026-11-10T09:36:00.000Z",
+    "type": "worktree.created",
+    "subject": "wtr_5e6f708192a3b4c5",
+    "actor": "scheduler",
+    "causedBy": [
+      1
+    ],
+    "data": {
+      "worktreeId": 42,
+      "repo": "backbase/me-services-fleet",
+      "branch": "feat/retarget-stacks",
+      "path": "~/Dev/tmux-fleet/.claude/worktrees/feat-retarget-stacks",
+      "ownerPeerId": "engineer-1",
+      "class": "active"
+    }
+  },
+  "path": "data.worktreeId"
+}

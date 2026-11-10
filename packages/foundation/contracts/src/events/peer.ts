@@ -28,7 +28,7 @@ export const peerRegistered = event(
  * pane.
  */
 export const peerStateChanged = event(
-  'peer.state',
+  'peer.state_changed',
   object({
     peerId: peerId(),
     state: peerState(),
@@ -81,7 +81,7 @@ export const sessionEnded = event(
  * notification class, deduped and rate-limited by key (§6.1).
  */
 export const providerError = event(
-  'provider.error',
+  'provider.errored',
   object({
     peerId: peerId(),
     sessionId: optional(sessionId()),

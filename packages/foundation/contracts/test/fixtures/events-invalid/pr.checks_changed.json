@@ -1,0 +1,25 @@
+{
+  "input": {
+    "seq": 22,
+    "ts": "2026-11-10T09:22:00.000Z",
+    "type": "pr.checks_changed",
+    "subject": "backbase/me-services-fleet#42",
+    "actor": "scheduler",
+    "causedBy": [
+      21
+    ],
+    "data": {
+      "pr": {
+        "repo": "backbase/me-services-fleet",
+        "number": 42
+      },
+      "headSha": 42,
+      "state": "failing",
+      "failing": [
+        "build",
+        "integration/postgres"
+      ]
+    }
+  },
+  "path": "data.headSha"
+}

@@ -1,0 +1,25 @@
+{
+  "input": {
+    "seq": 45,
+    "ts": "2026-11-10T09:45:00.000Z",
+    "type": "decision.requested",
+    "subject": "dec_6f708192a3b4c5d6",
+    "actor": "pm",
+    "causedBy": [
+      7
+    ],
+    "data": {
+      "decisionId": "dec_6f708192a3b4c5d6",
+      "kind": "same_feature",
+      "question": "Is \"retarget stacked PRs\" the same feature as FLEET-14?",
+      "options": [
+        "yes",
+        "no"
+      ],
+      "workId": "wrk_7f3a91c2d84b0e56",
+      "inputsHash": 42,
+      "routedTo": "judge:claude-sonnet-5-5"
+    }
+  },
+  "path": "data.inputsHash"
+}

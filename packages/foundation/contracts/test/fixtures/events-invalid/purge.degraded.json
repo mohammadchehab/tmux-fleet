@@ -1,0 +1,18 @@
+{
+  "input": {
+    "seq": 41,
+    "ts": "2026-11-10T09:41:00.000Z",
+    "type": "purge.degraded",
+    "subject": "architect",
+    "actor": "pm",
+    "causedBy": [
+      39
+    ],
+    "data": {
+      "peerId": "architect",
+      "sessionId": 42,
+      "reason": "two asks produced no valid state file; using the mechanical summary"
+    }
+  },
+  "path": "data.sessionId"
+}

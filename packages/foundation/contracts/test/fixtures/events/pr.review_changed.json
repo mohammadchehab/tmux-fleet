@@ -1,9 +1,9 @@
 {
-  "seq": 22,
-  "ts": "2026-11-10T09:22:00.000Z",
-  "type": "pr.checks",
+  "seq": 23,
+  "ts": "2026-11-10T09:23:00.000Z",
+  "type": "pr.review_changed",
   "subject": "backbase/me-services-fleet#42",
-  "actor": "scheduler",
+  "actor": "peer:architect",
   "causedBy": [
     21
   ],
@@ -13,10 +13,7 @@
       "number": 42
     },
     "headSha": "9c1d2e3f405162738495a6b7c8d9e0f1023a4b5c",
-    "state": "failing",
-    "failing": [
-      "build",
-      "integration/postgres"
-    ]
+    "state": "approved",
+    "reviewer": "architect"
   }
 }

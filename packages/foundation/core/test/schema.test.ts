@@ -7,9 +7,11 @@ import {
   oneOf,
   optional,
   parse,
+  parseStrict,
   record,
   refine,
   safeParse,
+  safeParseStrict,
   SchemaError,
   string,
   union,
@@ -76,5 +78,39 @@ describe('schema combinators', () => {
         return true
       },
     )
+  })
+})
+
+describe('write boundaries are strict, reads are tolerant', () => {
+  test('a tolerant parse drops an unknown key, a strict one names it', () => {
+    const input = { x: 'a', typo: 'lost silently' }
+    assert.deepEqual(parse(point, input), { x: 'a' }, 'a reader tolerates a newer writer')
+
+    const result = safeParseStrict(point, input)
+    assert.equal(result.ok, false)
+    if (result.ok) return
+    assert.deepEqual(result.error.issues.map((i) => i.path), ['typo'])
+  })
+
+  test('a misspelt optional field is caught before it reaches the store', () => {
+    // The case the mode exists for: `y` is optional, so a typo would otherwise
+    // change the value silently instead of failing.
+    assert.deepEqual(parse(point, { x: 'a', Y: 2 }), { x: 'a' })
+    assert.throws(() => parseStrict(point, { x: 'a', Y: 2 }), /Y: unknown field/)
+  })
+
+  test('strict mode reaches nested objects and array items, not just the root', () => {
+    const nested = object({ outer: object({ name: string() }), items: array(object({ id: string() })) })
+    assert.throws(() => parseStrict(nested, { outer: { name: 'n', extra: 1 }, items: [] }), /outer\.extra/)
+    assert.throws(() => parseStrict(nested, { outer: { name: 'n' }, items: [{ id: 'i', extra: 1 }] }), /items\[0\]\.extra/)
+  })
+
+  test('an open map is data all the way down, so strict mode has nothing to refuse', () => {
+    const env = record(string())
+    assert.deepEqual(parseStrict(env, { PATH: '/bin', HOME: '/root' }), { PATH: '/bin', HOME: '/root' })
+  })
+
+  test('strict mode still accepts a value the shape declares in full', () => {
+    assert.deepEqual(parseStrict(point, { x: 'a', y: 2 }), { x: 'a', y: 2 })
   })
 })

@@ -1,7 +1,7 @@
 {
   "seq": 6,
   "ts": "2026-11-10T09:06:00.000Z",
-  "type": "provider.error",
+  "type": "provider.errored",
   "subject": "architect",
   "actor": "pm",
   "causedBy": [

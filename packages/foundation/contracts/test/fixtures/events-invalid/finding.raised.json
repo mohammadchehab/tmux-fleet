@@ -1,0 +1,28 @@
+{
+  "input": {
+    "seq": 52,
+    "ts": "2026-11-10T09:52:00.000Z",
+    "type": "finding.raised",
+    "subject": "fnd_708192a3b4c5d6e7",
+    "actor": "scheduler",
+    "causedBy": [
+      51
+    ],
+    "data": {
+      "findingId": "fnd_708192a3b4c5d6e7",
+      "fingerprint": "sha256:9a8b7c6d5e4f3021",
+      "tool": "semgrep",
+      "ruleId": "typescript.lang.security.audit.hardcoded-secret",
+      "severity": "high",
+      "path": 42,
+      "line": 118,
+      "message": "Hardcoded credential in a DDL default value.",
+      "sha": "3ee0e67a1b2c3d4e5f60718293a4b5c6d7e8f901",
+      "pr": {
+        "repo": "backbase/me-services-fleet",
+        "number": 42
+      }
+    }
+  },
+  "path": "data.path"
+}
