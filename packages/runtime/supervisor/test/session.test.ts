@@ -262,6 +262,49 @@ test('events become peer states, and a completed turn that is under the limit ke
   assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
 })
 
+test('a tool.use for an ended turn is ignored even after a newer turn has ended too', async () => {
+  // The wrapper remembers only the newest ended turn, so a call arriving for an
+  // older one is not recognised by that slot. Counted, it would put an entry in
+  // `#toolCalls` under a turn that will never end again: nothing judges it and
+  // nothing clears it.
+  const r = rig()
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const first = 'trn_0000000000000001' as TurnId
+  const second = 'trn_0000000000000002' as TurnId
+  const at = '2026-11-10T09:00:00.000Z'
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
+    { type: 'turn.started', turnId: first, at },
+    { type: 'turn.ended', turnId: first, at, reason: 'completed' },
+    { type: 'turn.started', turnId: second, at },
+    { type: 'turn.ended', turnId: second, at, reason: 'completed' },
+    { type: 'tool.use', turnId: first, tool: 'Bash' },
+    { type: 'session.ended', reason: 'exit', code: 0 },
+  )
+  await run
+
+  assert.deepEqual(
+    r.records.filter((record) => record.type === 'peer.tool_used'),
+    [],
+    'a call whose turn already ended counts nothing, whichever ended turn is the newest',
+  )
+})
+
 test('a tool summary is stored only when it is a path — a command never reaches the log', async () => {
   // The supervisor is the writer of `peer.tool_used`, so it does not take the
   // adapter's word for what is safe: a summary the event must not carry is
