@@ -77,6 +77,9 @@ importers:
       '@fleet/security-scanners':
         specifier: workspace:*
         version: link:../../packages/security/scanners
+      '@fleet/workspace-worktree':
+        specifier: workspace:*
+        version: link:../../packages/workspace/worktree
       yaml:
         specifier: ^2.8.1
         version: 2.9.1
@@ -270,6 +273,15 @@ importers:
       '@fleet/security-findings':
         specifier: workspace:*
         version: link:../findings
+
+  packages/workspace/worktree:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../foundation/core
 
 packages:
 

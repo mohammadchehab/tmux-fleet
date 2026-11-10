@@ -28,6 +28,7 @@
     "@fleet/runtime-supervisor": "workspace:*",
     "@fleet/security-findings": "workspace:*",
     "@fleet/security-scanners": "workspace:*",
+    "@fleet/workspace-worktree": "workspace:*",
     "yaml": "^2.8.1"
   },
   "bin": {

@@ -62,12 +62,20 @@ export const standupRendered = event(
 
 // -------------------------------------------------------------------- findings
 
-/** A scanner finished a run over one SHA; a skip is recorded, never silent (§6.2). */
+/**
+ * A scanner finished a run over one SHA; a skip is recorded, never silent (§6.2).
+ *
+ * `sha` is optional because not every skip happens at a commit. A `pr.opened`
+ * skip names the head it declined to scan; a nightly skip that could not resolve
+ * `main`'s head at all — no checkout, or no `origin/main` — has no commit to
+ * name, and the reason says so. Recording the absence with a reason is still
+ * better than the silence §6.2 calls a bug.
+ */
 export const scanSkipped = event(
   'scan.skipped',
   object({
     repo: repo(),
-    sha: sha(),
+    sha: optional(sha()),
     tool: string({ minLength: 1, maxLength: 60 }),
     reason: string({ minLength: 1, maxLength: 500 }),
   }),

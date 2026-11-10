@@ -105,6 +105,31 @@ test('§6.2: a pr.opened is scanned by the tools the profile named, and the find
   assert.ok(scan.runs >= 1)
 })
 
+test('§6.2: the 02:00 schedule scans main at the head the workspace port names', async (t) => {
+  const mainSha = 'f00dc0ffee0123456789abcdef0123456789abcd' as Sha
+  const sandbox = await createSandbox({
+    security: ['semgrep'],
+    securityIo: fakeIo(),
+    // The `workspace` port (§9): a fake, so the nightly scan never fetches a remote.
+    branchHead: { head: async (cwd) => (cwd === checkout ? mainSha : undefined) },
+  })
+  t.after(() => sandbox.stop())
+
+  // The checkout is in the store before the daemon starts, because §6's catch-up
+  // runs a schedule that has no recorded run on the first start — and that first
+  // run is the nightly scan this test is about.
+  await sandbox.composed.store.append([worktreeCreated])
+  await sandbox.call('up')
+
+  const raised = await until(
+    async () => (await sandbox.events()).find((event) => event.type === 'finding.raised'),
+    'the nightly scan to raise its finding',
+  )
+
+  assert.equal(raised.data.sha, mainSha, 'the nightly scan reports the head it was given, not a guess')
+  assert.equal(raised.data.tool, 'semgrep')
+})
+
 test('§6.2: a profile with no `security` block installs no scanner, and a pr.opened is not scanned', async (t) => {
   const sandbox = await createSandbox()
   t.after(() => sandbox.stop())
