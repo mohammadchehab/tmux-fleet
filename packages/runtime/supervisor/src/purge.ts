@@ -89,7 +89,8 @@ export interface PurgePorts {
   readonly restart: (stateFile: StateFile, from: SessionHandle) => Promise<RestartResult>
   /** What the store already knows, for the degraded handoff. */
   readonly facts: () => MechanicalFacts | Promise<MechanicalFacts>
-  readonly record: (event: PurgeEvent) => void
+  /** Awaited at every call: the store's `append` is what makes a purge visible. */
+  readonly record: (event: PurgeEvent) => void | Promise<void>
   readonly writeFile: (path: string, text: string) => Promise<void>
   /** `~/.fleet/<profile>/peers/<peerId>/state.md` (§1.1). */
   readonly stateFilePath: (peerId: PeerId) => string
@@ -117,7 +118,7 @@ export const selfPurge = async (ports: PurgePorts): Promise<PurgeOutcome> => {
   const { handle, peerId, record } = ports
   const usage = await ports.provider.usage(handle)
 
-  record({
+  await record({
     type: 'purge.started',
     peerId,
     sessionId: handle.sessionId,
@@ -127,7 +128,7 @@ export const selfPurge = async (ports: PurgePorts): Promise<PurgeOutcome> => {
 
   const collected = await collectStateFile(ports)
 
-  record(
+  await record(
     collected.degraded
       ? { type: 'purge.degraded', peerId, sessionId: handle.sessionId, reason: collected.reason ?? 'no valid state file' }
       : { type: 'purge.saved', peerId, sessionId: handle.sessionId, stateFile: collected.stateFile },
@@ -143,7 +144,7 @@ export const selfPurge = async (ports: PurgePorts): Promise<PurgeOutcome> => {
   await ports.provider.stop(handle)
   const restarted = await ports.restart(collected.stateFile, handle)
 
-  record({
+  await record({
     type: 'purge.completed',
     peerId,
     fromSessionId: handle.sessionId,

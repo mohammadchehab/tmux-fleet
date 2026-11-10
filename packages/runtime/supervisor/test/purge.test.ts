@@ -20,6 +20,7 @@ const handle: SessionHandle = {
   providerId: 'claude',
   model: 'claude-sonnet-5-5',
   permissionMode: 'default',
+  briefTurnId: 'trn_0123456789abcdef' as SessionHandle['briefTurnId'],
 }
 const fresh: SessionHandle = { ...handle, sessionId: 'ses_bbbbbbbbbbbbbbbb', sessionRef: 'sess_new' as SessionHandle['sessionRef'] }
 
@@ -45,7 +46,7 @@ interface Harness {
 
 const harness = (
   replies: readonly (string | undefined)[],
-  options: { readonly restartFails?: Error } = {},
+  options: { readonly restartFails?: Error; readonly recordFails?: Error } = {},
 ): Harness => {
   const events: PurgeEvent[] = []
   const asks: string[] = []
@@ -86,7 +87,11 @@ const harness = (
         prs: ['#26'],
         branch: 'fleet-purge',
       }),
-      record: (event: PurgeEvent) => {
+      record: async (event: PurgeEvent) => {
+        // Asynchronous on purpose, like the store's `append`: the purge must
+        // wait for it rather than race on past it.
+        await Promise.resolve()
+        if (options.recordFails !== undefined) throw options.recordFails
         events.push(event)
       },
       writeFile: async (path: string, text: string) => {
@@ -177,8 +182,18 @@ test('a state file naming another peer is refused and asked again', async () => 
 
 test('a failed restart is not swallowed: a peer with no session must be visible', async () => {
   const h = harness([JSON.stringify(stateFile())], { restartFails: Object.assign(new Error('no cwd'), { code: 'invalid_input' }) })
+  // The purge reports it; the session wrapper is what recovers a session from it.
   await assert.rejects(selfPurge(h.ports), /no cwd/)
   // It stopped the old session, so a silent failure would leave the peer dead.
   assert.deepEqual(h.stopped, [handle.sessionId])
   assert.equal(h.events.at(-1)?.type, 'purge.saved')
+})
+
+test('a record that fails is not raced past: the purge stops where the append did', async () => {
+  const h = harness([JSON.stringify(stateFile())], { recordFails: new Error('store is down') })
+  // Unawaited, this would be an unhandled rejection while the purge ran on to
+  // stop the session its own record never described.
+  await assert.rejects(selfPurge(h.ports), /store is down/)
+  assert.deepEqual(h.stopped, [])
+  assert.deepEqual(h.asks, [])
 })
