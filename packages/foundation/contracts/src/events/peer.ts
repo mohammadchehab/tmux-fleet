@@ -66,7 +66,7 @@ export const peerStandardsSet = event(
     peerId: peerId(),
     version: positiveInt(),
     briefId: briefId(),
-    /** sha-256 of the standards text the peer is handed; equal text, equal digest. */
+    /** sha-256 of what the peer is handed — its brief text and its standards — so a changed role is a changed brief too. */
     digest: contentHash(),
     sources: array(
       object({

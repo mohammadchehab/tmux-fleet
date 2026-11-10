@@ -24,6 +24,7 @@ import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
 
 import { decodeProfile, type Profile } from '../src/config/profile.ts'
 import { createSupervisor, type Supervisor } from '../src/execution/sessions.ts'
+import type { StandingBriefs } from '../src/execution/standards.ts'
 
 const peerId = 'engineer-1' as PeerId
 const checkout = '/work/widgets'
@@ -91,6 +92,7 @@ const rig = async (
     readonly providerId?: string
     readonly worktrees?: readonly Worktree[]
     readonly provisioner?: WorktreeProvisioner
+    readonly standing?: StandingBriefs
   } = {},
 ): Promise<Rig> => {
   const providerId = options.providerId ?? 'claude'
@@ -175,6 +177,7 @@ const rig = async (
       },
     },
     ...(options.provisioner === undefined ? {} : { worktrees: options.provisioner }),
+    ...(options.standing === undefined ? {} : { standing: options.standing }),
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
   })
   return { stateDir: paths.stateDir, supervisor, records, starts }
@@ -447,4 +450,114 @@ test('a provisioner that cannot make the worktree refuses the peer, not falls ba
 
   await assert.rejects(r.supervisor.start(), /git refused to make the worktree/)
   assert.equal(r.starts.length, 0)
+})
+
+/** A standing brief whose version a test can move, recording where it was asked to read from. */
+const fakeStanding = (): { standing: StandingBriefs; asked: { peer: string; cwd: string }[]; setText(text: string): void } => {
+  const asked: { peer: string; cwd: string }[] = []
+  let text = 'Never push to main.'
+  return {
+    asked,
+    setText: (next) => (text = next),
+    standing: {
+      for: async (peer, cwd) => {
+        asked.push({ peer: String(peer.id), cwd })
+        return {
+          brief: {
+            briefId: 'brf_00000000000000b7' as never,
+            version: 7,
+            contractVersions: [],
+            text: `You are ${String(peer.id)}. Your standing instructions are given.`,
+          },
+          systemPromptAppend: text,
+        }
+      },
+    },
+  }
+}
+
+test('the session starts on the standing brief and carries the standards as its standing instructions, claude and cursor alike', async (t) => {
+  for (const providerId of ['claude', 'cursor']) {
+    const { standing, asked } = fakeStanding()
+    const profile = decodeProfile({
+      profile: 'test',
+      repos: ['acme/widgets'],
+      checkouts: { 'acme/widgets': checkout },
+      ...(providerId === 'cursor' ? { providers: { cursor: { contextLimits: { m: 200_000 } } } } : {}),
+      peers: [{ id: peerId, role: 'engineer', provider: providerId, model: 'm', ...(providerId === 'cursor' ? { permissionMode: 'plan' } : {}) }],
+    })
+    const r = await rig(profile, { providerId, standing })
+    t.after(() => r.supervisor.stop())
+    await r.supervisor.start()
+
+    assert.equal(r.starts[0]?.brief.version, 7, providerId)
+    assert.equal(r.starts[0]?.systemPromptAppend, 'Never push to main.', providerId)
+    // Read from where the peer works, so the repo is the peer's own.
+    assert.deepEqual(asked, [{ peer: String(peerId), cwd: checkout }])
+    // The Mailbox judges mail against the version the running session carries.
+    assert.equal(await r.supervisor.briefs.current(peerId), 7, providerId)
+  }
+})
+
+test('a purge restart reuses the brief and the standards it started on, even if they have changed since (§8: the same brief)', async (t) => {
+  const { standing, asked, setText } = fakeStanding()
+  const r = await rig(profileWith({ purge: { maxTurns: 1 } }), { standing })
+  t.after(() => r.supervisor.stop())
+  await oneTurn(r)
+  setText('Rules edited while the peer was running.')
+  await until(() => r.starts.length === 2, 'the replacement session')
+
+  assert.equal(r.starts[1]?.brief.briefId, r.starts[0]?.brief.briefId)
+  assert.equal(r.starts[1]?.systemPromptAppend, 'Never push to main.')
+  assert.equal(asked.length, 1, 'standards are read at a start, not at every restart')
+})
+
+test('a peer whose standards cannot be built is refused, with the reason, and no session is started', async (t) => {
+  const r = await rig(profileWith(undefined), {
+    standing: {
+      for: async () => Promise.reject(new Error('standards.nonNegotiables names /p/n.md, which cannot be read')),
+    },
+  })
+  t.after(() => r.supervisor.stop())
+
+  await assert.rejects(r.supervisor.start(), /standards\.nonNegotiables names \/p\/n\.md/)
+  assert.equal(r.starts.length, 0)
+})
+
+test('a peer refused at start is a peer.failed the board shows, the other peers still start, and `up` still fails (§4)', async (t) => {
+  const r = await rig(
+    decodeProfile({
+      profile: 'test',
+      repos: ['acme/widgets'],
+      checkouts: { 'acme/widgets': checkout },
+      peers: [
+        { id: 'architect-1', role: 'architect', provider: 'claude', model: 'm', permissionMode: 'plan' },
+        { id: peerId, role: 'engineer', provider: 'claude', model: 'm' },
+        { id: 'engineer-2', role: 'engineer', provider: 'claude', model: 'm', permissionMode: 'plan' },
+      ],
+    }),
+    {
+      standing: {
+        for: async (peer) =>
+          String(peer.id) === 'engineer-1'
+            ? Promise.reject(new Error('standards.nonNegotiables names /p/n.md, which cannot be read'))
+            : { brief: { briefId: 'brf_00000000000000b7' as never, version: 1, contractVersions: [], text: 'ok' } },
+      },
+    },
+  )
+  t.after(() => r.supervisor.stop())
+
+  await assert.rejects(r.supervisor.start(), /standards\.nonNegotiables names \/p\/n\.md/)
+
+  assert.deepEqual(r.supervisor.running().map(String).sort(), ['architect-1', 'engineer-2'], 'the peers after it were still started')
+  const failed = r.records.filter((record) => record.type === 'peer.failed')
+  assert.equal(failed.length, 1)
+  assert.equal(failed[0]?.subject, 'engineer-1')
+  assert.equal(failed[0]?.actor, 'peer:engineer-1')
+  assert.deepEqual(failed[0]?.data, {
+    peerId: 'engineer-1',
+    reason: 'provider_error',
+    message: 'standards.nonNegotiables names /p/n.md, which cannot be read',
+    retryable: false,
+  })
 })

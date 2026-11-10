@@ -221,6 +221,22 @@ export interface Worktrees {
 }
 
 /**
+ * A file as a repository's default branch has it (§12.1): what a peer's standards
+ * are read from, instead of a working tree the peer can edit — until a peer has a
+ * worktree of its own, its cwd *is* the checkout, and a peer that could change its
+ * own rules by editing `AGENTS.md` would be judged against what it wrote.
+ */
+export interface RepoFiles {
+  /**
+   * `path` at the tip of the default branch of the repository `cwd` belongs to,
+   * and the commit it was read at. `undefined` when there is nothing to read:
+   * `cwd` is not a repository, it has no default branch yet, or the file is not
+   * on it. Never the working tree.
+   */
+  read(cwd: string, path: string): Promise<{ readonly text: string; readonly ref: string } | undefined>
+}
+
+/**
  * §9's creation half: make a checkout for a peer under the repo's own
  * `.claude/worktrees/<topic>`. Kept apart from `Worktrees` (removal) so a fake of
  * the one need not grow the other, and because the two have different callers:

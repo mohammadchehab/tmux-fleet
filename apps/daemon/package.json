@@ -20,6 +20,7 @@
     "@fleet/integrations-trackers-jira": "workspace:*",
     "@fleet/notify-core": "workspace:*",
     "@fleet/notify-macos": "workspace:*",
+    "@fleet/orchestration-briefs": "workspace:*",
     "@fleet/orchestration-gate": "workspace:*",
     "@fleet/orchestration-judge": "workspace:*",
     "@fleet/orchestration-ledger": "workspace:*",

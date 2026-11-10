@@ -330,6 +330,30 @@ export interface ProfileBuilds {
   }
 }
 
+/**
+ * §12.1: what every peer is held to, beyond what the target repo's own
+ * `AGENTS.md` and `CLAUDE.md` already say (those are read from the repo's default
+ * branch, never configured here).
+ *
+ * Both keys name documents by path: absolute, or relative to the directory the
+ * profile file is in — never to a repo or a peer's worktree, which a peer can
+ * edit. Declared means required: a document that cannot be read refuses the
+ * daemon's start with the key named, because a rule that goes missing without a
+ * word is how a peer writes off-standard code. Neither document is ever cut: one
+ * over the size a peer carries is refused, so the profile's author shortens it.
+ */
+export interface StandardsProfile {
+  /** A document of rules that outrank the repo's own. */
+  readonly nonNegotiables?: string
+  /**
+   * Documents a role must follow, by role — a skill's text, say. They are inlined
+   * into the peer's brief rather than named: the claude provider runs with
+   * `settingSources: []` and cursor has no skill tool, so a name alone is a
+   * sentence a peer cannot act on.
+   */
+  readonly skills?: Readonly<Record<string, readonly string[]>>
+}
+
 export interface Profile {
   /** The profile's own name; must match the file it was read from (§2). */
   readonly profile: string
@@ -343,6 +367,8 @@ export interface Profile {
    * no checkout, and a peer on it is refused at start rather than started blind.
    */
   readonly checkouts?: Readonly<Record<string, string>>
+  /** §12.1: the standards every peer's brief carries. Absent, a peer gets the role statement alone. */
+  readonly standards?: StandardsProfile
   readonly peers: readonly PeerProfile[]
   /** §6's per-routine settings, handed to `planRoutines` unchanged. */
   readonly routines?: RoutinesConfig
@@ -698,11 +724,18 @@ const jiraTrackerBlock = (): Schema<JiraTrackerProfile> =>
 const trackerBlock = (): Schema<TrackerProfile> =>
   unionAs<TrackerProfile>()([backlogTrackerBlock(), jiraTrackerBlock()])
 
+const standardsBlock = (): Schema<StandardsProfile> =>
+  objectAs<StandardsProfile>()({
+    nonNegotiables: optional(text(400)),
+    skills: optional(record(array(text(400), { maxItems: 30 }))),
+  })
+
 export const profileSchema = (): Schema<Profile> =>
   objectAs<Profile>()({
     profile: text(60),
     repos: array(text(200), { maxItems: 50 }),
     checkouts: optional(record(refine(text(400), (value) => value.startsWith('/'), 'an absolute path'))),
+    standards: optional(standardsBlock()),
     peers: array(peerProfile(), { maxItems: 50 }),
     routines: optional(routinesBlock()),
     providers: optional(providersBlock()),
