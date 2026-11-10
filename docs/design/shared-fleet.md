@@ -42,8 +42,8 @@ Fleets never talk to each other. They read and write the repo.
 fleet-coord  (private; nobody pushes to main)
   <ns>/fleet/<github-user>     only that person's fleet writes here: heartbeat, pace, bids, outgoing messages
   <ns>/claim/<masked-task-id>  a claim; whoever created the ref holds the task
-  <ns>/rotate/<n>              a key rotation; whoever created the ref performed it
-  keys/<ns>/<github-user>.age  the engagement key, encrypted to that member's GitHub SSH key (§5)
+  <ns>/rotate/<n>              a key rotation; whoever created the ref performed it. It holds rotation.json
+                               and <github-user>.age: the key, encrypted to that member's GitHub SSH keys (§5)
 ```
 
 `<ns>` is an **engagement code name** (`eng-07`), mapped to the customer only in each person's local profile, so even
@@ -152,8 +152,12 @@ One random 32-byte key per engagement, **encrypted separately to each team membe
 - **Members** are the engagement's GitHub team — the same list that grants repo access, so there is one list, not two.
 - **Public keys** come from the authenticated API (`gh api users/<user>/keys`). The anonymous `github.com/<user>.keys`
   URL returns 404 for enterprise-managed accounts, so it is not used.
-- **Reading**: each fleet decrypts its own `keys/<ns>/<user>.age` with the owner's SSH private key and holds the key in
-  memory only — never on disk, in git, in the environment or in an event.
+- **Where it lives**: in the rotation that made it. `<ns>/rotate/<n>` is created once and never edited; it holds
+  `rotation.json` (the members it was made for, the members with no usable key, who made it, when) and one
+  `<user>.age` per member. The highest `n` is the current key.
+- **Reading**: each fleet decrypts its own `<user>.age` from the current rotation with the owner's SSH private key and
+  holds the key in memory only — never on disk, in git, in the environment or in an event. With `taskData: false`
+  nothing needs the key, so no fleet decrypts it: it is generated, sealed and dropped.
 - `age` is called as a binary, as `git` and `gh` are: the TypeScript implementation (`age-encryption` 0.3.x) has no SSH
   recipients, and hand-rolled ed25519→X25519 conversion is exactly the crypto a review should refuse.
 
@@ -166,14 +170,24 @@ prints the one-time fix (`ssh-keygen -t ed25519`, add the `.pub` to GitHub) inst
 
 ### 5.2 Membership changes, with no one doing anything but the team change
 
-Each poll, a fleet compares the team's members with the files under `keys/<ns>/`:
+Every ten minutes, and at `fleet up`, a fleet compares the team's members with the current rotation's `members`. Any
+difference is a **new rotation**, for the team as it now stands:
 
-- **Someone joined**: any member's fleet encrypts the current key to the newcomer's keys and commits their copy.
-- **Someone left**: GitHub has already removed their repo access — the first lock, closed at once. Within one poll, the
-  first online fleet creates `rotate/<n>` (exactly one wins, §2.1), generates a new key, encrypts it to the remaining
-  members only, deletes the leaver's copy, and releases every claim the leaver held so their tasks return to the pool
-  immediately. If no fleet is online, this happens at the next `fleet up`; nothing leaks in between, because the leaver
-  can no longer read the repo.
+- **Someone joined**: a new key, sealed to every member including the newcomer. The newcomer never holds a key that was
+  in use before they joined, so nothing sealed before their arrival is theirs to open.
+- **Someone left**: GitHub has already removed their repo access — the first lock, closed at once. The new key is
+  sealed to the remaining members only; the leaver's copy is not deleted but superseded, and it opens only a key nobody
+  uses any more. Releasing the leaver's claims is phase 2 (§9): with `taskData: false` there are none.
+- **A member had no usable key and added one**: they are listed in the rotation's `missing`, and the look that finds a
+  key for them makes the rotation that includes them.
+
+Of the fleets that see the same change, the first to create `rotate/<n+1>` wins (§2.1); the others' keys were never
+published. If no fleet is online, the rotation happens at the next `fleet up`; nothing leaks in between, because the
+leaver can no longer read the repo. The first fleet up in an engagement makes rotation 1, so nobody runs an `init`.
+
+A fleet **refuses** to rotate when the team reads as empty, when its own user is not on it, or when no member has a key
+`age` can use: each of those is a token that cannot see the team, not a team that changed, and acting on it would seal
+the key to nobody.
 
 Data the leaver fetched before removal stays readable to them: no system revokes what someone already holds. It covers
 only up to the moment they left, they were entitled to it then, and it is masked metadata, not code.
@@ -189,17 +203,15 @@ only up to the moment they left, they were entitled to it then, and it is masked
 
 ## 6. Commands
 
-```sh
-fleet coord init <ns> --team <org>/<team> --repo <org>/fleet-coord   # once per engagement, by whoever starts it
-fleet coord status                                                   # members, who holds a copy, last rotation
-fleet coord rotate                                                   # emergency rotation; otherwise automatic
-```
-
-Everyone else adds the engagement to their profile; `fleet up` does the rest:
+Everyone adds the engagement to their profile, and `fleet up` does the rest — the first fleet up makes the key
+(§5.2), so there is no `init`:
 
 ```yaml
 coord: { engagement: eng-07, team: <org>/<team>, repo: <org>/fleet-coord, taskData: false }
 ```
+
+`fleet coord status` (members, who holds a copy, the current rotation) and `fleet coord rotate` (an emergency rotation
+that does not wait for a change) are the two commands left; neither is needed for the key to be made and kept current.
 
 ## 7. Security review
 
@@ -240,7 +252,7 @@ coord: { engagement: eng-07, team: <org>/<team>, repo: <org>/fleet-coord, taskDa
 
 | `taskData` | what runs | gate |
 | :- | :- | :- |
-| `false` (the default when absent) | heartbeat, pace and capacity on each fleet's branch (§3); `fleet coord init`, the `age`-wrapped key, join and leave handling (§5) | approved |
+| `false` (the default when absent) | heartbeat, pace and capacity on each fleet's branch (§3); the `age`-wrapped key, made at the first `fleet up` and rotated on join and leave (§5) | approved |
 | `true` | masked claims and bids (§3), one review per PR, one build per sha, cross-fleet dedupe, peer messages through the trust table (§4) | Legal sign-off (finding 2) |
 
 With `taskData: false` the fleet writes nothing derived from the customer: no masked id, no claim ref, no message. That
@@ -251,7 +263,7 @@ The PRs, in order, each with its tests:
 1. the coordination port in `foundation/contracts`, and its git transport in `integrations` (`ls-remote`, fetch, push to
    one's own branch, create-once refs);
 2. pace and capacity publishing, read by the PM (§3);
-3. the engagement key: `fleet coord init|status|rotate`, `age` wrapping, join and leave (§5);
+3. the engagement key: `age` wrapping, a rotation on every change in the team (§5); then `fleet coord status|rotate`;
 4. claims and bids, behind `taskData`;
 5. shared reviews, builds and dedupe, behind `taskData`;
 6. peer messages through the trust table, behind `taskData`.
