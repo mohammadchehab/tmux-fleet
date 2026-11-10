@@ -67,4 +67,61 @@ describe('server.close() with idle clients', () => {
       await rm(home, { recursive: true, force: true })
     }
   })
+
+  it('does not cut off in-flight RPC responses like down', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'fleet-server-'))
+    const socketPath = join(home, 'test.sock')
+    const pidPath = join(home, 'test.pid')
+
+    try {
+      const api = {
+        up: async () => ({ ok: true }),
+        down: async () => ({ ok: true, result: { stopped: true } }),
+      } as unknown as DaemonApi
+
+      const server = await createDaemonServer({
+        api,
+        socketPath,
+        pidPath,
+      })
+
+      // Send a down RPC request and immediately close the server
+      const responsePromise = (async () => {
+        const socket = connect(socketPath)
+        return new Promise<string>((resolve, reject) => {
+          socket.setEncoding('utf8')
+          let buffer = ''
+          socket.on('data', (chunk) => {
+            buffer += chunk
+            const newline = buffer.indexOf('\n')
+            if (newline !== -1) {
+              resolve(buffer.slice(0, newline))
+              socket.destroy()
+            }
+          })
+          socket.on('error', reject)
+          socket.write('{"id":"down-1","method":"down"}\n')
+        })
+      })()
+
+      // Close the server after a short delay (but before timeout)
+      // The down response should still arrive because it's active
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      void server.close()
+
+      const response = await Promise.race([
+        responsePromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('down response timed out')), 2000)
+        ),
+      ])
+
+      // Verify we got a valid down response despite server.close() being called
+      const parsed = JSON.parse(response)
+      assert.equal((parsed as any).ok, true)
+      assert.ok((parsed as any).result)
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
 })
