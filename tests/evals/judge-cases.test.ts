@@ -21,6 +21,7 @@ import { test } from 'node:test'
 
 import { decodeStrict } from '../../packages/foundation/core/src/index.ts'
 import {
+  evalCaseId,
   judgeAnswer,
   judgeInput,
   questionKinds,
@@ -80,6 +81,10 @@ const parseCase = (file: string, raw: unknown): Case => {
 
   assert.equal(typeof id, 'string', `${where}: id is a string`)
   assert.equal(id, file.replace(/\.json$/, ''), `${where}: id is the filename stem`)
+  // The same schema `eval.case_scored` validates `caseId` with, so a case that loads here is a
+  // case a run can report: a bad name fails now, not after the cases have been scored.
+  const decodedId = decodeStrict(evalCaseId(), id)
+  assert.ok(decodedId.ok, `${where}: id is an eval case id — ${JSON.stringify(decodedId)}`)
   assert.equal(suite, SUITE, `${where}: suite is the directory name`)
   assert.equal(typeof source, 'string', `${where}: source is a string`)
   assert.ok((source as string).length > 0, `${where}: source names the incident the case came from`)

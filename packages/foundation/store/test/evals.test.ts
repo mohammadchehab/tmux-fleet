@@ -166,6 +166,44 @@ test('a case for a run the log never opened is an anomaly, not a stray row', asy
   await store.close()
 })
 
+test('a repeated attempt number is not a second attempt', async () => {
+  const path = tempStorePath()
+  const store = await openSqliteStore({ path, clock: fixedClock })
+  // The same attempt delivered twice — an append retried after a lost reply — and an older
+  // attempt landing after a newer one. Neither may add to the tally or replace the verdict.
+  await store.append([
+    started(3),
+    scored(1, true, 'attempt 1: exact match'),
+    scored(1, true, 'attempt 1: exact match'),
+    scored(2, false, 'attempt 2: escalate'),
+    scored(1, true, 'attempt 1: exact match'),
+  ])
+
+  const [row] = snapshot(path).cases as { attempts: number; passes: number; pass: number; detail: string }[]
+  // One pass over two attempts, not three over one: a pass rate no run produced is what §17
+  // gates on, so the row must not be able to hold one.
+  assert.deepEqual([row?.attempts, row?.passes], [2, 1])
+  assert.equal(row?.pass, 0, 'a stale attempt 1 does not un-fail attempt 2')
+  assert.equal(row?.detail, 'attempt 2: escalate')
+  await store.close()
+})
+
+test('a start that arrives after the run finished does not erase the result', async () => {
+  const path = tempStorePath()
+  const store = await openSqliteStore({ path, clock: fixedClock })
+  await store.append([finished(3, 2)])
+  const [before] = snapshot(path).runs
+
+  // A replayed append, or a runner resuming with the runId it already used. The start is
+  // identity, not a reset: the finished row keeps its state and its aggregates.
+  await store.append([started(3)])
+  const [after] = snapshot(path).runs as { state: string; passed: number; cases: number }[]
+  assert.deepEqual(after, before, 'a start is idempotent, and never a way back to running')
+  assert.equal(after?.state, 'finished')
+  assert.equal(after?.passed, 2)
+  await store.close()
+})
+
 test('replaying the eval events rebuilds exactly the rows append wrote', async () => {
   const path = tempStorePath()
   const store = await openSqliteStore({ path, clock: fixedClock })

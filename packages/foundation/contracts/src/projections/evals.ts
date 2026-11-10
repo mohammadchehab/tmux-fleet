@@ -7,11 +7,11 @@
  * does not route on an eval result, so `decide()` is not handed them.
  */
 
-import { boolean, count, number, objectAs, oneOf, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
+import { boolean, count, number, objectAs, oneOf, optional, positiveInt, refine, string, text, timestamp, type Schema } from '@fleet/foundation-core'
 import { evalRunId, sha } from '@fleet/foundation-core'
 import type { EvalRunId, Sha } from '@fleet/foundation-core'
 import { providerId } from '../provider.ts'
-import { evalSuites, type EvalSuite } from '../events/evals.ts'
+import { evalCaseId, evalSuites, type EvalSuite } from '../events/evals.ts'
 
 /** `running` until `eval.run_finished` lands; there is no `cancelled` — a run that dies stays visible as running. */
 export const evalRunStates = ['running', 'finished'] as const
@@ -77,13 +77,20 @@ export interface EvalCase {
 }
 
 export const evalCase = (): Schema<EvalCase> =>
-  objectAs<EvalCase>()({
-    runId: evalRunId(),
-    caseId: string({ pattern: /^[a-z0-9][a-z0-9_-]*$/, minLength: 1, maxLength: 80 }),
-    attempts: positiveInt(),
-    passes: count(),
-    pass: boolean(),
-    score: number({ min: 0, max: 1 }),
-    detail: text(2000),
-    updatedAt: timestamp(),
-  })
+  // A case cannot pass more attempts than it had. The store's tally already keeps
+  // that true, but the pass rate is what §17 gates on, so the row itself refuses
+  // to be a number no run could have produced.
+  refine(
+    objectAs<EvalCase>()({
+      runId: evalRunId(),
+      caseId: evalCaseId(),
+      attempts: positiveInt(),
+      passes: count(),
+      pass: boolean(),
+      score: number({ min: 0, max: 1 }),
+      detail: text(2000),
+      updatedAt: timestamp(),
+    }),
+    (row) => row.passes <= row.attempts,
+    'a case that passed more attempts than it had',
+  )
