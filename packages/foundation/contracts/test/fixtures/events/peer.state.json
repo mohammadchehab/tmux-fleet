@@ -1,0 +1,16 @@
+{
+  "seq": 2,
+  "ts": "2026-11-10T09:02:00.000Z",
+  "type": "peer.state",
+  "subject": "engineer-1",
+  "actor": "pm",
+  "causedBy": [
+    1
+  ],
+  "data": {
+    "peerId": "engineer-1",
+    "state": "working",
+    "sessionId": "ses_1a2b3c4d5e6f7081",
+    "reason": "turn.started"
+  }
+}

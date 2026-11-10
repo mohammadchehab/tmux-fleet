@@ -1,0 +1,18 @@
+{
+  "worktreeId": "wtr_5e6f708192a3b4c5",
+  "repo": "backbase/me-services-fleet",
+  "branch": "feat/retarget-stacks",
+  "path": "~/Dev/tmux-fleet/.claude/worktrees/feat-retarget-stacks",
+  "ownerPeerId": "engineer-1",
+  "class": "orphaned",
+  "dirty": true,
+  "unpushed": false,
+  "holders": [
+    {
+      "pid": 48213,
+      "command": "node --test"
+    }
+  ],
+  "createdAt": "2026-11-10T09:36:00.000Z",
+  "updatedAt": "2026-11-10T09:37:00.000Z"
+}

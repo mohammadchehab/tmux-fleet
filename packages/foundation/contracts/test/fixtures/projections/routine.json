@@ -1,0 +1,9 @@
+{
+  "routineId": "worktree-gc",
+  "kind": "worktree-gc",
+  "trigger": "heartbeat",
+  "state": "failed",
+  "lastRunAt": "2026-11-10T09:35:00.000Z",
+  "runs": 128,
+  "failures": 1
+}

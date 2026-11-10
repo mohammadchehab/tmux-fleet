@@ -1,0 +1,15 @@
+{
+  "seq": 35,
+  "ts": "2026-11-10T09:35:00.000Z",
+  "type": "routine.failed",
+  "subject": "worktree-gc",
+  "actor": "scheduler",
+  "causedBy": [
+    34
+  ],
+  "data": {
+    "routineId": "worktree-gc",
+    "kind": "worktree-gc",
+    "error": "git worktree list exited 128: not a git repository"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@fleet/foundation-contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The schemas and ports every group shares: the event registry, projection schemas, SessionSpec/Turn/ProviderEvent, the Mailbox API and the cross-group ports (architecture §1.1, §3, §4, §7).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "briefId": "brf_3c4d5e6f708192a3",
+  "version": 1,
+  "contractVersions": [
+    {
+      "contractId": "con_2b3c4d5e6f708192",
+      "version": 2
+    }
+  ],
+  "text": "Retarget every dependent PR onto the parent base before merging the parent."
+}

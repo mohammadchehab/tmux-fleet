@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/runtime-provider-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Provider interface exactly as architecture §4 declares it, plus capabilities and conformance helpers.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-core": "workspace:*",
+    "@fleet/foundation-contracts": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

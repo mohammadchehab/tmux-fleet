@@ -1,0 +1,21 @@
+{
+  "repo": "backbase/me-services-fleet",
+  "number": 42,
+  "base": "main",
+  "head": "feat/retarget-stacks",
+  "headSha": "9c1d2e3f405162738495a6b7c8d9e0f1023a4b5c",
+  "checks": "failing",
+  "failingChecks": [
+    "build",
+    "integration/postgres"
+  ],
+  "review": "approved",
+  "stackParent": {
+    "repo": "backbase/me-services-fleet",
+    "number": 41
+  },
+  "workId": "wrk_7f3a91c2d84b0e56",
+  "merged": false,
+  "createdAt": "2026-11-10T09:21:00.000Z",
+  "updatedAt": "2026-11-10T09:26:00.000Z"
+}

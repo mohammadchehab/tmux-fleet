@@ -1,0 +1,19 @@
+{
+  "seq": 23,
+  "ts": "2026-11-10T09:23:00.000Z",
+  "type": "pr.review",
+  "subject": "backbase/me-services-fleet#42",
+  "actor": "peer:architect",
+  "causedBy": [
+    21
+  ],
+  "data": {
+    "pr": {
+      "repo": "backbase/me-services-fleet",
+      "number": 42
+    },
+    "headSha": "9c1d2e3f405162738495a6b7c8d9e0f1023a4b5c",
+    "state": "approved",
+    "reviewer": "architect"
+  }
+}

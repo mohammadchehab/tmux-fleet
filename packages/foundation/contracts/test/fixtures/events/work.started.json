@@ -1,0 +1,15 @@
+{
+  "seq": 11,
+  "ts": "2026-11-10T09:11:00.000Z",
+  "type": "work.started",
+  "subject": "wrk_7f3a91c2d84b0e56",
+  "actor": "peer:engineer-1",
+  "causedBy": [
+    10
+  ],
+  "data": {
+    "workId": "wrk_7f3a91c2d84b0e56",
+    "peerId": "engineer-1",
+    "sessionId": "ses_1a2b3c4d5e6f7081"
+  }
+}

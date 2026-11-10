@@ -1,0 +1,98 @@
+/**
+ * Golden fixtures for the provider-facing contracts (architecture §4, §7, §8).
+ * These are the types that cross the process boundary, so they get the same
+ * treatment as events: one fixture each, parsed by its schema, re-encoded to
+ * the same value.
+ */
+
+import assert from 'node:assert/strict'
+import { readFileSync, readdirSync } from 'node:fs'
+import { test } from 'node:test'
+import { parse, SchemaError, type Schema } from '@fleet/foundation-core'
+import {
+  briefHandoff,
+  mcpServer,
+  providerCapabilities,
+  providerEvent,
+  sessionSpec,
+  stateFile,
+  turn,
+  usage,
+} from '../src/index.ts'
+
+const providerEventsDir = new URL('./fixtures/provider-events/', import.meta.url)
+const providerDir = new URL('./fixtures/provider/', import.meta.url)
+
+const fixture = (dir: URL, name: string): unknown => JSON.parse(readFileSync(new URL(`${name}.json`, dir), 'utf8'))
+
+const fixtureNames = (dir: URL): string[] =>
+  readdirSync(dir)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => name.slice(0, -'.json'.length))
+    .sort()
+
+/** The provider stream is a discriminated union, so a fixture is named by its `type`. */
+const providerEventTypes = ['compaction', 'error', 'question.asked', 'tool.use', 'turn.ended', 'turn.started'] as const
+
+/** The rest of §4's vocabulary, by fixture name. */
+const contracts: Readonly<Record<string, () => Schema<unknown>>> = {
+  'brief-handoff': briefHandoff as () => Schema<unknown>,
+  'mcp-server': mcpServer as () => Schema<unknown>,
+  'provider-capabilities': providerCapabilities as () => Schema<unknown>,
+  'session-spec': sessionSpec as () => Schema<unknown>,
+  'state-file': stateFile as () => Schema<unknown>,
+  turn: turn as () => Schema<unknown>,
+  usage: usage as () => Schema<unknown>,
+}
+
+test('provider-event fixtures are exactly the union members', () => {
+  assert.deepEqual(fixtureNames(providerEventsDir), [...providerEventTypes].sort())
+})
+
+for (const type of providerEventTypes) {
+  test(`golden: provider event ${type}`, () => {
+    const value = fixture(providerEventsDir, type)
+    const parsed = parse(providerEvent(), value) as { type: string }
+    assert.deepEqual(parsed, value, 'the fixture survives decode and encode unchanged')
+    assert.equal(parsed.type, type, 'the union dispatches on `type`, which is why waiting_input needs no regex')
+  })
+}
+
+test('the provider stream vocabulary is six events, not five', () => {
+  assert.equal(providerEventTypes.length, 6, 'turn.started, turn.ended, tool.use, question.asked, error, compaction')
+  assert.equal(new Set(providerEventTypes).size, providerEventTypes.length)
+})
+
+test('every provider contract has a fixture, and every fixture a contract', () => {
+  assert.deepEqual(fixtureNames(providerDir), Object.keys(contracts).sort())
+})
+
+for (const [name, schema] of Object.entries(contracts)) {
+  test(`golden: provider contract ${name}`, () => {
+    const value = fixture(providerDir, name)
+    const parsed = parse(schema(), value)
+    assert.deepEqual(parsed, value)
+    assert.deepEqual(parse(schema(), parsed), parsed, 'a second decode changes nothing')
+  })
+}
+
+test('an unknown provider-event type is refused, so the union is closed', () => {
+  assert.throws(() => parse(providerEvent(), { type: 'turn.paused', turnId: 'trn_8192a3b4c5d6e7f8' }), SchemaError)
+})
+
+test('a session spec refuses a permission mode the provider vocabulary does not have', () => {
+  const value = fixture(providerDir, 'session-spec') as Record<string, unknown>
+  assert.throws(() => parse(sessionSpec(), { ...value, permissionMode: 'yolo' }), SchemaError)
+})
+
+test('a session spec needs a brief: a peer never starts from a bare prompt (§12)', () => {
+  const value = fixture(providerDir, 'session-spec') as Record<string, unknown>
+  const { brief: _brief, ...withoutBrief } = value
+  assert.throws(() => parse(sessionSpec(), withoutBrief), SchemaError)
+})
+
+test('a state file needs a goal and a brief version, the two things a resumed peer must know (§8)', () => {
+  const value = fixture(providerDir, 'state-file') as Record<string, unknown>
+  assert.throws(() => parse(stateFile(), { ...value, goal: undefined }), SchemaError)
+  assert.throws(() => parse(stateFile(), { ...value, briefVersion: 0 }), SchemaError)
+})

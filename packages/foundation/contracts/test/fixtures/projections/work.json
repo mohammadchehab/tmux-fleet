@@ -1,0 +1,27 @@
+{
+  "workId": "wrk_7f3a91c2d84b0e56",
+  "title": "Retarget stacked PRs before merging",
+  "state": "mergeable",
+  "role": "engineer",
+  "body": "The gate merges a stack parent while a dependent still targets it.",
+  "assignee": "engineer-1",
+  "contractId": "con_2b3c4d5e6f708192",
+  "dependsOn": [
+    "wrk_8a4b02d3e95c1f67"
+  ],
+  "prs": [
+    {
+      "repo": "backbase/me-services-fleet",
+      "number": 42
+    }
+  ],
+  "external": {
+    "system": "backlog",
+    "key": "FLEET-14"
+  },
+  "briefId": "brf_3c4d5e6f708192a3",
+  "briefVersion": 1,
+  "blockedReason": "waiting on the user to pick a definition of \"same feature\"",
+  "createdAt": "2026-11-10T09:07:00.000Z",
+  "updatedAt": "2026-11-10T09:13:00.000Z"
+}
