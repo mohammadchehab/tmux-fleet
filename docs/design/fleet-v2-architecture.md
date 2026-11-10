@@ -338,7 +338,7 @@ One tick runs on any event (not a timer poll) and on a heartbeat. Each tick is a
 | dedupe | before assign | search `main`, open PRs and `Work` for the same intent; if a hit, ask Judge `same_feature?` |
 | track PR | PR event | update `Work`; when checks green on head SHA and review satisfied → `mergeable` |
 | merge | `mergeable` | PR gate (§10) merges; PM never merges itself |
-| unblock | peer `waiting_input` | classify (typed): route to architect/user, or answer from `Decision` log |
+| unblock | peer `waiting_input` ∧ its own `Work` is `blocked` | route by `Work.blockedOn`: an answered `Decision` from the log if there is one, else the reviewer role for `peer`/`contract`, else a `Decision` row for the user — one per `Work`, never a Judge call |
 | idle | peer `idle` > N min, nothing assignable | mark capacity free; raise `no_work` to the user, once |
 | standup | schedule | render a report from projections; no model call |
 | stale | `Brief` older than a newer `Contract` version | supersede the brief, tell the peer (§12) |
