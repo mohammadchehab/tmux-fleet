@@ -52,6 +52,7 @@ test('assistant tool calls become tool.use with a short summary and nothing else
         content: [
           { type: 'text', text: 'working' },
           { type: 'tool_use', name: 'Bash', input: { command: 'pnpm test', description: 'run tests' } },
+          { type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/a.ts' } },
           { type: 'tool_use', name: 'mcp__codegraph__explore', input: { query: 'Provider' } },
         ],
       },
@@ -61,7 +62,9 @@ test('assistant tool calls become tool.use with a short summary and nothing else
     at,
   )
   assert.deepEqual(events, [
-    { type: 'tool.use', turnId: turn, tool: 'Bash', summary: 'pnpm test' },
+    // A command is not a target this adapter will put in the stream; a path is.
+    { type: 'tool.use', turnId: turn, tool: 'Bash' },
+    { type: 'tool.use', turnId: turn, tool: 'Edit', summary: '/tmp/a.ts' },
     { type: 'tool.use', turnId: turn, tool: 'mcp__codegraph__explore' },
   ])
 })
@@ -155,12 +158,28 @@ test('no turn open means no turn events', () => {
   assert.deepEqual(mapMessage({ type: 'result', subtype: 'success', is_error: false }, undefined, live, at), [])
 })
 
-test('tool summaries name one safe field per tool, truncated, and nothing for the rest', () => {
-  assert.equal(summariseToolUse('Bash', { command: 'ls' }), 'ls')
-  assert.equal(summariseToolUse('Read', { file_path: '/tmp/a.ts' }), '/tmp/a.ts')
-  assert.equal(summariseToolUse('WebFetch', { url: 'https://example.com' }), 'https://example.com')
-  assert.equal(summariseToolUse('Bash', { command: 'x'.repeat(500) })?.length, 200)
-  assert.equal(summariseToolUse('mcp__x__y', { anything: 'here' }), undefined)
+test('a target is the path an edit-family call names, and nothing else', () => {
+  for (const tool of ['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
+    assert.equal(summariseToolUse(tool, { file_path: '/tmp/a.ts' }), '/tmp/a.ts', tool)
+  }
+  // Bounded so one log row stays small — a cut, not a redaction.
+  assert.equal(summariseToolUse('Read', { file_path: `/${'x'.repeat(500)}` })?.length, 200)
+  // The allowlist is default-deny: a call whose summary would be a command, a
+  // URL, a search, a brief or an MCP payload has no target at all, and neither
+  // does a tool this adapter has never seen.
+  for (const [tool, input] of [
+    ['Bash', { command: 'curl https://x/?token=abc' }],
+    ['Bash', { command: 'ls' }],
+    ['WebFetch', { url: 'https://example.com/?token=abc' }],
+    ['WebFetch', { url: 'https://user:pw@example.com' }],
+    ['WebSearch', { query: 'api_key=sk_live_abc' }],
+    ['Task', { description: 'deploy with token abc' }],
+    ['Agent', { description: 'deploy with token abc' }],
+    ['mcp__x__y', { anything: 'here', file_path: '/tmp/a.ts' }],
+    ['SomeToolAddedTomorrow', { file_path: '/tmp/a.ts' }],
+  ] as const) {
+    assert.equal(summariseToolUse(tool, input), undefined, tool)
+  }
 })
 
 test('AskUserQuestion input is read into typed questions', () => {

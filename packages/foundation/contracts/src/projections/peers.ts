@@ -90,7 +90,7 @@ export interface PeerActivity {
   readonly workId?: WorkId
   /** The provider's name for the last tool it ran. */
   readonly lastTool?: string
-  /** That call's short, already-redacted target — a path, a description, a command. */
+  /** That call's target — a file path, and only for the tools whose target is one. */
   readonly lastTarget?: string
   readonly lastToolAt?: string
   /**

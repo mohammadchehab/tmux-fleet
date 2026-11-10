@@ -134,86 +134,31 @@ const toolUses = (message: Record<string, unknown>): ToolUseBlock[] => {
 }
 
 /**
- * Remove common secret patterns from strings (API keys, tokens, passwords).
- * Matches patterns like `-H 'Authorization: Bearer token'`, `api_key=secret`, etc.
+ * The tools whose call has a target this fleet is willing to put in the log:
+ * the ones whose input names a file, and nothing else. Claude's names.
+ *
+ * The rule is a **default-deny allowlist**, because the alternatives all fail
+ * open. A command (`Bash`), a URL (`WebFetch`), a search query (`WebSearch`), a
+ * sub-agent's brief (`Task`/`Agent`), and anything under an MCP server can each
+ * carry a token — `curl -H 'Authorization: …'`, `?token=…`, `user:pw@host` — and
+ * a pattern-based redactor is a guess about where a secret sits, not a rule
+ * about what may be stored. A tool this adapter has never heard of gets the
+ * same answer as Bash: the name, and nothing else. So a tool added tomorrow
+ * leaks nothing.
  */
-export const redactSecrets = (value: string): string => {
-  // Remove Authorization headers and API keys/tokens in various formats
-  // Matches: -H 'Authorization: ...', --api-key=..., api_key=..., etc.
-  return value
-    .replace(/-H\s+['"][Aa]uthorization:\s*Bearer\s+[^'"]+['"]/g, "-H 'Authorization: [REDACTED]'")
-    .replace(/-H\s+['"][Aa]uthorization:\s*[^'"]+['"]/g, "-H 'Authorization: [REDACTED]'")
-    .replace(/([?&]|--)(api[_-]?key|key|token|auth|secret|password|pwd)\s*=\s*[^&\s]+/gi, '$1$2=[REDACTED]')
-    .replace(/(["'])(.*?\1)/g, (match) => {
-      // Redact bearer tokens and similar patterns inside quotes
-      if (/^["']?Bearer\s+\S+["']?$/.test(match) || /^["']?sk_\w+["']?$/.test(match)) {
-        return match.charAt(0) + '[REDACTED]' + match.charAt(0)
-      }
-      return match
-    })
-}
-
-/**
- * Remove secret query parameters from URLs (api_key, token, auth, etc).
- */
-export const redactUrlSecrets = (url: string): string => {
-  try {
-    const parsed = new URL(url)
-    const secretParams = ['api_key', 'key', 'token', 'auth', 'secret', 'password', 'pwd', 'api', 'bearer']
-    let hasRedaction = false
-    for (const param of secretParams) {
-      if (parsed.searchParams.has(param)) {
-        parsed.searchParams.set(param, '[REDACTED]')
-        hasRedaction = true
-      }
-    }
-    // If no secret params were found, return original URL to preserve formatting
-    if (!hasRedaction) return url
-    return parsed.toString()
-  } catch {
-    // If URL parsing fails, redact known patterns as fallback
-    return redactSecrets(url)
-  }
-}
+const TARGET_TOOL_NAMES: ReadonlySet<string> = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 /**
  * A short summary of a tool call for the event stream — never the whole input
- * (§4). One safe, already-short field per tool; anything else gets none, and
- * the store keeps only `tool`. Sensitive data (API keys, tokens, passwords) is
- * redacted from all summaries.
+ * (§4). Only the tools in `TARGET_TOOL_NAMES` contribute one, and theirs is the
+ * path they touch; every other call is the name alone. The 200-character bound
+ * is here so one log row stays small, not as a redaction.
  */
 export const summariseToolUse = (name: string, input: Record<string, unknown>): string | undefined => {
-  const first = (key: string, shouldRedact = false): string | undefined => {
-    const value = input[key]
-    if (typeof value !== 'string' || value.length === 0) return undefined
-    const redacted = shouldRedact ? redactSecrets(value) : value
-    return truncate(redacted, 200)
-  }
-  switch (name) {
-    case 'Bash':
-      // Bash commands often contain API keys, tokens, and passwords
-      return first('command', true)
-    case 'Read':
-    case 'Write':
-    case 'Edit':
-    case 'NotebookEdit':
-      // File paths are generally safe, no redaction needed
-      return first('file_path', false)
-    case 'Task':
-    case 'Agent':
-      // Descriptions could contain secrets if user puts them there
-      return first('description', true)
-    case 'WebFetch':
-    case 'WebSearch': {
-      // URLs commonly contain API keys as query parameters
-      const rawUrl = input.url ?? input.query
-      if (typeof rawUrl !== 'string' || rawUrl.length === 0) return undefined
-      const redacted = name === 'WebFetch' && rawUrl.startsWith('http') ? redactUrlSecrets(rawUrl) : redactSecrets(rawUrl)
-      return truncate(redacted, 200)
-    }
-    default:
-      return undefined
-  }
+  if (!TARGET_TOOL_NAMES.has(name)) return undefined
+  const path = input.file_path
+  if (typeof path !== 'string' || path.length === 0) return undefined
+  return truncate(path, 200)
 }
 
 const truncate = (value: string, max: number): string =>
