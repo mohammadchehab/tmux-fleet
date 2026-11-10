@@ -215,7 +215,9 @@ export const createJudge = (deps: JudgeDeps): JudgeService => {
   }
 
   const ask = async (question: JudgeQuestion): Promise<Result<JudgeOutcome, FleetError>> => {
-    const { kind, input, inputsHash, questionId } = question
+    const { kind, input, questionId } = question
+    // The hash is ours, never the caller's: a supplied hash that names someone else's answer would replay it.
+    const inputsHash = hashInputs(kind, input)
     const subject = question.workId ?? questionId
     const startedAt = clock.millis()
 
@@ -255,7 +257,10 @@ export const createJudge = (deps: JudgeDeps): JudgeService => {
     } catch (thrown) {
       return err(toFleetError(thrown, 'store_failed'))
     }
-    if (previous !== undefined) return record(previous.answer, previous.model, 0, true)
+    // A logged answer is replayed only if it still passes the rules this question's inputs impose.
+    if (previous !== undefined && semanticProblem(kind, input, previous.answer) === undefined) {
+      return record(previous.answer, previous.model, 0, true)
+    }
 
     const model = deps.models?.[kind] ?? deps.model
     let reason: string | undefined

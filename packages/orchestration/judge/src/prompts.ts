@@ -90,7 +90,7 @@ export const systemPrompt = (kind: QuestionKind): string => `${RULES}\n\nTask: $
 export const userPrompt = (kind: QuestionKind, input: JudgeInput, retryReason?: string): string => {
   const parts = [
     '<data>',
-    JSON.stringify(input, null, 2),
+    JSON.stringify(input, null, 2).replace(/</g, '\\u003c').replace(/>/g, '\\u003e'),
     '</data>',
     '',
     `Answer with one JSON object of kind "${kind}" matching this JSON Schema:`,
