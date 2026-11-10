@@ -264,6 +264,15 @@ importers:
         specifier: workspace:*
         version: link:../../foundation/core
 
+  packages/orchestration/coordination:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../foundation/core
+
   packages/orchestration/gate:
     dependencies:
       '@fleet/foundation-contracts':
