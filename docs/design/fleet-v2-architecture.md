@@ -278,7 +278,7 @@ method that returns text meant to be parsed.
 
 ```ts
 interface Provider {
-  readonly id: string                                    // "claude", "deepinfra", "opencode", "cursor"
+  readonly id: string                                    // "claude", "deepinfra", "cursor"
   readonly capabilities: { resume: boolean; modelSwitch: boolean; usageTokens: boolean; usageCost: boolean;
                            structuredOutput: boolean; permissionModes: PermissionMode[] }
   start(spec: SessionSpec): Promise<SessionHandle>       // spec carries cwd, env, model, permissionMode, role brief, resume ref
