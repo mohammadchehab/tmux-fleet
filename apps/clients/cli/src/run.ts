@@ -30,11 +30,13 @@ import {
   evalBuildTask,
   evalSuites,
   turnKinds,
+  workNotePhases,
   type AppendEvent,
   type BuildsParams,
   type Decision,
   type LsResult,
   type TurnKind,
+  type WorkNotePhase,
   type UpResult,
 } from '@fleet/foundation-contracts'
 
@@ -47,6 +49,7 @@ import {
   formatDecision,
   formatDown,
   formatLs,
+  formatNote,
   formatPeek,
   formatReplay,
   formatSend,
@@ -68,6 +71,7 @@ const usage = (): string =>
     '  fleet send <peer> <kind> <body>     message a peer',
     '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first (--limit keeps the newest N)',
     '  fleet decide <id> [answer]          show an open decision, or answer it',
+    '  fleet note <phase> <text>           tell the fleet where you are, from a peer session',
     '  fleet replay [--from N [--to N]]    rebuild the projections, or read a window of the log',
     '  fleet evals run <suite> --provider <name> --model <id> --repo <owner/name> --sha <sha>',
     '                                      run an eval suite against its baseline, as a build',
@@ -97,6 +101,7 @@ const usage = (): string =>
     '  --to <seq>         with --from, the last seq to read; absent means to the head',
     '',
     `kinds: ${turnKinds.join(' | ')}   (info is what a person usually sends)`,
+    `note phases: ${workNotePhases.join(' | ')}   (blocked is the one the PM answers; a note is on the Work you hold)`,
     `suites: ${evalSuites.join(' | ')}   (judge is the one that runs)`,
   ].join('\n')
 
@@ -116,6 +121,7 @@ export type Command =
   | { readonly kind: 'send'; readonly to: string; readonly turn: TurnKind; readonly body: string }
   | { readonly kind: 'peek'; readonly peer: string; readonly limit?: number }
   | { readonly kind: 'decide'; readonly id: string; readonly decision?: string; readonly note?: string }
+  | { readonly kind: 'note'; readonly phase: WorkNotePhase; readonly body: string }
   | { readonly kind: 'replay'; readonly from?: number; readonly to?: number }
   | {
       readonly kind: 'evals-run'
@@ -337,6 +343,18 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
         },
         how: how(),
       }
+    }
+    case 'note': {
+      arity('note', rest, '<phase> <text>', (count) => count >= 2)
+      const [phase, ...words] = rest
+      const body = words.join(' ')
+      if (phase === undefined || body === '') throw usageError('usage: fleet note <phase> <text>')
+      // The phase is a closed list (§5.1): a word outside it would be refused by
+      // the daemon anyway, and saying which four exist is more use than "invalid".
+      if (!(workNotePhases as readonly string[]).includes(phase)) {
+        throw usageError(`phase "${phase}" is not one of ${workNotePhases.join(', ')}`)
+      }
+      return { command: { kind: 'note', phase: phase as WorkNotePhase, body }, how: how() }
     }
     case 'replay': {
       arity('replay', rest, '[--from N [--to N]]', (count) => count === 0)
@@ -587,6 +605,21 @@ const execute = async (
         })
       }
       return { text: formatDecision(found), value: found }
+    }
+    case 'note': {
+      // The peer is the caller, and `FLEET_PEER` is how the daemon tells a
+      // session who it is (§6.2): a shell the fleet did not start has no Work to
+      // note on, and saying so beats a note that lands nowhere.
+      const peer = deps.env?.['FLEET_PEER']
+      if (peer === undefined || peer === '') {
+        throw usageError('fleet note is for a peer session: FLEET_PEER is not set, so there is no Work to note on')
+      }
+      const result = await call('note', {
+        peerId: asArgument(peerId(), peer, 'peer'),
+        phase: command.phase,
+        body: command.body,
+      })
+      return { text: formatNote(result), value: result }
     }
     case 'replay': {
       // One method, two questions; the daemon decides which one it is being

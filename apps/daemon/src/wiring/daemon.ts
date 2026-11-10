@@ -44,8 +44,12 @@ import type {
   EventSink,
   FleetEvent,
   Mailbox,
+  NoteParams,
+  NoteResult,
   ReplayParams,
   ReplayResult,
+  Work,
+  WorkState,
 } from '@fleet/foundation-contracts'
 import type { EventStore } from '@fleet/foundation-store'
 import type { BuildLedger } from '@fleet/orchestration-ledger'
@@ -86,6 +90,16 @@ export interface Daemon extends DaemonApi {
 }
 
 const ACTOR: Actor = 'user'
+
+/**
+ * The states in which a Work is still the assignee's (§5.1). `assigned` and
+ * `in_progress` are the obvious two; `in_review`, `mergeable` and `blocked` are
+ * in the list because the peer has not let go of the Work at any of them — a
+ * peer that opened a PR is still the one answering questions about it, and a
+ * blocked peer is the one that says what it is blocked on. `merged`, `cleaned`
+ * and `cancelled` are over, and `proposed`/`ready` have no assignee at all.
+ */
+const heldWorkStates: ReadonlySet<WorkState> = new Set(['assigned', 'in_progress', 'in_review', 'mergeable', 'blocked'])
 
 export const createDaemon = (deps: DaemonDeps): Daemon => {
   const clock = deps.clock ?? systemClock
@@ -320,6 +334,41 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
         },
       ])
       return { recorded: true } as const
+    },
+
+    async note(input: NoteParams): Promise<NoteResult> {
+      // A note names the peer, not the Work (§5.1): what a peer is working on is
+      // the PM's decision, so the daemon reads it off the Work rather than
+      // trusting the caller to name it. That is also why the answer carries the
+      // workId — a peer that did not name one learns which Work it spoke about.
+      const held: Work[] = (await read.work.all()).filter(
+        (row) => row.assignee === input.peerId && heldWorkStates.has(row.state),
+      )
+      const [work, ...rest] = held
+      if (work === undefined) {
+        throw fleetError('not_found', `peer ${String(input.peerId)} has no Work to note on`, {
+          details: { peerId: String(input.peerId) },
+        })
+      }
+      if (rest.length > 0) {
+        // Two held Works is a fleet that has lost track, not a note to guess at:
+        // picking one would put the peer's words on the wrong card.
+        throw fleetError(
+          'conflict',
+          `peer ${String(input.peerId)} holds ${String(held.length)} Works (${held.map((row) => String(row.workId)).join(', ')}); a note cannot say which`,
+          { details: { peerId: String(input.peerId), workIds: held.map((row) => String(row.workId)) } },
+        )
+      }
+      await append([
+        {
+          type: 'work.noted',
+          ts: clock.now(),
+          subject: work.workId,
+          actor: peerActor(input.peerId),
+          data: { workId: work.workId, peerId: input.peerId, phase: input.phase, body: input.body },
+        },
+      ])
+      return { workId: work.workId, phase: input.phase }
     },
 
     async replay(input): Promise<ReplayResult> {

@@ -57,6 +57,10 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
       calls.push(`usage:${String(input.peerId)}`)
       return { recorded: true } as const
     },
+    async note(input) {
+      calls.push(`note:${String(input.peerId)}:${input.phase}`)
+      return { workId: 'wrk_7f3a91c2d84b0e56' as never, phase: input.phase }
+    },
     async eventsAppend(input) {
       calls.push(`events.append:${String(input.events.length)}`)
       return { seqs: input.events.map((_, index) => (index + 1) as Seq) }
@@ -145,6 +149,17 @@ test('usage decodes its report strictly and a bad field is named', async () => {
   await dispatch(subject, { method: 'usage', params: report })
   assert.deepEqual(subject.calls, ['usage:engineer-1'])
   await assert.rejects(() => dispatch(subject, { method: 'usage', params: { ...report, contextLimit: 0 } }), /contextLimit/)
+})
+
+test('note decodes the phase against §5.1\'s closed list, and a word outside it is named', async () => {
+  const subject = api()
+  await dispatch(subject, { method: 'note', params: { peerId: 'engineer-1', phase: 'implement', body: 'tests next' } })
+  assert.deepEqual(subject.calls, ['note:engineer-1:implement'])
+  // `done` is not a phase: the list is the contract, so an invented one is refused by name.
+  await assert.rejects(
+    () => dispatch(api(), { method: 'note', params: { peerId: 'engineer-1', phase: 'done', body: 'x' } }),
+    /phase/,
+  )
 })
 
 test('evals takes a run id, and a run id is what it takes', async () => {

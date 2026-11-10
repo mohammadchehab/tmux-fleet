@@ -423,6 +423,68 @@ test('usage records a peer\'s turn as turn.usage_recorded, and refuses a peer th
   await daemon.down()
 })
 
+test('a note lands on the Work the peer holds, and the reply names the Work the peer did not', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+
+  const WORK = 'wrk_7f3a91c2d84b0e56' as WorkId
+  await store.append([
+    { ts: '2026-11-10T09:00:00.000Z', type: 'work.proposed', subject: WORK, actor: 'user', causedBy: [], data: { workId: WORK, title: 'Say which phase the board is in', dependsOn: [] } },
+    { ts: '2026-11-10T09:01:00.000Z', type: 'work.assigned', subject: WORK, actor: 'pm', causedBy: [], data: { workId: WORK, peerId: 'engineer-1' as PeerId, briefId: 'brf_0123456789abcdef' as BriefId, briefVersion: 1 } },
+  ])
+
+  // §5.1: the peer names the phase and the words; the Work is the daemon's answer.
+  assert.deepEqual(await daemon.note({ peerId: 'engineer-1' as PeerId, phase: 'blocked', body: 'no way to replay a partial log' }), {
+    workId: WORK,
+    phase: 'blocked',
+  })
+
+  const noted = (await store.read(1)).filter((event) => event.type === 'work.noted')
+  assert.equal(noted.length, 1)
+  assert.equal(noted[0]?.subject, WORK)
+  assert.equal(noted[0]?.actor, 'peer:engineer-1')
+  assert.deepEqual(noted[0]?.data, {
+    workId: WORK,
+    peerId: 'engineer-1',
+    phase: 'blocked',
+    body: 'no way to replay a partial log',
+  })
+
+  // A peer with nothing assigned has nothing to note on, and one that the fleet does
+  // not have is not a peer: the same code, because neither names a Work.
+  await assert.rejects(
+    () => daemon.note({ peerId: 'architect-1' as PeerId, phase: 'plan', body: 'reading the design' }),
+    (thrown: unknown) => {
+      assert.equal((thrown as { code?: string }).code, 'not_found')
+      return true
+    },
+  )
+  await daemon.down()
+})
+
+test('a peer holding two live Works is a conflict, not a guess about which one it meant', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+
+  const A = 'wrk_7f3a91c2d84b0e56' as WorkId
+  const B = 'wrk_2b3c4d5e6f708192' as WorkId
+  const assigned = (workId: WorkId, ts: string): AppendEvent[] => [
+    { ts, type: 'work.proposed', subject: workId, actor: 'user', causedBy: [], data: { workId, title: 'x', dependsOn: [] } },
+    { ts, type: 'work.assigned', subject: workId, actor: 'pm', causedBy: [], data: { workId, peerId: 'engineer-1' as PeerId, briefId: 'brf_0123456789abcdef' as BriefId, briefVersion: 1 } },
+  ]
+  await store.append([...assigned(A, '2026-11-10T09:00:00.000Z'), ...assigned(B, '2026-11-10T09:02:00.000Z')])
+
+  await assert.rejects(
+    () => daemon.note({ peerId: 'engineer-1' as PeerId, phase: 'implement', body: 'x' }),
+    (thrown: unknown) => {
+      assert.equal((thrown as { code?: string }).code, 'conflict')
+      assert.match((thrown as Error).message, /holds 2 Works/)
+      return true
+    },
+  )
+  await daemon.down()
+})
+
 test('decide answers an open decision and refuses one that is not there', async () => {
   const { daemon, store } = await harness()
   await daemon.up()

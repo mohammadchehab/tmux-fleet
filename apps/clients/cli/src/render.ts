@@ -23,7 +23,7 @@ import type {
   Routine,
   TokenReport,
 } from '@fleet/foundation-contracts'
-import type { DownResult, LsResult, PeekResult, SendResult, UpResult } from '@fleet/foundation-contracts'
+import type { DownResult, LsResult, NoteResult, PeekResult, SendResult, UpResult } from '@fleet/foundation-contracts'
 
 const indent = (lines: readonly string[], by: number): readonly string[] =>
   lines.map((line) => `${' '.repeat(by)}${line}`)
@@ -190,6 +190,10 @@ export const formatUp = (result: UpResult): string =>
 export const formatDown = (_result: DownResult): string => 'fleetd stopped'
 
 export const formatSend = (result: SendResult, peer: string): string => `sent ${result.msgId} to ${peer}`
+
+/** `fleet note` echoes the Work: the peer named the phase, the daemon named the Work it landed on. */
+export const formatNote = (result: NoteResult): string =>
+  `noted ${result.phase} on ${String(result.workId)} (mirrored to the board when the profile maps one)`
 
 const messageLines = (message: Message): readonly string[] => {
   const head = [
