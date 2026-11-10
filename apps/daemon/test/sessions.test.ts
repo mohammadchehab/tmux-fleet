@@ -20,7 +20,8 @@ import { test } from 'node:test'
 
 import { fixedClock, profilePaths, type PeerId, type Seq, type TurnId } from '@fleet/foundation-core'
 import type { AppendEvent, EventSink, ProviderEvent, SessionSpec, Turn, Worktree, WorktreeProvisioner } from '@fleet/foundation-contracts'
-import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
+import type { Provider, SessionHandle, TurnSpend } from '@fleet/runtime-provider-sdk'
+import type { BookkeepingFailure } from '@fleet/runtime-supervisor'
 
 import { decodeProfile, type Profile } from '../src/config/profile.ts'
 import { createSupervisor, type Supervisor } from '../src/execution/sessions.ts'
@@ -93,6 +94,12 @@ const rig = async (
     readonly worktrees?: readonly Worktree[]
     readonly provisioner?: WorktreeProvisioner
     readonly standing?: StandingBriefs
+    /** What the provider reports a finished turn spent (§6.2); without one no usage row is written. */
+    readonly spend?: TurnSpend
+    /** Make the store refuse `turn.usage_recorded`, the way a locked or full ledger would. */
+    readonly rejectUsage?: boolean
+    /** Where the daemon reports a bookkeeping failure it did not turn into a session failure. */
+    readonly onBookkeepingFailure?: (failure: BookkeepingFailure) => void
   } = {},
 ): Promise<Rig> => {
   const providerId = options.providerId ?? 'claude'
@@ -140,6 +147,7 @@ const rig = async (
     // Small against a large window: no ratio can fire, so the only trigger a
     // test can observe is the turn count the profile asked for.
     usage: async () => ({ contextTokens: 1_000, contextLimit: 1_000_000 }),
+    ...(options.spend === undefined ? {} : { turnSpend: () => options.spend }),
     stop: async (handle: SessionHandle) => {
       const feed = feeds.get(handle.sessionId)
       feed?.push({ type: 'session.ended', reason: 'stopped' })
@@ -151,6 +159,11 @@ const rig = async (
   // there, and what this file asserts is what the daemon *passed down*.
   const store: EventSink = {
     append: async (batch: readonly AppendEvent[]): Promise<readonly Seq[]> => {
+      // One row the store refuses, the way TASK-4's ledger would: the supervisor
+      // has to keep the session and report the refusal rather than call it a crash.
+      if (options.rejectUsage === true && batch.some((record) => record.type === 'turn.usage_recorded')) {
+        throw new Error('the store refused the append')
+      }
       records.push(...batch)
       return batch.map((_, index) => records.length - batch.length + index + 1)
     },
@@ -178,6 +191,9 @@ const rig = async (
     },
     ...(options.provisioner === undefined ? {} : { worktrees: options.provisioner }),
     ...(options.standing === undefined ? {} : { standing: options.standing }),
+    ...(options.onBookkeepingFailure === undefined
+      ? {}
+      : { onBookkeepingFailure: options.onBookkeepingFailure }),
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
   })
   return { stateDir: paths.stateDir, supervisor, records, starts }
@@ -272,6 +288,35 @@ test('a profile with no purge block leaves the supervisor’s defaults in place'
     [],
   )
   assert.equal(r.starts.length, 1)
+})
+
+test('a usage row the store refuses reaches the daemon’s port, naming the peer, the turn and the error', async (t) => {
+  // TASK-4 stopped a refused bookkeeping row from being read as a dead session.
+  // The cost was silence: a fleet whose spend cap reads these rows had no way to
+  // learn one was never filed. The port is the daemon's half of the answer — the
+  // supervisor reports, the composition root logs, and the session stays live.
+  const failures: BookkeepingFailure[] = []
+  const r = await rig(profileWith(undefined), {
+    spend: { inputTokens: 900, outputTokens: 120, cachedTokens: 0 },
+    rejectUsage: true,
+    onBookkeepingFailure: (failure) => failures.push(failure),
+  })
+  t.after(() => r.supervisor.stop())
+  await oneTurn(r)
+
+  await until(() => failures.length > 0, 'the daemon to be told the row was refused')
+  assert.equal(failures.length, 1, 'one refused append is reported once')
+  assert.equal(failures[0]?.peerId, peerId)
+  assert.equal(failures[0]?.turnId, turnId)
+  assert.equal((failures[0]?.error as Error).message, 'the store refused the append')
+
+  // The peer is still running, and the store's version of the turn is a live
+  // session that merely lacks its usage row — not a `peer.failed` the board rings on.
+  assert.deepEqual(r.supervisor.running(), [peerId])
+  assert.deepEqual(
+    r.records.filter((record) => record.type === 'peer.failed' || record.type === 'turn.usage_recorded'),
+    [],
+  )
 })
 
 const twoPeers = (second: Record<string, unknown>, extra: Record<string, unknown> = {}): Profile =>

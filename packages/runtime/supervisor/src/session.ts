@@ -74,6 +74,22 @@ export interface PurgeInput {
   readonly ask: (text: string) => Promise<void>
 }
 
+/**
+ * A bookkeeping append the store refused, kept out of the session's way
+ * (TASK-4, TASK-57).
+ *
+ * The row is a measurement, not the session, so a refused append must not end
+ * one — but dropping it in silence leaves a fleet whose spend cap reads those
+ * rows unable to tell a turn it never spent from one it never measured. This is
+ * the whole of what the supervisor knows about it: whose turn it was, which
+ * turn, and what the store said.
+ */
+export interface BookkeepingFailure {
+  readonly peerId: PeerId
+  readonly turnId: TurnId
+  readonly error: unknown
+}
+
 export interface PeerSessionPorts {
   readonly provider: Provider
   readonly handle: SessionHandle
@@ -97,6 +113,14 @@ export interface PeerSessionPorts {
    * crash and can reorder them, and neither is visible until it matters.
    */
   readonly record: (record: SessionRecord) => void | Promise<void>
+  /**
+   * Where a refused bookkeeping append goes instead of out of `run()`
+   * (TASK-57). The sink that would carry the complaint is the store that just
+   * refused it, so the complaint needs somewhere else to land — the daemon log,
+   * under fleetd. Absent, the failure is dropped, which is TASK-4's behaviour and
+   * is what a test with no use for the line gets.
+   */
+  readonly onBookkeepingFailure?: (failure: BookkeepingFailure) => void
   /**
    * Run one purge and return with the fresh session. Injected so this file
    * holds the loop and `purge.ts` holds the protocol, and so tests can purge
@@ -354,10 +378,14 @@ export class PeerSession {
         // A rejected row is bookkeeping, not the session: the `try` around this
         // loop is for the stream, and a store that refuses this one append used to
         // end a healthy session as `crashed` and hand it to `recover` — the peer
-        // replaced because a measurement could not be filed. Nothing re-raises it:
-        // the sink that would carry the complaint is the store that just refused
-        // it, and a session is the wrong thing to sacrifice to make it visible.
-        await this.#recordUsage(handle, event.turnId, usage).catch(() => {})
+        // replaced because a measurement could not be filed. The sink that would
+        // carry the complaint is the store that just refused it, and a session is
+        // the wrong thing to sacrifice to make it visible: the failure goes to
+        // `onBookkeepingFailure` instead, which under fleetd is the daemon log
+        // (TASK-4, TASK-57).
+        await this.#recordUsage(handle, event.turnId, usage).catch((error: unknown) =>
+          this.#reportBookkeepingFailure(event.turnId, error),
+        )
         const trigger = purgeTrigger({
           usage,
           usageTokens: provider.capabilities.usageTokens,
@@ -601,6 +629,22 @@ export class PeerSession {
       return await this.#ports.provider.usage(handle)
     } catch {
       return undefined
+    }
+  }
+
+  /**
+   * Tell whoever is listening that a bookkeeping append was refused (TASK-57).
+   *
+   * The port is a log, not a store: if the log itself throws — a closed stderr, a
+   * subscriber with a bug — the session must still not be sacrificed to it, which
+   * is the one rule this call exists under. So the port's own failure is dropped,
+   * and dropped knowingly: there is nothing left to report it to.
+   */
+  #reportBookkeepingFailure(turnId: TurnId, error: unknown): void {
+    try {
+      this.#ports.onBookkeepingFailure?.({ peerId: this.#ports.peerId, turnId, error })
+    } catch {
+      // Nothing left to report a failure to. The session is what matters.
     }
   }
 

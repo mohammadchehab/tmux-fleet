@@ -66,6 +66,7 @@ import { ClaudeProvider, createStructuredCompletion } from '@fleet/runtime-provi
 import { createCursorProvider } from '@fleet/runtime-provider-cursor'
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
+import type { BookkeepingFailure } from '@fleet/runtime-supervisor'
 import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
 import { createBranchHead, createRepoFiles, createWorktreeProvisioner, createWorktrees } from '@fleet/workspace-worktree'
 import { createBranchCleanupFactory } from '../routines/branch-cleanup.ts'
@@ -307,6 +308,17 @@ const trackerFor = async (profile: TrackerProfile, credentials: JiraCredentialSo
   })
 }
 
+/**
+ * The daemon log's one line for a bookkeeping append the store refused
+ * (TASK-57): the peer, the turn and what the store said. Named rather than
+ * inlined into the wiring below so the sentence a person reads is the thing
+ * under test, and so it is one line per failure by construction.
+ */
+export const bookkeepingFailureLine = (failure: BookkeepingFailure): string => {
+  const reason = failure.error instanceof Error ? failure.error.message : String(failure.error)
+  return `fleetd: bookkeeping for ${String(failure.peerId)} failed on turn ${String(failure.turnId)} and the session stays live: ${reason}`
+}
+
 export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   const clock = deps.clock ?? systemClock
   const paths = profilePaths(deps.profileName, deps.roots)
@@ -394,7 +406,15 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
       append: wake.append,
       clock,
     }),
-    store: wake, providers, clock, providerEnv })
+    store: wake, providers, clock, providerEnv,
+    // TASK-57: a bookkeeping row the store refused is not a dead session, but it
+    // must not vanish either — the spend cap reads these rows, and a fleet that
+    // silently stopped measuring would look exactly like a fleet that stopped
+    // spending. One line per failure, with the peer, the turn and what the store said.
+    onBookkeepingFailure: (failure) => {
+      console.error(bookkeepingFailureLine(failure))
+    },
+  })
 
   const mailbox = createMailbox({
     store: { append: wake.append, messages: store.reader().messages },

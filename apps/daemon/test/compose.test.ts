@@ -17,10 +17,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { profilePaths } from '@fleet/foundation-core'
+import { profilePaths, type PeerId, type TurnId } from '@fleet/foundation-core'
 import type { Tracker } from '@fleet/foundation-contracts'
 
-import { buildProviders, compose } from '../src/wiring/compose.ts'
+import { buildProviders, compose, bookkeepingFailureLine } from '../src/wiring/compose.ts'
 import { decodeProfile, type Profile } from '../src/config/profile.ts'
 
 const MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
@@ -319,5 +319,32 @@ ${judge}
       await composed.store.close().catch(() => {})
       await rm(home, { recursive: true, force: true })
     }
+  })
+})
+
+describe('a bookkeeping append the store refused (TASK-57)', () => {
+  // TASK-4 stopped a refused row from failing a healthy session, at the cost of
+  // dropping it in silence. The daemon's half of the fix is this line: it has to
+  // name the peer and the turn, or the person reading the log cannot tell which
+  // measurement went missing, and the reason, or they cannot tell why.
+  it('is one log line naming the peer, the turn and what the store said', () => {
+    const line = bookkeepingFailureLine({
+      peerId: 'engineer-1' as PeerId,
+      turnId: 'trn_0123456789abcdef' as TurnId,
+      error: new Error('database is locked'),
+    })
+    assert.equal(
+      line,
+      'fleetd: bookkeeping for engineer-1 failed on turn trn_0123456789abcdef and the session stays live: database is locked',
+    )
+  })
+
+  it('still says something usable when the store threw something that is not an Error', () => {
+    const line = bookkeepingFailureLine({
+      peerId: 'engineer-1' as PeerId,
+      turnId: 'trn_0123456789abcdef' as TurnId,
+      error: 'SQLITE_BUSY',
+    })
+    assert.match(line, /failed on turn trn_0123456789abcdef .*: SQLITE_BUSY$/)
   })
 })
