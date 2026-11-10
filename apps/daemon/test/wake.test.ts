@@ -28,7 +28,7 @@ import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import { createMailbox } from '@fleet/runtime-mailbox'
 
 import type { Supervisor } from '../src/sessions.ts'
-import { createWakingSink, type WakingSinkDeps } from '../src/wake.ts'
+import { createWakingSink, deliverOnSessionStart, type WakingSinkDeps } from '../src/wake.ts'
 
 const roots = await mkdtemp(join(tmpdir(), 'fleet-wake-'))
 after(async () => {
@@ -224,11 +224,7 @@ test('a pending message is delivered when its peer reaches running, and a replay
 
   // Exactly the wiring `compose` uses: `session.started` is the moment a peer can
   // be handed something, because it is the moment it has a session to hand it to.
-  sink.listen(async (event) => {
-    if (event.type !== 'session.started') return
-    const delivered = await mailbox.deliver(event.data.peerId)
-    if (!delivered.ok) throw delivered.error
-  })
+  sink.listen(deliverOnSessionStart(mailbox))
 
   await sink.append([registered()])
 
@@ -260,4 +256,52 @@ test('a pending message is delivered when its peer reaches running, and a replay
   await sink.append([started(sessionId, true)])
   assert.deepEqual(supervisor.sent, ['CI is red on integration/postgres.'], 'no second turn in the same session')
   assert.equal((await deliveries()).length, 1, 'and no second acknowledgement in the log')
+})
+
+/**
+ * §7 resume: the lease a delivery asks for can be created by *starting* a session,
+ * and that start appends `session.started` inside the delivery that asked for it.
+ * The append wakes the listener again, for the same peer, from inside the first
+ * delivery — the one shape that can deadlock the Mailbox's per-peer serialization,
+ * because the second delivery would wait for the first to finish.
+ */
+test('a resume that starts the session inside the delivery does not re-enter it', { timeout: 5000 }, async () => {
+  const store = await openStore()
+  const sessionId = newSessionId()
+  const sent: string[] = []
+  const sink = sinkOver(store, { scheduler: () => ({ async wake() { return [] } }) })
+
+  const sessions = {
+    async acquire() {
+      // A resuming `acquire`: the session that makes the lease exists only now, and
+      // its `session.started` is appended through the same sink as every other write.
+      await sink.append([started(sessionId, true)])
+      return ok({
+        sessionId,
+        resumed: true,
+        async send(turn: Turn): Promise<TurnId> {
+          sent.push(turn.text)
+          return `trn_${String(sent.length)}` as TurnId
+        },
+      })
+    },
+  }
+
+  const mailbox = createMailbox({
+    store: { append: (batch) => sink.append(batch), messages: store.reader().messages },
+    sessions,
+    briefs: { async current() { return 2 } },
+  })
+  sink.listen(deliverOnSessionStart(mailbox))
+
+  await sink.append([registered()])
+  await mailbox.send({ to: peer, from: 'pm' as Actor, kind: 'nudge', briefVersion: 2, body: 'CI is red.' })
+
+  // Reaching this line at all is the assertion: without the guard this append never
+  // resolves, because the delivery it wakes waits for the delivery it is inside.
+  await sink.append([started(sessionId)])
+
+  assert.deepEqual(sent, ['CI is red.'], 'the message is handed over once')
+  const deliveries = (await store.read(1)).filter((event) => event.type === 'message.delivered')
+  assert.equal(deliveries.length, 1, 'and acknowledged once')
 })

@@ -16,14 +16,47 @@
  * injected `onError`'s job — the same place `fleetd` logs everything else.
  */
 
-import type { Seq } from '@fleet/foundation-core'
-import type { AppendEvent, EventSink, FleetEvent } from '@fleet/foundation-contracts'
+import type { PeerId, Seq } from '@fleet/foundation-core'
+import type { AppendEvent, EventSink, FleetEvent, Mailbox } from '@fleet/foundation-contracts'
 
 /** What reads back the events a batch just wrote, so the wake sees the seqs the store assigned. */
 export type ReadCommitted = (from: Seq, limit: number) => Promise<readonly FleetEvent[]>
 
 /** Someone who hears every committed event, in order, after the scheduler has woken. */
 export type CommittedListener = (event: FleetEvent) => Promise<void>
+
+/**
+ * §7's delivery trigger: a peer that reaches running gets what is waiting for it.
+ *
+ * `send` hands a message over immediately and leaves it `pending` when the peer has
+ * no session, so this is the retry that makes a queue a queue — and it fires on
+ * resume too, because a resume arrives as another `session.started`.
+ *
+ * Delivering for a peer that is *already* being delivered is skipped on purpose.
+ * A delivery can itself produce a `session.started`: a supervisor whose `acquire`
+ * resumes starts a session, and that append wakes this listener. Awaiting a second
+ * `deliver` from there would wait on the Mailbox's per-peer serialization, which is
+ * waiting for the first delivery to finish — a hang, not an error. It would also be
+ * redundant: the delivery in flight is handing over everything that is pending.
+ */
+export const deliverOnSessionStart = (mailbox: Pick<Mailbox, 'deliver'>): CommittedListener => {
+  const delivering = new Set<PeerId>()
+
+  return async (event) => {
+    if (event.type !== 'session.started') return
+    const peerId = event.data.peerId
+    if (delivering.has(peerId)) return
+    delivering.add(peerId)
+    try {
+      const delivered = await mailbox.deliver(peerId)
+      // Thrown so it lands in the sink's `onError`, the one place a failed wake is
+      // reported; a delivery that did not happen is not a reason to lose the event.
+      if (!delivered.ok) throw delivered.error
+    } finally {
+      delivering.delete(peerId)
+    }
+  }
+}
 
 export interface WakingSinkDeps {
   /** The store's own append, unwrapped: this is what actually writes. */
