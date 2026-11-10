@@ -1,6 +1,6 @@
 # Fleet v2: a ground-up design
 
-**Status:** draft for Mohammad. Replaces the scrapped like-for-like TypeScript port (#14, #15).
+**Status:** draft for Mohammad. Decided: standalone `@fleet/sdk`; IsnadiBot is the first target repo (§14). Replaces the scrapped like-for-like TypeScript port (#14, #15).
 **Author:** architect. **Brief:** deterministic project manager, self-purging peers, auto-wired routines, an SDK with
 typed providers; tmux at most a view.
 
@@ -276,7 +276,9 @@ Node alone, shipping in tmux-fleet where the fleet already lives. Tying fleet re
 fleet's correctness to Effect services and the app's persistence, repeats the very coupling v1 had to bash. I also
 have not verified that its Claude driver covers a DeepInfra-pointed Anthropic endpoint or exposes context usage.
 
-**Recommendation: standalone, with a deliberate seam.**
+**Decided (Mohammad, 2026-11-10): standalone.** The fleet is a standalone tool that builds IsnadiBot; it does not ship inside the product. IsnadiBot is the first target repo, not a dependency. `@fleet/sdk` lives in tmux-fleet as recommended below.
+
+**Recommendation (adopted): standalone, with a deliberate seam.**
 1. Build `fleetd` and the `Provider` interface (§4) in tmux-fleet as a **separate, dependency-light TypeScript
    package** (`@fleet/sdk`), with no Effect and no app code.
 2. Shape `Provider` to be a **subset of IsnadiBot's `ProviderAdapterShape`** (same verbs, same event kinds) so an
@@ -287,8 +289,7 @@ have not verified that its Claude driver covers a DeepInfra-pointed Anthropic en
 4. Revisit after phase 2: if the SDK has grown a second copy of what IsnadiBot's providers do, extract the shared
    package then. Doing it first blocks the fleet behind the app's release train.
 
-**Open question for Mohammad:** is the fleet meant to ship as part of IsnadiBot's product (then build on it, and
-accept its stack), or as a standalone tool others install (then the above)? The recommendation assumes standalone.
+**Open question resolved:** the fleet is a standalone tool, not part of IsnadiBot's product (see Decided above).
 
 ## 15. Phased build plan
 
