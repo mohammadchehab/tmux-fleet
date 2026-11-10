@@ -163,6 +163,7 @@ which owns them:
 | `standup` | cron (default 09:00 local) and on request | report from projections |
 | `worktree-gc` | daily + on `merged` | §9 |
 | `reconcile` | startup + 10 min | provider `status` vs registry; restart dead sessions, fix drift |
+| `security-scan` | PR assigned to security-architect, nightly | §6.2: runs scanners, raises typed findings |
 | `notify` | events + 5 min | §6.1: the notification projection, delivered through `Notifier` |
 
 A routine declares `{id, trigger, run(ctx)}`; its runs are events (`routine.started/finished/failed`), so a
@@ -216,6 +217,66 @@ profile; routing by class is profile config.
 
 The `notify` routine (§6) runs on events and a 5 min heartbeat; its runs are events like any routine's, and it replays
 deterministically. **It lands in phase 1**: the decision inbox is how the deterministic PM escalates to the user.
+
+## 6.2 Security scanning and codegraph, enforced by mechanism
+
+### Scanners (security-architect routine)
+
+The security-architect stops hunting by reading code. A `security-scan` routine runs real tools, on every PR the
+security-architect is asked to review (on the PR head SHA) and nightly on `main`. Tools are chosen by signal per
+cost and by what the target repo contains; each is a `Scanner` adapter that emits typed findings.
+
+| tool | covers | why this one | when |
+| :- | :- | :- | :- |
+| **semgrep** | SAST: injection, authz mistakes, unsafe sinks, project rules | fast, offline rules, custom rules per repo, JSON/SARIF output | every PR + nightly |
+| **gitleaks** | secrets in the diff and history | purpose-built, low false positives, runs on the diff in seconds | every PR (diff) + nightly (history) |
+| **osv-scanner** | known-vulnerable dependencies from lockfiles (pnpm-lock, go.sum, …) | one tool for all ecosystems, uses the OSV database; `pnpm audit` adds nothing the lockfile scan misses | every PR that touches a lockfile + nightly |
+| **trivy (config/fs)** | IaC and container misconfig, image CVEs | only where the repo has Dockerfiles, `deploy/` or `infra/` | PRs touching those paths + nightly |
+| **claude-security scan skill** | deep, model-driven review: logic flaws a rule cannot express | expensive, so **not per PR**: nightly on `main`, and on a PR flagged security-relevant by path (identity, gateway, tokens, secrets, egress) | scheduled + flagged PRs |
+
+Not chosen: CodeQL (heavier setup, GitHub-side), `npm audit` alone (npm-only), running every tool on every PR (cost
+and noise). A scanner that is absent is skipped and recorded (`scan.skipped`), never silently.
+
+**Findings are typed events.** `finding.raised {tool, ruleId, severity, path, line, fingerprint, message, sha}`,
+where `fingerprint = hash(ruleId + path + normalized snippet)`, so a finding survives line shifts and is **deduped by
+rule + location**; a re-run that sees the same fingerprint appends `finding.seen`, not a new finding. The `Finding`
+projection holds `open | confirmed | dismissed | fixed` with the decision that moved it.
+
+**From finding to work, to a decision:**
+1. `finding.raised` is routed by the PM as a rule, not by an LLM: severity LOW/INFO stays in the projection; MED and
+   up becomes a `security-verify` Work for the security-architect with the finding attached.
+2. The security-architect **reads only the cited code** (through codegraph, below) to verify, and answers a typed
+   `finding.verdict {confirmed | dismissed, reason}`. A dismissal needs a reason and is remembered by fingerprint.
+3. `confirmed` creates a fix Work: MED gets a ticket and enters the queue; HIGH is assigned to an engineer at once
+   (fleet rule 7).
+4. A `confirmed` **critical** (profile-defined: severity critical, or a secret in a pushed branch, or an exploitable
+   path to a gateway/identity/token surface) additionally appends `decision.requested`, which the notification
+   projection (§6.1) turns into a "needs decision" notification. Leaked secrets also create a rotation Work at once.
+5. A PR is not blocked by findings the security-architect has not yet verified (fleet rule 7); a confirmed critical
+   blocks the PR gate (§10) for that PR.
+
+### Codegraph, enforced
+
+"Use codegraph first" is a mechanism in the session wrapper, not a prompt line. For every session of every peer:
+
+1. **Index:** before `startSession`, the supervisor runs `codegraph-ensure` for the peer's worktree (installs the CLI
+   and indexes if missing; fast no-op otherwise) and emits `index.ready {worktreeId, symbols, ageSec}`; a stale index is
+   refreshed at turn start after the peer's commits.
+2. **Tool:** the wrapper wires the codegraph MCP server (`codegraph_explore`) into `SessionSpec.mcp` for providers
+   that take MCP, and the `codegraph explore` CLI path for those that do not.
+3. **Guard:** a `PreToolUse` hook (Claude Agent SDK / CLI hooks; an equivalent filter in the provider adapter where a
+   provider has no hooks) inspects `Grep`, `Glob` and `Read`. When an index exists for the cwd and the call is a broad
+   sweep (a Grep/Glob without a narrow path, or a Read of a file when no `codegraph_explore` has run this turn for that
+   area), it **redirects**: the hook returns a message telling the model to call `codegraph_explore` with the query,
+   once per turn; the second identical attempt is allowed and logged. A narrow Read of a known file for edit is always
+   allowed. Mode is `enforce | warn | off` per role in the profile; the security-architect is `enforce`.
+4. **Measure:** each turn appends `turn.usage {peerId, in, out, cached, toolCalls: {grep, glob, read, codegraph}}`
+   from the provider's `usage()`. The `token-report` projection gives, per peer and role, tokens per Work item, the
+   share of exploration done through codegraph, and redirect counts. Baseline: run a fixed set of tasks with the guard
+   `off` then `enforce`; the stated target is a measured drop in tokens per completed Work item, reported, not assumed.
+
+Failure modes: if `codegraph-ensure` fails, the session starts without the guard and `index.failed` is raised as a
+failure notification, since an unindexed peer silently costs more.
 
 ## 7. Messaging and identity
 
@@ -310,6 +371,8 @@ serial blocker because the PM sees it as a dependency edge and parallelises ever
 | duplicate features | `dedupe` rule before assign (§5.2) and in every brief |
 | self-purge | §8, inside the session wrapper, no PM/loop |
 | the user finds out late, or is spammed | §6.1: decision inbox + `Notifier` (macOS first); notify only on decisions, final failures and the daily standup, deduped and rate-limited; `fleet decide <id>` answers and closes it |
+| the security architect hunts by reading code | §6.2: semgrep, gitleaks, osv-scanner (+trivy where it applies, claude-security scan nightly); findings are typed, deduped events; a peer only verifies |
+| peers burn tokens grepping | §6.2: codegraph wired and indexed by the session wrapper, a PreToolUse guard redirects broad sweeps, per-peer token usage measured |
 | routines typed by hand | §6, started by `fleetd` |
 
 ## 14. Decision: standalone vs build on IsnadiBot
@@ -376,8 +439,59 @@ a different shape.
 | PR gate, PR queue | **PR queue** (TASK-89, read-only, sorted by who acts next) | IsnadiBot has no merge gate, no stack retarget; **fleet-only for now, future feature** |
 | worktree manager | thread `worktreePath` and workspace root; `workspace-layout.md` | no owner/GC/holder tracking found in the docs read; **future IsnadiBot feature** |
 | build ledger | none found | **future IsnadiBot feature** |
+| security scanning | none found in product code; scanner/codegraph strings appear only in repo dev config (`.mcp.json`, `AGENTS.md`, `.claude/settings.json`) | gap; natural homes: the skills registry (E14) for the scan skill, `McpHttpServer` for exposing tools; **future IsnadiBot feature** |
+| codegraph + guard | none in product code (dev config only); skills are loaded per bot through the E14 registry and tools through the MCP server | gap; hook-style PreToolUse enforcement not found in the code I read; **future IsnadiBot feature** |
 | silent/failed session handling | **Silence watchdog** (reports, never interrupts) | fleet's `reconcile` restart-and-resume goes beyond it |
 | Provider | **`ProviderAdapterShape`** (`startSession`, `sendTurn`, `interruptTurn`, `respondToRequest`, `respondToUserInput`, `stopSession`, `listSessions`, `readThread`, `streamEvents`, `capabilities`) | §4 is a subset; see below |
+
+### How much of phase 1 duplicates E13, and should it be built in IsnadiBot instead
+
+Checked against `origin/main` of IsnadiBot, not the docs alone:
+- **Built:** the work-item aggregate and projection (TASK-87 PR1, #146) and the role library and fleet templates
+  (TASK-92, #143).
+- **Designed, not built:** the dispatcher (`FleetDispatcherReactor`, TASK-86; no such code on main), handoff and the
+  context epoch (TASK-84; not on main), auto-clear (TASK-85), bot status (TASK-83), standup routine (TASK-88), PR queue
+  (TASK-89), scale (TASK-90), triage (TASK-91). All specified in `fleet-operations.md`.
+
+Phase 1 (§15), item by item:
+
+| phase 1 item | in E13? |
+| :- | :- |
+| work items, roles | **yes, built** |
+| dispatcher: assign on idle, wake boss for judgement, idle backoff | **yes, designed** (TASK-86) |
+| self-purge: handoff doc, context reset, auto-clear at a token limit | **yes, designed** (TASK-84/85) |
+| bot status busy/asking/held/idle, capacity | **yes, designed** (TASK-83) |
+| standup, PR queue (read-only) | **yes, designed** (TASK-88/89) |
+| event store, registry, provider adapters, session supervision | **yes, exists** (orchestration engine, provider layer) |
+| stable identity, mailbox | **mostly** (bots/threads are durable; no explicit mailbox with brief versioning) |
+| decision inbox + notifications | **partly** (Decisions group, bot inbox, push); no escalation routing from a PM |
+| merge gate, stack retarget, worktree GC, build ledger, scanners, codegraph guard, contract gating, typed judge, replay | **no** |
+
+So roughly the whole PM loop, self-purge, status and standup scope of phase 1 (the part that is most of its
+size) duplicates E13, and the runtime under it (store, providers, supervisor) duplicates what IsnadiBot already is.
+What phase 1 has that E13 lacks is the fleet-specific hygiene: the merge gate, worktree manager, build ledger,
+scanners, codegraph guard and contract gating.
+
+**Recommendation: do not build the overlap twice. Build it once, in IsnadiBot, as E13, and make the fleet's
+fleet-only parts a layer on top.** The cost of the other option is concrete: two decider/dispatcher/handoff
+implementations that must be kept behaviour-compatible, where E13 already has the spec, the vocabulary and merged
+foundations.
+
+The argument against, which Mohammad must weigh (and why this is his call, not mine):
+1. **Bootstrapping.** The fleet builds IsnadiBot. If the dispatcher that keeps the team busy is inside IsnadiBot, a
+   bug in it stalls the team that must fix it, and a half-built branch cannot be the runtime. Mitigation: the fleet
+   runs a **pinned released IsnadiBot**, never the checkout under edit.
+2. **Other target repos.** The fleet also serves repos that are not IsnadiBot (the Backbase repos). Depending on an
+   IsnadiBot server makes "standalone" mean "needs an IsnadiBot environment installed". If that is unacceptable, the
+   standalone store/PM stays and E13 is ported later (§14.1, phase 4), i.e. the duplication is paid knowingly.
+3. **Pace.** E13's dispatcher and handoff are not built; waiting for them delays the fleet Mohammad needs now.
+
+**Shape of the recommended path:** (a) the fleet's pain is now, so a **thin interim fleet** runs on today's tmux fleet
+plus the dispatch (#12) and context-guard (#13) already open, with no v2 daemon rebuilt; (b) E13 TASK-84/85/86/83/88
+are built in IsnadiBot, in order, with the fleet's rules and thresholds as the spec; (c) the fleet-only layer (merge
+gate, worktree manager, ledger, scanners, codegraph guard, contracts) is built as the standalone `@fleet/sdk` against
+IsnadiBot's provider contract, so it works with either backend. If Mohammad prefers the fully standalone v2 as
+written, phase 1 stands and E13 is ported later; this section is the cost of that choice.
 
 ### Rules for fleet code so the move is a port
 
