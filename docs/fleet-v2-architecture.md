@@ -101,7 +101,7 @@ Nothing the fleet writes at runtime lives in the repo or in a worktree.
    findings/  builds/<sha>-<task>.log       # scanner raw output, build logs (§6.2, §11)
    notify/                                  # delivered-notification receipts (§6.1)
    backup/                                  # nightly copy of store.sqlite
-~/.fleet/<profile>/worktrees.json           # not used: worktree state is events; the git worktrees live under each repo's own .claude/worktrees/<topic> (§9)
+(git worktrees are not here: they live under each repo's own .claude/worktrees/<topic>, and their state is events in the store, §9)
 ```
 
 Role and peer *definitions* are config in the repo (`config/roles`, `config/squads`) and per-profile overrides in the
