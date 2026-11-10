@@ -312,6 +312,11 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       // first, which is what `fleet peek` is for (§7). An `ack`ed message is
       // history and reads from the projection instead. Both are `Message` — the
       // same row the CLI renders — so nothing is reshaped on the way out.
+      // A limit of zero asks for nothing, and "nothing" is an empty answer —
+      // `slice(-0)` is `slice(0)`, the whole box, so the two slices below
+      // cannot express it. It also cannot fall through: an empty pending slice
+      // would read as an empty box and return the whole history it is not in.
+      if (input.limit === 0) return { messages: [] }
       const pending = await deps.mailbox.pending(input.peer)
       const rows = input.limit === undefined ? pending : pending.slice(-input.limit)
       if (rows.length > 0) return { messages: rows }
