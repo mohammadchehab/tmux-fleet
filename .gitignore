@@ -3,3 +3,6 @@
 __pycache__/
 node_modules/
 *.tsbuildinfo
+
+# CI reports (.github/workflows/security.yml writes the scanners' SARIF here before uploading it)
+.ci-reports/

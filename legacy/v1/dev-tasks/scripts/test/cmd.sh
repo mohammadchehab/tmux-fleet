@@ -66,11 +66,14 @@ check test ! -e "$t/localbin/fleet"
 echo mine > "$t/localbin/fleet"
 check bash -c '! dev-tasks/scripts/install/bin.sh'
 check grep -qx mine "$t/localbin/fleet"
-# locks. Two holders of one lock run one after the other, never interleaved
+# locks. Two holders of one lock run one after the other, never interleaved. B starts only once A holds the lock, so the
+# order is asserted without depending on how the two background starts interleave on a loaded runner.
 L=skills/fleet/scripts/lib/lock.sh; D="$t/lockdir"; : > "$t/order"
 hold() { bash -c 'source "$1"; fleet_lock "$2" x 20; echo "start $3" >> "$4"; sleep 1; echo "end $3" >> "$4"' _ "$L" "$D" "$1" "$t/order"; }
-hold A & hold B & wait
-check bash -c '[ "$(sed -n 1p "$1" | cut -d" " -f1)$(sed -n 2p "$1" | cut -d" " -f1)$(sed -n 3p "$1" | cut -d" " -f1)$(sed -n 4p "$1" | cut -d" " -f1)" = startendstartend ]' _ "$t/order"
+hold A &
+for _ in $(seq 1 100); do [ -e "$D/locks/x.lock" ] && break; sleep 0.1; done
+hold B & wait
+check bash -c 'got=$(sed -n "1,4p" "$1" | cut -d" " -f1 | tr -d "\n"); [ "$got" = startendstartend ] || { echo "lock order was: $(tr "\n" "/" < "$1")"; exit 1; }' _ "$t/order"
 check test ! -e "$D/locks/x.lock"          # released on exit
 # fail fast: wait 0 says who holds it
 bash -c 'source "$1"; fleet_lock "$2" x 0 holder-cmd; sleep 3' _ "$L" "$D" & h=$!; sleep 0.5

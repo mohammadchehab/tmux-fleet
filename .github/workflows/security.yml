@@ -1,0 +1,134 @@
+# Security scanning, the mechanism behind design §6.2.
+#
+#   every PR      semgrep (SAST), gitleaks (the diff's secrets), osv-scanner (pnpm-lock.yaml)
+#   every main    the same three, gitleaks over the whole history rather than the diff
+#   nightly       the same as a push to main, on a cron, so a CVE published after a merge is still found
+#
+# Not here, on purpose (§6.2): trivy (no Dockerfile, no infra/, no deploy/ in this repo — add it the day one lands) and
+# claude-security (model-driven and expensive: nightly and path-flagged PRs, phase 2). CodeQL is not used: §6.2 picks
+# semgrep for its offline, per-repo rules.
+#
+# MEDIUM and above fails the job (severity-gate.mjs). See docs/runbook/ci.md for the floor, why the job is safe to make
+# a required check, and how a false positive is suppressed.
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # 05:17 UTC daily, off the hour: a nightly scan has no reason to join the :00 stampede.
+    - cron: '17 5 * * *'
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  # SARIF upload, so every finding shows in Security → Code scanning and can be triaged or dismissed with a reason.
+  security-events: write
+  # gitleaks reads the PR's commits on a pull_request event from a fork.
+  pull-requests: read
+
+env:
+  REPORTS: .ci-reports
+  GITLEAKS_VERSION: 8.30.1
+  OSV_SCANNER_VERSION: 2.7.1
+  SEMGREP_VERSION: 1.184.0
+
+jobs:
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # fetch-depth: 0 — gitleaks scans commits, so it needs the history it is asked about, not one tree.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: install the scanners
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORTS"
+          curl -sSLo "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          sudo install "$RUNNER_TEMP/gitleaks" /usr/local/bin/gitleaks
+          curl -sSLo "$RUNNER_TEMP/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          sudo install -m 0755 "$RUNNER_TEMP/osv-scanner" /usr/local/bin/osv-scanner
+          # pipx, not pip: the runner's python is externally managed (PEP 668) and pip install refuses there.
+          pipx install "semgrep==${SEMGREP_VERSION}"
+          gitleaks version
+          osv-scanner --version | head -1
+          semgrep --version
+
+      # On a PR the diff is what is being reviewed: base..head, so a finding is attributed to the change introducing it.
+      # On main and nightly, the whole history — a secret committed long ago is still leaked.
+      - name: gitleaks (secrets)
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            RANGE="HEAD"
+          fi
+          echo "gitleaks: scanning $RANGE"
+          # --exit-code 0: whether a finding blocks is severity-gate.mjs's decision — one place, not each tool's own
+          # convention. A tool that crashes still fails the job; a tool that finds something reports it here.
+          gitleaks detect --source . --redact --no-banner --log-opts="$RANGE" \
+            --report-format sarif --report-path "$REPORTS/gitleaks.sarif" --exit-code 0
+
+      # SAST over the TypeScript half. legacy/v1 is bash (shellcheck covers it in CI) and spikes/ is throwaway evidence
+      # outside the workspace (§1.1) — scanning either only reports noise nobody will act on.
+      # Targets the repo root with --exclude rather than a list of directories: semgrep exits 2 on a path that does not
+      # exist, so `packages apps tests` failed the job the day `apps/` had not been created yet. Root + excludes keeps
+      # working as the layout grows. No --quiet: it hides the reason a scan failed, and findings reach the log through
+      # the gate anyway.
+      - name: semgrep (SAST)
+        env:
+          SEMGREP_SEND_METRICS: 'off'
+        run: |
+          set -euo pipefail
+          semgrep scan --config p/typescript --config p/javascript --config p/nodejs \
+            --exclude legacy --exclude spikes --exclude docs --exclude node_modules \
+            --disable-version-check --sarif --output "$REPORTS/semgrep.sarif" .
+
+      # The lockfile is the whole dependency surface: an osv finding here is a known-vulnerable package this repo ships.
+      # osv-scanner reads every ecosystem, so it still covers packages the day one of them adds its provider SDK.
+      - name: osv-scanner (dependency vulnerabilities)
+        run: osv-scanner scan --lockfile=pnpm-lock.yaml --format sarif --output-file "$REPORTS/osv.sarif"
+
+      # MEDIUM and above fails. The per-tool severity mapping lives in the script's header, next to the code.
+      - name: gate (MEDIUM and above fails)
+        run: |
+          node .github/scripts/severity-gate.mjs --floor MEDIUM \
+            --report gitleaks="$REPORTS/gitleaks.sarif" \
+            --report semgrep="$REPORTS/semgrep.sarif" \
+            --report osv="$REPORTS/osv.sarif"
+
+      # Upload runs even when the gate failed — a failing scan is exactly when the findings must be visible and
+      # triageable on the PR. One upload per tool: a distinct category per tool is what keeps code scanning from
+      # treating three tools' results as one analysis.
+      - name: upload gitleaks SARIF
+        if: always() && hashFiles('.ci-reports/gitleaks.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: .ci-reports/gitleaks.sarif
+          category: gitleaks
+
+      - name: upload semgrep SARIF
+        if: always() && hashFiles('.ci-reports/semgrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: .ci-reports/semgrep.sarif
+          category: semgrep
+
+      - name: upload osv-scanner SARIF
+        if: always() && hashFiles('.ci-reports/osv.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: .ci-reports/osv.sarif
+          category: osv-scanner

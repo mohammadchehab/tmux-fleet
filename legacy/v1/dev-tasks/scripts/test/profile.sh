@@ -99,7 +99,7 @@ mkdir -p "$t/home/r2"; cp "$t/lrepo/AGENTS.md" "$t/home/r2/AGENTS.md"
 # the user's folder is linted too (real profiles live there)
 mkdir -p "$t/home/.config/fleet/profiles"; rm -f "$t/lp/x.env"
 printf 'FLEET_REPO=%s\nFLEET_KEY=ACME\n' "$t/lrepo" > "$t/home/.config/fleet/profiles/real.env"
-out=$(env HOME="$t/home" FLEET_PROFILES_DIR="$t/lp" "$L" 2>&1 || true); echo "$out" | grep -q "FAIL real.env:2 FLEET_KEY 'ACME'" && ok || bad "lint: a profile in the user's folder must be checked: $out"
+out=$(env HOME="$t/home" XDG_CONFIG_HOME="$t/home/.config" FLEET_PROFILES_DIR="$t/lp" "$L" 2>&1 || true); echo "$out" | grep -q "FAIL real.env:2 FLEET_KEY 'ACME'" && ok || bad "lint: a profile in the user's folder must be checked: $out"
 rm -f "$t/home/.config/fleet/profiles/real.env"
 # shellcheck disable=SC2088  # the literal ~ is the input: the lint must expand it itself
 put 'FLEET_KEY=ACME' '~/r2'; lint >/dev/null 2>&1 && bad "lint: ~ in FLEET_REPO must be expanded (hit expected)" || ok
