@@ -62,7 +62,7 @@ export const PACKAGE_ORDER: Readonly<Record<string, readonly string[]>> = {
   workspace: ['worktree', 'codegraph'],
   security: ['findings', 'scanners'],
   notify: ['core', 'channels/macos'],
-  integrations: ['github', 'gitlab', 'trackers'],
+  integrations: ['github', 'gitlab', 'trackers/backlog'],
   // §17: the eval suites are dev tooling, not a product surface. Within the group a suite may use the adapter that
   // turns its results into events, which is the only edge there is.
   evals: ['adapter', 'suites/judge'],
