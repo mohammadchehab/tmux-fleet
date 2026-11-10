@@ -71,8 +71,8 @@ import { decision, routine, tokenReport } from './projections/ops.ts'
 import type { Decision, Routine, TokenReport } from './projections/ops.ts'
 import { message } from './projections/mailbox.ts'
 import type { Message } from './projections/mailbox.ts'
-import { peer, peerCompactions } from './projections/peers.ts'
-import type { Peer, PeerCompactions } from './projections/peers.ts'
+import { peer, peerActivity, peerCompactions } from './projections/peers.ts'
+import type { Peer, PeerActivity, PeerCompactions } from './projections/peers.ts'
 import { work } from './projections/work.ts'
 import type { Work } from './projections/work.ts'
 
@@ -471,6 +471,11 @@ export interface LsResult {
    * here — a client that wanted one peer's total should not have to re-add rows.
    */
   readonly tokens: readonly TokenReport[]
+  /**
+   * What each peer is doing right now (§4): `state` says `working`, this says
+   * at what. One row per peer with something to say.
+   */
+  readonly activity: readonly PeerActivity[]
 }
 
 export const lsResult = (): Schema<LsResult> =>
@@ -481,6 +486,7 @@ export const lsResult = (): Schema<LsResult> =>
     decisions: array(decision()),
     compactions: array(peerCompactions()),
     tokens: array(tokenReport()),
+    activity: array(peerActivity()),
   })
 
 /** `send`: the id the Mailbox minted, so the client can find it in `peek`. */

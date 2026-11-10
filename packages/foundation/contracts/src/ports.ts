@@ -27,7 +27,7 @@ import type { MessageAckState } from './events/messages.ts'
 import type { ProviderHandle, Turn } from './provider.ts'
 import type { Build, PullRequest, Worktree } from './projections/delivery.ts'
 import type { Decision, Finding, Notification, Routine, TokenReport } from './projections/ops.ts'
-import type { Peer, PeerCompactions, Session } from './projections/peers.ts'
+import type { Peer, PeerActivity, PeerCompactions, Session } from './projections/peers.ts'
 import type { Work } from './projections/work.ts'
 import type { ExternalItem } from './shapes.ts'
 import type { WorkState } from './work-state.ts'
@@ -353,6 +353,16 @@ export interface ReadModel {
    */
   readonly tokens: {
     all(): Promise<readonly TokenReport[]>
+  }
+
+  /**
+   * What each peer is doing right now (§4): its current Work, the last tool it
+   * ran and that call's target, and how much it has edited that Work. A peer
+   * with nothing to say has no row, the same way a peer that never compacted
+   * has no compaction row.
+   */
+  readonly activity: {
+    all(): Promise<readonly PeerActivity[]>
   }
 }
 

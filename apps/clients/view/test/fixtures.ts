@@ -5,8 +5,8 @@
  * rather than silently rendering `undefined` in a pane.
  */
 
-import type { LsResult, Peer } from '@fleet/foundation-contracts'
-import type { PeerId, SessionId } from '@fleet/foundation-core'
+import type { LsResult, Peer, PeerActivity } from '@fleet/foundation-contracts'
+import type { PeerId, SessionId, WorkId } from '@fleet/foundation-core'
 
 /**
  * A peer row. The id is taken as a plain string and branded here, so a test reads
@@ -29,6 +29,27 @@ export const peerFixture = (overrides: Partial<Omit<Peer, 'peerId'>> & { readonl
   }
 }
 
+/**
+ * A peer-activity row: what the peer is working on, the last tool and its short
+ * target, the edits that Work has taken, and when its last turn ended. All four
+ * are projection values; no pane infers any of them from the peer's state.
+ */
+export const activityFixture = (
+  overrides: Partial<Omit<PeerActivity, 'peerId'>> & { readonly peerId?: string } = {},
+): PeerActivity => {
+  const { peerId: raw, ...rest } = overrides
+  return {
+    peerId: (raw ?? 'engineer-1') as PeerId,
+    workId: 'wrk_0123456789abcdef' as WorkId,
+    lastTool: 'Edit',
+    lastTarget: 'packages/foundation/store/src/peers.ts',
+    lastToolAt: '2026-11-10T12:58:01.000Z',
+    lastTurnAt: '2026-11-10T12:58:01.000Z',
+    edits: 14,
+    ...rest,
+  }
+}
+
 export const lsFixture = (peers: readonly Peer[]): LsResult => ({
   status: {
     profile: 'firstrun',
@@ -42,6 +63,7 @@ export const lsFixture = (peers: readonly Peer[]): LsResult => ({
   decisions: [],
   compactions: [],
   tokens: [],
+  activity: [],
 })
 
 /** An opaque id is `<prefix>_<16 lowercase hex>`, which is what `sessionId()` checks. */

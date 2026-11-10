@@ -15,7 +15,7 @@
  */
 
 import { isWorkTerminal, workStates } from '@fleet/foundation-contracts'
-import type { DaemonStatus, TokenReport, Work, WorkState } from '@fleet/foundation-contracts'
+import type { DaemonStatus, PeerActivity, TokenReport, Work, WorkState } from '@fleet/foundation-contracts'
 
 export interface BoardPage {
   readonly status: DaemonStatus
@@ -27,6 +27,8 @@ export interface BoardPage {
    * has two of them and the line is about the Work.
    */
   readonly usage: readonly TokenReport[]
+  /** Per-peer activity, joined to a row by `workId`; a Peer with no Work is simply absent here. */
+  readonly activity: readonly PeerActivity[]
   /** Rendered into the footer so a test can assert freshness without a clock. */
   readonly renderedAt: string
 }
@@ -77,7 +79,24 @@ const link = (href: string, text: string): string =>
 
 const prLabel = (pr: Work['prs'][number]): string => `${pr.repo}#${String(pr.number)}`
 
-const row = (item: Work, spend: Spend | undefined): string => {
+/**
+ * The peer working this item, as far as the activity projection knows: the
+ * last tool and its short target, and how many edits the Work has taken. Both
+ * are values the store held — the target is already the adapter's redacted
+ * summary, bounded again by the event — so neither is read from anywhere else.
+ */
+const activityFacts = (row: PeerActivity | undefined): readonly string[] => {
+  if (row === undefined) return []
+  const facts: string[] = []
+  if (row.lastTool !== undefined) {
+    const what = row.lastTarget === undefined ? row.lastTool : `${row.lastTool} ${row.lastTarget}`
+    facts.push(`<span class="doing">${escape(what)}</span>`)
+  }
+  if (row.edits > 0) facts.push(`<span class="edits">${String(row.edits)} edit${row.edits === 1 ? '' : 's'}</span>`)
+  return facts
+}
+
+const row = (item: Work, spend: Spend | undefined, activity: readonly PeerActivity[]): string => {
   const facts: string[] = []
   if (item.assignee !== undefined) facts.push(`<span class="who">${escape(item.assignee)}</span>`)
   if (item.role !== undefined) facts.push(`<span class="role">${escape(item.role)}</span>`)
@@ -89,6 +108,7 @@ const row = (item: Work, spend: Spend | undefined): string => {
     const label = `${item.external.system}:${item.external.key}`
     facts.push(item.external.url === undefined ? `<span>${escape(label)}</span>` : link(item.external.url, label))
   }
+  facts.push(...activityFacts(activity.find((entry) => entry.workId === item.workId)))
   const blocked = item.blockedReason === undefined ? '' : `<p class="why">${escape(item.blockedReason)}</p>`
   // What this Work has cost so far, as the report measured it. A Work with no
   // turn gets no line: `$0.00` would claim a Work that was free rather than one
@@ -110,8 +130,13 @@ const row = (item: Work, spend: Spend | undefined): string => {
   ].join('')
 }
 
-const column = (state: WorkState, items: readonly Work[], spend: ReadonlyMap<string, Spend>): string => {
-  const rows = items.map((item) => row(item, spend.get(item.workId))).join('\n')
+const column = (
+  state: WorkState,
+  items: readonly Work[],
+  spend: ReadonlyMap<string, Spend>,
+  activity: readonly PeerActivity[],
+): string => {
+  const rows = items.map((item) => row(item, spend.get(item.workId), activity)).join('\n')
   return [
     `<section class="state ${isWorkTerminal(state) ? 'done' : 'open'}">`,
     `<h2>${escape(state)}<span class="count">${String(items.length)}</span></h2>`,
@@ -130,7 +155,7 @@ export const renderBoard = (page: BoardPage): string => {
   const columns = workStates
     .map((state) => ({ state, items: page.work.filter((item) => item.state === state) }))
     .filter((group) => group.items.length > 0)
-    .map((group) => column(group.state, group.items, spend))
+    .map((group) => column(group.state, group.items, spend, page.activity))
     .join('\n')
 
   const body =

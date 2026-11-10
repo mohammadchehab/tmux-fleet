@@ -17,6 +17,7 @@ import type {
   FleetEvent,
   Message,
   Peer,
+  PeerActivity,
   PeerCompactions,
   ReplayResult,
   Routine,
@@ -56,6 +57,27 @@ const peerRow = (peer: Peer): readonly string[] => [
   `brief v${String(peer.briefVersion)}`,
   peer.currentSessionId ?? '-',
 ]
+
+/**
+ * What a busy peer is doing (§4). `state` says `working`; this says at what, on
+ * which Work, and how much of that Work it has rewritten — the three things a
+ * person watching a fleet wants before deciding whether to interrupt it.
+ *
+ * The target is the provider's own short summary (a path, a description), so it
+ * is already safe to print. It is shortened again here only so one long path
+ * cannot push the other columns off a terminal; the daemon's payload is not cut.
+ */
+const activityRow = (row: PeerActivity): readonly string[] => [
+  row.peerId,
+  row.lastTool ?? '-',
+  row.lastTarget === undefined ? '-' : shorten(row.lastTarget, 56),
+  row.workId ?? '-',
+  `edits ${String(row.edits)}`,
+  row.lastTurnAt ?? 'no turn yet',
+]
+
+const shorten = (value: string, max: number): string =>
+  value.length <= max ? value : `${value.slice(0, max - 1)}…`
 
 const routineRow = (routine: Routine): readonly string[] => [
   routine.kind,
@@ -132,6 +154,15 @@ export const formatLs = (result: LsResult): string => {
     `store   ${status.storePath}`,
     '',
     ...section('peers', result.peers.length, columns(result.peers.map(peerRow)), 'none registered'),
+    '',
+    // Right after the peers, because it answers the question the peers row raises:
+    // a peer that says `working` is a peer whose reader wants to know at what (§4).
+    ...section(
+      'activity',
+      result.activity.length,
+      columns(result.activity.map(activityRow)),
+      'none: no peer has a Work or has used a tool',
+    ),
     '',
     ...section('routines', result.routines.length, columns(result.routines.map(routineRow)), 'none'),
     '',

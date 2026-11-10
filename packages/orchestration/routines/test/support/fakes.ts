@@ -150,6 +150,9 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
     // §6.2's cost report is not something a routine decides on; no test in this
     // package reads it, so the fake answers the empty report.
     tokens: { all: async () => [] },
+    // No activity is seeded either: a routine decides from the log, and the
+    // activity row is a reading of it for a person, not an input to a rule.
+    activity: { all: async () => [] },
     put: (next) => {
       Object.assign(current, next)
     },

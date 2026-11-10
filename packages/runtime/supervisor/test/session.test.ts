@@ -254,7 +254,7 @@ test('events become peer states, and a completed turn that is under the limit ke
 
   assert.deepEqual(
     r.records.map((record) => (record.type === 'peer.state_changed' ? record.data.state : record.type)),
-    ['working', 'idle', 'ended', 'session.ended'],
+    ['working', 'peer.tool_used', 'idle', 'ended', 'session.ended'],
   )
   assert.deepEqual(session.state, 'ended')
   // What the wrapper wrote is what the store accepts: the records are the

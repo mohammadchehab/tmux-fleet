@@ -26,9 +26,9 @@ export type PurgeRecord = Extract<
 >
 
 /**
- * Everything one session's stream produces: its states, its compactions, what
- * each turn cost, its end, its purges, and the one fault this loop refuses to
- * route around (§8).
+ * Everything one session's stream produces: its states, its compactions, the
+ * tools it used, what each turn cost, its end, its purges, and the one fault
+ * this loop refuses to route around (§8).
  *
  * `turn.usage_recorded` is here because the fleet is the measurer under fleetd
  * (§6.2): the turn boundary is where the provider's numbers are, and a session
@@ -48,6 +48,7 @@ export type SessionRecord =
         type:
           | 'peer.state_changed'
           | 'peer.compacted'
+          | 'peer.tool_used'
           | 'turn.usage_recorded'
           | 'session.ended'
           | 'provider.errored'
