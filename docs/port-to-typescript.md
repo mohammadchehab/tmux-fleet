@@ -1,6 +1,8 @@
 # Porting tmux-fleet from bash/python to Node.js + TypeScript
 
-**Status:** plan for review. No porting starts until this is approved.
+**Status:** approved. **Mohammad's call (2026-11-09): option B, the clean break** — the whole project is
+TypeScript, `lib/lock.sh` included; the six tests that call library functions in-process move those assertions into
+`tests/unit`. See §3 for the decision and what it costs.
 
 **Goal:** move every script the fleet runs from bash (and two from Python) to Node.js + TypeScript,
 with no change in behaviour that a peer, a skill, a hook or the user can observe.
@@ -20,7 +22,11 @@ with no change in behaviour that a peer, a skill, a hook or the user can observe
 | `dev-tasks/scripts/test/wt.sh` | 71 |
 | `task lint` | 44 scripts shellcheck-clean, 16 skill frontmatters ok, 2 profiles checked |
 
-Every slice below must leave those numbers at or above their baseline, with 0 failures.
+The counts above are the shell suite alone. Under the clean break (§3) some of them **move** into `tests/unit`
+rather than staying in their file, so the gate is not "211 in the shell suite forever": it is **no assertion lost** —
+`task test` reports 0 failures, and every slice's PR body states how many assertions it moved out of a shell file
+and into a unit test, and the total after the move. From slice 1 on, `task test` runs the shell suite and the
+TypeScript unit tests together.
 
 ---
 
@@ -33,7 +39,8 @@ Every slice below must leave those numbers at or above their baseline, with 0 fa
   Never executed; `source`d into a caller and defining functions and variables there.
 - **2 Python** — `skills/fleet/scripts/fleet-reply-log`, `skills/fleet-clear/scripts/peer-tokens`.
 
-The libraries are the hard part: their callers include **the test suite itself**, in-process. See §3.
+The libraries are the hard part: their callers include **the test suite itself**, in-process. That is what the
+clean break in §3 pays for, and why six test files change shape in slice 1.
 
 ### Inventory
 
@@ -46,7 +53,7 @@ Columns: **reads** = env and files it consumes; **writes** = state it changes; *
 | `bin/fleet` | 88 | `FLEET_CHECKOUT`, `FLEET_PROFILE`, argv; symlink chain to find the checkout; `_list` runs `lib/tmux.sh` | nothing (execs) | 4 |
 | `lib/tmux.sh` | 82 | `FLEET_TMUX`, `TMUX`, `TMUX_PANE`, `FLEET_PROFILE`, `FLEET_STATE`, `HOME` | nothing | 1 |
 | `lib/profile.sh` | 45 | `FLEET_PROFILE`, `FLEET_USER_PROFILES_DIR`, `XDG_CONFIG_HOME`, `FLEET_PROFILES_DIR`, `FLEET_REPO`, profile `.env`; sets `REPO` **in the caller's scope** | nothing | 1 |
-| `lib/lock.sh` | 55 | `FLEET_LOCK_WAIT`, `FLEET_LOCKS`; lock folder contents (`pid`, `cmd`, `since`) | `<dir>/locks/<name>.lock/`, exports `FLEET_LOCKS` | **stays bash** (§3) |
+| `lib/lock.sh` | 55 | `FLEET_LOCK_WAIT`, `FLEET_LOCKS`; lock folder contents (`pid`, `cmd`, `since`) | `<dir>/locks/<name>.lock/`, exports `FLEET_LOCKS` | 1 (§3) |
 | `lib/pane.sh` | 60 | `@fleet-cli` tmux option; pane text on stdin; `#{pane_current_command}` | nothing (pure text filter) | 2 |
 | `lib/roster.sh` | 62 | `$FLEET_STATE/roster.d/<peer>` (`key=value` lines) | `roster.d/<peer>`, atomic rewrite via `mktemp`+`mv` | 2 |
 | `lib/backlog.sh` | 63 | `FLEET_BACKLOG_BIN`, `FLEET_BOARD_PORT`, `FLEET_SESSION_PROFILE`; `backlog --version`; `jq` | `$FLEET_STATE/backlog/`, `$FLEET_STATE/backlog-mcp.json`; starts a tmux session | 2 |
@@ -143,13 +150,19 @@ src/
     roster.ts                # roster.d read/write/prune
     backlog.ts               # board CLI, port, URL, init, start, mcp config
     worktree.ts              # main checkout, root, owner, branch state, scan, cache
+    lock.ts                  # the lock folders, process lifetime, stale takeover, FLEET_LOCKS re-entrancy (§3)
     output.ts                # stdout/stderr writers, usage(), die()
   devtasks/                  # helpers only the dev-tasks commands use
     git.ts  symlink.ts  frontmatter.ts
 tests/
   unit/                      # node:test, one file per src/lib module
-skills/fleet/scripts/lib/*.sh # bash adaptors (lock.sh unchanged) — see §3
+dev-tasks/scripts/lib/shim.sh  # sourced by every entry-point shim: real-path resolution, then exec the TS (§3)
 ```
+
+The seven `skills/fleet/scripts/lib/*.sh` files are **deleted** as their last bash caller is ported, and gone by
+slice 12. Until then they are the implementation for every command that is still bash — so during the port two
+implementations of a library coexist, each pinned by the tests that still use it. That is the cost of the clean
+break, and it is bounded: it ends at slice 12.
 
 **Runtime choice: run the TypeScript directly.** Node ≥22.18 strips types natively, so `node src/cli/fleet-up.ts`
 just runs. This machine has Node 26.11 and both `node t.ts` and `node --experimental-strip-types t.ts` work.
@@ -169,11 +182,15 @@ with the same `cksum` algorithm so ports and cache filenames do not move.
 
 ---
 
-## 3. The compatibility layer, and the one thing that cannot go to TypeScript
+## 3. The clean break: every library goes to TypeScript, the lock included
 
-The brief asks that the existing tests run unchanged. **Six of the nine test files do not execute the scripts —
-they `source` the libraries and call functions in-process**, and assert on effects that belong to the shell
-process, not to a program:
+**Decision (Mohammad, 2026-11-09): option B.** There is one implementation of every library and no adaptor layer
+between bash and TypeScript. This section records what that forces, because it is the one place where the port
+cannot be invisible.
+
+The constraint is a property of the existing tests, not a matter of preference. **Six of the nine test files do not
+execute the scripts — they `source` the libraries and call functions in-process**, and assert on effects that
+belong to the shell process, not to a program:
 
 | test | line | what it needs |
 | :- | :- | :- |
@@ -189,50 +206,62 @@ its parent, and cannot assign to its caller's `REPO`. So:
 
 > **A full port of the libraries to TypeScript and byte-identical tests are mutually exclusive.**
 
-### The resolution: every lib keeps its name and stays sourceable; the logic moves out except the lock
+Under option B the **tests** give way, not the design: each in-process assertion is rewritten against the
+TypeScript module. The shell file keeps only what goes through a command — a real process boundary, which is what
+the ported code is.
 
-`skills/fleet/scripts/lib/*.sh` survive as **thin bash adaptors** over `src/lib/*.ts`, and keep their documented
-function names. Tests stay byte-identical, and the implementation is TypeScript.
+### What moves where
 
-```bash
-# lib/pane.sh, after the port
-_fleet_lib_ts() { node "$_FLEET_ROOT/src/lib/pane.ts" "$@"; }
-fleet_pane_state()   { _fleet_lib_ts state  "$@"; }
-fleet_pane_reply()   { _fleet_lib_ts reply  "$@"; }   # stdin -> stdout, unchanged
-fleet_pane_clean()   { _fleet_lib_ts clean  "$@"; }
-```
+| what a shell test asserts in-process | today | after |
+| :- | :- | :- |
+| a lock held for the caller's lifetime, released on exit, `FLEET_LOCKS` exported to children (`cmd.sh`, `wt.sh`, `tmux-isolation.sh`) | `source lib/lock.sh`, then `fleet_lock` | `tests/unit/lock.test.ts` — each assertion holds the lock in a **real child process** and checks the folder, the `busy:` line, the exit code and the takeover |
+| `fleet_pane_state` / `fleet_pane_reply` reading a pipe (`pane.sh`) | `source lib/pane.sh` | `tests/unit/pane.test.ts` |
+| `fleet_resolve_repo` assigning `REPO` in the caller's shell (`profile.sh`, `profile-init.sh`) | `source lib/profile.sh` | `tests/unit/profile.test.ts`, on `resolveRepo()`'s return value; the shell files keep the `profile init` and lookup checks |
+| `fleet_main_checkout` / `fleet_worktree_root` / `fleet_worktree_owner_set` (`worktrees.sh`, `wt.sh`) | `source lib/worktree.sh` | `tests/unit/worktree.test.ts`; `wt.sh` keeps the `fleet wt` command checks |
 
-```bash
-# lib/profile.sh, after the port — the caller-scope assignment is why this evals
-fleet_resolve_repo() { local out; out=$(_fleet_lib_ts resolve-repo) || return 1; eval "$out"; }  # REPO='…'
-fleet_load_profile() { _fleet_lib_ts load-profile "$@"; }   # subscribes the env vars via `eval` too
-```
+**The rule: no assertion is dropped.** Every slice's PR body states how many assertions it moved and the total
+after the move, so the parity claim stays checkable — 211 in the shell suite today, then shell + unit together.
 
-**`lib/lock.sh` stays bash, permanently, and is not ported.** It is 55 lines, it is correct, and its contract —
-`mkdir` atomicity, a holder that outlives its caller, an EXIT trap, `FLEET_LOCKS` re-entrancy across `bash -c`
-children — is process-lifetime semantics. Emulating it from Node would mean writing the same code twice and
-letting the two drift; the tests would then be testing the copy nobody runs.
+### The entry points keep a bash shim
 
-**The consequence for the ported commands:** they must take their locks through the same bash, so the **shim
-takes the lock**, before handing over to Node:
+53 paths stay executable and every entry point stays a bash file, because `task install` links *folders* and the
+hook paths are absolute (§4). The shim is three lines:
 
 ```bash
 #!/usr/bin/env bash
 # shim — the implementation is src/cli/fleet-up.ts
 set -euo pipefail
-_FLEET_ROOT=$(<resolve this file's real path, /../../../..>)
-source "$_FLEET_ROOT/skills/fleet/scripts/lib/lock.sh"
-source "$_FLEET_ROOT/skills/fleet/scripts/lib/tmux.sh"
-fleet_lock "$(fleet_state_dir)" fleet "${FLEET_LOCK_WAIT:-60}" "$@" || exit 1
-node "$_FLEET_ROOT/src/cli/fleet-up.ts" "$@"   # not exec: the EXIT trap must still release the lock
-exit $?
+source "$(dirname "${BASH_SOURCE[0]}")/lib/shim.sh"
+fleet_exec src/cli/fleet-up.ts "$@"
 ```
 
-The holder pid is the shim's, `basename "$0"` is still `fleet-up`, so both the lock file's `cmd` field and the
-`busy: … is held by pid N (fleet-up, 3 s)` message are byte-identical. `node` is a child, not an `exec`, purely
-so the trap survives.
+`shim.sh` does the one thing every shim must do: resolve its own real path through the readlink chain, exactly as
+`bin/fleet` does today, set `FLEET_CHECKOUT` from it, then `exec node "$FLEET_CHECKOUT/src/cli/<cmd>.ts" "$@"`.
+`exec`, not a child — with the lock in TypeScript there is no bash trap left to protect, and a child would only
+cost a fork per command.
 
-**Locks per command** (from `lib/lock.sh`'s header, which stays authoritative):
+`$0` inside the Node process is `node`, so each `src/cli` file carries the name its shim was invoked by. That is
+what keeps the lock file's `cmd` field and the `busy:` line byte-identical.
+
+### The lock, in TypeScript
+
+`src/lib/lock.ts` reproduces `lib/lock.sh` exactly where anyone can observe it:
+
+- **Layout.** `<dir>/locks/<name>.lock/` holding `pid`, `cmd`, `since`; `mkdir` is still the atomic claim. Nothing
+  about the folder moves, so a lock the old code took is a lock the new code sees, and the reverse.
+- **Message.** `<script>: busy: <name> is held by pid <pid> (<cmd>, <s> s); try again shortly`, on stderr, with
+  `<script>` the command's own name and `<cmd>` that name plus the caller's pass-through arguments.
+- **Exit.** The lock call returns 1, and the command exits 1.
+- **Wait.** 3rd argument, else `FLEET_LOCK_WAIT`, else 30 s; `0` fails at once; one `sleep 1` per attempt.
+- **Stale.** A holder that is not alive is taken over; a folder with no `pid` is taken over after 2 s.
+- **Re-entrancy.** `FLEET_LOCKS` (exported, space-delimited) names locks an ancestor holds; an entry counts only
+  while its `pid` is alive, so a stale `FLEET_LOCKS` inherited by a tmux server never blocks a fleet.
+- **Lifetime.** The Node process holds the lock for its own lifetime and releases it on `exit`, `SIGINT` (`130`)
+  and `SIGTERM` — the EXIT trap, moved to `process.on`.
+- **Handover.** `passLock(dir, name, pid)` hands a held lock to the background waiter and stops releasing it here;
+  `adoptLock(dir, name)` takes the release duty over. Same contract as `fleet_lock_pass` / `fleet_lock_adopt`.
+
+**Locks per command:**
 
 | lock | commands |
 | :- | :- |
@@ -243,17 +272,16 @@ so the trap survives.
 | `board-page` | starting the board's page (fleet-up, fleet-board) |
 | `install` (in `~/.fleet-state/locks`) | install, update, link, backlog |
 
-Commands that take no lock keep a shim with no lock line.
+Commands that take no lock simply do not call it — the shim is identical either way.
 
-### If Mohammad prefers a clean break instead
+### What option A would have cost
 
-The alternative is to port `lock.sh` to TypeScript as well and let the **six test files change shape**: each
-`source … && fleet_lock …` assertion moves into `tests/unit/lock.test.ts`, and the shell test keeps only
-entry-point-level assertions. That is a defensible end state — one language, no adaptors — but it breaks the
-"tests run unchanged" acceptance criterion, so it is a decision, not an implementation detail.
-
-**Recommendation: the adaptors.** They meet the brief as written, they leave `lock.sh` as the single source of
-truth for locking, and they keep the parity proof the tests already give us.
+The rejected alternative kept `lib/lock.sh` in bash permanently and made the other six libs thin bash adaptors over
+`src/lib/*.ts`, so the six test files could stay byte-identical. It is a real design — one source of truth for
+locking, and the parity proof lands without touching a test. But it leaves a permanent bash layer whose only job is
+to re-expose TypeScript functions to bash, and it means the port never finishes: every library implemented once and
+exposed twice. Option B finishes and leaves the project in one language. The price is paid once, in slice 1: six
+test files change shape and their in-process assertions are rewritten under `tests/unit`.
 
 ---
 
@@ -292,10 +320,15 @@ Frozen, by contract:
 
 ## 5. Testing
 
-**Parity comes from the existing suite, unchanged.** `task test` runs `smoke.sh`, which runs the other eight.
-The black-box tests already use a fake `tmux` on `PATH`, a fake `backlog`, a fake `gh`, a throwaway `HOME`, a
-private `FLEET_TMUX` socket and temp `FLEET_STATE` — so they exercise the ported code with no changes at all.
-Node is found through the same `PATH`, so the stubs keep working.
+**Parity still comes from the existing suite**, minus the assertions that cannot survive a process boundary.
+`task test` runs `smoke.sh`, which runs the other eight, and every black-box assertion in them is untouched: they
+already use a fake `tmux` on `PATH`, a fake `backlog`, a fake `gh`, a throwaway `HOME`, a private `FLEET_TMUX`
+socket and temp `FLEET_STATE`, so they exercise the ported code without knowing it is ported. Node is found through
+the same `PATH`, so the stubs keep working.
+
+What does not survive is the in-process `source lib/*.sh` call (§3). Those assertions move out of the shell file
+into a unit test, one for one — so the shell count drops by exactly what `tests/unit` gains, and every slice's PR
+states both numbers.
 
 **Plus TypeScript unit tests** — `node --test tests/unit/`, one file per `src/lib` module, wired into `task test`
 so it runs on every slice:
@@ -305,41 +338,55 @@ so it runs on every slice:
 | `shell-quote.ts` | `%q` parity against real bash: empty, spaces, `'`, `"`, `$`, backticks, newline, `=`, `~`, non-ASCII |
 | `profile.ts` | `KEY=VALUE` parsing: comments, trailing blanks, quotes, `~`/`$HOME` expansion, empty-means-unset, env-wins, a non-`FLEET_` key ignored |
 | `state.ts` | `FLEET_STATE` > `~/.fleet-state/<profile>` > `~/.fleet-state` |
+| `lock.ts` | the folder claim, the `busy:` line, wait/`0`, stale takeover, a dead holder in `FLEET_LOCKS`, release on exit and on a signal, `pass`/`adopt` — every one of them with the lock held in a real child process |
 | `tmux.ts` | session naming with/without profile, `=<session>:` targeting, tag filtering (the `fleet-isnadi-` prefix trap) |
 | `pane.ts` | the box-drawing/alternation table; `busy`/`asking`/`held`/`unknown`/`idle` classification on captured panes |
 | `worktree.ts` | `branch_state` matrix: detached, open (never pushed / tracking main), merged (ancestor, and squash), gone, open |
 | `roster.ts` | read/write/prune, `session_id`-only update, corrupt entries |
 
-`task lint` gains `tsc --noEmit` and a check that no `any` appears in `src/`.
+`task lint` gains `tsc --noEmit` and a check that no `any` appears in `src/` — from slice 1, when `src/` first
+exists.
 
-**Per-slice gate**, no exceptions: `task test` ≥ baseline with 0 failures, `task lint` clean.
+**Per-slice gate**, no exceptions: `task test` reports 0 failures with **no assertion dropped** (the PR states the
+moved count), `task lint` clean including `tsc --noEmit`.
 
 ---
 
-## 6. Port order
+## 6. Port order and who owns each slice
 
-Twelve PRs. Each is independently shippable and leaves the fleet working. Each command's slice is:
-**write the TS → point the shim at it → run the unchanged tests → only then drop the bash body** (it stays in git
-history; a reviewer can `git diff HEAD~1 -- skills/fleet/scripts/<cmd>`).
+Twelve PRs, one per slice, each independently shippable and each leaving the fleet working. Each command's slice is
+**write the TS → point the shim at it → run the suite → only then drop the bash body** (it stays in git history; a
+reviewer can `git diff HEAD~1 -- skills/fleet/scripts/<cmd>`).
 
-| # | Title | Contents | Gate |
-| --: | :- | :- | :- |
-| 0 | `Document the port to TypeScript` | this file | review |
-| 1 | `port: node/ts foundation + profile and tmux libs` | `package.json`, `tsconfig.json`, `src/lib/{exec,shell-quote,state,profile,tmux,output}.ts`, their unit tests, bash adaptors for `profile.sh`/`tmux.sh`/`env.sh`. No command ported yet. | 211 / lint |
-| 2 | `port: pane, roster and backlog libs` | `src/lib/{pane,roster,backlog}.ts` + adaptors. First slice where unchanged tests exercise TypeScript through the adaptors. | 211 / lint |
-| 3 | `port: worktree lib` | `src/lib/worktree.ts` (the scan, the cache, `du`/`lsof`/`gh`/`jq` replacements) + adaptor | 211 / lint |
-| 4 | `port: bin/fleet dispatcher` | `src/cli/fleet.ts` incl. `_list`; shim for `bin/fleet` | 211 / lint |
-| 5 | `port: read-only commands` | `fleet-ls`, `fleet-peek`, `fleet-capacity`, `fleet-pr-queue` | 211 / lint |
-| 6 | `port: messaging and hooks` | `fleet-send`, `fleet-session-record`, `fleet-reply-log` (Python → TS), `fleet-clear`, `fleet-clear-heavy`, `peer-tokens` (Python → TS), `cc-send` | 211 / lint |
-| 7 | `port: lifecycle commands` | `fleet-up`, `fleet-down`, `fleet-view`, `fleet-attach`, `fleet-scale`, `fleet-handoff`, `fleet-board` | 211 / lint |
-| 8 | `port: fleet-worktree` | `fleet-worktree` (266 lines, the largest command) | 211 / lint |
-| 9 | `port: board commands` | `board-jira`, `board-docs`, `board-decision` | 211 / lint |
-| 10 | `port: dev-tasks` | install/link/bin/uninstall/update/backlog/completion, lint/{shell,skills,profile}, profile/init, clean; `task lint` gains `tsc --noEmit` | 211 / lint |
-| 11 | `port: the in-flight scripts` | `fleet-dispatch`, `fleet-judge`, the `fleet-context-guard` hook — **only after #12 and #13 merge** | 211 / lint |
-| 12 | `port: drop the dead bash` | remove what no longer has a caller; `shellcheck` now covers the shims and the tests only | 211 / lint |
+Three streams, so the port runs in parallel instead of in one queue:
 
-Slices 1–3 change no observable behaviour at all — they add `src/` and swap library internals under
-byte-identical bash entry points. That is deliberate: the parity proof lands before anything user-visible moves.
+- **Foundation** — slices 0–4, then 11–12. It comes first because every other slice imports `src/lib`.
+- **Read-only, messaging and the board** — slices 5, 6, 9.
+- **Lifecycle, `fleet worktree` and dev-tasks** — slices 7, 8, 10.
+
+Slices 5–10 branch off slice 1, so slice 1 is **pushed early as a draft** with its exported signatures in place,
+before every body is written. When a stacked base is about to merge, its dependents retarget to `main` first. Nobody
+merges their own slice: Mohammad decides.
+
+| # | Title | Owner | Contents | Gate |
+| --: | :- | :- | :- | :- |
+| 0 | `Document the port to TypeScript` | foundation | this file | review |
+| 1 | `port: node/ts foundation, the lock, and the profile and tmux libs` | foundation | `package.json`, `tsconfig.json`, `src/lib/{exec,shell-quote,output,state,profile,tmux,lock}.ts` + `tests/unit`, `dev-tasks/scripts/lib/shim.sh`, `tsc --noEmit` and the no-`any` check in `task lint`. The in-process lock and `REPO` assertions leave the shell tests. No command ported yet. | 0 failed, count stated / lint |
+| 2 | `port: pane, roster and backlog libs` | foundation | `src/lib/{pane,roster,backlog}.ts` + unit tests; `pane.sh`'s in-process assertions move out | 0 failed, count stated / lint |
+| 3 | `port: worktree lib` | foundation | `src/lib/worktree.ts` (the scan, the cache, the `du`/`lsof`/`gh`/`jq` replacements) + unit tests; `worktrees.sh` and `wt.sh` keep only the command checks | 0 failed, count stated / lint |
+| 4 | `port: bin/fleet dispatcher` | foundation | `src/cli/fleet.ts` incl. `_list`; the `bin/fleet` shim | 0 failed / lint |
+| 5 | `port: read-only commands` | read-only | `fleet-ls`, `fleet-peek`, `fleet-capacity`, `fleet-pr-queue` | 0 failed / lint |
+| 6 | `port: messaging and hooks` | read-only | `fleet-send`, `fleet-session-record`, `fleet-reply-log` (Python → TS), `fleet-clear`, `fleet-clear-heavy`, `peer-tokens` (Python → TS), `cc-send` | 0 failed / lint |
+| 7 | `port: lifecycle commands` | lifecycle | `fleet-up`, `fleet-down`, `fleet-view`, `fleet-attach`, `fleet-scale`, `fleet-handoff`, `fleet-board` | 0 failed / lint |
+| 8 | `port: fleet-worktree` | lifecycle | `fleet-worktree` (266 lines, the largest command) | 0 failed / lint |
+| 9 | `port: board commands` | read-only | `board-jira`, `board-docs`, `board-decision` | 0 failed / lint |
+| 10 | `port: dev-tasks` | lifecycle | install/link/bin/uninstall/update/backlog/completion, lint/{shell,skills,profile}, profile/init, clean | 0 failed / lint |
+| 11 | `port: the in-flight scripts` | foundation | `fleet-dispatch`, `fleet-judge`, the `fleet-context-guard` hook — **only after #12 and #13 merge** | 0 failed / lint |
+| 12 | `port: drop the dead bash` | foundation | remove `skills/fleet/scripts/lib/*.sh` and the lock source in `env.sh`, and every bash body that no longer has a caller; `shellcheck` then covers the shims and the tests only | 0 failed / lint |
+
+Slices 1–3 change no observable behaviour at all: the entry points stay, and the libraries gain a TypeScript
+implementation and a unit test. The only thing that moves is where the assertions live. That is deliberate — the
+parity proof lands before anything user-visible does.
 
 ---
 
@@ -379,8 +426,8 @@ inside a parity PR.
 
 ## 8. Open questions for Mohammad
 
-1. **The adaptor layer** (§3): keep six `lib/*.sh` as bash adaptors with `lock.sh` untouched — or port the libs
-   fully and rewrite the six test files' in-process assertions? Recommended: adaptors.
+1. ~~**The adaptor layer** (§3)~~ — **answered, 2026-11-09: option B, the clean break.** `lock.sh` is ported, the
+   in-process assertions move to `tests/unit`, the shims stay bash and take no lock.
 2. **Node ≥22.18 as a hard requirement** — acceptable, given every machine running a fleet must have it?
 3. **Slice size**: twelve PRs as tabled, or fold 1–3 into one "foundation" PR and 5–6 into one "read-only +
    messaging" PR to get to six or seven?
