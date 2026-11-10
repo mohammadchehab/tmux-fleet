@@ -384,6 +384,28 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     assert.equal(escalation.data.retryAt, new Date(Date.parse(escalation.ts) + 60_000).toISOString())
   })
 
+  it('still escalates when the escalation itself hit a refused store (TASK-2)', async () => {
+    const { deps, store, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
+    // The store's own error and the body's are the same words, as when the body
+    // died on a store write: the repeat that follows must not be taken for a
+    // banner already rung.
+    state.error = 'store_failed: store is unavailable'
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    assert.equal(state.runs, 2)
+    // The third failure is the one that would escalate, and the store refuses
+    // the very write that starts it: no body runs, no banner can be written.
+    clock.advance(61_000)
+    store.failNext(1)
+    await scheduler.tick()
+    assert.equal(state.runs, 2, 'the refused start ran no body')
+    assert.equal(store.ofType('routine.failing').length, 0, 'nothing could be written yet')
+    // The store is back and the same error repeats: the banner was never said.
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    assert.equal(store.ofType('routine.failing').length, 1, 'the dropped escalation is owed, not announced')
+  })
+
   it('does not ring again while the error is the same', async () => {
     const { deps, store, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
     const scheduler = createScheduler(deps)

@@ -303,12 +303,19 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
    * loud (§6, §6.1). The escalation is written on the third failure in a row and
    * then only when the error itself changes: a routine whose remote is down
    * answers the same way every time, and a banner per retry is the spam §6.1
-   * exists to prevent.
+   * exists to prevent. `canAnnounce` is false when the store has just refused a
+   * write: the escalation could not be appended, so the error is not marked as
+   * said and the next failure that reaches the store still owes it (TASK-2).
    */
-  const recordFailure = (routine: PlannedRoutine, at: Timestamp, error: string): AppendEvent | undefined => {
+  const recordFailure = (
+    routine: PlannedRoutine,
+    at: Timestamp,
+    error: string,
+    canAnnounce = true,
+  ): AppendEvent | undefined => {
     const previous = attempts.get(routine.id)
     const failures = (previous?.failures ?? 0) + 1
-    const escalate = failures >= ESCALATE_AFTER && previous?.escalated !== error
+    const escalate = canAnnounce && failures >= ESCALATE_AFTER && previous?.escalated !== error
     const escalated = escalate ? error : previous?.escalated
     const atMillis = Date.parse(at)
     attempts.set(routine.id, {
@@ -381,9 +388,10 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
         // act invisibly (§6).
         const error = messageOf(toFleetError(thrown, 'store_failed'))
         // Still an attempt that failed, so it still spaces the next one out. The
-        // escalation is dropped rather than appended: the store just refused a
-        // write, and a second one would only fail the same way.
-        recordFailure(routine, clock.now(), error)
+        // escalation is not appended — the store just refused a write, and a
+        // second one would only fail the same way — and so it is not marked as
+        // said either: the retry that reaches the store writes it (TASK-2).
+        recordFailure(routine, clock.now(), error, false)
         return record({
           actions: 0,
           actionsFailed: 0,
