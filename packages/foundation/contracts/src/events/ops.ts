@@ -113,7 +113,7 @@ export const routineFailing = event(
  * One `tracker-sync` run, as the fleet saw it (§3). The routine's own
  * `routine.finished` says a run happened and how many actions it produced; this
  * says what the board *said* — how many tickets came back, how many were new,
- * and what the tracker answered when it was told to move. It is the difference
+ * and what the tracker answered when it was told to move or told a note. It is the difference
  * between "the sync ran" and "the sync agreed with the board", which is the only
  * way to see a drift between the two before a human does.
  */
@@ -130,6 +130,8 @@ export const trackerSynced = event(
     transitioned: count(),
     /** PR links the tracker accepted. */
     linked: count(),
+    /** Notes (`Tracker.comment`) the tracker accepted — `work.noted` reaching a board. */
+    commented: count(),
     /**
      * Calls the tracker refused or that threw. Counted here and carried in
      * `error` rather than thrown: one ticket the board will not move does not
