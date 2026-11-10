@@ -108,9 +108,12 @@ export const createDaemonServer = async (deps: ServerDeps): Promise<DaemonServer
     address: deps.socketPath,
     pid,
     async close() {
-      // Stop accepting new connections; don't wait for clients to disconnect.
-      // Clients are destroyed immediately so they don't block shutdown.
+      // Stop accepting new connections, but don't await the callback.
+      // Active connections (like down RPC's reply) get a grace period to finish.
       server.close()
+      // Grace period for active connections to finish (e.g., down RPC response).
+      // After this, any remaining sockets are destroyed so shutdown doesn't block.
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
       for (const socket of sockets) socket.destroy()
       sockets.clear()
       await rm(deps.socketPath, { force: true })
