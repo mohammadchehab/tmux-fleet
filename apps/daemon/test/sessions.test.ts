@@ -210,6 +210,33 @@ const oneTurn = async (r: Rig): Promise<void> => {
   await lease.value.send({ text: 'status?', kind: 'info', briefVersion: 1 })
 }
 
+test('a lease taken before a purge names the session it will actually deliver into', async (t) => {
+  const r = await rig(profileWith({ purge: { maxTurns: 1 } }))
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+
+  // The Mailbox holds a lease across the purge: it takes one, a turn purges the
+  // session, and the same lease sends the next message. `send` follows the pump
+  // onto the replacement session, so `sessionId` has to follow it too — a frozen
+  // one would have the store record the turn against the session that ended, and
+  // `deliverTo`'s `deliveredSessionId` check would re-send every unacked message.
+  const lease = await r.supervisor.acquire(peerId)
+  if (!lease.ok) throw lease.error
+  const first = lease.value.sessionId
+  assert.equal(first, 'ses_0000000000000001')
+
+  await lease.value.send({ text: 'status?', kind: 'info', briefVersion: 1 })
+  await until(() => r.starts.length === 2, 'the replacement session')
+
+  assert.equal(lease.value.sessionId, 'ses_0000000000000002')
+
+  // A lease taken now agrees with the one held across the purge: both name the
+  // session the log calls current.
+  const fresh = await r.supervisor.acquire(peerId)
+  if (!fresh.ok) throw fresh.error
+  assert.equal(fresh.value.sessionId, lease.value.sessionId)
+})
+
 test('the profile’s maxTurns is the session’s, so one turn can purge it', async (t) => {
   const r = await rig(profileWith({ purge: { maxTurns: 1 } }))
   t.after(() => r.supervisor.stop())

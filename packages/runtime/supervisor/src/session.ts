@@ -182,6 +182,13 @@ export class PeerSession {
     this.#handle = ports.handle
   }
 
+  /**
+   * The session running *now*, which is not the one this object was built with.
+   * A recovery and a purge both replace `#handle` under `run()`, so a holder
+   * that cached the handle it saw at construction keeps naming a session that
+   * has ended — and `deliver` would go to the replacement while the caller's
+   * record of where the turn went pointed at the dead one (§7, §8).
+   */
   get handle(): SessionHandle {
     return this.#handle
   }
