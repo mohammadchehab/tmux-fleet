@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/integrations-coordination",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Coordination transport via git (shared fleets, architecture §2, §9): the Coordination port, git ls-remote/fetch/push, and atomic ref creation for claims.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

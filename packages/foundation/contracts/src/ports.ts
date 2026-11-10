@@ -480,3 +480,69 @@ export interface PeerSessionLease {
 export interface PeerSessions {
   acquire(peerId: PeerId): Promise<Result<PeerSessionLease, FleetError>>
 }
+
+// ---------------------------------------------------------------- coordination (§2)
+
+/** A git ref and the commit it points at (shared fleet coordination repository). */
+export interface GitRef {
+  readonly name: string
+  readonly sha: Sha
+}
+
+/**
+ * The coordination transport for shared fleets (§2, §9). Fleets read and write
+ * to a shared GitHub repository via git, with no server. Each fleet writes only
+ * to its own branch and creates refs atomically. Implemented by
+ * `@fleet/integrations-coordination-git` over git and `gh`.
+ */
+export interface Coordination {
+  /**
+   * All refs in the repository and their commits, as `git ls-remote` reports them.
+   * Polled every 30-60 seconds to discover other fleets' updates (§2.2).
+   */
+  listRefs(repo: Repo): Promise<readonly GitRef[]>
+
+  /**
+   * Fetch a named ref into `cwd`, creating or updating it locally. The fetch is
+   * shallow (one commit), so polling happens in seconds, not minutes.
+   */
+  fetch(input: {
+    readonly repo: Repo
+    readonly cwd: string
+    readonly ref: string
+  }): Promise<Sha>
+
+  /**
+   * Push updates to the fleet's own branch (`<ns>/fleet/<user>`). Fails if
+   * `expectedSha` does not match the remote, protecting against lost writes when
+   * a peer's machine comes back online and its clock is ahead.
+   */
+  push(input: {
+    readonly repo: Repo
+    readonly cwd: string
+    readonly branch: string
+    readonly message: string
+    readonly expectedSha?: Sha
+  }): Promise<Sha>
+
+  /**
+   * Create a ref atomically for the first time (§2.1): `gh` rejects the request
+   * if the ref already exists, so the winner of simultaneous creates is decided by
+   * the forge, not by race conditions. Used for claims and rotations (phase 2+).
+   */
+  createRef(input: {
+    readonly repo: Repo
+    readonly ref: string
+    readonly message: string
+  }): Promise<Sha>
+
+  /**
+   * Delete a ref (phase 2+: release a stale claim). Fails if `expectedSha` does
+   * not match, protecting the owner of a claim from deleting another's.
+   */
+  deleteRef(input: {
+    readonly repo: Repo
+    readonly ref: string
+    readonly expectedSha: Sha
+  }): Promise<void>
+}

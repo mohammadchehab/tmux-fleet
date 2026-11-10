@@ -185,6 +185,15 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/integrations/coordination:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../foundation/core
+
   packages/integrations/github:
     dependencies:
       '@fleet/foundation-contracts':
