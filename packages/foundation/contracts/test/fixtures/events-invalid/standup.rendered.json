@@ -11,9 +11,9 @@
     "data": {
       "date": "2026-11-10",
       "text": "Merged 1, in review 1, blocked 0, 2 decisions open.",
-      "peers": 3,
-      "openDecisions": "not-a-number"
+      "peers": "not-a-number",
+      "openDecisions": 2
     }
   },
-  "path": "data.openDecisions"
+  "path": "data.peers"
 }

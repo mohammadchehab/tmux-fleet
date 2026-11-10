@@ -9,11 +9,11 @@
       1
     ],
     "data": {
-      "peerId": "engineer-1",
-      "state": "not-a-valid-value",
+      "peerId": 42,
+      "state": "working",
       "sessionId": "ses_1a2b3c4d5e6f7081",
       "reason": "turn.started"
     }
   },
-  "path": "data.state"
+  "path": "data.peerId"
 }

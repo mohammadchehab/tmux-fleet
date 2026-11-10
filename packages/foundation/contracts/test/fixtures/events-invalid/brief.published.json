@@ -9,9 +9,9 @@
       18
     ],
     "data": {
-      "briefId": 42,
+      "briefId": "brf_3c4d5e6f708192a3",
       "workId": "wrk_7f3a91c2d84b0e56",
-      "peerId": "engineer-1",
+      "peerId": 42,
       "version": 1,
       "contractVersions": [
         {
@@ -22,5 +22,5 @@
       "text": "Retarget every dependent PR onto the parent base before merging the parent."
     }
   },
-  "path": "data.briefId"
+  "path": "data.peerId"
 }

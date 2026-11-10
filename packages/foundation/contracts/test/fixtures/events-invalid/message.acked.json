@@ -9,9 +9,9 @@
       30
     ],
     "data": {
-      "msgId": 42,
-      "to": "engineer-1"
+      "msgId": "msg_4d5e6f708192a3b4",
+      "to": 42
     }
   },
-  "path": "data.msgId"
+  "path": "data.to"
 }

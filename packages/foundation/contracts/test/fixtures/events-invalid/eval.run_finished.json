@@ -15,12 +15,12 @@
       "provider": "deepinfra",
       "model": "deepseek-ai/DeepSeek-V3.2",
       "cases": 10,
-      "passed": 8,
+      "passed": "not-a-number",
       "tokensIn": 48210,
       "tokensOut": 3904,
       "costUsd": 0.0412,
-      "latencyMs": "not-a-number"
+      "latencyMs": 184320
     }
   },
-  "path": "data.latencyMs"
+  "path": "data.passed"
 }

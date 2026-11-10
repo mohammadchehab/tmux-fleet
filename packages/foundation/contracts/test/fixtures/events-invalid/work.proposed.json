@@ -9,8 +9,8 @@
       1
     ],
     "data": {
-      "workId": 42,
-      "title": "Retarget stacked PRs before merging",
+      "workId": "wrk_7f3a91c2d84b0e56",
+      "title": 42,
       "role": "engineer",
       "body": "The gate merges a stack parent while a dependent still targets it.",
       "dependsOn": [
@@ -22,5 +22,5 @@
       }
     }
   },
-  "path": "data.workId"
+  "path": "data.title"
 }

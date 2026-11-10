@@ -10,9 +10,9 @@
     ],
     "data": {
       "routineId": "worktree-gc",
-      "kind": "not-a-valid-value",
-      "error": "git worktree list exited 128: not a git repository"
+      "kind": "worktree-gc",
+      "error": 42
     }
   },
-  "path": "data.kind"
+  "path": "data.error"
 }

@@ -10,10 +10,10 @@
     ],
     "data": {
       "workId": "wrk_7f3a91c2d84b0e56",
-      "peerId": 42,
+      "peerId": "engineer-1",
       "briefId": "brf_3c4d5e6f708192a3",
-      "briefVersion": 1
+      "briefVersion": "not-a-number"
     }
   },
-  "path": "data.peerId"
+  "path": "data.briefVersion"
 }

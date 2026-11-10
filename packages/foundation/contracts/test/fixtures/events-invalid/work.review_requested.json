@@ -9,13 +9,13 @@
       11
     ],
     "data": {
-      "workId": "wrk_7f3a91c2d84b0e56",
-      "peerId": 42,
+      "workId": 42,
+      "peerId": "engineer-1",
       "pr": {
         "repo": "backbase/me-services-fleet",
         "number": 42
       }
     }
   },
-  "path": "data.peerId"
+  "path": "data.workId"
 }

@@ -9,7 +9,11 @@
       11
     ],
     "data": {
-      "base": "main",
+      "pr": {
+        "repo": "backbase/me-services-fleet",
+        "number": 42
+      },
+      "base": 42,
       "head": "feat/retarget-stacks",
       "headSha": "9c1d2e3f405162738495a6b7c8d9e0f1023a4b5c",
       "workId": "wrk_7f3a91c2d84b0e56",
@@ -19,5 +23,5 @@
       }
     }
   },
-  "path": "data.pr"
+  "path": "data.base"
 }

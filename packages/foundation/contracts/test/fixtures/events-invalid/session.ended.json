@@ -9,10 +9,10 @@
       4
     ],
     "data": {
-      "peerId": "engineer-1",
-      "sessionId": 42,
+      "peerId": 42,
+      "sessionId": "ses_1a2b3c4d5e6f7081",
       "endReason": "purged"
     }
   },
-  "path": "data.sessionId"
+  "path": "data.peerId"
 }

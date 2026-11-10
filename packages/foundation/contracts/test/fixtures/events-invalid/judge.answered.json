@@ -11,15 +11,10 @@
     "data": {
       "questionId": "qst_9a8b7c6d5e4f3021",
       "kind": "review_verdict",
-      "answer": {
-        "kind": "review_verdict",
-        "verdict": "approve",
-        "why": "the finding is a nit; the retarget loop already stops on an unchanged base"
-      },
       "model": "claude-sonnet-5-5",
       "durationMs": 1840,
-      "retries": "not-a-number"
+      "retries": 0
     }
   },
-  "path": "data.retries"
+  "path": "data.answer"
 }

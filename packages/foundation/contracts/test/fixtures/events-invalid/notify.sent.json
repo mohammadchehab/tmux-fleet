@@ -12,9 +12,9 @@
       "key": "decision:dec_6f708192a3b4c5d6",
       "class": "decision",
       "channel": "macos",
-      "title": 42,
-      "body": "Is \"retarget stacked PRs\" the same feature as FLEET-14?"
+      "title": "Needs your decision: same feature?",
+      "body": 42
     }
   },
-  "path": "data.title"
+  "path": "data.body"
 }

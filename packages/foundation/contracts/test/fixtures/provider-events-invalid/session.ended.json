@@ -1,8 +1,8 @@
 {
   "input": {
     "type": "session.ended",
-    "reason": "exit",
-    "code": "not-a-number"
+    "reason": 42,
+    "code": 0
   },
-  "path": "code"
+  "path": "reason"
 }
