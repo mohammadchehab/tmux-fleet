@@ -129,6 +129,8 @@ apps/clients, apps/hooks  ->  the daemon API / foundation types only
 
 Nothing the fleet writes at runtime lives in the repo or in a worktree.
 
+**Decided (Mohammad, 2026-11-10):** profiles move from `.env` to YAML at `~/.config/fleet/profiles/<profile>.yaml`, and v2 runtime state lives in `~/.fleet/<profile>/`.
+
 ```
 ~/.config/fleet/profiles/<profile>.yaml       # the user's profile: target repos, policy overrides, notify, limits (was ~/.config/fleet/profiles/*.env)
 ~/.fleet/<profile>/
