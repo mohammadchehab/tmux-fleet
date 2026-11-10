@@ -39,7 +39,7 @@ import type { Provider, SessionHandle, Turn } from '@fleet/runtime-provider-sdk'
 import { peerStateOf } from './peer-state.ts'
 import { purgeTrigger, type PurgeLimits } from './policy.ts'
 import { restartStateFileOf, type PurgeOutcome } from './purge.ts'
-import { sessionIdOf, type SessionRecord } from './records.ts'
+import { permissionModeOf, sessionIdOf, type SessionRecord } from './records.ts'
 import { emptyToolCalls, withToolCall, type ToolCalls } from './tool-calls.ts'
 
 export type { SessionRecord } from './records.ts'
@@ -261,6 +261,13 @@ export class PeerSession {
   async #pump(handle: SessionHandle): Promise<PurgeOutcome | undefined> {
     const { clock, limits, provider } = this.#ports
     const sessionId = sessionIdOf(handle)
+    // Subscribe before anything is awaited: a provider hands out its stream on the call, and what it emits
+    // while the start is being recorded has to be waiting here, not lost.
+    const stream = provider.events(handle)
+    // The adapter's own `session.started` stays inside it (§4), so this is the one place the store learns a
+    // session began: the sessions projection, the mailbox's replay on start and the Work sync all hang off it.
+    // Written before the first event is read, so it is the first record of the session.
+    await this.#recordStart(handle)
     const startedAt = clock.millis()
     // Nothing is reset here. A new stream starts owning nothing because the
     // session it replaces abandoned what it owned when it ended, and a leftover
@@ -286,7 +293,7 @@ export class PeerSession {
 
     let failed: unknown
     try {
-      for await (const event of provider.events(handle)) {
+      for await (const event of stream) {
         await this.#apply(handle, event, purge !== undefined)
 
         if (event.type === 'session.ended') break
@@ -670,6 +677,26 @@ export class PeerSession {
    * the store, so both go through here and a reader cannot tell them apart by
    * accident (§3, §4).
    */
+  async #recordStart(handle: SessionHandle): Promise<void> {
+    const { clock, peerId, record } = this.#ports
+    await record({
+      type: 'session.started',
+      ts: clock.now(),
+      subject: sessionIdOf(handle),
+      actor: peerActor(peerId),
+      data: {
+        peerId,
+        sessionId: sessionIdOf(handle),
+        providerId: handle.providerId,
+        providerSessionRef: handle.sessionRef,
+        model: handle.model,
+        permissionMode: permissionModeOf(handle),
+        // Every start here is a new session: a purge or a recovery starts a fresh one carrying a state file.
+        resumed: false,
+      },
+    })
+  }
+
   async #recordEnd(handle: SessionHandle, endReason: SessionEndReason, code?: number): Promise<void> {
     const { clock, peerId, record } = this.#ports
     await record({

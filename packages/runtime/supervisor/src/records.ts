@@ -16,7 +16,7 @@ import {
   sessionId as sessionIdSchema,
   type SessionId,
 } from '@fleet/foundation-core'
-import type { AppendEvent } from '@fleet/foundation-contracts'
+import { permissionMode as permissionModeSchema, type AppendEvent, type PermissionMode } from '@fleet/foundation-contracts'
 import type { SessionHandle } from '@fleet/runtime-provider-sdk'
 
 /** A §8 purge step: the trigger, the handoff, and the fresh session in place. */
@@ -26,8 +26,8 @@ export type PurgeRecord = Extract<
 >
 
 /**
- * Everything one session's stream produces: its states, its compactions, the
- * tools it used, what each turn cost, its end, its purges, and the one fault
+ * Everything one session's stream produces: its start, its states, its compactions,
+ * the tools it used, what each turn cost, its end, its purges, and the one fault
  * this loop refuses to route around (§8).
  *
  * `turn.usage_recorded` is here because the fleet is the measurer under fleetd
@@ -46,6 +46,7 @@ export type SessionRecord =
       AppendEvent,
       {
         type:
+          | 'session.started'
           | 'peer.state_changed'
           | 'peer.compacted'
           | 'peer.tool_used'
@@ -67,6 +68,22 @@ export const sessionIdOf = (handle: SessionHandle): SessionId => {
     throw fleetError(
       'internal',
       `provider ${handle.providerId} returned ${JSON.stringify(handle.sessionId)}, which is not a session id`,
+      { details: { peerId: handle.peerId }, cause: decoded.error },
+    )
+  }
+  return decoded.value
+}
+
+/**
+ * `session.started` carries the mode the session is *running*, as a closed set; the handle holds a bare
+ * `string`. Decoded for the same reason as the session id: a provider that invents a mode is a bug here, now.
+ */
+export const permissionModeOf = (handle: SessionHandle): PermissionMode => {
+  const decoded = decodeStrict(permissionModeSchema(), handle.permissionMode)
+  if (!decoded.ok) {
+    throw fleetError(
+      'internal',
+      `provider ${handle.providerId} reports permission mode ${JSON.stringify(handle.permissionMode)}, which is not one the fleet knows`,
       { details: { peerId: handle.peerId }, cause: decoded.error },
     )
   }
