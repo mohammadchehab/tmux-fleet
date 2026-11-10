@@ -92,6 +92,42 @@ describe('list and searchIntent', () => {
   })
 })
 
+describe('a nested GitLab namespace', () => {
+  const nested = parse(repo(), 'backbase/fleet/services')
+
+  it('encodes the whole path as GitLab’s one project segment', async () => {
+    const fake = fakeGlab(() => json([mrJson()]))
+    const prs = await createGitLabPullRequests({ glab: fake.glab }).list(nested)
+
+    assert.deepEqual(fake.calls[0], [
+      'api',
+      'projects/backbase%2Ffleet%2Fservices/merge_requests?state=opened&per_page=100',
+    ])
+    assert.deepEqual(
+      prs.map((pr) => pr.repo),
+      [nested],
+    )
+  })
+
+  it('hands the nested path to `glab mr` as the project it is', async () => {
+    const fake = fakeGlab(() => ({}))
+    await createGitLabPullRequests({ glab: fake.glab }).retarget(nested, 7, 'main')
+    assert.deepEqual(fake.calls[0], ['mr', 'update', '7', '-R', 'backbase/fleet/services', '--target-branch', 'main', '--yes'])
+  })
+
+  it('reads a stack parent that nests too — `group/sub/repo#12` is one footer', async () => {
+    const fake = fakeGlab((args) =>
+      args[1]?.endsWith('/pipelines') === true
+        ? json([])
+        : json(mrJson({ description: 'Why.\n\nFleet-Stack-Parent: backbase/fleet/core#3' })),
+    )
+    const pr = await createGitLabPullRequests({ glab: fake.glab }).get(nested, 7)
+
+    assert.equal(String(pr?.stackParent?.repo), 'backbase/fleet/core')
+    assert.equal(pr?.stackParent?.number, 3)
+  })
+})
+
 describe('get: a missing merge request is an answer, a failed call is not', () => {
   it('reads the merge request and the pipelines it ran', async () => {
     const fake = fakeGlab((args) =>
