@@ -20,6 +20,7 @@ import {
   type Timestamp,
 } from '@fleet/foundation-core'
 import {
+  eventTypes,
   fleetEvent,
   type AppendEvent,
   type FleetEvent,
@@ -47,25 +48,27 @@ interface EventRow {
   readonly data: string
 }
 
+/** Every type this build registers, so a row's `type` alone decides whether it is knowable. */
+const registered = new Set<string>(eventTypes)
+
 const toEvent = (row: EventRow): FleetEvent | undefined => {
-  try {
-    return parse(fleetEvent(), {
-      seq: Number(row.seq),
-      ts: row.ts,
-      type: row.type,
-      subject: row.subject,
-      actor: row.actor,
-      causedBy: row.caused_by === null ? undefined : (JSON.parse(row.caused_by) as unknown),
-      data: JSON.parse(row.data) as unknown,
-    })
-  } catch (thrown) {
-    // Unknown event type after rollback to an older build: skip the row but keep it in the log.
-    // A future upgrade may register the type and replay it. Log the skipped type at info level.
-    if (thrown instanceof Error && thrown.message.includes('expected')) {
-      return undefined
-    }
-    throw thrown
-  }
+  // Unknown event type after a rollback to an older build: skip the row but keep it in the log.
+  // A future upgrade may register the type and replay it.
+  //
+  // Only an unregistered type earns the skip. Every schema error reads "expected …" — as does
+  // JSON.parse's "Unexpected token" — so testing the message instead of the type dropped corrupt
+  // rows of *known* events as if they were from the future, and a rebuild replayed past them (§5.4).
+  if (!registered.has(row.type)) return undefined
+
+  return parse(fleetEvent(), {
+    seq: Number(row.seq),
+    ts: row.ts,
+    type: row.type,
+    subject: row.subject,
+    actor: row.actor,
+    causedBy: row.caused_by === null ? undefined : (JSON.parse(row.caused_by) as unknown),
+    data: JSON.parse(row.data) as unknown,
+  })
 }
 
 const SELECT_EVENTS = 'SELECT seq, ts, type, subject, actor, caused_by, data FROM events'
