@@ -23,6 +23,11 @@
  * It is also the first body whose trigger includes an event (`work.merged`), so a
  * profile with no `repos` gets no factory and the branch it would have deleted
  * stays where it is.
+ *
+ * `worktree-gc` is the same shape and the same seam: it needs §9's manager, the
+ * forge (the only voice that can say a PR closed unmerged — §3 has no such event)
+ * and a sink for its own facts, so `apps/daemon` registers it and this map stays a
+ * map of the bodies that need nothing a routine is not handed.
  */
 
 import type { RoutineKind } from '@fleet/foundation-contracts'
@@ -34,8 +39,10 @@ import { babysit } from './pr-babysit.ts'
 import { reconcile } from './reconcile.ts'
 import { standup } from './standup.ts'
 import { sync } from './tracker-sync.ts'
+import { gc } from './worktree-gc.ts'
 
-export { babysit, cleanup, dispatch, keepBusy, reconcile, standup, sync }
+export { babysit, cleanup, dispatch, gc, keepBusy, reconcile, standup, sync }
+export type { HolderLiveness, WorktreeGcDeps } from './worktree-gc.ts'
 
 export const installedFactories: Readonly<Partial<Record<RoutineKind, RoutineFactory>>> = {
   dispatch,
