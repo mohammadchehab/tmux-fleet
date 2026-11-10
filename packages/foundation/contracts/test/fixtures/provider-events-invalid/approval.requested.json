@@ -1,0 +1,10 @@
+{
+  "input": {
+    "type": "approval.requested",
+    "turnId": 42,
+    "requestId": "apr_7f6e5d4c3b2a1908",
+    "tool": "Bash",
+    "summary": "git push origin phase-0-events"
+  },
+  "path": "turnId"
+}

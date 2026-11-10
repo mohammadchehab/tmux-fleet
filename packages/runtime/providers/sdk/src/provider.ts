@@ -13,20 +13,29 @@ import type {
   ProviderEvent,
   ProviderHandle,
   ProviderSessionRef,
+  QuestionAnswer,
   SessionSpec,
   Turn,
   Usage,
 } from '@fleet/foundation-contracts'
+import type { QuestionId } from '@fleet/foundation-core'
+
+/** The two answers an approval takes. Anything else is the human's job, not the inbox's. */
+export type ApprovalDecision = 'allow' | 'deny'
 
 export type {
   ProviderCapabilities,
   ProviderEvent,
   ProviderHandle,
+  ProviderQuestion,
   ProviderSessionRef,
+  QuestionAnswer,
   SessionSpec,
   Turn,
   Usage,
-}
+} from '@fleet/foundation-contracts'
+
+export type { QuestionId } from '@fleet/foundation-core'
 
 /**
  * An open session. Opaque to everything outside the provider: the supervisor
@@ -69,6 +78,21 @@ export interface Provider extends ProviderHandle {
   /** Stop the current turn (or one turn), leaving the session usable. */
   interrupt(handle: SessionHandle, turn?: TurnId): Promise<void>
 
+  /**
+   * Resolve a pending `question.asked`. The id comes from the event, never from
+   * the answer: an event is stored and replayed, so it cannot carry one (§4).
+   * Rejects `FleetError('not_found')` when nothing is pending under that id —
+   * the session died, or the answer was already delivered.
+   */
+  answer(handle: SessionHandle, questionId: QuestionId, answer: QuestionAnswer): Promise<void>
+
+  /**
+   * Resolve a pending `approval.requested`. In `bypassPermissions` no approval
+   * is ever asked (the SDK auto-approves and never consults its callback), so a
+   * `respond` there is the same `not_found` (§4, §13).
+   */
+  respond(handle: SessionHandle, requestId: string, decision: ApprovalDecision): Promise<void>
+
   stop(handle: SessionHandle): Promise<void>
 
   status(handle: SessionHandle): Promise<PeerState>
@@ -79,7 +103,7 @@ export interface Provider extends ProviderHandle {
   /** Read from the spawned process or SDK config, never from a UI string (§4, §13). */
   model(handle: SessionHandle): Promise<{ id: string; endpoint?: string }>
 
-  /** Turn started/ended, tool use, question asked, error, compaction (§4). */
+  /** Turn started/ended{reason}, tool use, questions, approvals, session end, error, compaction (§4). */
   events(handle: SessionHandle): AsyncIterable<ProviderEvent>
 
   /** Resume a session from a vendor ref. Present when `capabilities.resume` is true. */

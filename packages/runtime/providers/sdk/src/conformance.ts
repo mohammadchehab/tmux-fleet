@@ -45,7 +45,13 @@ export const capabilityChecks = (): readonly ConformanceCheck[] => [
     name: 'declares every capability explicitly',
     because: 'a provider that cannot do something says so; the supervisor adapts, it does not guess (§4)',
     run: async (provider) => {
-      const flags: readonly (keyof ProviderCapabilities)[] = ['resume', 'modelSwitch', 'usageTokens', 'structuredOutput']
+      const flags: readonly (keyof ProviderCapabilities)[] = [
+        'resume',
+        'modelSwitch',
+        'usageTokens',
+        'usageCost',
+        'structuredOutput',
+      ]
       const missing = flags.filter((key) => typeof provider.capabilities[key] !== 'boolean')
       return missing.length === 0 ? null : `capabilities must state ${missing.join(', ')} as a boolean`
     },
@@ -86,6 +92,23 @@ export interface SessionSubject {
  * package (`tests/conformance/providers`); phase 0 defines the rule.
  */
 export const resumeChecks = (): readonly SessionCheck[] => [
+  {
+    name: 'usage() reports cost only when capabilities.usageCost says so',
+    because:
+      'a vendor priced at another vendor’s rates produces a number that looks real; the spend ledger records null instead (§4, §11)',
+    run: async ({ provider, handle }) => {
+      let usage
+      try {
+        usage = await provider.usage(handle)
+      } catch (thrown) {
+        return `usage() threw: ${toFleetError(thrown, 'provider_failed').message}`
+      }
+      if (provider.capabilities.usageCost) {
+        return typeof usage.costUsd === 'number' ? null : 'usage() omitted costUsd although capabilities.usageCost is true'
+      }
+      return usage.costUsd === undefined ? null : 'usage() reported costUsd although capabilities.usageCost is false'
+    },
+  },
   {
     name: 'resume() does what capabilities.resume says',
     because:

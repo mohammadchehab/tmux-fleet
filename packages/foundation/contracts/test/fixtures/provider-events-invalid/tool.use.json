@@ -1,0 +1,9 @@
+{
+  "input": {
+    "type": "tool.use",
+    "turnId": 42,
+    "tool": "mcp__codegraph__codegraph_explore",
+    "summary": "Provider interface (§4) in packages/runtime/providers/sdk"
+  },
+  "path": "turnId"
+}

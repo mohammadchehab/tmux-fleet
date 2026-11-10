@@ -1,5 +1,22 @@
 {
   "type": "question.asked",
   "turnId": "trn_8192a3b4c5d6e7f8",
-  "question": "Should the gate retarget dependents before or after merging the parent?"
+  "questionId": "qst_5c4d3e2f1a0b9c87",
+  "questions": [
+    {
+      "question": "Should the gate retarget dependents before or after merging the parent?",
+      "header": "Retarget order",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Before merging",
+          "description": "Dependents move as soon as the parent is approved"
+        },
+        {
+          "label": "After merging",
+          "description": "Dependents move once the parent is on main"
+        }
+      ]
+    }
+  ]
 }

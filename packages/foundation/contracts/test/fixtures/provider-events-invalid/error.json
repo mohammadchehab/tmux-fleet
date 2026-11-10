@@ -1,0 +1,8 @@
+{
+  "input": {
+    "type": "error",
+    "message": 42,
+    "retryable": true
+  },
+  "path": "message"
+}
