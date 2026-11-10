@@ -8,6 +8,8 @@
  *    tick that would otherwise merge it — and because it moved, `mergeBlocker` then refuses it (§10).
  * 2. **`supersede_brief` before `assign`.** A stale brief is corrected before any new Work is handed out, so a peer
  *    is never briefed twice in one tick.
+ * 3. **`unblock` after `request_decisions`, before `idle`.** The user-facing rules speak first, so a Work they
+ *    already put a question about is not asked about a second way; and §5.2's row order is `unblock`, then `idle`.
  *
  * `dedupe` before `assign` is not implicit — §5.2 says it — and is why a rule takes a `questioned` set.
  */
@@ -25,6 +27,7 @@ export {
   retargetDependents,
 } from './gate.ts'
 export { raiseCapacityGaps } from './idle.ts'
+export { blockedDecisionId, unblockWaitingPeers } from './unblock.ts'
 export { supersedeStaleBriefs } from './stale.ts'
 export { renderStandupDue } from './standup.ts'
 
@@ -33,6 +36,7 @@ import { questionDuplicates, questionThinCards } from './dedupe.ts'
 import { requestDecisions } from './escalate.ts'
 import { mergeGreenPrs, retargetDependents } from './gate.ts'
 import { raiseCapacityGaps } from './idle.ts'
+import { unblockWaitingPeers } from './unblock.ts'
 import { supersedeStaleBriefs } from './stale.ts'
 import { renderStandupDue } from './standup.ts'
 import type { Rule } from './context.ts'
@@ -46,6 +50,7 @@ export const pmRules: readonly Rule[] = [
   questionThinCards,
   assignReadyWork,
   requestDecisions,
+  unblockWaitingPeers,
   raiseCapacityGaps,
   renderStandupDue,
 ]

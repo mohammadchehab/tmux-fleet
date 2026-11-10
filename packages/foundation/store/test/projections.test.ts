@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { PeerId } from '@fleet/foundation-core'
+import type { PeerId, WorkId } from '@fleet/foundation-core'
 import type { AppendEvent } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore } from '../src/index.ts'
 import { appendable, fixedClock, fixtureLog, tempStorePath } from './fixtures.ts'
@@ -340,5 +340,32 @@ test('sessions.all() is every session the fleet has, oldest first, in one read',
     ...(await store.reader().sessions.forPeer('engineer-1' as PeerId)),
     ...(await store.reader().sessions.forPeer('engineer-2' as PeerId)),
   ])
+})
+
+test('a blocked Work says who can unblock it, and only while it is blocked', async () => {
+  const store = await open()
+  const workId = 'wrk_4a5b6c7d8e9f0a1b' as WorkId
+  await store.append([
+    event('work.proposed', workId, { workId, title: 'Ship the store', dependsOn: [] }),
+    event('work.blocked', workId, {
+      workId,
+      reason: 'the shared contract is not published yet',
+      blockedOn: 'contract',
+    }),
+  ])
+
+  const blocked = await store.reader().work.get(workId)
+  assert.equal(blocked?.state, 'blocked')
+  assert.equal(blocked?.blockedReason, 'the shared contract is not published yet')
+  assert.equal(blocked?.blockedOn, 'contract', '§5.2 `unblock` routes on this field, not on the prose')
+
+  // a replay has to reproduce it: the field lives in the event, so it survives `rebuild` (§5.4)
+  await store.rebuild()
+  assert.equal((await store.reader().work.get(workId))?.blockedOn, 'contract')
+
+  await store.append([event('work.ready', workId, { workId, reason: 'the contract is published' })])
+  const ready = await store.reader().work.get(workId)
+  assert.equal(ready?.state, 'ready')
+  assert.equal(ready?.blockedOn, undefined, 'a Work that is no longer blocked has nobody to route to')
   await store.close()
 })

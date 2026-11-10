@@ -10,13 +10,22 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { approvalDecisionId, decide, indexOf, mergeBlocker, resolveOptions, similarity } from '../src/index.ts'
+import {
+  approvalDecisionId,
+  blockedDecisionId,
+  decide,
+  indexOf,
+  mergeBlocker,
+  resolveOptions,
+  similarity,
+} from '../src/index.ts'
 import type { RuleContext } from '../src/index.ts'
-import type { DecideRequest, FleetEvent, FleetState, PullRequest } from '@fleet/foundation-contracts'
+import type { DecideRequest, FleetEvent, FleetState, PmAction, PullRequest } from '@fleet/foundation-contracts'
 import {
   architect,
   decision,
   kinds,
+  message,
   notification,
   peer,
   pullRequest,
@@ -32,6 +41,9 @@ const event = (type: string, subject: string, data: unknown, seq = 41): FleetEve
   ({ seq, ts: T0, type, subject, actor: 'pm', causedBy: [seq - 1], data }) as unknown as FleetEvent
 
 const contractKey = (): string => 'con_2b3c4d5e6f708192'
+
+/** The id the `work()` builder gives: the Work every unblock test is stuck on. */
+const snapshotWorkId = () => work().workId
 
 /** A `RuleContext` for the rules a test calls directly, carrying the same defaults `decide` resolves. */
 const context = (snapshot: FleetState): RuleContext => ({
@@ -550,4 +562,138 @@ test('a reordered snapshot hashes alike: a store s answer order is not an input'
   const request = (snapshot: typeof left): DecideRequest => ({ state: snapshot, tick: tick() })
 
   assert.equal(decide(request(left)).inputsHash, decide(request(right)).inputsHash)
+})
+
+// -------------------------------------------------------------------- unblock
+// §5.2 `unblock`: a peer in `waiting_input` is stuck on a blocked Work, and `Work.blockedOn` says who
+// can clear it. The tests walk the three routes in the order the rule tries them, plus the two that
+// would otherwise re-fire on every heartbeat.
+
+/** An engineer waiting on its own blocked Work: the trigger every case below starts from. */
+const stuck = (over: { blockedOn?: 'user' | 'contract' | 'peer' | 'external'; blockedReason?: string } = {}) => ({
+  peers: [peer({ state: 'waiting_input' })],
+  work: [
+    work({
+      state: 'blocked',
+      assignee: 'engineer-1' as never,
+      blockedReason: over.blockedReason ?? 'which price source is authoritative?',
+      ...(over.blockedOn === undefined ? {} : { blockedOn: over.blockedOn }),
+    }),
+  ],
+})
+
+/** The one action of a kind, failing the test when the tick produced none. */
+const only = <K extends PmAction['kind']>(actions: readonly PmAction[], kind: K): Extract<PmAction, { kind: K }> => {
+  const found = actions.filter((action): action is Extract<PmAction, { kind: K }> => action.kind === kind)
+  assert.equal(found.length, 1, `expected exactly one ${kind}, got ${kinds(actions).join(', ') || 'nothing'}`)
+  return found[0]
+}
+
+test('a block only the user can clear becomes one decision in the inbox, naming the peer and why', () => {
+  const snapshot = state(stuck({ blockedOn: 'user' }))
+  const actions = decide({ state: snapshot, tick: tick() }).actions
+
+  const asked = only(actions, 'request_decision')
+  assert.equal(asked.decisionKind, 'blocked')
+  assert.equal(asked.decisionId, blockedDecisionId(snapshot.work[0]!))
+  assert.equal(asked.workId, snapshot.work[0]!.workId)
+  assert.deepEqual(asked.options, [], 'a blockage is answered in words, not from a list of two')
+  assert.match(asked.question, /engineer-1 \(engineer\) is waiting/)
+  assert.match(asked.question, /which price source is authoritative\?/)
+  // §5.2: the PM routes, it does not message the user
+  assert.ok(!kinds(actions).includes('send_message'))
+})
+
+test('the same blockage is not asked about twice: the inbox row is the question', () => {
+  const snapshot = state(stuck({ blockedOn: 'user' }))
+  const first = only(decide({ state: snapshot, tick: tick() }).actions, 'request_decision')
+
+  const answered = state({
+    ...stuck({ blockedOn: 'user' }),
+    decisions: [decision({ decisionId: first.decisionId, kind: 'blocked', workId: first.workId })],
+  })
+  assert.deepEqual(decide({ state: answered, tick: tick() }).actions, [], 'an open row is already the question')
+})
+
+test('a peer block is routed to the reviewer role as a message, with the reason and the brief to answer against', () => {
+  const snapshot = state({ ...stuck({ blockedOn: 'peer' }), peers: [peer({ state: 'waiting_input' }), architect()] })
+  const actions = decide({ state: snapshot, tick: tick() }).actions
+
+  const sent = only(actions, 'send_message')
+  assert.equal(sent.to, 'architect-1')
+  assert.equal(sent.messageKind, 'info')
+  assert.equal(sent.briefVersion, 0, "the architect's own brief version, not the waiting peer's")
+  assert.match(sent.body, /engineer-1/)
+  assert.match(sent.body, /Blocked on peer/)
+  assert.ok(!kinds(actions).includes('request_decision'), 'a role that can answer means the user is not asked')
+})
+
+test('a peer block nobody can route does not go silent: it falls back to the user', () => {
+  const actions = decide({ state: state(stuck({ blockedOn: 'contract' })), tick: tick() }).actions
+  const asked = only(actions, 'request_decision')
+
+  assert.equal(asked.decisionKind, 'blocked')
+  assert.match(asked.question, /No live peer holds the "pr-architect" role/)
+})
+
+test('an answer already in the Decision log is delivered, and the user is asked nothing', () => {
+  const snapshot = state({
+    ...stuck({ blockedOn: 'user' }),
+    decisions: [
+      decision({
+        decisionId: 'dec_6f708192a3b4c5d6' as never,
+        kind: 'blocked',
+        state: 'answered',
+        text: 'Use the slow source; it is the only one with history.',
+        workId: snapshotWorkId(),
+        answeredAt: '2026-11-10T10:00:00.000Z',
+      }),
+    ],
+  })
+  const actions = decide({ state: snapshot, tick: tick() }).actions
+
+  const sent = only(actions, 'send_message')
+  assert.equal(sent.to, 'engineer-1')
+  assert.equal(sent.messageKind, 'answer')
+  assert.match(sent.body, /Use the slow source/)
+  assert.match(sent.body, /dec_6f708192a3b4c5d6/, 'the peer can cite which decision it is acting on')
+  assert.ok(!kinds(actions).includes('request_decision'), 'it is answered: asking again would be a loop')
+})
+
+test('a delivered answer is not re-sent on the next heartbeat', () => {
+  const workId = snapshotWorkId()
+  const snapshot = state({
+    ...stuck({ blockedOn: 'user' }),
+    decisions: [
+      decision({
+        decisionId: 'dec_6f708192a3b4c5d6' as never,
+        kind: 'blocked',
+        state: 'answered',
+        text: 'Use the slow source.',
+        workId,
+        answeredAt: T0,
+      }),
+    ],
+    messages: [message({ to: peer().peerId, body: 'This answers dec_6f708192a3b4c5d6 ("which source?")' })],
+  })
+  assert.deepEqual(decide({ state: snapshot, tick: tick() }).actions, [])
+})
+
+test('a routed peer block is not re-sent either', () => {
+  const workId = snapshotWorkId()
+  const snapshot = state({
+    ...stuck({ blockedOn: 'peer' }),
+    peers: [peer({ state: 'waiting_input' }), architect()],
+    messages: [message({ to: architect().peerId, body: `engineer-1 is waiting on Work ${workId}: Ship the store` })],
+  })
+  assert.deepEqual(decide({ state: snapshot, tick: tick() }).actions, [])
+})
+
+test('a waiting peer with no blocked Work is the provider s business, not the PM s', () => {
+  // a peer mid-turn asking its own question: there is no Work field to route by, so nothing is invented
+  const snapshot = state({
+    peers: [peer({ state: 'waiting_input' })],
+    work: [work({ state: 'in_progress', assignee: 'engineer-1' as never })],
+  })
+  assert.deepEqual(decide({ state: snapshot, tick: tick() }).actions, [])
 })
