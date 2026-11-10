@@ -199,7 +199,13 @@ test('a routine counts its runs and its failures', async () => {
   const store = await open()
   await store.append([
     event('routine.started', 'dispatch', { routineId: 'dispatch', kind: 'dispatch', trigger: 'heartbeat' }),
-    event('routine.finished', 'dispatch', { routineId: 'dispatch', kind: 'dispatch', durationMs: 41, actions: 0 }),
+    event('routine.finished', 'dispatch', {
+      routineId: 'dispatch',
+      kind: 'dispatch',
+      durationMs: 41,
+      actions: 0,
+      actionsFailed: 0,
+    }),
     event('routine.started', 'dispatch', { routineId: 'dispatch', kind: 'dispatch', trigger: 'heartbeat' }, '2026-11-10T10:05:00.000Z'),
   ])
 
