@@ -215,3 +215,13 @@ test('a provider whose model() ignores the switch is caught', async () => {
   assert.equal(caught.length, 1)
   assert.match(caught[0] ?? '', /it must report the requested model/)
 })
+
+test('a handle that names no brief turn is caught', async () => {
+  const anonymous = {
+    ...stub('anonymous', {}),
+    start: async () => ({ ...handle('anonymous'), briefTurnId: 'the-first-one' as TurnId }),
+  }
+  const caught = await resumeFailures(anonymous)
+  assert.equal(caught.length, 1)
+  assert.match(caught[0] ?? '', /is not a TurnId/)
+})
