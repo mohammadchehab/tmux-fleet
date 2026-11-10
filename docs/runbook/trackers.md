@@ -84,10 +84,16 @@ that found nothing still says so.
 
 | port | CLI |
 | :- | :- |
-| `pull(query)` | `backlog task list --json -s <query>` (no `-s` for the whole board) |
+| `pull(query)` | `backlog task list --json -s <query>` (no `-s` for the whole board), then one `task view` per row |
 | `get(key)` | `backlog task view <key> --json`; "not found" is `undefined` |
 | `transition(key, to)` | `backlog task edit <key> -s <status> --plain` |
 | `link(key, url)` | `task view`, then `backlog task edit <key> --append-notes "PR: <url>" --plain` |
+
+`pull` is two calls, not one, because `task list --json` is a summary: it prints no `path` and no `description`, so a
+row on its own has no URL a human can open and no body a brief can quote. Each row is therefore read with the same
+`task view` `get` makes, up to eight at a time, and the row's place is taken by the card itself — one extra call per
+card on a poll that already paid for the list. A card that leaves the board between the list and its read is dropped;
+a view that fails for any other reason fails the pull, so a broken read never looks like a shorter board.
 
 A non-zero exit that says "not found" is an answer; any other failure throws `external_failed`, so a broken project
 never reads as a deleted card. A `schemaVersion` other than `1` is refused rather than guessed at.
