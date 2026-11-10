@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/runtime-mailbox",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Mailbox (architecture §7): stable peer ids, typed messages persisted as store events, at-least-once delivery with ack. The only way anything talks to a peer.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

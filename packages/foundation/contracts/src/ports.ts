@@ -5,9 +5,23 @@
  * no git.
  */
 
-import type { DecisionId, NotificationKey, PeerId, Repo, Sha, WorkId } from '@fleet/foundation-core'
+import type {
+  DecisionId,
+  FleetError,
+  NotificationKey,
+  PeerId,
+  Repo,
+  Result,
+  Seq,
+  SessionId,
+  Sha,
+  TurnId,
+  WorkId,
+} from '@fleet/foundation-core'
 import type { ChecksState, ReviewState } from './events/delivery.ts'
-import type { ProviderHandle } from './provider.ts'
+import type { AppendEvent } from './events/registry.ts'
+import type { Message } from './projections/mailbox.ts'
+import type { ProviderHandle, Turn } from './provider.ts'
 import type { PullRequest, Worktree } from './projections/delivery.ts'
 import type { Decision, Finding, Notification, Routine } from './projections/ops.ts'
 import type { Peer, Session } from './projections/peers.ts'
@@ -97,6 +111,11 @@ export interface ReadModel {
   readonly findings: {
     all(): Promise<readonly Finding[]>
   }
+  /** §7's projection: what the Mailbox wrote, and what `fleet peek` reads. */
+  readonly messages: {
+    all(): Promise<readonly Message[]>
+    forPeer(id: PeerId): Promise<readonly Message[]>
+  }
   readonly pullRequests: {
     all(): Promise<readonly PullRequest[]>
   }
@@ -106,4 +125,56 @@ export interface ReadModel {
   readonly routines: {
     all(): Promise<readonly Routine[]>
   }
+}
+
+// ------------------------------------------------------------------ mailbox (§7)
+
+/**
+ * The append-only write port: the one way into the store (§3, §5.4). Narrow on
+ * purpose — the Mailbox writes messages and reads them back, so that is all it
+ * is given, and a fake in memory is enough to test it before the SQLite store
+ * lands (§15). `EventStore` in `@fleet/foundation-store` satisfies it
+ * structurally; `apps/daemon` passes that implementation in.
+ */
+export interface EventSink {
+  /** Append a batch atomically. Returns the seqs, in the order given. */
+  append(batch: readonly AppendEvent[]): Promise<readonly Seq[]>
+}
+
+/** The read side the Mailbox needs: the `message` projection for one peer (§3, §7). */
+export interface MessageReader {
+  forPeer(peerId: PeerId): Promise<readonly Message[]>
+}
+
+/**
+ * The brief version a peer's context is on (§7, §12). The Mailbox reads it to
+ * reject a reply or status that cites an older one, and attaches the current
+ * version so the sender can re-send correctly.
+ */
+export interface BriefVersions {
+  /** The version the peer's context carries, or `undefined` before it has a brief. */
+  current(peerId: PeerId): Promise<number | undefined>
+}
+
+/**
+ * A live session the Mailbox can hand messages to (§4, §7). It is a thin
+ * closure over `Provider.send` and the handle the supervisor holds, so the
+ * Mailbox never depends on a provider and never sees a vendor session ref.
+ */
+export interface PeerSessionLease {
+  readonly sessionId: SessionId
+  /** True when a session had to be started or resumed to produce this lease (§7). */
+  readonly resumed: boolean
+  /** One provider call — a turn, never keystrokes (§4, §7). */
+  send(turn: Turn): Promise<TurnId>
+}
+
+/**
+ * How the Mailbox reaches a peer. `acquire` is resume-then-deliver in one call
+ * on purpose (§7): the supervisor starts or resumes a session if the peer has
+ * none, so a caller cannot forget the resume and nothing is sent to a dead
+ * socket. An offline peer is a typed `Result`, not a throw.
+ */
+export interface PeerSessions {
+  acquire(peerId: PeerId): Promise<Result<PeerSessionLease, FleetError>>
 }
