@@ -38,7 +38,7 @@ const evalCaseScoredEvent = {
   data: { runId: 'evr_0123456789abcdef', caseId: 'stale-brief', attempt: 1, pass: true, score: 1, detail: 'matched' },
 }
 
-/** Params that must be accepted for a method; `{}` for the four that take nothing. */
+/** Params that must be accepted for a method; `{}` for the ones that take nothing. */
 const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
   up: [{}],
   down: [{}],
@@ -63,6 +63,7 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
   'events.append': [{ events: [evalCaseScoredEvent] }],
   evals: [{ runId: 'evr_4c1d9a7b2e5f6038' }],
   replay: [{}, { from: 3 }, { from: 3, to: 9 }, { from: 1, to: 1 }],
+  work: [{}],
 }
 
 test('the method set is the one a client builds against, and the usage report a hook sends', () => {
@@ -77,6 +78,7 @@ test('the method set is the one a client builds against, and the usage report a 
     'events.append',
     'evals',
     'replay',
+    'work',
   ])
 })
 

@@ -188,6 +188,14 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       }
     },
 
+    async work() {
+      // One projection read, exactly: a board's rows are the store's rows, so
+      // this reshapes nothing and filters nothing. A board that disagreed with
+      // `fleet ls` about the fleet would be a board rendering a shape of its own
+      // (§2).
+      return { work: await read.work.all() }
+    },
+
     async send(input) {
       // The brief version the message is written against is resolved here, not
       // defaulted: `0` is not a brief version, and a store that refuses to

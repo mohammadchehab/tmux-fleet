@@ -75,6 +75,7 @@ tmux-fleet/
 ├─ apps/
 │  ├─ daemon/                     # `fleetd`: the only place the groups are wired together; store owner; local API on a Unix socket (§2)
 │  ├─ clients/
+│  │  ├─ board/                   # `fleet-board`: a read-only web board of Work items, from `ls` and `work` (§2, §3)
 │  │  ├─ cli/                     # `fleet`: thin API client: up, down, ls, send, peek, decide, replay (§2, §6.1)
 │  │  └─ view/                    # `fleet-view`: a read-only pane per peer, from the daemon API (§2)
 │  └─ hooks/
@@ -177,7 +178,7 @@ the user's profile; the *live* peers (ids, sessions, briefs) exist only in the s
 | 0 contracts | `packages/foundation/{core,contracts,store}` (types and schemas only), `packages/runtime/providers/sdk`, `tests/{architecture,conformance}` skeleton, `docs/`, workspace root files; v1 moves to `legacy/v1/` |
 | 1 vertical slice | `foundation/store` (working), `runtime/providers/{claude,deepinfra}`, `runtime/{supervisor,mailbox}`, `orchestration/{pm,routines,gate}`, `notify/{core,channels/macos}`, `integrations/github`, `apps/daemon`, `apps/clients/cli`, `apps/hooks/usage-report`, `config/{definitions,policies}`, `tests/{integration/{lifecycle,self-purge,delivery},fixtures}` |
 | 2 hygiene | `workspace/{worktree,codegraph}`, `orchestration/{briefs,ledger}`, `security/{scanners,findings}`, `apps/hooks/tool-guard`, `tests/integration/security`, stack retarget in `gate`, `fleet replay` |
-| 3 providers and sinks | `runtime/providers/{opencode,cursor}`, `integrations/trackers`, `apps/clients/view`, `fleet migrate`; `legacy/` deleted |
+| 3 providers and sinks | `runtime/providers/{opencode,cursor}`, `integrations/trackers`, `apps/clients/{view,board}`, `fleet migrate`; `legacy/` deleted |
 | 2 evals (with 2 hygiene) | `packages/evals/{adapter,suites/judge}`, `tests/evals/{cases/judge,baselines,promptfoo}`; the eval event contracts can land in phase 1 (§17) |
 | 4 hand-off | docs only: `docs/ideas` with measured lessons |
 
@@ -222,6 +223,12 @@ The security routine can start earlier than phase 2 on the interim fleet; phase 
   thing it is watching. The command is `fleet-view` and not `fleet view` because §1.1 puts the view in its own app
   and apps never import each other — the CLI could not reach it to expose it as a subcommand, and moving the view
   into the CLI would make the CLI two things.
+- **web board** (optional): `fleet-board` serves one page at `/` and is a read of two methods — `ls` for the header,
+  `work` for the rows — re-asked on every request, with no cache, no script on the page and nothing written anywhere.
+  Each row is the projection's own `Work`, in the projection's order; the page groups them by state to be readable and
+  never filters them, because a board that decided which items exist would be a second opinion about the fleet (§2).
+  It is a separate app from the tmux view for the reason the view is separate from the CLI (§1.1), and `--once` prints
+  the same page without a socket listener, which is how it is tested.
 
 ## 3. Data model
 

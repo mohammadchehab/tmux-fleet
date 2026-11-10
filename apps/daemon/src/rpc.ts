@@ -59,7 +59,7 @@ export const decodeRequest = (line: string): DaemonRequest => {
  * Turn a request into a call. Each case decodes that method's own params, so the
  * error names the field the client got wrong rather than the generic "params is
  * invalid"; `?? {}` is what makes an absent `params` the same request as `{}` for
- * the four methods that take nothing.
+ * the methods that take nothing.
  */
 export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<unknown> => {
   const params = request.params ?? {}
@@ -87,6 +87,9 @@ export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<
       return api.evals(decode(daemonParamsFor('evals'), params))
     case 'replay':
       return api.replay(decode(daemonParamsFor('replay'), params))
+    case 'work':
+      decode(daemonParamsFor('work'), params)
+      return api.work()
   }
 }
 
