@@ -1,0 +1,13 @@
+{
+  "msgId": "msg_4d5e6f708192a3b4",
+  "to": "engineer-1",
+  "from": "pm",
+  "kind": "nudge",
+  "briefVersion": 1,
+  "body": "CI is red on integration/postgres; the failing check is in the log you already have.",
+  "state": "acked",
+  "sentAt": "2026-11-10T09:29:00.000Z",
+  "deliveredAt": "2026-11-10T09:30:00.000Z",
+  "ackedAt": "2026-11-10T09:31:00.000Z",
+  "currentBriefVersion": 2
+}

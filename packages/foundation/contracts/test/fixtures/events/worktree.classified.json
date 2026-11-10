@@ -1,0 +1,22 @@
+{
+  "seq": 37,
+  "ts": "2026-11-10T09:37:00.000Z",
+  "type": "worktree.classified",
+  "subject": "wtr_5e6f708192a3b4c5",
+  "actor": "scheduler",
+  "causedBy": [
+    36
+  ],
+  "data": {
+    "worktreeId": "wtr_5e6f708192a3b4c5",
+    "class": "orphaned",
+    "dirty": true,
+    "unpushed": false,
+    "holders": [
+      {
+        "pid": 48213,
+        "command": "node --test"
+      }
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "id": "codegraph",
+  "command": "codegraph",
+  "args": ["mcp"],
+  "env": {
+    "CODEGRAPH_ROOT": "/Users/mohammads/Dev/tmux-fleet"
+  }
+}

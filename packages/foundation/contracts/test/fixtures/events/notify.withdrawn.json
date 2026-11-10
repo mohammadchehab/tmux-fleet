@@ -1,0 +1,13 @@
+{
+  "seq": 49,
+  "ts": "2026-11-10T09:49:00.000Z",
+  "type": "notify.withdrawn",
+  "subject": "decision:dec_6f708192a3b4c5d6",
+  "actor": "scheduler",
+  "causedBy": [
+    46
+  ],
+  "data": {
+    "key": "decision:dec_6f708192a3b4c5d6"
+  }
+}

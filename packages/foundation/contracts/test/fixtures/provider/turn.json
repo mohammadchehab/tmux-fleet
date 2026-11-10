@@ -1,0 +1,5 @@
+{
+  "text": "CI is red on integration/postgres; the failing check is in the log you already have.",
+  "kind": "nudge",
+  "briefVersion": 1
+}

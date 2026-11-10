@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/foundation-store",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The append-only event store: its interface and schema DDL. No implementation in phase 0 (architecture §3, §5.4, §15).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-core": "workspace:*",
+    "@fleet/foundation-contracts": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "seq": 19,
+  "ts": "2026-11-10T09:19:00.000Z",
+  "type": "brief.published",
+  "subject": "brf_3c4d5e6f708192a3",
+  "actor": "pm",
+  "causedBy": [
+    18
+  ],
+  "data": {
+    "briefId": "brf_3c4d5e6f708192a3",
+    "workId": "wrk_7f3a91c2d84b0e56",
+    "peerId": "engineer-1",
+    "version": 1,
+    "contractVersions": [
+      {
+        "contractId": "con_2b3c4d5e6f708192",
+        "version": 2
+      }
+    ],
+    "text": "Retarget every dependent PR onto the parent base before merging the parent."
+  }
+}

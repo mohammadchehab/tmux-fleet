@@ -1,0 +1,5 @@
+{
+  "type": "error",
+  "message": "429 from the provider; retry scheduled after 30s",
+  "retryable": true
+}

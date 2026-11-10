@@ -1,0 +1,17 @@
+{
+  "peerId": "engineer-1",
+  "role": "engineer",
+  "workId": "wrk_7f3a91c2d84b0e56",
+  "turns": 12,
+  "inputTokens": 61200,
+  "outputTokens": 4180,
+  "cachedTokens": 148000,
+  "toolCalls": {
+    "grep": 2,
+    "glob": 1,
+    "read": 6,
+    "codegraph": 9
+  },
+  "redirects": 0,
+  "updatedAt": "2026-11-10T09:56:00.000Z"
+}

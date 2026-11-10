@@ -20,7 +20,8 @@ Run the fleet
   scale add|remove|roles …   add or remove one peer                   clear [-n] [peer …]  clear idle peers over the token limit
   send [-f|-i] "text" [peer …]  type into peers' prompts             peek [-n N] [peer …] each peer's last reply
   capacity [lines]           who is busy, idle, asking; the board     handoff [peer] hand a peer over to a fresh copy
-  prs                        the open PRs by bucket
+  prs                        the open PRs by bucket                   dispatch [--live] one project-manager tick as rules
+  judge <question> [file]    one typed judgment (route, brief-ready)
 Worktrees (fleet wt = fleet worktree), across every repo the fleet touches
   wt ls [--stale] [--json] [--no-fetch]   fetches, then each worktree: owner, branch, PR, age, dirty, unpushed, size, peer in it, class
   wt prune [--idle] [--nested] [--yes]   remove merged, gone, orphaned ones (dry run without --yes); never dirty or in use
@@ -58,6 +59,8 @@ case "$cmd" in
   view)      exec "$F/fleet-view" "$@" ;;
   send)      exec "$F/fleet-send" "$@" ;;
   peek)      exec "$F/fleet-peek" "$@" ;;
+  dispatch)  exec "$F/fleet-dispatch" "$@" ;;
+  judge)     exec "$F/fleet-judge" "$@" ;;
   worktree|wt) exec "$F/fleet-worktree" "$@" ;;
   scale)     exec "$SK/fleet-scale/scripts/fleet-scale" "$@" ;;
   clear)     exec "$SK/fleet-clear/scripts/fleet-clear" "$@" ;;

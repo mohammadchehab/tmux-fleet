@@ -1,0 +1,16 @@
+{
+  "seq": 20,
+  "ts": "2026-11-10T09:20:00.000Z",
+  "type": "brief.superseded",
+  "subject": "brf_3c4d5e6f708192a3",
+  "actor": "pm",
+  "causedBy": [
+    18
+  ],
+  "data": {
+    "briefId": "brf_3c4d5e6f708192a3",
+    "version": 1,
+    "supersededBy": "brf_4d5e6f708192a3b4",
+    "reason": "contract v3 changed the gate interface"
+  }
+}

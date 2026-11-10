@@ -1,0 +1,14 @@
+{
+  "seq": 38,
+  "ts": "2026-11-10T09:38:00.000Z",
+  "type": "worktree.removed",
+  "subject": "wtr_5e6f708192a3b4c5",
+  "actor": "scheduler",
+  "causedBy": [
+    15
+  ],
+  "data": {
+    "worktreeId": "wtr_5e6f708192a3b4c5",
+    "reason": "merged into main, clean"
+  }
+}

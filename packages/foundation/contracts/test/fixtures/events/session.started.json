@@ -1,0 +1,19 @@
+{
+  "seq": 4,
+  "ts": "2026-11-10T09:04:00.000Z",
+  "type": "session.started",
+  "subject": "engineer-1",
+  "actor": "pm",
+  "causedBy": [
+    1
+  ],
+  "data": {
+    "peerId": "engineer-1",
+    "sessionId": "ses_1a2b3c4d5e6f7081",
+    "providerId": "claude-code",
+    "providerSessionRef": "sess_9f8e7d6c5b4a39281706",
+    "model": "claude-sonnet-5-5",
+    "permissionMode": "acceptEdits",
+    "resumed": false
+  }
+}
