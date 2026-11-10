@@ -29,13 +29,13 @@ import {
 } from '@fleet/foundation-core'
 import type {
   BriefHandoff,
+  EventSink,
   PeerSessionLease,
   PeerSessions,
   SessionSpec,
   StateFile,
   Turn,
 } from '@fleet/foundation-contracts'
-import type { EventStore } from '@fleet/foundation-store'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
 import {
   PeerSession,
@@ -64,7 +64,8 @@ export const defaultPurgeLimits: PurgeLimits = Object.freeze({
 export interface SupervisorDeps {
   readonly profile: Profile
   readonly paths: ProfilePaths
-  readonly store: EventStore
+  /** The append-only sink, waking as it goes (§5.2): this is where `session.started` comes from. */
+  readonly store: EventSink
   /** Concrete providers, by the profile's `provider` name. Built in `compose.ts`, never here. */
   readonly providers: ReadonlyMap<string, Provider>
   readonly clock?: Clock
