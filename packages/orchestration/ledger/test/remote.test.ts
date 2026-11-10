@@ -136,10 +136,18 @@ describe('createRemoteRunner', () => {
     assert.deepEqual(outcome, { status: 'succeeded', durationMs: 900, exitCode: 0 })
   })
 
-  it('reports a failed remote build as failed, with its code', async () => {
+  it('reports an ssh that could not reach the host as cancelled, not as a failed build (TASK-97)', async () => {
+    // 255 is ssh's own error; a build that failed says its own code. Caching 255 as a
+    // verdict would make a network blip permanent for the sha.
     const { invoke } = recorder({ code: 255, durationMs: 30 })
     const outcome = await createRemoteRunner({ ...options, process: invoke }).run(build())
-    assert.deepEqual(outcome, { status: 'failed', durationMs: 30, exitCode: 255 })
+    assert.deepEqual(outcome, { status: 'cancelled', durationMs: 30, exitCode: 255 })
+  })
+
+  it('reports a failed remote build as failed, with its code', async () => {
+    const { invoke } = recorder({ code: 2, durationMs: 30 })
+    const outcome = await createRemoteRunner({ ...options, process: invoke }).run(build())
+    assert.deepEqual(outcome, { status: 'failed', durationMs: 30, exitCode: 2 })
   })
 })
 

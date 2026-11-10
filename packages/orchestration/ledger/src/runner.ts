@@ -13,6 +13,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -64,9 +65,9 @@ export interface ProcessInvocation {
   readonly args: readonly string[]
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly cwd?: string
-  /** Both streams are appended here, so a build is readable while it runs. */
+  /** Both streams are written here (the file starts empty: a run owns its log), so a build is readable while it runs. */
   readonly logPath: string
-  /** Stdout alone is appended here as well, when a caller wants the answer without the narration. */
+  /** Stdout alone is written here as well, when a caller wants the answer without the narration. */
   readonly stdoutPath?: string
   /** Kill the process if it runs longer than this (milliseconds). */
   readonly timeoutMs?: number
@@ -93,12 +94,29 @@ export const DEFAULT_BUILD_TIMEOUT_MS = 60 * 60_000
 const slug = (value: string): string => value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'x'
 
 /**
- * `artifacts/builds/<sha>-<task>.log` (§1.1). The task is slugged rather than
- * quoted: a log path travels through a shell on the remote host, and a filename
- * that needs quoting is a filename that will one day not be quoted.
+ * `artifacts/builds/<sha>-<task>-<hash>.log` (§1.1). The task is slugged rather than
+ * quoted: a log path travels through a shell on the remote host, and a filename that
+ * needs quoting is a filename that will one day not be quoted.
+ *
+ * A slug is lossy (`a-b:c` and `a:b-c` are one slug) and carries no repo, so the name
+ * ends in a short hash of the whole key. Two builds that are different keys never share
+ * a log, whatever their slugs; one build is always the same name, so a reclaimed run
+ * finds (and, since `spawnToLog` truncates, replaces) its own.
  */
-export const buildLogPath = (logDir: string, sha: Sha, task: string): string =>
-  join(logDir, `${slug(sha)}-${slug(task)}.log`)
+export const buildLogPath = (logDir: string, sha: Sha, task: string, repo: Repo): string => {
+  const key = createHash('sha256').update(`${repo}\0${sha}\0${task}`).digest('hex').slice(0, 8)
+  return join(logDir, `${slug(sha)}-${slug(task)}-${key}.log`)
+}
+
+/**
+ * The error a build's own timeout raises. A build that ran too long ran, and its
+ * answer is "too slow"; any other reason `run` threw is the *infrastructure* failing
+ * (no such binary, a full disk), which says nothing about the commit.
+ */
+export const buildTimeoutError = (timeoutMs: number): Error =>
+  Object.assign(new Error(`timeout: process exceeded ${timeoutMs}ms`), { name: 'BuildTimeoutError' })
+
+export const isBuildTimeout = (error: unknown): boolean => error instanceof Error && error.name === 'BuildTimeoutError'
 
 /** Exit code → what §11's `build.finished` records. A signal death is a failure, not a success. */
 export const statusOf = (code: number | null): BuildStatus => (code === 0 ? 'succeeded' : 'failed')
@@ -126,11 +144,11 @@ export const spawnToLog: RunProcess = (invocation) => {
 
     void mkdir(dirname(invocation.logPath), { recursive: true })
       .then(() => {
-        const log = createWriteStream(invocation.logPath, { flags: 'a' })
+        const log = createWriteStream(invocation.logPath, { flags: 'w' })
         // The answer file is a copy of stdout, not a replacement for it: the log
         // stays the whole build, in order, for whoever reads it afterwards.
         const answer =
-          invocation.stdoutPath === undefined ? undefined : createWriteStream(invocation.stdoutPath, { flags: 'a' })
+          invocation.stdoutPath === undefined ? undefined : createWriteStream(invocation.stdoutPath, { flags: 'w' })
 
         // Handle stream errors: EACCES, ENOSPC, etc.
         log.once('error', (error) => {
@@ -175,7 +193,7 @@ export const spawnToLog: RunProcess = (invocation) => {
             // no line in it looks like a build that simply stopped.
             log.write(`\nfleet: build timed out after ${invocation.timeoutMs}ms and was killed\n`)
             killTree()
-            fail(new Error(`timeout: process exceeded ${invocation.timeoutMs}ms`))
+            fail(buildTimeoutError(invocation.timeoutMs as number))
           }, invocation.timeoutMs)
         }
 
