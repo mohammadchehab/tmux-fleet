@@ -21,6 +21,7 @@ import type {
   AppendEvent,
   BriefVersions,
   Message,
+  MessageAckState,
   PeerSessionLease,
   PeerSessions,
   Turn,
@@ -30,6 +31,8 @@ import type { MailboxStore } from '../../src/mailbox.ts'
 export interface FakeStore extends MailboxStore {
   /** Every event appended so far, in order; the assertions read this. */
   readonly events: readonly AppendEvent[]
+  /** Every message read, with the state filter it carried; `undefined` means every state. */
+  readonly reads: readonly { readonly peerId: PeerId; readonly states?: readonly MessageAckState[] }[]
   /** Every event of one type, in order and narrowed to that variant. */
   ofType<T extends AppendEvent['type']>(type: T): readonly Extract<AppendEvent, { type: T }>[]
   /** Make the next store call — an append or a read — throw, so a test can watch the failure path. */
@@ -42,6 +45,7 @@ export interface FakeStore extends MailboxStore {
  */
 export const fakeStore = (): FakeStore => {
   const events: AppendEvent[] = []
+  const reads: { peerId: PeerId; states?: readonly MessageAckState[] }[] = []
   const rows = new Map<MessageId, Message>()
   let seq = 0
   let nextFailure: Error | undefined
@@ -84,6 +88,7 @@ export const fakeStore = (): FakeStore => {
 
   return {
     events,
+    reads,
     ofType: <T extends AppendEvent['type']>(type: T) =>
       events.filter((event): event is Extract<AppendEvent, { type: T }> => event.type === type),
     failNext: (error) => {
@@ -101,9 +106,15 @@ export const fakeStore = (): FakeStore => {
       return written
     },
     messages: {
-      async forPeer(peerId: PeerId): Promise<readonly Message[]> {
+      // The filter is the contract's, so the fake applies it too: a test that
+      // passes must pass against a store that narrows the read (§7, §15).
+      async forPeer(peerId: PeerId, states?: readonly MessageAckState[]): Promise<readonly Message[]> {
         takeFailure()
-        return [...rows.values()].filter((row) => row.to === peerId)
+        reads.push(states === undefined ? { peerId } : { peerId, states })
+        const wanted = states === undefined ? undefined : new Set(states)
+        return [...rows.values()].filter(
+          (row) => row.to === peerId && (wanted === undefined || wanted.has(row.state)),
+        )
       },
     },
   }
