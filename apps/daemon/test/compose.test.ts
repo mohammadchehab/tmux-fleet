@@ -114,7 +114,7 @@ describe('the profile’s tracker block, as the daemon builds it', () => {
    */
   const withTrackers = async (
     trackers?: string,
-    options: { readonly ownTracker?: boolean } = {},
+    options: { readonly ownTracker?: boolean; readonly environ?: Readonly<Record<string, string>> } = {},
   ): Promise<{ home: string; composed: Awaited<ReturnType<typeof compose>> }> => {
     const home = await mkdtemp(join(tmpdir(), 'fleet-trackers-'))
     const configHome = join(home, '.config')
@@ -135,6 +135,7 @@ ${trackers ?? ''}`,
     const composed = await compose({
       profileName: 'board',
       roots: { home, configHome },
+      ...(options.environ === undefined ? {} : { environ: options.environ }),
       ...(trackers === undefined || options.ownTracker === false ? {} : { tracker: neverAsked() }),
     })
     return { home, composed }
@@ -173,7 +174,8 @@ ${trackers ?? ''}`,
 
   it('wires the Jira adapter when the profile names a site, with no board directory in sight', async () => {
     // No `deps.tracker`, so the adapter the profile names is the one built: had
-    // this still gone to Backlog.md, there is no `path` for it to run in.
+    // this still gone to Backlog.md, there is no `path` for it to run in. The
+    // token comes from fleetd's environment, because the profile never holds one.
     const { home, composed } = await withTrackers(
       `trackers:
   system: jira
@@ -182,11 +184,10 @@ ${trackers ?? ''}`,
   auth:
     kind: cloud
     email: fleet@acme.test
-    token: s3cr3t
   statuses:
     in_progress: In Progress
 `,
-      { ownTracker: false },
+      { ownTracker: false, environ: { JIRA_API_TOKEN: 'not-a-real-jira-token' } },
     )
     try {
       assert.ok(composed.scheduler.plan.installed.includes('tracker-sync'))
@@ -194,6 +195,26 @@ ${trackers ?? ''}`,
     } finally {
       await clean(home, composed)
     }
+  })
+
+  it('refuses a Jira site whose token is in neither place, at compose, before any routine can run', async () => {
+    // Neither `JIRA_API_TOKEN` in the environment nor a token file under
+    // `configHome`: a configuration fault, not a site that refuses to answer.
+    await assert.rejects(
+      () =>
+        withTrackers(
+          `trackers:
+  system: jira
+  query: project = FLEET
+  baseUrl: https://acme.atlassian.net
+  auth:
+    kind: cloud
+    email: fleet@acme.test
+`,
+          { ownTracker: false, environ: {} },
+        ),
+      /no Jira token/,
+    )
   })
 
   it('refuses a Jira site that is not https, at compose, before any routine can run', async () => {
@@ -206,9 +227,8 @@ ${trackers ?? ''}`,
   baseUrl: http://acme.atlassian.net
   auth:
     kind: pat
-    token: p4t
 `,
-          { ownTracker: false },
+          { ownTracker: false, environ: { JIRA_PAT: 'not-a-real-pat' } },
         ),
       /must be https/,
     )

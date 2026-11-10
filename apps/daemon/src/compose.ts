@@ -52,6 +52,7 @@ import { createGitHubPullRequests } from '@fleet/integrations-github'
 import { createGitLabPullRequests } from '@fleet/integrations-gitlab'
 import { createBacklogTracker } from '@fleet/integrations-trackers-backlog'
 import { createJiraTracker } from '@fleet/integrations-trackers-jira'
+import { readJiraAuth, type JiraCredentialSources } from './jira-env.ts'
 import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
 import type { JudgeService } from '@fleet/orchestration-judge'
@@ -233,8 +234,13 @@ export const buildProviders = (profile: Profile): ReadonlyMap<string, Provider> 
  * wins over both — a caller with its own board, or a test, supplies one and
  * nothing here is constructed. Building either adapter is offline: Backlog.md
  * runs only when it is polled, and Jira's client resolves no URL until a call.
+ *
+ * A Jira site's token is read here, through `jira-env.ts`, and never from the
+ * profile: the profile says where it lives. That is why this is `async` — the
+ * file source is read with the filesystem — and why a site with no reachable
+ * credential fails compose rather than every later sync.
  */
-const trackerFor = (profile: TrackerProfile): Tracker => {
+const trackerFor = async (profile: TrackerProfile, credentials: JiraCredentialSources): Promise<Tracker> => {
   if (profile.system === 'backlog') {
     return createBacklogTracker({
       path: profile.path,
@@ -244,7 +250,7 @@ const trackerFor = (profile: TrackerProfile): Tracker => {
   }
   return createJiraTracker({
     baseUrl: profile.baseUrl,
-    auth: profile.auth,
+    auth: await readJiraAuth({ ...credentials, auth: profile.auth }),
     ...(profile.statuses === undefined ? {} : { statuses: profile.statuses }),
     ...(profile.search === undefined ? {} : { search: profile.search }),
   })
@@ -407,7 +413,12 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
       ? {}
       : {
           'tracker-sync': createTrackerSyncFactory({
-            tracker: deps.tracker ?? trackerFor(trackers),
+            tracker:
+              deps.tracker ??
+              (await trackerFor(trackers, {
+                environ: deps.environ ?? process.env,
+                configHome: paths.configHome,
+              })),
             store: { append: wake.append },
             system: trackers.system,
             query: trackers.query,

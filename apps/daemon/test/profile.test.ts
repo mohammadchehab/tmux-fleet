@@ -114,14 +114,14 @@ describe('decoding a profile', () => {
     assert.throws(() => decodeProfile(minimal({ trackers: { system: 'backlog', query: 'open' } })), /path/)
   })
 
-  it('reads a Jira block in either of the two credential shapes', () => {
+  it('reads a Jira block that says where its credential lives, in either shape', () => {
     const cloud = decodeProfile(
       minimal({
         trackers: {
           system: 'jira',
           query: 'project = FLEET AND status != Done',
           baseUrl: 'https://acme.atlassian.net',
-          auth: { kind: 'cloud', email: 'fleet@acme.test', token: 's3cr3t' },
+          auth: { kind: 'cloud', email: 'fleet@acme.test', tokenEnv: 'ACME_JIRA_API_TOKEN' },
           statuses: { in_progress: 'In Progress' },
           role: 'engineer',
         },
@@ -131,7 +131,7 @@ describe('decoding a profile', () => {
       system: 'jira',
       query: 'project = FLEET AND status != Done',
       baseUrl: 'https://acme.atlassian.net',
-      auth: { kind: 'cloud', email: 'fleet@acme.test', token: 's3cr3t' },
+      auth: { kind: 'cloud', email: 'fleet@acme.test', tokenEnv: 'ACME_JIRA_API_TOKEN' },
       statuses: { in_progress: 'In Progress' },
       role: 'engineer',
     })
@@ -143,7 +143,7 @@ describe('decoding a profile', () => {
           system: 'jira',
           query: 'project = FLEET',
           baseUrl: 'https://jira.acme.test',
-          auth: { kind: 'pat', token: 'p4t' },
+          auth: { kind: 'pat', tokenFile: '/run/secrets/jira' },
         },
       }),
     )
@@ -151,16 +151,43 @@ describe('decoding a profile', () => {
       system: 'jira',
       query: 'project = FLEET',
       baseUrl: 'https://jira.acme.test',
-      auth: { kind: 'pat', token: 'p4t' },
+      auth: { kind: 'pat', tokenFile: '/run/secrets/jira' },
+    })
+
+    // Both sources are optional, as they are for DeepInfra: a profile that names
+    // neither gets the defaults, and the token is read at compose — not here.
+    const bare = decodeProfile(
+      minimal({
+        trackers: {
+          system: 'jira',
+          query: 'project = FLEET',
+          baseUrl: 'https://jira.acme.test',
+          auth: { kind: 'pat' },
+        },
+      }),
+    )
+    assert.deepEqual(bare.trackers, {
+      system: 'jira',
+      query: 'project = FLEET',
+      baseUrl: 'https://jira.acme.test',
+      auth: { kind: 'pat' },
     })
   })
 
-  it('refuses a Jira block with no credential, and one carrying a Backlog key', () => {
-    const noCredential = { system: 'jira', query: 'open', baseUrl: 'https://acme.test' }
-    assert.throws(() => decodeProfile(minimal({ trackers: noCredential })), /auth/)
+  it('refuses a Jira block that writes the token down, and one carrying a Backlog key', () => {
+    // The rule the DeepInfra block states holds here too: a profile is a file in
+    // the repo's reach, and a token in it would be a token in `git status`. The
+    // refusal is an unknown field, so a pasted token is not quietly accepted.
+    const withToken = {
+      system: 'jira',
+      query: 'open',
+      baseUrl: 'https://acme.test',
+      auth: { kind: 'cloud', email: 'fleet@acme.test', token: 's3cr3t' },
+    }
+    assert.throws(() => decodeProfile(minimal({ trackers: withToken })), /token/)
 
     // `system` decides which keys are read: a Jira site has no directory to run in.
-    const withPath = { ...noCredential, path: '.', auth: { kind: 'pat', token: 'p4t' } }
+    const withPath = { system: 'jira', query: 'open', baseUrl: 'https://acme.test', path: '.', auth: { kind: 'pat' } }
     assert.throws(() => decodeProfile(minimal({ trackers: withPath })), /path/)
   })
 
