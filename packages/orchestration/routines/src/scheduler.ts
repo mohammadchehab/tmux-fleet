@@ -420,13 +420,26 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
       } catch (thrown) {
         const error = messageOf(toFleetError(thrown))
         const failedAt = clock.now()
+        const escalatedBefore = attempts.get(routine.id)?.escalated
         const failing = recordFailure(routine, failedAt, error)
         // The failure and its escalation go in one batch: a banner that outran
         // the fact it is about would be the ledger telling two stories (§6, §6.1).
-        await deps.store.append([
-          failedEvent(routine, failedAt, error),
-          ...(failing === undefined ? [] : [failing]),
-        ])
+        try {
+          await deps.store.append([
+            failedEvent(routine, failedAt, error),
+            ...(failing === undefined ? [] : [failing]),
+          ])
+        } catch (refused) {
+          // The banner was not written, so it is not said: give the error back
+          // its earlier standing and the retry that reaches the store owes it
+          // again (TASK-2).
+          const current = attempts.get(routine.id)
+          if (failing !== undefined && current !== undefined) {
+            const { escalated: _said, ...unsaid } = current
+            attempts.set(routine.id, escalatedBefore === undefined ? unsaid : { ...unsaid, escalated: escalatedBefore })
+          }
+          throw refused
+        }
         // A failed run is a run: the projection stamps `lastRunAt` with it
         // (`projections.ts`, `routine.failed`) and a restart seeds `lastRun` from
         // that row, so the map and the log must agree here too — leaving it unset
