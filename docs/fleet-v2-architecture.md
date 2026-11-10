@@ -19,116 +19,152 @@ Non-goals: parity with v1 commands or output text; porting any bash; keeping tmu
 
 ## 1.1 Repository layout
 
-One pnpm-style workspace of TypeScript packages in the existing tmux-fleet repo (`@fleet/*`; Node >=22.18 runs the
-TypeScript directly, no build step; no runtime dependency outside `node:` builtins plus `better-sqlite3` or
-`node:sqlite`, and each provider's own SDK inside its package). Section numbers are this document's.
+One workspace of TypeScript packages in the existing tmux-fleet repo (`@fleet/<group>-<name>`; Node >=22.18 runs the
+TypeScript directly, no build step; no runtime dependency outside `node:` builtins plus the SQLite driver and each
+provider's own SDK inside its package). Section numbers are this document's.
+
+**Rule: no folder is a flat bag of siblings.** Every level groups by domain; a folder holds either sub-groups or the
+packages of one group, and a group with a single member is a leaf, not a folder of one.
 
 ```
 tmux-fleet/
 ├─ packages/
-│  ├─ core/            # @fleet/core: ids, event envelope, commands, domain types, pure helpers, Result/Error types (§3)
-│  ├─ store/           # @fleet/store: append-only SQLite event store, projections, migrations, replay (§3, §5.4)
-│  ├─ providers/
-│  │  ├─ sdk/          # @fleet/provider-sdk: the Provider interface, SessionSpec, ProviderEvent, conformance tests (§4)
-│  │  ├─ claude/       # Claude Agent SDK (CLI fallback); also the base for deepinfra (§4)
-│  │  ├─ deepinfra/    # claude provider with per-session DeepInfra env, model read from the process (§4)
-│  │  ├─ opencode/     # OpenCode server/SDK mode (§4)
-│  │  └─ cursor/       # Cursor headless agent, turn-count purge fallback (§4)
-│  ├─ pm/              # @fleet/pm: the work state machine, decide(), rules, Judge client, Decision log (§5)
-│  ├─ routines/        # @fleet/routines: scheduler and the routine definitions: dispatch, keep-busy, pr-babysit, standup, reconcile (§6)
-│  ├─ notify/          # @fleet/notify: notification projection, Notifier interface, macOS notifier, decision inbox (§6.1)
-│  ├─ security/        # @fleet/security: Scanner adapters (semgrep, gitleaks, osv, trivy, claude-security), finding lifecycle (§6.2)
-│  ├─ codegraph/       # @fleet/codegraph: ensure-index, MCP wiring, PreToolUse guard policy, token-report projection (§6.2)
-│  ├─ mailbox/         # @fleet/mailbox: addressing by peerId, briefs, versions, acks, resume-then-deliver (§7)
-│  ├─ supervisor/      # @fleet/supervisor: session lifecycle, restart, permission-mode check, self-purge wrapper (§2, §8)
-│  ├─ worktree/        # @fleet/worktree: create, classify, holders, GC, link check (§9)
-│  ├─ gate/            # @fleet/gate: PR gate, stack retarget, merge ownership policy; gh adapter (§10)
-│  ├─ ledger/          # @fleet/ledger: Build ledger and the remote (hetzner) runner (§11)
-│  ├─ contracts/       # @fleet/contracts: Contract and Brief publishing, dependency gating, staleness (§12)
-│  └─ adapters/        # @fleet/adapters: sinks and sources: Backlog.md, Jira, GitHub issues (§3)
+│  ├─ foundation/                 # what everything may import; no domain logic that other groups own
+│  │  ├─ core/                    # ids, event envelope, Result/Error, clock, pure helpers, the `exec` and `io` shapes (§3)
+│  │  ├─ contracts/               # the schemas and ports every group shares: commands, events, API types, and the ports other groups need from each other, e.g. `PullRequests` (§3, §10)
+│  │  └─ store/                   # append-only SQLite event store, projections, migrations, replay (§3, §5.4)
+│  ├─ runtime/                    # running peers
+│  │  ├─ providers/
+│  │  │  ├─ sdk/                  # the Provider interface, SessionSpec, ProviderEvent, conformance helpers (§4)
+│  │  │  ├─ claude/               # Claude Agent SDK (CLI fallback); base for deepinfra (§4)
+│  │  │  ├─ deepinfra/            # claude with per-session DeepInfra env; model read from the process (§4)
+│  │  │  ├─ opencode/             # OpenCode server/SDK mode (§4)
+│  │  │  └─ cursor/               # Cursor headless agent, turn-count purge fallback (§4)
+│  │  ├─ supervisor/              # session lifecycle, restart, permission-mode check, self-purge wrapper (§2, §8)
+│  │  └─ mailbox/                 # addressing by peerId, briefs, versions, acks, resume-then-deliver (§7)
+│  ├─ orchestration/              # deciding and moving work
+│  │  ├─ pm/                      # the work state machine, decide(), rules, Judge client, Decision log (§5)
+│  │  ├─ routines/                # scheduler + routines: dispatch, keep-busy, pr-babysit, standup, reconcile (§6)
+│  │  ├─ briefs/                  # Contract and Brief publishing, dependency gating, staleness (§12)
+│  │  ├─ gate/                    # PR gate, stack retarget, merge-ownership policy (§10)
+│  │  └─ ledger/                  # Build ledger and the remote (hetzner) runner (§11)
+│  ├─ workspace/                  # the code and the checkouts peers work in
+│  │  ├─ worktree/                # create, classify, holders, GC, link check (§9)
+│  │  └─ codegraph/               # ensure-index, MCP wiring, PreToolUse guard policy, token-report projection (§6.2)
+│  ├─ security/
+│  │  ├─ scanners/                # Scanner adapters: semgrep, gitleaks, osv-scanner, trivy, claude-security (§6.2)
+│  │  └─ findings/                # typed finding events, fingerprint dedupe, verdicts, routing to work and decisions (§6.2)
+│  ├─ notify/
+│  │  ├─ core/                    # notification projection, dedupe/rate-limit rules, decision inbox, `Notifier` interface (§6.1)
+│  │  └─ channels/
+│  │     └─ macos/                # terminal-notifier / osascript notifier; phone and Slack are siblings later (§6.1)
+│  └─ integrations/
+│     ├─ github/                  # `gh`/git adapters behind the contracts' ports: PRs, checks, retarget (§10)
+│     └─ trackers/                # Backlog.md, Jira sinks and sources (§3)
 ├─ apps/
-│  ├─ fleetd/          # the daemon: wires the packages, owns the store, serves the local API on a Unix socket (§2)
-│  ├─ cli/             # `fleet`: thin API client: up, down, ls, send, peek, decide, replay, view (§2, §6.1)
-│  ├─ hooks/           # entry points the providers call: PreToolUse guard, Stop/usage reporter; tiny import graphs (§6.2, §8)
-│  └─ view/            # optional tmux view: read-only panes fed from transcripts (§2)
+│  ├─ daemon/                     # `fleetd`: the only place the groups are wired together; store owner; local API on a Unix socket (§2)
+│  ├─ clients/
+│  │  ├─ cli/                     # `fleet`: thin API client: up, down, ls, send, peek, decide, replay (§2, §6.1)
+│  │  └─ view/                    # optional read-only tmux view fed from transcripts (§2)
+│  └─ hooks/
+│     ├─ tool-guard/              # PreToolUse entry: redirects broad Grep/Glob/Read sweeps (§6.2)
+│     └─ usage-report/            # Stop/usage entry: reports per-turn usage; tiny import graph (§6.2, §8)
 ├─ config/
-│  ├─ roles/           # one file per role: brief, default provider/model/effort, permission mode, tools (replaces skills/fleet/roles + models)
-│  ├─ squads/          # peer lists per squad (replaces skills/fleet/squads)
-│  ├─ policies/        # merge ownership, PR cap, scanner set, codegraph mode, notify classes, limits (§5, §6, §10)
-│  └─ profiles/        # example profiles (`example.yaml`); real ones live in the user's home, below
-├─ tests/
-│  ├─ unit/            # per package, beside it as `*.test.ts`; this folder holds cross-package unit suites only
-│  ├─ integration/     # fleetd + a fake provider, in-process, no network: the phase exit tests run here
-│  ├─ conformance/     # one suite every Provider must pass, run against each provider package (§4)
-│  └─ fixtures/        # recorded provider event streams, gh/git sandboxes, golden event logs for replay (§5.4)
-├─ docs/               # this design, ADRs, the idea map for E13 (§14.1), runbook
-├─ legacy/             # v1, frozen during the transition (see below)
-│  ├─ skills/  bin/  dev-tasks/  profiles/  hooks/
-├─ package.json  tsconfig.json  Taskfile.yaml   # workspace root, `task test` and `task lint` run both worlds until v1 is removed
-└─ AGENTS.md  README.md
+│  ├─ definitions/
+│  │  ├─ roles/                   # one file per role: brief, default provider/model/effort, permission mode, tools (replaces skills/fleet/roles + models)
+│  │  └─ squads/                  # peer lists per squad (replaces skills/fleet/squads)
+│  ├─ policies/
+│  │  ├─ merge/                   # merge ownership, PR cap (§5, §10)
+│  │  ├─ security/                # scanner set per repo, critical definition (§6.2)
+│  │  ├─ codegraph/               # guard mode per role (§6.2)
+│  │  ├─ notify/                  # classes, windows, reminder hours (§6.1)
+│  │  └─ limits/                  # context limits per provider/model, wait times (§8)
+│  └─ profiles/
+│     └─ examples/                # `example.yaml`; real profiles live in the user's home, below
+├─ tests/                         # cross-package tests only; unit tests sit beside their package as `*.test.ts`
+│  ├─ architecture/               # the import-direction test over the workspace graph (below)
+│  ├─ conformance/
+│  │  └─ providers/               # one suite every provider package must pass (§4)
+│  ├─ integration/
+│  │  ├─ lifecycle/               # fleetd + a fake provider: start, kill, resume, identity (§7)
+│  │  ├─ self-purge/              # purge and resume at a limit (§8)
+│  │  ├─ delivery/                # assign, PR gate, merge, notify: the phase 1 exit test (§5, §10)
+│  │  └─ security/                # scanner fixtures to findings to decisions (§6.2)
+│  └─ fixtures/
+│     ├─ provider-streams/        # recorded provider event streams (§4)
+│     ├─ repos/                   # git/gh sandboxes for worktree, gate and scanner tests (§9, §10)
+│     └─ event-logs/              # golden event logs for replay (§5.4)
+├─ docs/
+│  ├─ design/                     # this document and later architecture specs
+│  ├─ decisions/                  # ADRs
+│  ├─ ideas/                      # the E13 idea map and lessons (§14.1)
+│  └─ runbook/                    # operating the fleet
+├─ legacy/
+│  └─ v1/                         # skills/, bin/, dev-tasks/, profiles/, hooks/ moved unchanged; frozen (below)
+└─ package.json  tsconfig.json  Taskfile.yaml  AGENTS.md  README.md   # workspace root; `task test`/`task lint` run both worlds until v1 is removed
 ```
 
-### Dependency direction
-
-Imports point one way, enforced by a lint rule over the workspace graph:
+### Dependency direction, by group
 
 ```
-core  <-  store  <-  { pm, mailbox, notify, security, codegraph, worktree, gate, ledger, contracts, adapters, routines, supervisor }
-core  <-  providers/sdk  <-  providers/{claude, deepinfra, opencode, cursor}
-{ the feature packages, providers/* }  <-  apps/fleetd  (the only place that wires them together)
-apps/cli, apps/view  ->  the daemon's API only (no package imports except core types)
-apps/hooks  ->  core + providers/sdk types only
+foundation   <-   runtime, orchestration, workspace, security, notify, integrations     (every group depends on foundation)
+apps/daemon  <-   all groups                                                            (the only wiring point)
+apps/clients, apps/hooks  ->  the daemon API / foundation types only
 ```
 
-- `core` imports nothing. Feature packages import `core` and `store` (and `providers/sdk` types where needed), never each
-  other; if two need to talk, they do it through events in the store or through `fleetd`. `pm` is pure: it imports `core`
-  only, takes state as input and returns actions, so it cannot reach a provider or the disk (§5).
-- A provider package imports `providers/sdk` and `core`, never the store; the supervisor adapts its events into the store.
-- `apps/*` never import each other. `apps/cli` and `apps/view` talk to `fleetd` over the socket; that is what keeps
-  tmux and the CLI a view, not the control plane.
+- **Groups never import each other sideways.** If `orchestration` needs something `runtime` or `integrations` does, it
+  declares a **port in `foundation/contracts`** (e.g. `PullRequests`, `ProviderRegistry`) and `apps/daemon` injects the
+  implementation. Otherwise groups cooperate through **events in the store**. This is what keeps `pm` pure and
+  `gate` testable without `gh`.
+- **Inside a group**, packages import `foundation` and only the earlier-listed siblings they need: every
+  `providers/<x>` imports `providers/sdk`; `scanners` imports `findings` types; `notify/channels/*` import
+  `notify/core`; `supervisor` and `mailbox` import `providers/sdk`. `pm` imports `foundation/core` and
+  `foundation/contracts` only (pure: state in, actions out, §5). A provider never imports `store`; `supervisor`
+  adapts its events into the store.
+- `apps/*` never import each other. `apps/clients/*` talk to the daemon over the socket, which keeps tmux and the CLI
+  a view, not the control plane.
+- `tests/architecture` fails the build if an import violates any rule above.
 
 ### On disk
 
 Nothing the fleet writes at runtime lives in the repo or in a worktree.
 
 ```
-~/.config/fleet/profiles/<profile>.yaml     # the user's profile: target repos, policies overrides, notify, limits (was ~/.config/fleet/profiles/*.env)
+~/.config/fleet/profiles/<profile>.yaml       # the user's profile: target repos, policy overrides, notify, limits (was ~/.config/fleet/profiles/*.env)
 ~/.fleet/<profile>/
-   store.sqlite   store.sqlite-wal          # the event store and its projections (§3)
-   fleetd.sock    fleetd.pid  fleetd.log    # the daemon's API socket, pid, log
-   peers/<peerId>/state.md                  # human copy of each peer's latest typed state file (§8)
-   transcripts/<peerId>/<sessionId>.jsonl   # provider event streams, source for the optional view
-   findings/  builds/<sha>-<task>.log       # scanner raw output, build logs (§6.2, §11)
-   notify/                                  # delivered-notification receipts (§6.1)
-   backup/                                  # nightly copy of store.sqlite
-(git worktrees are not here: they live under each repo's own .claude/worktrees/<topic>, and their state is events in the store, §9)
+   store/      store.sqlite, store.sqlite-wal, backup/        # the event store and its nightly copy (§3)
+   daemon/     fleetd.sock, fleetd.pid, fleetd.log             # API socket, pid, log (§2)
+   peers/      <peerId>/state.md                               # human copy of each peer's latest typed state file (§8)
+   transcripts/ <peerId>/<sessionId>.jsonl                     # provider event streams, source for the optional view
+   artifacts/  findings/, builds/<sha>-<task>.log              # scanner raw output, build logs (§6.2, §11)
+   notify/     <key>.json                                      # delivered-notification receipts (§6.1)
 ```
 
-Role and peer *definitions* are config in the repo (`config/roles`, `config/squads`) and per-profile overrides in the
-user's profile file; the *live* peers (ids, sessions, briefs) exist only in the store. v1's `$FLEET_STATE`
+Git worktrees are not here: they live under each repo's own `.claude/worktrees/<topic>`, and their state is events in
+the store (§9). Role and peer *definitions* are config in the repo (`config/definitions`) with per-profile overrides in
+the user's profile; the *live* peers (ids, sessions, briefs) exist only in the store. v1's `$FLEET_STATE`
 (`~/.fleet-state/<profile>`) is left untouched; `fleet migrate` (phase 3) imports its roster and board once, read-only.
 
 ### What happens to the old bash
 
 | v1 path | transition | removed |
 | :- | :- | :- |
-| `skills/`, `bin/`, `dev-tasks/`, `profiles/`, `hooks/` | moved under `legacy/` in phase 0 by one mechanical commit, kept working, **deprecated** (no new features, fixes only); `task install` links from there; the live fleet keeps running on it | **phase 3**, after `fleet migrate` and a week of the v2 fleet running a real squad |
-| `skills/fleet/roles/*.md`, `squads/*`, `models` | their content is copied into `config/roles`, `config/squads` in phase 1 (the role text is reused, the model/effort table becomes fields) | with the rest, phase 3 |
-| PRs #12 (dispatch/judge) and #13 (context-guard) | stay as the interim fleet's stopgap until phase 1's exit test passes; not extended | phase 3 (their rules are in `pm` and `supervisor`) |
-| `skills/*/SKILL.md` for Claude Code skill loading | a thin v2 `fleet` skill stays (it tells a peer how to talk to the daemon through the CLI) | kept |
+| `skills/`, `bin/`, `dev-tasks/`, `profiles/`, `hooks/` | moved under `legacy/v1/` in phase 0 by one mechanical commit, kept working, **deprecated** (fixes only); `task install` links from there; the live fleet keeps running on it | **phase 3**, after `fleet migrate` and a week of the v2 fleet running a real squad |
+| `skills/fleet/roles/*.md`, `squads/*`, `models` | content copied into `config/definitions/{roles,squads}` in phase 1 (role text reused, the model/effort table becomes fields) | with the rest, phase 3 |
+| PRs #12 (dispatch/judge) and #13 (context-guard) | stay as the interim fleet's stopgap until phase 1's exit test passes; not extended | phase 3 (their rules live in `orchestration/pm` and `runtime/supervisor`) |
+| `skills/*/SKILL.md` for Claude Code skill loading | a thin v2 `fleet` skill stays (tells a peer how to talk to the daemon through the CLI) | kept |
 
 ### What each phase adds to the tree
 
 | phase | adds |
 | :- | :- |
-| 0 contracts | `packages/core`, `packages/providers/sdk`, the event/projection/command schemas in `core` and `store` (types only), `tests/conformance` skeleton, `docs/`, the workspace root files; v1 moves to `legacy/` |
-| 1 vertical slice | `store`, `providers/claude` (+ `deepinfra` as config), `supervisor` (incl. self-purge), `mailbox`, `pm`, `routines` (dispatch, keep-busy, pr-babysit, reconcile, standup), `notify` (macOS, decision inbox), `gate` (merge only), `apps/fleetd`, `apps/cli`, `apps/hooks` (usage reporter), `config/roles`, `config/squads`, `config/policies`, `tests/integration`, `tests/fixtures` |
-| 2 hygiene | `worktree`, `ledger`, `contracts`, `security` and `codegraph` (scanners, guard, token report), stack retarget in `gate`, `fleet replay` |
-| 3 providers and sinks | `providers/opencode`, `providers/cursor`, `adapters`, `apps/view`, `fleet migrate`; `legacy/` deleted |
-| 4 hand-off | docs only: the idea map and measured lessons |
+| 0 contracts | `packages/foundation/{core,contracts,store}` (types and schemas only), `packages/runtime/providers/sdk`, `tests/{architecture,conformance}` skeleton, `docs/`, workspace root files; v1 moves to `legacy/v1/` |
+| 1 vertical slice | `foundation/store` (working), `runtime/providers/{claude,deepinfra}`, `runtime/{supervisor,mailbox}`, `orchestration/{pm,routines,gate}`, `notify/{core,channels/macos}`, `integrations/github`, `apps/daemon`, `apps/clients/cli`, `apps/hooks/usage-report`, `config/{definitions,policies}`, `tests/{integration/{lifecycle,self-purge,delivery},fixtures}` |
+| 2 hygiene | `workspace/{worktree,codegraph}`, `orchestration/{briefs,ledger}`, `security/{scanners,findings}`, `apps/hooks/tool-guard`, `tests/integration/security`, stack retarget in `gate`, `fleet replay` |
+| 3 providers and sinks | `runtime/providers/{opencode,cursor}`, `integrations/trackers`, `apps/clients/view`, `fleet migrate`; `legacy/` deleted |
+| 4 hand-off | docs only: `docs/ideas` with measured lessons |
 
-Note: §6.2 (scanners, codegraph) is scheduled in phase 2 here, but the security routine can start earlier on the
-interim fleet; the exit test of phase 1 does not depend on it.
+The security routine can start earlier than phase 2 on the interim fleet; phase 1's exit test does not depend on it.
 
 ## 2. Components
 
