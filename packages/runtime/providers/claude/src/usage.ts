@@ -24,7 +24,7 @@
  */
 
 import { fleetError } from '@fleet/foundation-core'
-import type { Usage } from '@fleet/runtime-provider-sdk'
+import type { TurnSpend, Usage } from '@fleet/runtime-provider-sdk'
 
 /** Configured context windows, per model id, with the one to use when a model is not listed. */
 export interface ContextLimits {
@@ -110,6 +110,102 @@ export const usageFrom = (input: {
     ...(autoCompactAt === undefined ? {} : { autoCompactAt }),
   }
   return input.costUsd === undefined ? base : { ...base, costUsd: input.costUsd }
+}
+
+/**
+ * The counters a `result` reports cumulatively over the whole query, as the
+ * adapter carries them from one boundary to the next (`#reported`).
+ */
+export interface SpendTotals {
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cachedTokens: number
+  readonly costUsd: number
+}
+
+/** Nothing measured yet: the baseline a session starts from. */
+export const noSpend: SpendTotals = Object.freeze({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, costUsd: 0 })
+
+const whole = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+
+/**
+ * `result.modelUsage` summed over every model the query called: the only field
+ * that covers **Task subagents, sidechains and internal calls** as well as the
+ * main loop. It is why this is the number §6.2 wants — a transcript reader sees
+ * the main loop and, at best, whichever sidechains it knows to look for.
+ */
+const modelUsageTotals = (value: unknown): SpendTotals | undefined => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const rows = Object.values(value as Record<string, unknown>)
+  if (rows.length === 0) return undefined
+  let totals: SpendTotals = noSpend
+  for (const row of rows) {
+    if (typeof row !== 'object' || row === null) continue
+    const entry = row as Record<string, unknown>
+    const cost = entry['costUSD']
+    totals = {
+      inputTokens: totals.inputTokens + whole(entry['inputTokens']),
+      outputTokens: totals.outputTokens + whole(entry['outputTokens']),
+      cachedTokens: totals.cachedTokens + whole(entry['cacheReadInputTokens']),
+      costUsd: totals.costUsd + (typeof cost === 'number' && Number.isFinite(cost) && cost > 0 ? cost : 0),
+    }
+  }
+  return totals
+}
+
+/**
+ * `result.usage`: the main loop's own counters, the fallback for a boundary
+ * message that carries no `modelUsage` (a crash result, or an SDK that predates
+ * the field). Under-counts subagents by construction — better a small number
+ * than none, and the field is documented as per-turn in streaming input.
+ */
+const mainLoopTotals = (value: unknown): SpendTotals | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined
+  const used = value as Record<string, unknown>
+  const totals: SpendTotals = {
+    inputTokens: whole(used['input_tokens']),
+    outputTokens: whole(used['output_tokens']),
+    cachedTokens: whole(used['cache_read_input_tokens']),
+    costUsd: 0,
+  }
+  return totals.inputTokens === 0 && totals.outputTokens === 0 && totals.cachedTokens === 0 ? undefined : totals
+}
+
+/**
+ * One turn's spend, as the difference between this boundary message and the one
+ * before it.
+ *
+ * Four things this deliberately does:
+ *
+ * - **Reads `modelUsage` first**, so a turn that fanned out to subagents is
+ *   billed for them.
+ * - **Never goes negative.** The running total resets on `/clear`, and a resumed
+ *   session continues from a transcript total; a counter that went backwards
+ *   means the baseline is stale, so that counter reports zero for the turn (what
+ *   it spent is unknowable across the reset) and the baseline rebases here.
+ * - **Reports the cost delta**, not the cumulative `total_cost_usd`, because
+ *   `turn.usage_recorded` is one turn's row.
+ * - **Reports nothing when the message measured nothing** (a startup error
+ *   carries zeroed usage), because a zeroed row reads as a turn that was free.
+ */
+export const spendFrom = (record: unknown, seen: SpendTotals): { totals: SpendTotals; spend?: TurnSpend } => {
+  if (typeof record !== 'object' || record === null) return { totals: seen }
+  const message = record as Record<string, unknown>
+  const totals = modelUsageTotals(message['modelUsage']) ?? mainLoopTotals(message['usage'])
+  if (totals === undefined) return { totals: seen }
+
+  const delta = (now: number, before: number): number => Math.max(0, Math.round(now - before))
+  const costUsd = totals.costUsd >= seen.costUsd ? totals.costUsd - seen.costUsd : undefined
+  return {
+    totals,
+    spend: {
+      inputTokens: delta(totals.inputTokens, seen.inputTokens),
+      outputTokens: delta(totals.outputTokens, seen.outputTokens),
+      cachedTokens: delta(totals.cachedTokens, seen.cachedTokens),
+      ...(costUsd === undefined || costUsd === 0 ? {} : { costUsd }),
+    },
+  }
 }
 
 /**

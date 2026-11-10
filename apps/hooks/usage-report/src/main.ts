@@ -4,6 +4,11 @@
  * every turn with the Stop payload on stdin; it measures the turn from the
  * transcript and tells the daemon, which appends `turn.usage_recorded`.
  *
+ * Under fleetd this hook is **not installed**: the supervisor sits at the same
+ * turn boundary and records the row itself from the provider, so there is one
+ * measurer and nothing in a peer's settings to keep in step. This is the route
+ * for the sessions fleetd does not supervise (§6.2); see the README.
+ *
  * It **never fails the peer**: whatever goes wrong — no socket, no limit, a
  * transcript it cannot read — it says why on stderr and exits 0, because a hook
  * that blocked a Stop to report a number would cost more than the number is

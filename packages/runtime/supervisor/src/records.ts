@@ -26,8 +26,13 @@ export type PurgeRecord = Extract<
 >
 
 /**
- * Everything one session's stream produces: its states, its compactions, its
- * end, its purges, and the one fault this loop refuses to route around (§8).
+ * Everything one session's stream produces: its states, its compactions, what
+ * each turn cost, its end, its purges, and the one fault this loop refuses to
+ * route around (§8).
+ *
+ * `turn.usage_recorded` is here because the fleet is the measurer under fleetd
+ * (§6.2): the turn boundary is where the provider's numbers are, and a session
+ * the supervisor owns has no Stop hook to ask.
  *
  * `provider.errored` is here for the last of those: the supervisor's own
  * invariant violation has no event of its own, and inventing one would ripple
@@ -37,7 +42,17 @@ export type PurgeRecord = Extract<
  */
 export type SessionRecord =
   | PurgeRecord
-  | Extract<AppendEvent, { type: 'peer.state_changed' | 'peer.compacted' | 'session.ended' | 'provider.errored' }>
+  | Extract<
+      AppendEvent,
+      {
+        type:
+          | 'peer.state_changed'
+          | 'peer.compacted'
+          | 'turn.usage_recorded'
+          | 'session.ended'
+          | 'provider.errored'
+      }
+    >
 
 /**
  * The provider hands back a bare `string`; the store's events carry a

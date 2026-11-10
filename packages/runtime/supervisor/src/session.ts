@@ -33,13 +33,14 @@ import {
   type SessionId,
   type TurnId,
 } from '@fleet/foundation-core'
-import type { ProviderEvent, SessionEndReason, StateFile } from '@fleet/foundation-contracts'
+import type { ProviderEvent, SessionEndReason, StateFile, Usage } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle, Turn } from '@fleet/runtime-provider-sdk'
 
 import { peerStateOf } from './peer-state.ts'
 import { purgeTrigger, type PurgeLimits } from './policy.ts'
 import { restartStateFileOf, type PurgeOutcome } from './purge.ts'
 import { sessionIdOf, type SessionRecord } from './records.ts'
+import { emptyToolCalls, withToolCall, type ToolCalls } from './tool-calls.ts'
 
 export type { SessionRecord } from './records.ts'
 
@@ -129,6 +130,14 @@ export class PeerSession {
   #stopped = false
   /** True from the moment a purge is triggered until a session is running again. */
   #purging = false
+  /** Tool calls per *open* turn, dropped when the turn ends (§6.2). */
+  readonly #toolCalls = new Map<TurnId, ToolCalls>()
+  /**
+   * The turn that ended most recently, with the exploration it spent. One slot
+   * is enough: the boundary is judged by the same iteration that applied the
+   * event, before the next event is read.
+   */
+  #endedTurn: { readonly turnId: TurnId; readonly toolCalls: ToolCalls } | undefined
   /**
    * Turns started and not yet ended, each with the session that raised it: a
    * purge boundary is not one while work is open, and the work only counts
@@ -288,6 +297,11 @@ export class PeerSession {
 
         turns += 1
         const usage = await provider.usage(handle)
+        // §6.2's measurement, at the boundary the fleet already owns: the same
+        // `usage()` the purge reads, plus what the turn spent. Recorded before
+        // the trigger is judged, so a turn that causes a purge has still been
+        // counted — the handoff costs tokens too.
+        await this.#recordUsage(handle, event.turnId, usage)
         const trigger = purgeTrigger({
           usage,
           usageTokens: provider.capabilities.usageTokens,
@@ -350,8 +364,20 @@ export class PeerSession {
       case 'turn.started':
         this.#openTurns.set(event.turnId, sessionId)
         break
+      case 'tool.use': {
+        // A call reported after its turn ended belongs to no boundary that will
+        // ever be judged, so it counts nothing — and counting it would keep an
+        // entry in `#toolCalls` that nothing clears.
+        if (this.#endedTurn?.turnId === event.turnId) break
+        this.#toolCalls.set(event.turnId, withToolCall(this.#toolCalls.get(event.turnId) ?? emptyToolCalls, event.tool))
+        break
+      }
       case 'turn.ended':
         this.#openTurns.delete(event.turnId)
+        // The tally moves out of the open-turn map here, because the map is for
+        // turns that are still running and the boundary is judged below.
+        this.#endedTurn = { turnId: event.turnId, toolCalls: this.#toolCalls.get(event.turnId) ?? emptyToolCalls }
+        this.#toolCalls.delete(event.turnId)
         // This turn cannot end while a question it asked is still open, so its
         // ending is the proof that each of them was answered. Cleared here,
         // before the caller judges the boundary, so the purge can fire at it.
@@ -474,6 +500,43 @@ export class PeerSession {
         },
       },
     )
+  }
+
+  /**
+   * One finished turn, as the store hears about it (§6.2).
+   *
+   * Two sources, and neither is a guess: the context side is the `usage()` the
+   * caller already measured for the purge, and the spend is whatever the
+   * provider reported for the turn — which is why a provider without
+   * `turnSpend` records nothing rather than a row of zeroes that a report would
+   * read as a free turn.
+   *
+   * The exploration counts come from the stream's own `tool.use` events, not
+   * from a transcript: under fleetd there is no hook to read one, and the same
+   * source works for every provider.
+   */
+  async #recordUsage(handle: SessionHandle, turnId: TurnId, usage: Usage): Promise<void> {
+    const { clock, peerId, provider, record } = this.#ports
+    const spend = provider.turnSpend?.(handle)
+    if (spend === undefined) return
+    const toolCalls = this.#endedTurn?.turnId === turnId ? this.#endedTurn.toolCalls : emptyToolCalls
+    await record({
+      type: 'turn.usage_recorded',
+      ts: clock.now(),
+      subject: peerId,
+      actor: peerActor(peerId),
+      data: {
+        peerId,
+        sessionId: sessionIdOf(handle),
+        contextTokens: usage.contextTokens,
+        contextLimit: usage.contextLimit,
+        inputTokens: spend.inputTokens,
+        outputTokens: spend.outputTokens,
+        cachedTokens: spend.cachedTokens,
+        toolCalls,
+        ...(spend.costUsd === undefined ? {} : { costUsd: spend.costUsd }),
+      },
+    })
   }
 
   /**

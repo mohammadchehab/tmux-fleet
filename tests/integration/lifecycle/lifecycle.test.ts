@@ -183,6 +183,78 @@ test('§15: a message sent over the socket is the message the peer would read', 
   )
 })
 
+test('§6.2: the turn boundary records what the turn spent, with no hook to install', async (t) => {
+  const sandbox = await createSandbox()
+  t.after(() => sandbox.stop())
+  await sandbox.call('up')
+
+  // The turn is started through the handle the supervisor holds, which is where
+  // the boundary that follows belongs: under fleetd the measurer is the
+  // supervisor, not a Stop hook in the session's own transcript.
+  const session = sandbox.scripted.sessions.find((candidate) => String(candidate.spec.peerId) === 'engineer-1')
+  assert.ok(session, 'engineer-1 has a session')
+  await sandbox.scripted.provider.send(session.handle, {
+    text: 'take the first ready work item',
+    kind: 'info',
+    briefVersion: 1,
+  })
+
+  // The brief is a turn too, so this session's work turn is the *second* row:
+  // one row per boundary, not one row per session.
+  const rows = await until(
+    async () => {
+      const all = await sandbox.events()
+      const matching = all.filter(
+        (event) => event.type === 'turn.usage_recorded' && event.data.sessionId === session.handle.sessionId,
+      )
+      return matching.length >= 2 ? matching : undefined
+    },
+    'the work turn to record what it spent',
+  )
+  assert.deepEqual(rows[0]?.data['toolCalls'], { grep: 0, glob: 0, read: 0, codegraph: 0 }, 'the brief used no tools')
+  const recorded = rows[1]
+  assert.ok(recorded, 'the work turn is the second row')
+
+  // One row per turn, written by the fleet itself: the tokens the provider
+  // counted (§6.2's `turn.usage`), the pressure the boundary saw, and the tools
+  // the turn used counted from the stream rather than asked of the peer.
+  assert.equal(recorded.subject, 'engineer-1', 'the row is the peer\'s, which is what `ls` and the purge read')
+  assert.deepEqual(recorded.data, {
+    peerId: 'engineer-1',
+    sessionId: session.handle.sessionId,
+    contextTokens: 10,
+    contextLimit: 1_000,
+    inputTokens: 1_200,
+    outputTokens: 300,
+    cachedTokens: 4_000,
+    toolCalls: { grep: 1, glob: 0, read: 0, codegraph: 0 },
+  })
+  assert.equal('turnId' in recorded.data, false, 'keyed by session; the turn id is the stream\'s')
+
+  // The scripted provider declares `usageCost: false`, and a provider that
+  // prices nothing yields no `costUsd` — an absent field, not a zero (§6.2).
+  assert.equal('costUsd' in recorded.data, false)
+
+  // The row is the turn's, not the session's whole life: another turn appends
+  // another row rather than updating the last one, so a fleet's spend is a sum
+  // over rows and never a snapshot someone had to sample.
+  await sandbox.scripted.provider.send(session.handle, {
+    text: 'take the second ready work item',
+    kind: 'info',
+    briefVersion: 1,
+  })
+  const all = await until(
+    async () => {
+      const matching = (await sandbox.events()).filter(
+        (event) => event.type === 'turn.usage_recorded' && event.data.sessionId === session.handle.sessionId,
+      )
+      return matching.length >= 3 ? matching : undefined
+    },
+    'the third turn to record its own row',
+  )
+  assert.equal(all.length, 3)
+})
+
 test('§15: `down` stops the loops, and the fleet is no longer reachable', async (t) => {
   const sandbox = await createSandbox()
   t.after(() => sandbox.stop())

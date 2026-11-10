@@ -9,7 +9,7 @@ import { test } from 'node:test'
 
 import { fixedClock, type PeerId, type QuestionId, type TurnId } from '@fleet/foundation-core'
 import { appendIssues, type ProviderEvent, type Usage } from '@fleet/foundation-contracts'
-import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
+import type { Provider, SessionHandle, TurnSpend } from '@fleet/runtime-provider-sdk'
 
 import { PeerSession, PurgeRestartFailed, type PurgeOutcome, type SessionRecord } from '../src/index.ts'
 
@@ -108,18 +108,28 @@ interface Rig {
   ) => Promise<SessionHandle>
 }
 
+/**
+ * What this rig's provider does beyond the happy path, all of it off by default.
+ *
+ * `spend` is what the provider reports for a finished turn (§6.2). Left out,
+ * because that is a provider that counts no tokens — and the wrapper must then
+ * record no usage at all rather than a row of zeroes.
+ */
 const rig = (
   usage: (h: SessionHandle) => Usage = () => ({
     contextTokens: 100,
     contextLimit: 1_000,
   }),
-  /**
-   * A provider that stops a session without synthesising `session.ended` — the
-   * one shape the loop cannot learn a session ended from, and so the only way a
-   * replacement can inherit work. Every real adapter emits it (§4); the fault
-   * test below is the one that asks what happens when one does not.
-   */
-  options: { readonly silentStop?: boolean } = {},
+  options: {
+    /**
+     * A provider that stops a session without synthesising `session.ended` — the
+     * one shape the loop cannot learn a session ended from, and so the only way a
+     * replacement can inherit work. Every real adapter emits it (§4); the fault
+     * test below is the one that asks what happens when one does not.
+     */
+    readonly silentStop?: boolean
+    readonly spend?: TurnSpend
+  } = {},
 ): Rig => {
   const feeds = new Map<string, Feed>()
   const sent: string[] = []
@@ -156,6 +166,7 @@ const rig = (
       return turnId
     },
     usage: async (h: SessionHandle) => usage(h),
+    ...(options.spend === undefined ? {} : { turnSpend: () => options.spend }),
     stop: async (h: SessionHandle) => {
       // The adapter synthesises `session.ended` when we stop it (§4); the rig does the same.
       const feed = feeds.get(h.sessionId)
@@ -249,6 +260,94 @@ test('events become peer states, and a completed turn that is under the limit ke
   // What the wrapper wrote is what the store accepts: the records are the
   // registry's own events, so the append boundary has nothing to object to.
   assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
+})
+
+test('a completed turn is recorded with what it cost and how it explored', async () => {
+  // The fleet is the measurer under fleetd (§6.2): the boundary is where the
+  // provider's numbers are, and there is no Stop hook in a session it owns.
+  const r = rig(() => ({ contextTokens: 4_096, contextLimit: 200_000 }), {
+    spend: {
+      inputTokens: 900,
+      outputTokens: 120,
+      cachedTokens: 3_400,
+      costUsd: 0.02,
+    },
+  })
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
+    started(),
+    { type: 'tool.use', turnId, tool: 'Grep' },
+    { type: 'tool.use', turnId, tool: 'Read' },
+    { type: 'tool.use', turnId, tool: 'mcp__codegraph__codegraph_explore' },
+    // A tool the guard does not watch is a call, but not one of its counters.
+    { type: 'tool.use', turnId, tool: 'Bash' },
+    ended(),
+    { type: 'session.ended', reason: 'exit', code: 0 },
+  )
+  await run
+
+  const recorded = r.records.filter((record) => record.type === 'turn.usage_recorded')
+  assert.equal(recorded.length, 1)
+  assert.deepEqual(recorded[0]?.data, {
+    peerId,
+    sessionId: 'ses_aaaaaaaaaaaaaaaa',
+    contextTokens: 4_096,
+    contextLimit: 200_000,
+    inputTokens: 900,
+    outputTokens: 120,
+    cachedTokens: 3_400,
+    toolCalls: { grep: 1, glob: 0, read: 1, codegraph: 1 },
+    costUsd: 0.02,
+  })
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
+})
+
+test('a provider that counts no tokens records no usage, rather than a row of zeroes', async () => {
+  const r = rig()
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), { type: 'tool.use', turnId, tool: 'Grep' }, ended(), {
+    type: 'session.ended',
+    reason: 'exit',
+    code: 0,
+  })
+  await run
+
+  assert.deepEqual(
+    r.records.filter((record) => record.type === 'turn.usage_recorded'),
+    [],
+  )
 })
 
 test('at the limit the session purges, comes back on the new handle, and keeps running', async () => {

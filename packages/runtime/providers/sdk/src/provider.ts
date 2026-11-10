@@ -61,6 +61,22 @@ export interface SessionHandle {
 }
 
 /**
+ * One turn's spend, as the provider measured it (§6.2): the counters
+ * `turn.usage_recorded` carries, minus the identity and the context side, which
+ * are the supervisor's to fill in from `usage()`.
+ */
+export interface TurnSpend {
+  /** Fresh input tokens: not what was read from, or written to, the cache. */
+  readonly inputTokens: number
+  /** Output tokens, thinking included where the provider counts it there. */
+  readonly outputTokens: number
+  /** Tokens read out of the prompt cache. */
+  readonly cachedTokens: number
+  /** The turn's own cost, from the provider's pricing; absent when it prices nothing. */
+  readonly costUsd?: number
+}
+
+/**
  * §4, unchanged:
  *
  * ```ts
@@ -106,6 +122,21 @@ export interface Provider extends ProviderHandle {
 
   /** Context tokens against the model's limit; the self-purge trigger (§8). */
   usage(handle: SessionHandle): Promise<Usage>
+
+  /**
+   * What the turn that just ended spent (§6.2), for `turn.usage_recorded`.
+   *
+   * The other half of `usage()`: that one answers how full the context is, this
+   * one what the turn cost. It is answered from what the stream already said at
+   * the boundary — no control call, so it still answers for a session whose CLI
+   * has just exited, and it counts **subagents and sidechains** where the
+   * provider's boundary message reports them (`result.modelUsage` does), which
+   * is what a transcript reader cannot see.
+   *
+   * Optional: a provider that counts no tokens leaves it out, and the supervisor
+   * records no usage rather than a row of zeroes that reads as a cheap turn.
+   */
+  turnSpend?(handle: SessionHandle): TurnSpend | undefined
 
   /**
    * The window this provider is configured to assume for `model` (§8), known
