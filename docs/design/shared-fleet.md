@@ -1,6 +1,6 @@
 # Shared fleets: pooled budgets across people, with no server
 
-**Status**: design. Security: approved for phase 1; Legal sign-off required before task metadata (§7). Supersedes PR #159 (a Backlog.md board synced through a shared remote).
+**Status**: design. Security: approved with task data off; Legal sign-off required to turn it on (§7, §9). Supersedes PR #159 (a Backlog.md board synced through a shared remote).
 **Builds on**: [`fleet-v2-architecture.md`](fleet-v2-architecture.md) — one `fleetd` per person, event-sourced store,
 typed questions only (§5.3), the Mailbox (§7), the build ledger (§11).
 
@@ -186,19 +186,19 @@ fleet coord rotate                                                   # emergency
 Everyone else adds the engagement to their profile; `fleet up` does the rest:
 
 ```yaml
-coord: { engagement: eng-07, team: <org>/<team>, repo: <org>/fleet-coord }
+coord: { engagement: eng-07, team: <org>/<team>, repo: <org>/fleet-coord, taskData: false }
 ```
 
 ## 7. Security review
 
 Reviewed by the security session on 2026-11-10 against an earlier draft whose key was derived from the customer
 workspace repo's root commit: **approve with changes**. Re-reviewed the same day against §5 as written here:
-**approved for phase 1; Legal sign-off required before task metadata ships.**
+**approved with task data off; Legal sign-off required before it is turned on.**
 
 | finding | status |
 | :- | :- |
 | 1. key from an unprotected source — needs rotation, audit, authenticated delivery | **approved** (critical → low-medium): a random key, rotated on every departure, rotations in git history and team changes in the org audit log, delivered only to the holder of a member's SSH key. Residual: a member's SSH private key is the root of their copy (standard SSH model). |
-| 2. customer-derived metadata on the company's GitHub needs written InfoSec, Legal and customer sign-off | **approved for phase 1**, which publishes nothing customer-derived. **Legal sign-off required** before any phase that publishes task metadata (§9, phases 3–5). |
+| 2. customer-derived metadata on the company's GitHub needs written InfoSec, Legal and customer sign-off | **approved with `taskData: false`**, which publishes nothing customer-derived. **Legal sign-off required** before `taskData: true` (§9). |
 | 3. metadata visible to every org member | **approved** (medium → low): a per-engagement team, not org-wide access. |
 | 4. no cross-fleet revocation | **approved** (medium → low): removal from the team revokes access at once and rotates the key within a poll (§5.2). |
 | 5. deterministic masking shows repetition | accepted: payloads are encrypted; masking alone was never the control. |
@@ -217,15 +217,31 @@ workspace repo's root commit: **approve with changes**. Re-reviewed the same day
 | A key derived from the workspace repo's root commit | not a secret: it survives in CI logs, mirrors and former members' clones; not rotatable (finding 1) |
 | A company vault (1Password, cloud KMS) | meets finding 1, but needs an account request per person — a maintenance chore §1 rules out. Remains the fallback if §5 is not accepted. |
 
-## 9. Phases
+## 9. One release, task data behind a switch
 
-1. **Pace only.** Fleet branches with heartbeat, pace and capacity — no customer-derived data, so finding 2 does not
-   apply. Each fleet's PM reads the others' pace; nothing is claimed yet. This is the reduced scope if sign-off for
-   finding 2 is refused.
-2. **Key and membership.** `fleet coord init`, `age`-wrapped keys, join and leave handling (§5).
-3. **Claims and bids.** Masked claim refs; allocation by pace (§3).
-4. **Shared work.** One review per PR, one build per sha, cross-fleet dedupe.
-5. **Peer messages.** Encrypted, typed, through the trust table (§4).
+Everything ships as **one release**, built as a series of small PRs (one package each, in `PACKAGE_ORDER`). What
+security approved works on day one; what needs Legal is already built and is turned on by one profile setting:
 
-Each phase is a package with tests, placed in `PACKAGE_ORDER` under the group §1.1 assigns it; the coordination
-transport is a port in `foundation/contracts`, implemented in `integrations` and injected by `apps/daemon`.
+```yaml
+coord: { engagement: eng-07, team: <org>/<team>, repo: <org>/fleet-coord, taskData: false }
+```
+
+| `taskData` | what runs | gate |
+| :- | :- | :- |
+| `false` (the default when absent) | heartbeat, pace and capacity on each fleet's branch (§3); `fleet coord init`, the `age`-wrapped key, join and leave handling (§5) | approved |
+| `true` | masked claims and bids (§3), one review per PR, one build per sha, cross-fleet dedupe, peer messages through the trust table (§4) | Legal sign-off (finding 2) |
+
+With `taskData: false` the fleet writes nothing derived from the customer: no masked id, no claim ref, no message. That
+is a property the tests assert on the bytes pushed, not a promise. Turning it on needs no new code and no new release.
+
+The PRs, in order, each with its tests:
+
+1. the coordination port in `foundation/contracts`, and its git transport in `integrations` (`ls-remote`, fetch, push to
+   one's own branch, create-once refs);
+2. pace and capacity publishing, read by the PM (§3);
+3. the engagement key: `fleet coord init|status|rotate`, `age` wrapping, join and leave (§5);
+4. claims and bids, behind `taskData`;
+5. shared reviews, builds and dedupe, behind `taskData`;
+6. peer messages through the trust table, behind `taskData`.
+
+`apps/daemon` injects the transport; no group imports another (§1.1).
