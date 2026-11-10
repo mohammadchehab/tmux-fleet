@@ -38,6 +38,7 @@ import {
   newTurnId,
   systemClock,
   type Clock,
+  type FleetError,
   type PeerState,
   type SessionId,
   type Timestamp,
@@ -138,7 +139,13 @@ export class ClaudeSession {
 
   // ------------------------------------------------------------- lifecycle
 
-  /** Wait for `init`, check the session came up as asked, and hand back the handle. */
+  /**
+   * Wait for `init`, check the session came up as asked, and hand back the handle.
+   *
+   * A launch that does not match the spec is a failure, not a warning: it rejects
+   * with `config_mismatch` / `permission_mode_mismatch` so the supervisor can
+   * stop and restart it (§13). `Provider.start()` does the stopping.
+   */
   async start(turn: Turn): Promise<ClaudeSession> {
     this.#emit({ type: 'turn.started', turnId: this.#openingTurn, at: this.#now() })
     // The CLI says nothing until the first user message, so the brief goes now.
@@ -148,14 +155,21 @@ export class ClaudeSession {
     this.#state = 'idle'
 
     if (init.model !== this.#requestedModel) {
-      this.#configMismatch('model', this.#requestedModel, init.model)
+      throw this.#mismatch('model', this.#requestedModel, init.model)
     }
     if (init.permissionMode !== this.#spec.permissionMode) {
-      this.#emit({
-        type: 'error',
-        message: `permission_mode_mismatch: asked for ${this.#spec.permissionMode}, the session came up in ${init.permissionMode}`,
-        retryable: false,
-      })
+      throw fleetError(
+        'permission_mode_mismatch',
+        `asked for permissionMode ${this.#spec.permissionMode}, the session came up in ${init.permissionMode}`,
+        {
+          details: {
+            sessionId: this.sessionId,
+            peerId: this.peerId,
+            expected: this.#spec.permissionMode,
+            observed: init.permissionMode,
+          },
+        },
+      )
     }
     return this
   }
@@ -275,6 +289,11 @@ export class ClaudeSession {
    * Change the model on a live session (`capabilities.modelSwitch`). The new
    * model becomes the requested one, so the next `init` echo is checked against
    * it — a switch the CLI ignores surfaces as `config_mismatch`, not silence.
+   *
+   * The confirmation arrives with the **next turn's** first message, not when
+   * this resolves: the control call does not echo synchronously, and a throwaway
+   * turn to force one would cost tokens. So a switch on a session that never
+   * sends again is unconfirmed — the supervisor holds it as pending, not failed.
    */
   async setModel(model: string): Promise<void> {
     this.#assertLive()
@@ -365,12 +384,19 @@ export class ClaudeSession {
     const turnId = this.#inflight[0]
     for (const event of mapMessage(message, turnId, this.#turnState, this.#now())) {
       if (event.type === 'session.started') {
+        const first = this.#sessionRef === undefined
         this.#sessionRef ??= event.sessionRef
         this.#observedModel = event.model
         this.#observedMode = event.permissionMode
         this.#started.resolve({ model: event.model, permissionMode: event.permissionMode })
         // The launch `init` describes how the session came up; later ones are
-        // just this turn's echo and must not re-trigger the launch check.
+        // just this turn's echo and must not re-trigger the launch check. They
+        // are where a model switch is confirmed, though, so an echo that still
+        // reports the old model is a mismatch — reported as an event, since
+        // `start()` has long since handed the session back.
+        if (!first && event.model !== this.#requestedModel) {
+          this.#reportMismatch('model', this.#requestedModel, event.model)
+        }
         continue
       }
       if (event.type === 'turn.ended') {
@@ -456,12 +482,19 @@ export class ClaudeSession {
     }
   }
 
-  #configMismatch(what: 'model' | 'endpoint', expected: string, observed: string): void {
-    this.#emit({
-      type: 'error',
-      message: `config_mismatch: asked for ${what} ${expected}, the session is running ${observed}`,
-      retryable: false,
+  /**
+   * The endpoint and model the session was asked for, against what it reported.
+   * At launch this rejects (§13); after launch — a model switch that did not take
+   * — it is an event, because `start()` has already handed the session back.
+   */
+  #mismatch(what: 'model' | 'endpoint', expected: string, observed: string): FleetError {
+    return fleetError('config_mismatch', `asked for ${what} ${expected}, the session is running ${observed}`, {
+      details: { sessionId: this.sessionId, peerId: this.peerId, what, expected, observed },
     })
+  }
+
+  #reportMismatch(what: 'model' | 'endpoint', expected: string, observed: string): void {
+    this.#emit({ type: 'error', message: this.#mismatch(what, expected, observed).message, retryable: false })
   }
 
   #finish(reason: 'exited' | 'failed', error: string | undefined): void {

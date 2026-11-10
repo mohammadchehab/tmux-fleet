@@ -31,6 +31,7 @@
 
 import { fleetError, toFleetError, type PeerState, type TurnId } from '@fleet/foundation-core'
 import type {
+  Provider,
   ProviderCapabilities,
   ProviderEvent,
   ProviderSessionRef,
@@ -39,7 +40,6 @@ import type {
   Turn,
   Usage,
 } from '@fleet/runtime-provider-sdk'
-import type { ProviderWithResume } from '@fleet/runtime-provider-sdk'
 
 import { openingMessage } from './brief.ts'
 import type { AdapterEvent } from './events.ts'
@@ -48,29 +48,69 @@ import { ClaudeSession, defaultSessionConfig, type ClaudeSessionConfig } from '.
 export interface ClaudeProviderConfig extends Partial<ClaudeSessionConfig> {
   /** Defaults to `claude`. The DeepInfra provider sets `deepinfra` and passes its own limits. */
   readonly id?: string
+  /**
+   * Overrides for `claudeCapabilities`. A capability is a promise the supervisor
+   * plans around, so a provider states what it can actually do: DeepInfra will
+   * say `usageCost: false` and any provider whose SDK cannot resume says
+   * `resume: false`. An override the adapter would contradict by doing the thing
+   * anyway is rejected at the call, not quietly honoured (see `setModel`, `start`).
+   */
+  readonly capabilities?: Partial<ProviderCapabilities>
 }
 
-export class ClaudeProvider implements ProviderWithResume {
+/** What the Agent SDK can do, measured in the spike (`docs/design/spikes/agent-sdk.md`). */
+export const claudeCapabilities: ProviderCapabilities = Object.freeze({
+  resume: true,
+  modelSwitch: true,
+  usageTokens: true,
+  structuredOutput: true,
+  permissionModes: Object.freeze([
+    'default',
+    'acceptEdits',
+    'bypassPermissions',
+    'plan',
+  ] as const satisfies ProviderCapabilities['permissionModes']),
+})
+
+export class ClaudeProvider implements Provider {
   readonly id: string
-  readonly capabilities: ProviderCapabilities & { resume: true } = {
-    resume: true,
-    modelSwitch: true,
-    usageTokens: true,
-    structuredOutput: true,
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-  }
+  /**
+   * Defaults to `claudeCapabilities`, all true. Only a config that has evidence
+   * for a `false` should narrow one — and then the matching method rejects
+   * `unsupported` rather than performing the capability it just disclaimed, so
+   * the two can never disagree.
+   */
+  readonly capabilities: ProviderCapabilities
 
   readonly #config: ClaudeSessionConfig
   readonly #sessions = new Map<string, ClaudeSession>()
 
   constructor(config: ClaudeProviderConfig = {}) {
-    const { id, ...sessionConfig } = config
+    const { id, capabilities, ...sessionConfig } = config
     this.id = id ?? 'claude'
+    this.capabilities = Object.freeze({
+      ...claudeCapabilities,
+      ...capabilities,
+      permissionModes: Object.freeze(capabilities?.permissionModes ?? claudeCapabilities.permissionModes),
+    })
     this.#config = { ...defaultSessionConfig, ...sessionConfig, providerId: this.id }
   }
 
-  /** Start a session from a spec. A `resumeRef` in the spec is honoured here (§7). */
+  /**
+   * Start a session from a spec. A `resumeRef` in the spec is honoured here (§7),
+   * and refused up front when `capabilities.resume` is false — a provider that
+   * cannot resume must not half-resume.
+   *
+   * Rejects `config_mismatch` / `permission_mode_mismatch` when the session comes
+   * up as something other than the spec asked for, and stops it first: the
+   * supervisor restarts rather than tolerating a session in the wrong mode (§13).
+   */
   async start(spec: SessionSpec): Promise<SessionHandle> {
+    if (!this.capabilities.resume && spec.resumeRef !== undefined) {
+      throw fleetError('unsupported', `provider ${this.id} cannot resume, but the spec carries a resumeRef`, {
+        details: { providerId: this.id, resumeRef: spec.resumeRef },
+      })
+    }
     const session = new ClaudeSession(spec, this.#config, spec.resumeRef)
     this.#sessions.set(session.sessionId, session)
     try {

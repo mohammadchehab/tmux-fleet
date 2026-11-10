@@ -10,10 +10,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import type { TurnId } from '@fleet/foundation-core'
+import { isFleetErrorCode, type TurnId } from '@fleet/foundation-core'
 import { capabilityChecks, type Provider } from '@fleet/runtime-provider-sdk'
 
-import { ClaudeProvider } from '../src/index.ts'
+import { claudeCapabilities, ClaudeProvider } from '../src/index.ts'
 
 const provider: Provider = new ClaudeProvider()
 
@@ -95,4 +95,56 @@ test('interrupting a stranger handle is not_found, not a crash', async () => {
   await assert.rejects(fresh.interrupt(handle, 'trn_0123456789abcdef' as TurnId), (thrown: unknown) => {
     return (thrown as { code?: string }).code === 'not_found'
   })
+})
+
+test('capabilities default to what the spike measured, frozen, and are a promise not a hint', () => {
+  const fresh = new ClaudeProvider()
+  assert.deepEqual(fresh.capabilities, {
+    resume: true,
+    modelSwitch: true,
+    usageTokens: true,
+    structuredOutput: true,
+    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+  })
+  assert.ok(Object.isFrozen(fresh.capabilities))
+  assert.ok(Object.isFrozen(fresh.capabilities.permissionModes))
+  assert.deepEqual(claudeCapabilities, fresh.capabilities)
+})
+
+test('a capability narrowed by config is a method that refuses, not one that lies', async () => {
+  const noSwitch = new ClaudeProvider({ capabilities: { modelSwitch: false, usageTokens: false } })
+  assert.equal(noSwitch.capabilities.modelSwitch, false)
+  assert.equal(noSwitch.capabilities.usageTokens, false)
+  assert.equal(noSwitch.capabilities.resume, true, 'a narrowing does not disturb the others')
+  // The guard runs before the session table, so this is `unsupported`, not `not_found`:
+  // the provider says what it cannot do before it says what it does not know.
+  await assert.rejects(
+    noSwitch.setModel({ sessionId: 'ses_aaaaaaaaaaaaaaaa' } as never, 'claude-opus-5-5'),
+    (thrown: unknown) => (thrown as { code?: string }).code === 'unsupported',
+  )
+})
+
+test('a provider that cannot resume refuses a resume spec before it spawns anything', async () => {
+  const noResume = new ClaudeProvider({ capabilities: { resume: false } })
+  const spec = {
+    peerId: 'engineer-1',
+    role: 'engineer',
+    cwd: '/tmp',
+    model: 'claude-opus-5-5',
+    permissionMode: 'default',
+    env: {},
+    brief: { briefId: 'brf_0123456789abcdef', version: 1, contractVersions: [], text: 'x' },
+    resumeRef: 'sess_dead',
+  } as never
+  await assert.rejects(noResume.start(spec), (thrown: unknown) => (thrown as { code?: string }).code === 'unsupported')
+  // The refusal happened before the session table was touched.
+  await assert.rejects(
+    noResume.status({ sessionId: 'ses_aaaaaaaaaaaaaaaa' } as never),
+    (thrown: unknown) => (thrown as { code?: string }).code === 'not_found',
+  )
+})
+
+test('the launch checks reject with typed codes, so the supervisor can restart on them', () => {
+  assert.ok(isFleetErrorCode('config_mismatch'))
+  assert.ok(isFleetErrorCode('permission_mode_mismatch'))
 })

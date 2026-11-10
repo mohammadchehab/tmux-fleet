@@ -19,6 +19,8 @@ export const fleetErrorCodes = [
   'store_failed',
   /** A session came up in a permission mode other than the one in its SessionSpec (§4, §13). */
   'permission_mode_mismatch',
+  /** A session came up on a model or endpoint other than the one in its SessionSpec (§4, §13). */
+  'config_mismatch',
   /** An external call (gh, git, a scanner) failed or timed out. */
   'external_failed',
   /** The operation did not finish in time. */
