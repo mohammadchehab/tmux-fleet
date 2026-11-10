@@ -93,6 +93,18 @@ export interface SessionSubject {
  */
 export const resumeChecks = (): readonly SessionCheck[] => [
   {
+    name: 'the handle names the turn the session was started with',
+    because:
+      'a provider that emits nothing until something is pushed at it has a turn running before any observer attaches; briefTurnId is how the supervisor accounts for it, so it must be a real TurnId the first turn.started can refer to (§4)',
+    run: async ({ handle }) => {
+      const id = handle.briefTurnId
+      if (typeof id !== 'string' || !/^trn_[0-9a-f]{16}$/.test(id)) {
+        return `SessionHandle.briefTurnId "${String(id)}" is not a TurnId`
+      }
+      return null
+    },
+  },
+  {
     name: 'usage() reports cost only when capabilities.usageCost says so',
     because:
       'a vendor priced at another vendor’s rates produces a number that looks real; the spend ledger records null instead (§4, §11)',
