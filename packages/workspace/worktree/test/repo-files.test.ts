@@ -77,4 +77,31 @@ describe('createRepoFiles', () => {
       await assert.rejects(createRepoFiles().read(clone, path), /not a path inside a repository/, path)
     }
   })
+
+  it('reads what the remote says the branch is, so a peer that moves origin/main locally cannot rewrite its rules', async () => {
+    const { clone, sha } = cloned()
+    // The peer's tree is a worktree of the clone, and refs/remotes is shared.
+    const worktree = join(clone, '.claude/worktrees/peer-a')
+    git(clone, 'worktree', 'add', '-q', '-b', 'peer/a', worktree)
+    writeFileSync(join(worktree, 'AGENTS.md'), 'Rules I wrote for myself.\n')
+    git(worktree, 'commit', '-q', '-am', 'mine')
+    git(worktree, 'update-ref', 'refs/remotes/origin/main', git(worktree, 'rev-parse', 'HEAD'))
+
+    assert.deepEqual(await createRepoFiles().read(worktree, 'AGENTS.md'), { text: 'Reviewed rules.\n', ref: sha })
+  })
+
+  it('follows the remote forward too: a newer reviewed commit the clone has not fetched is the one read', async () => {
+    const { origin, clone } = cloned()
+    writeFileSync(join(origin, 'AGENTS.md'), 'Newer reviewed rules.\n')
+    git(origin, 'commit', '-q', '-am', 'newer')
+    const newer = git(origin, 'rev-parse', 'HEAD')
+
+    assert.deepEqual(await createRepoFiles().read(clone, 'AGENTS.md'), { text: 'Newer reviewed rules.\n', ref: newer })
+  })
+
+  it('falls back to the local ref when the remote cannot be reached', async () => {
+    const { origin, clone, sha } = cloned()
+    git(clone, 'remote', 'set-url', 'origin', join(origin, 'gone'))
+    assert.deepEqual(await createRepoFiles().read(clone, 'AGENTS.md'), { text: 'Reviewed rules.\n', ref: sha })
+  })
 })

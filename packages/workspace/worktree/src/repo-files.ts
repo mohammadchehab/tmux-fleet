@@ -8,9 +8,8 @@
  * caller records cannot come from two different commits if the branch moves
  * between the two calls.
  *
- * No fetch. The ref is as fresh as the last fetch in that checkout, which is the
- * same answer `git log origin/main` gives anyone standing there; the caller records
- * the sha, so a stale read is visible rather than silent.
+ * Which commit is the *remote's*, not the local ref's: see the comment at the
+ * `ls-remote` below. The caller records the sha, so what was read is visible.
  */
 
 import type { RepoFiles } from '@fleet/foundation-contracts'
@@ -30,8 +29,26 @@ export const createRepoFiles = (runner: GitRunner = execFileGit): RepoFiles => (
     if (base === undefined) return undefined
 
     const resolved = await runner(['rev-parse', '--verify', '--quiet', `${base}^{commit}`], cwd)
-    const ref = resolved.stdout.trim()
+    let ref = resolved.stdout.trim()
     if (resolved.code !== 0 || !SHA.test(ref)) return undefined
+
+    // `refs/remotes/origin/*` live in the repository's shared git directory, which a
+    // peer working in any of its worktrees can write: `git update-ref` would let it
+    // point `origin/main` at a commit of its own and so rewrite its rules. So the
+    // remote is asked what the branch is, and that commit is what is read. Offline,
+    // the local ref stands (stale beats none) — the one case a peer's edit of it
+    // could matter, and the recorded sha says which commit was read.
+    const branch = base.replace(/^origin\//, '')
+    const asked = await runner(['ls-remote', '--exit-code', 'origin', `refs/heads/${branch}`], cwd)
+    const remote = asked.code === 0 ? (asked.stdout.split(/\s/)[0] ?? '') : ''
+    if (SHA.test(remote) && remote !== ref) {
+      const have = async (): Promise<boolean> => (await runner(['cat-file', '-e', `${remote}^{commit}`], cwd)).code === 0
+      // Objects only: nothing a fetch of a branch does touches a ref a peer's rules hang on.
+      if (!(await have())) await runner(['fetch', '--quiet', '--no-write-fetch-head', 'origin', `refs/heads/${branch}`], cwd)
+      // Not there even now: nothing trustworthy to read, so nothing is read.
+      if (!(await have())) return undefined
+      ref = remote
+    }
 
     const shown = await runner(['show', `${ref}:${path}`], cwd)
     // 128 is "no such path in that commit" (and "not a repository"): both are "nothing to read".
