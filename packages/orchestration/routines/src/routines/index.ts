@@ -4,19 +4,25 @@
  * the scheduler looks it up here, and nothing in `apps/daemon` mentions a
  * routine by name.
  *
- * A kind missing from this map is not an error — §6 lists eight, phase 1 builds
- * four — it is reported by the scheduler's plan so the daemon can log what is
- * configured and waiting for a body.
+ * A kind missing from this map is not an error — §6 lists eight, and this map
+ * holds the four whose body is a PM tick — it is reported by the scheduler's
+ * plan, so the daemon can log what is configured and waiting for a body.
+ *
+ * `pr-babysit` is the other body that exists and is deliberately not in here:
+ * it needs the forge's port, a sink and a mailbox, none of which the scheduler
+ * hands a routine, so `apps/daemon` registers it the way it registers `notify`
+ * (§1.1).
  */
 
 import type { RoutineKind } from '@fleet/foundation-contracts'
 import type { RoutineFactory } from '../routine.ts'
 import { dispatch } from './dispatch.ts'
 import { keepBusy } from './keep-busy.ts'
+import { babysit } from './pr-babysit.ts'
 import { reconcile } from './reconcile.ts'
 import { standup } from './standup.ts'
 
-export { dispatch, keepBusy, reconcile, standup }
+export { babysit, dispatch, keepBusy, reconcile, standup }
 
 export const installedFactories: Readonly<Partial<Record<RoutineKind, RoutineFactory>>> = {
   dispatch,
