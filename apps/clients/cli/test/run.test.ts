@@ -915,7 +915,7 @@ describe('run: build', () => {
   })
 
   it('decide answer can contain words starting with - (e.g., "-1")', async () => {
-    const { deps, out, calls } = harness({ decide: () => ({}) })
+    const { deps, out, calls } = harness({ decide: () => ({ options: [] }) })
     const code = await run(argv('decide', 'dec_0123456789abcdef', '-1'), deps)
     assert.equal(code, 0)
     assert.deepEqual(calls, [
@@ -924,7 +924,7 @@ describe('run: build', () => {
   })
 
   it('decide answer can contain --option-like words', async () => {
-    const { deps, out, calls } = harness({ decide: () => ({}) })
+    const { deps, out, calls } = harness({ decide: () => ({ options: [] }) })
     const code = await run(argv('decide', 'dec_0123456789abcdef', '--help', 'option'), deps)
     assert.equal(code, 0)
     assert.deepEqual(calls, [
