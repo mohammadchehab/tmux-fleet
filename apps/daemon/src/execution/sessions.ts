@@ -42,11 +42,12 @@ import type {
   WorktreeProvisioner,
   Turn,
 } from '@fleet/foundation-contracts'
-import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
+import type { Provider } from '@fleet/runtime-provider-sdk'
 import {
   PeerSession,
   mechanicalStateFile,
   selfPurge,
+  sessionIdOf,
   type MechanicalFacts,
   type SessionRecord,
 } from '@fleet/runtime-supervisor'
@@ -100,11 +101,17 @@ export interface SupervisorDeps {
   readonly onError?: (peer: PeerId, error: unknown) => void
 }
 
-/** One peer's running session, and the handle the Mailbox sends through. */
+/**
+ * One peer's running session, and the pump the Mailbox sends through.
+ *
+ * No handle is kept here. The one `provider.start` returned goes stale as soon
+ * as the pump recovers or purges: `PeerSession` swaps its own handle under
+ * `run()`, and a copy in this map would go on naming the session that ended.
+ * Everything that needs a handle asks the session, which is what `acquire` does.
+ */
 interface Running {
   /** The brief this session carries; a purge restart reuses it (§8), so it is what `briefs.current` reports. */
   readonly brief: BriefHandoff
-  readonly handle: SessionHandle
   readonly session: PeerSession
   readonly peer: PeerProfile
 }
@@ -370,7 +377,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
           }),
     })
 
-    const running: Running = { brief, handle, session, peer }
+    const running: Running = { brief, session, peer }
     sessions.set(peer.id, running)
     pumps.set(
       peer.id,
@@ -411,6 +418,13 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
      * §7: resume-then-deliver in one call. A peer with no session is a typed
      * `not_found`, never a throw — the Mailbox turns that into a delivery
      * failure the user can see.
+     *
+     * `sessionId` is a getter, not a value read here: the lease outlives the
+     * session it was taken on. A purge or a recovery replaces the pump's handle
+     * while the Mailbox still holds the lease, and `send` goes to the
+     * replacement — so a frozen id would have the Mailbox record the turn
+     * against a session that never received it, and its `deliveredSessionId`
+     * check would then re-deliver every unacked message on the next pass.
      */
     async acquire(peerId: PeerId): Promise<Result<PeerSessionLease, FleetError>> {
       const running = sessions.get(peerId)
@@ -418,7 +432,9 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
         return err(fleetError('not_found', `peer ${String(peerId)} has no running session`, { details: { peerId: String(peerId) } }))
       }
       return ok({
-        sessionId: String(running.handle.sessionId) as SessionId,
+        get sessionId(): SessionId {
+          return sessionIdOf(running.session.handle)
+        },
         resumed: false,
         send: (turn: Turn): Promise<TurnId> => running.session.deliver(turn),
       })
