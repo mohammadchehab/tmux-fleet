@@ -33,6 +33,7 @@ import type {
   EventSink,
   PeerSessionLease,
   PeerSessions,
+  ReadModel,
   SessionSpec,
   StateFile,
   Turn,
@@ -52,6 +53,11 @@ import { purgeLimitsOf, type PeerProfile, type Profile } from '../config/profile
 export interface SupervisorDeps {
   readonly profile: Profile
   readonly paths: ProfilePaths
+  /**
+   * Read side of the store, for the Worktree rows: a peer starts in the active
+   * worktree it owns (§9). Absent, a peer starts in its repo's profile checkout.
+   */
+  readonly read?: Pick<ReadModel, 'worktrees'>
   /** The append-only sink, waking as it goes (§5.2): this is where `session.started` comes from. */
   readonly store: EventSink
   /** Concrete providers, by the profile's `provider` name. Built in `compose.ts`, never here. */
@@ -144,6 +150,12 @@ export const roleBrief = (peer: PeerProfile, id = newBriefId()): BriefHandoff =>
   text: `You are ${String(peer.id)}, the ${peer.role}. Follow the fleet's protocol: work in your own worktree, open PRs, and report through the mailbox.`,
 })
 
+/** A peer that is not in plan mode can change files (§13); `default` is the omitted mode. */
+const canWrite = (peer: PeerProfile): boolean => (peer.permissionMode ?? 'default') !== 'plan'
+
+const sameDir = (a: string | undefined, b: string): boolean =>
+  a !== undefined && a.replace(/\/+$/, '') === b.replace(/\/+$/, '')
+
 export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
   const clock = deps.clock ?? systemClock
   const onError = deps.onError ?? (() => {})
@@ -159,12 +171,54 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
   }
 
   const sessions = new Map<PeerId, Running>()
+  /** Where each running peer's session was started, for the shared-checkout guard. */
+  const workdirs = new Map<PeerId, string>()
   const pumps = new Map<PeerId, Promise<void>>()
 
   const stateFilePath = (peerId: PeerId): string => deps.paths.peersDir + '/' + String(peerId) + '/state.md'
 
   const record = async (event: SessionRecord): Promise<void> => {
     await deps.store.append([event])
+  }
+
+  /**
+   * Where this peer's session runs: the active worktree it owns, else its
+   * repo's checkout — never the fleet's state directory, which holds the store
+   * and the socket and none of the repo's instructions. Asked at every start,
+   * a resume and a purge restart included, because a Worktree row can appear or
+   * go between sessions.
+   *
+   * A peer that can write must not share a checkout with another that can:
+   * two of them switch each other's branch. A plan-mode peer only reads, so it
+   * may share. Refused with the other peer's name, not started anyway.
+   */
+  const workdirFor = async (peer: PeerProfile): Promise<string> => {
+    const owned = (await deps.read?.worktrees.all())?.find(
+      (worktree) => worktree.ownerPeerId === peer.id && worktree.class === 'active',
+    )
+    const repo = peer.repo ?? deps.profile.repos[0]
+    const path = owned?.path ?? (repo === undefined ? undefined : deps.profile.checkouts?.[repo])
+    if (path === undefined) {
+      throw fleetError(
+        'config_mismatch',
+        `peer ${String(peer.id)} has no worktree and no checkout: add checkouts.${repo ?? '<repo>'} (an absolute path) to the profile`,
+        { details: { peerId: String(peer.id), repo } },
+      )
+    }
+    if (canWrite(peer)) {
+      for (const [otherId, other] of sessions) {
+        if (otherId === peer.id || !canWrite(other.peer)) continue
+        if (sameDir(workdirs.get(otherId), path)) {
+          throw fleetError(
+            'conflict',
+            `peer ${String(peer.id)} would share ${path} with ${String(otherId)}, and both can write: give one its own worktree or checkout`,
+            { details: { peerId: String(peer.id), otherPeerId: String(otherId), path } },
+          )
+        }
+      }
+    }
+    workdirs.set(peer.id, path)
+    return path
   }
 
   /** Start one session from the profile and hand it to the supervisor's pump. */
@@ -180,7 +234,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     const spec: SessionSpec = {
       peerId: peer.id,
       role: peer.role,
-      cwd: deps.paths.stateDir,
+      cwd: await workdirFor(peer),
       model: peer.model,
       permissionMode: peer.permissionMode ?? 'default',
       env: await envFor(peer, deps),
@@ -222,7 +276,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
             // the purge was running. So nothing is stranded, and nothing was
             // measured here either — this reports zero because it replayed zero,
             // not because there was nothing to replay.
-            const fresh = await provider.start({ ...spec, stateFile })
+            const fresh = await provider.start({ ...spec, cwd: await workdirFor(peer), stateFile })
             return { handle: fresh, replayedMessages: 0 }
           },
           facts: (): MechanicalFacts => ({
@@ -244,7 +298,8 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
         await provider.stop(from).catch(() => {})
         // A recovery that cannot start a session propagates: §8 says a peer with
         // no session must be visible, not silently idle.
-        return provider.start(stateFile === undefined ? spec : { ...spec, stateFile })
+        const fresh = { ...spec, cwd: await workdirFor(peer) }
+        return provider.start(stateFile === undefined ? fresh : { ...fresh, stateFile })
       },
       // §8: a compaction's price is the context the provider had to read again,
       // at the model's published rate. A peer with no `pricing` reports no cost
@@ -303,6 +358,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     async stop() {
       const running = [...sessions.values()]
       sessions.clear()
+      workdirs.clear()
       for (const peer of running) {
         await peer.session.stop().catch((error: unknown) => onError(peer.peer.id, error))
       }
