@@ -1,0 +1,27 @@
+{
+  "id": "duplicate-feature-index-access",
+  "suite": "judge",
+  "input": {
+    "kind": "same_feature",
+    "a": {
+      "title": "foundation: turn on noUncheckedIndexedAccess, and say what a miss means",
+      "body": "Enable noUncheckedIndexedAccess in the base tsconfig so an index into an array or a record reads as possibly missing, then fix every call site and write down what a miss means at each one.",
+      "files": [
+        "tsconfig.base.json"
+      ]
+    },
+    "b": {
+      "title": "tsconfig: strict index access for arrays and records",
+      "body": "Set noUncheckedIndexedAccess: true in the shared compiler options so that array and record indexing is checked, matching the strictness the other flags already ask for.",
+      "files": [
+        "tsconfig.base.json",
+        "packages/foundation/core/tsconfig.json"
+      ]
+    }
+  },
+  "expected": {
+    "kind": "same_feature",
+    "same": true
+  },
+  "source": "v1: two cards filed a day apart for the same compiler flag by two peers who had not read each other's backlog - the duplicate-feature case the problem table names. Same flag, same files, same acceptance."
+}

@@ -1,0 +1,27 @@
+{
+  "id": "route-security-finding",
+  "suite": "judge",
+  "input": {
+    "kind": "route_question",
+    "question": "Semgrep flagged a hardcoded token in a test fixture I added. The token is a fake, shaped like a real one. Is it a true finding, and does it block the merge?",
+    "candidates": [
+      {
+        "peerId": "security-architect",
+        "role": "owns the scanner set and the definition of critical"
+      },
+      {
+        "peerId": "engineer-1",
+        "role": "writes the code and the fixtures"
+      },
+      {
+        "peerId": "architect",
+        "role": "owns merge ownership and the PR cap"
+      }
+    ]
+  },
+  "expected": {
+    "kind": "route_question",
+    "peerId": "security-architect"
+  },
+  "source": "v1: a scanner finding that a peer could not tell from a real one, and that stalled a merge for a day. Whether a finding is true and what it blocks belongs to whoever owns the scanner set, not to the author of the fixture."
+}

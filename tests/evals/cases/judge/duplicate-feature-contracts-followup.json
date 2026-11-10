@@ -1,0 +1,27 @@
+{
+  "id": "duplicate-feature-contracts-followup",
+  "suite": "judge",
+  "input": {
+    "kind": "same_feature",
+    "a": {
+      "title": "contracts: tool policy, setModel, briefTurnId, session.started endpoint",
+      "body": "Provider-contract follow-up from the Agent SDK spike and the adapter: SessionSpec.toolPolicy with first-match rules, Provider.setModel plus a capabilities flag, SessionHandle.briefTurnId, and a session.started endpoint. Includes a conformance check that briefTurnId is a TurnId.",
+      "files": [
+        "packages/foundation/contracts/src/provider.ts",
+        "tests/conformance/providers/handles.test.ts"
+      ]
+    },
+    "b": {
+      "title": "conformance: a handle's briefTurnId must be a TurnId",
+      "body": "A provider that emits nothing until something is pushed at it has a turn running before any observer attaches, so briefTurnId must be a real TurnId the first turn.started can refer to. This adds that check to resumeChecks() and a test that a handle naming anything else is caught.",
+      "files": [
+        "tests/conformance/providers/handles.test.ts"
+      ]
+    }
+  },
+  "expected": {
+    "kind": "same_feature",
+    "same": true
+  },
+  "source": "v1: #35 duplicating #34 in this repo. Both are the briefTurnId conformance check the same spike produced, and #34's branch already carried it - building both is the duplicate effort §5.2's dedupe rule exists to stop."
+}

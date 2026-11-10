@@ -1,0 +1,18 @@
+{
+  "id": "stale-brief",
+  "suite": "judge",
+  "input": {
+    "kind": "escalate",
+    "situation": "A peer's session started forty minutes ago from brief v3. The contract for its Work was published at v4 nine minutes ago, and one acceptance item changed. The peer is mid-implementation and nobody has told it.",
+    "options": [
+      "supersede the brief and restart the session at v4",
+      "deliver the contract diff as a message and let the peer continue",
+      "let the peer finish and correct the work in review"
+    ]
+  },
+  "expected": {
+    "kind": "escalate",
+    "escalate": false
+  },
+  "source": "v1: a peer acted on a brief that had already been superseded. The architecture's answer is a versioned Brief and Contract resolved at every session start, so an option resolves it and \u00a75.3 does not escalate."
+}

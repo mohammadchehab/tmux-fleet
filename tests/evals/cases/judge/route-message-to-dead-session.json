@@ -1,0 +1,27 @@
+{
+  "id": "route-message-to-dead-session",
+  "suite": "judge",
+  "input": {
+    "kind": "route_question",
+    "question": "I sent a peer a message and its session had already been killed. The daemon still shows the peer registered but with no live session. Did my question survive to the new session, or do I need to send it again?",
+    "candidates": [
+      {
+        "peerId": "architect",
+        "role": "owns the runtime design: supervisor, sessions and the Mailbox"
+      },
+      {
+        "peerId": "devops",
+        "role": "owns hosts, tmux and deployment"
+      },
+      {
+        "peerId": "engineer-1",
+        "role": "implements the runtime packages"
+      }
+    ]
+  },
+  "expected": {
+    "kind": "route_question",
+    "peerId": "architect"
+  },
+  "source": "v1: a message to a dead session. The question is what the Mailbox guarantees across a resume, which is the architect's contract to state - devops and the implementer can only read it."
+}

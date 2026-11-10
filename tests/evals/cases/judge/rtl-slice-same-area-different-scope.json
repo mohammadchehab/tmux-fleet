@@ -1,0 +1,30 @@
+{
+  "id": "rtl-slice-same-area-different-scope",
+  "suite": "judge",
+  "input": {
+    "kind": "same_feature",
+    "a": {
+      "title": "mirror the app layout for Arabic: settings, chat and the loose files in src",
+      "body": "Part A of a three-slice right-to-left migration. Converts settings, chat and the loose files under src: physical direction utilities become logical ones, directional icons get an rtl: counterpart, and the workspace control bar is re-anchored.",
+      "files": [
+        "src/components/settings",
+        "src/components/chat",
+        "vite.config.ts"
+      ]
+    },
+    "b": {
+      "title": "mirror roster, usage and onboarding for right-to-left",
+      "body": "Part B of the same migration, stacked on part A. Converts three folders part A did not touch: roster, usage and onboarding. Two components stay left-to-right islands because they compute physical pointer and chart coordinates.",
+      "files": [
+        "src/components/roster",
+        "src/components/usage",
+        "src/components/onboarding"
+      ]
+    }
+  },
+  "expected": {
+    "kind": "same_feature",
+    "same": false
+  },
+  "source": "v1: isnadi-bot #101 and #102, the two halves of one migration. They are one area at two scopes, which the same_feature task explicitly says is not the same feature - treating them as duplicates would have dropped half the migration."
+}
