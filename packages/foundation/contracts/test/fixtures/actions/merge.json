@@ -1,0 +1,7 @@
+{
+  "kind": "merge",
+  "causedBy": [94, 95],
+  "pr": { "repo": "backbase/me-services", "number": 32 },
+  "headSha": "cc6a89f",
+  "method": "squash"
+}

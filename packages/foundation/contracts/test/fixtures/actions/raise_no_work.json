@@ -1,0 +1,6 @@
+{
+  "kind": "raise_no_work",
+  "causedBy": [103],
+  "role": "engineer",
+  "reason": "every ready card is assigned and no peer role can take another"
+}

@@ -1,0 +1,15 @@
+{
+  "input": {
+    "kind": "assign",
+    "causedBy": [41, 42],
+    "workId": "wrk_0123456789abcdef",
+    "peerId": "Engineer_1",
+    "brief": {
+      "briefId": "brf_0123456789abcdef",
+      "version": 2,
+      "contractVersions": [{ "contractId": "con_0123456789abcdef", "version": 3 }],
+      "text": "Build the transfer-limit screen against contract v3."
+    }
+  },
+  "path": "peerId"
+}

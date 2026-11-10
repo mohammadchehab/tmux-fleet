@@ -1,0 +1,8 @@
+{
+  "input": {
+    "kind": "raise_no_work",
+    "causedBy": [103],
+    "role": "engineer"
+  },
+  "path": "reason"
+}

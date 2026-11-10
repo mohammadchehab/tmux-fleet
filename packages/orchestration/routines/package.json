@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/orchestration-routines",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The scheduler and the routines it owns (architecture §6): registered from config, every run an event, no routine hand-wired.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

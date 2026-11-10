@@ -1,0 +1,22 @@
+{
+  "kind": "request_judge",
+  "causedBy": [70, 71],
+  "questionId": "qst_0123456789abcdef",
+  "question": "same_feature",
+  "input": {
+    "kind": "same_feature",
+    "a": {
+      "title": "Transfer limit banner",
+      "body": "Show the limit above the amount field.",
+      "files": ["src/transfers/limit-banner.tsx"]
+    },
+    "b": {
+      "title": "Restyle the amount field",
+      "body": "Add a limit hint under the input.",
+      "files": ["src/transfers/amount-field.tsx"]
+    }
+  },
+  "inputsHash": "sha256-5b2f1c0deadbeef",
+  "workId": "wrk_0123456789abcdef",
+  "askedFor": "engineer-1"
+}

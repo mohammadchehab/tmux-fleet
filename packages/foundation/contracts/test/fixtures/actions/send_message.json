@@ -1,0 +1,8 @@
+{
+  "kind": "send_message",
+  "causedBy": [61],
+  "to": "engineer-1",
+  "messageKind": "nudge",
+  "body": "CI is red on #32 at cc6a89f: typecheck, 2 errors in scheduler.ts.",
+  "briefVersion": 2
+}
