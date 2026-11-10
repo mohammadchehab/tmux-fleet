@@ -1863,5 +1863,13 @@ export const readers = (db: Sqlite): ReadModel => {
     routines: {
       all: async () => db.all<RoutineRow>('SELECT * FROM routines ORDER BY routine_id').map((row) => routineFromRow(row)),
     },
+    evals: {
+      get: async (runId) => {
+        const run = evalRunById(db, runId)
+        if (run === undefined) return undefined
+        const cases = rows<EvalCase>(PROJECTION_SCHEMAS.evalCase, 'SELECT data FROM eval_cases WHERE run_id = ? ORDER BY case_id', runId)
+        return { run, cases }
+      },
+    },
   }
 }

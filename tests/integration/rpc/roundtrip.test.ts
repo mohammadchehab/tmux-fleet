@@ -18,7 +18,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { newDecisionId, newEvalRunId, type DecisionId, type PeerId, type Sha } from '../../../packages/foundation/core/src/index.ts'
+import {
+  newDecisionId,
+  newEvalRunId,
+  type DecisionId,
+  type EvalRunId,
+  type PeerId,
+  type Sha,
+} from '../../../packages/foundation/core/src/index.ts'
 import { callDaemon, callerFor, isUnreachable } from '../../../apps/clients/cli/src/client.ts'
 import { createSandbox } from '../support/sandbox.ts'
 import type { Sandbox } from '../support/sandbox.ts'
@@ -161,6 +168,21 @@ test('every method of the port round-trips: the CLI decodes what the daemon answ
       } as never),
     /eval\./,
   )
+
+  // The same run read back through `evals`: the two §17 projections as one, which
+  // is what `fleet evals compare` puts side by side. No second write — the run
+  // above is the one in the log.
+  const compared = await call('evals', { runId })
+  assert.equal(compared.run.runId, runId)
+  assert.equal(compared.run.state, 'finished')
+  assert.equal(compared.run.passed, 1)
+  assert.deepEqual(
+    compared.cases.map((scored) => [scored.caseId, scored.attempts, scored.passes]),
+    [['case-a', 1, 1]],
+  )
+  // A run the log never opened is the daemon's `not_found`, not an empty run the
+  // CLI would print as zero cases.
+  await assert.rejects(() => call('evals', { runId: 'evr_0000000000000000' as EvalRunId }), /no eval run evr_0000000000000000/)
 
   // `down` answers before the socket goes away, so the CLI is not left hanging.
   assert.deepEqual(await call('down', {}), { stopped: true })

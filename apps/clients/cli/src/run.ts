@@ -13,7 +13,7 @@
  * again against the same contract.
  */
 
-import { decisionId, fleetError, peerId, toFleetError } from '@fleet/foundation-core'
+import { decisionId, evalRunId, fleetError, peerId, toFleetError } from '@fleet/foundation-core'
 import {
   evalSuites,
   turnKinds,
@@ -25,10 +25,14 @@ import {
 } from '@fleet/foundation-contracts'
 
 import { asArgument, isUnreachable, type DaemonCaller } from './client.ts'
+import { formatEvalCompare } from './evals-compare.ts'
 import { formatEvalRun } from './evals-report.ts'
 import { readEvalsOutput, type EvalsEvents, type EvalsProcessResult, type EvalsRunOptions } from './evals.ts'
 import { formatDecision, formatDown, formatLs, formatPeek, formatSend, formatUp } from './render.ts'
 import { socketPathOf } from './socket.ts'
+
+/** Both eval verbs, so a wrong one names every one that exists. */
+const EVALS_USAGE = 'fleet evals run <suite> | fleet evals compare <runA> <runB>'
 
 const usage = (): string =>
   [
@@ -41,6 +45,7 @@ const usage = (): string =>
     '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first',
     '  fleet decide <id> [answer]          show an open decision, or answer it',
     '  fleet evals run <suite>             run an eval suite against its baseline',
+    '  fleet evals compare <runA> <runB>   two eval runs side by side (a run id is printed by `evals run`)',
     '  fleet --help                        this',
     '',
     'options, on any command:',
@@ -79,6 +84,7 @@ export type Command =
       readonly model?: string
       readonly saveBaseline: boolean
     }
+  | { readonly kind: 'evals-compare'; readonly runA: string; readonly runB: string }
 
 export interface Parsed {
   readonly command: Command
@@ -235,8 +241,17 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       }
     }
     case 'evals': {
-      const [sub, suite, ...extra] = rest
-      if (sub !== 'run') throw usageError('usage: fleet evals run <suite>')
+      // The verb decides the rest, so `compare` and `run` each keep their own
+      // arity and their own refusal.
+      const [verb, ...more] = rest
+      if (verb === 'compare') {
+        arity('evals compare', more, '<runA> <runB>', (count) => count === 2)
+        const [runA, runB] = more
+        if (runA === undefined || runB === undefined) throw usageError(`usage: ${EVALS_USAGE}`)
+        return { command: { kind: 'evals-compare', runA, runB }, how: how() }
+      }
+      const [suite, ...extra] = more
+      if (verb !== 'run') throw usageError(`usage: ${EVALS_USAGE}`)
       if (suite === undefined || extra.length > 0) throw usageError('usage: fleet evals run <suite>')
       if (!(evalSuites as readonly string[]).includes(suite)) {
         throw usageError(`suite "${suite}" is not one of ${evalSuites.join(', ')}`)
@@ -439,6 +454,14 @@ const execute = async (
       // The suite's code, not the CLI's: `1` is a verdict about the model and `2` a
       // mistake in the setup, and a caller that scripted this reads the difference.
       return { text: lines.join('\n'), value: answer, exitCode: ran.exitCode }
+    }
+    case 'evals-compare': {
+      // Two reads of the projections, not one read of the log: the daemon hands
+      // each run over with its cases, and this side only lays them side by side.
+      const runA = asArgument(evalRunId(), command.runA, 'run id')
+      const runB = asArgument(evalRunId(), command.runB, 'run id')
+      const [a, b] = await Promise.all([call('evals', { runId: runA }), call('evals', { runId: runB })])
+      return { text: formatEvalCompare(a, b), value: { a, b } }
     }
     case 'help':
       return { text: usage(), value: {} }

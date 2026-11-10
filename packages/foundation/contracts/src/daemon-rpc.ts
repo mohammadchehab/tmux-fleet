@@ -31,6 +31,7 @@ import {
   array,
   count,
   decisionId,
+  evalRunId,
   literal,
   messageId,
   number,
@@ -51,12 +52,15 @@ import {
   type SessionId,
   type WorkId,
   type DecisionId,
+  type EvalRunId,
   type MessageId,
   type PeerId,
   type Schema,
 } from '@fleet/foundation-core'
 import { appendIssues } from './events/registry.ts'
 import type { AppendEvent } from './events/registry.ts'
+import { evalRunWithCases } from './projections/evals.ts'
+import type { EvalRunWithCases } from './projections/evals.ts'
 import { decision, routine } from './projections/ops.ts'
 import type { Decision, Routine } from './projections/ops.ts'
 import { message } from './projections/mailbox.ts'
@@ -75,7 +79,7 @@ import type { TurnKind } from './provider.ts'
  * without a case in `daemonParamsFor` does not compile, and without a case in
  * the daemon's dispatcher does not compile there either.
  */
-export const daemonMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage', 'events.append'] as const
+export const daemonMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage', 'events.append', 'evals'] as const
 export type DaemonMethod = (typeof daemonMethods)[number]
 
 /**
@@ -293,6 +297,21 @@ export const eventsAppendParams = (): Schema<EventsAppendParams> =>
     ),
   })
 
+/**
+ * `evals`: one run with its cases (§17). `fleet evals compare <runA> <runB>` is
+ * the caller, so a run is asked for by id — there is no "every run" read here,
+ * because a client that wanted one would be asking the daemon to hand over the
+ * log's whole eval history to answer a question about two of them.
+ */
+export interface EvalsParams {
+  readonly runId: EvalRunId
+}
+
+export const evalsParams = (): Schema<EvalsParams> =>
+  objectAs<EvalsParams>()({
+    runId: evalRunId(),
+  })
+
 /** Method → its params. The single place the two closed sets are tied together. */
 export interface DaemonParams {
   readonly up: NoParams
@@ -303,6 +322,7 @@ export interface DaemonParams {
   readonly decide: DecideParams
   readonly usage: UsageParams
   readonly 'events.append': EventsAppendParams
+  readonly evals: EvalsParams
 }
 
 export type DaemonParamsOf<M extends DaemonMethod> = DaemonParams[M]
@@ -319,6 +339,7 @@ const paramsSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonParamsOf
   decide: decideParams,
   usage: usageParams,
   'events.append': eventsAppendParams,
+  evals: evalsParams,
 }
 
 /** The schema for one method's params; what both the daemon and the CLI validate against. */
@@ -394,6 +415,8 @@ export interface EventsAppendResult {
 
 export const eventsAppendResult = (): Schema<EventsAppendResult> =>
   objectAs<EventsAppendResult>()({ seqs: array(number({ int: true, min: 1 })) as unknown as Schema<readonly Seq[]> })
+/** `evals`: the run and its cases, as the two projections hold them — nothing reshaped on the way out. */
+export type EvalsResult = EvalRunWithCases
 
 // ------------------------------------------------------------ results table
 
@@ -413,6 +436,7 @@ export interface DaemonResults {
   readonly decide: DecisionRow
   readonly usage: UsageResult
   readonly 'events.append': EventsAppendResult
+  readonly evals: EvalsResult
 }
 
 export type DaemonResultOf<M extends DaemonMethod> = DaemonResults[M]
@@ -426,6 +450,7 @@ const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[
   decide: decision,
   usage: usageResult,
   'events.append': eventsAppendResult,
+  evals: evalRunWithCases,
 }
 
 /** The schema for one method's result. The exhaustive key type is what makes a new method a compile error. */
@@ -459,4 +484,6 @@ export interface DaemonApi {
    * has one writer, so the runner hands its events over the socket.
    */
   eventsAppend(params: EventsAppendParams): Promise<EventsAppendResult>
+  /** One eval run with its cases (§17); `fleet evals compare` reads two of these. */
+  evals(params: EvalsParams): Promise<EvalsResult>
 }

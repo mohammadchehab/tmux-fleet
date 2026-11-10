@@ -20,10 +20,16 @@
 import { spawn } from 'node:child_process'
 
 import type { AppendEvent } from '@fleet/foundation-contracts'
-import { fleetError } from '@fleet/foundation-core'
+import { fleetError, type EvalRunId } from '@fleet/foundation-core'
 
 /** The suite's own report, decoded. Mirrors `EvalRunReport`, which is what prints it. */
 export interface EvalsReport {
+  /**
+   * The run's name, folded in from the envelope: the suite describes its arithmetic,
+   * and the id is the run's identity, not a fact the fold produced. It is here
+   * because `EvalRunReport` is what `fleet evals compare` takes a run by.
+   */
+  readonly runId: EvalRunId
   readonly suite: string
   readonly provider: string
   readonly model: string
@@ -274,6 +280,7 @@ export const readEvalsOutput = (body: string): EvalsOutput => {
     events: eventsOf(root['events']),
     ...(baselinePath === undefined ? {} : { baselinePath: str(baselinePath, 'baselinePath') }),
     report: {
+      runId: str(root['runId'], 'runId') as EvalRunId,
       suite: str(report['suite'], 'report.suite'),
       provider: str(report['provider'], 'report.provider'),
       model: str(report['model'], 'report.model'),

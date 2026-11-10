@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { FleetError, type DecisionId, type PeerId, type SessionId } from '@fleet/foundation-core'
-import type { DaemonMethod, LsResult } from '@fleet/foundation-contracts'
+import { FleetError, type DecisionId, type EvalRunId, type PeerId, type SessionId, type Sha } from '@fleet/foundation-core'
+import type { DaemonMethod, EvalRunWithCases, LsResult } from '@fleet/foundation-contracts'
 import type { DaemonCaller } from '../src/client.ts'
 import { run, type RunDeps } from '../src/run.ts'
 
@@ -246,8 +246,72 @@ describe('run: decide', () => {
   })
 })
 
-describe('run: down', () => {
-  it('reports the daemon stopped', async () => {
+const evalRun = (runId: string, passed: number): EvalRunWithCases => ({
+  run: {
+    runId: runId as EvalRunId,
+    suite: 'judge',
+    sha: 'ffcd0091a2b3c4d5' as Sha,
+    provider: 'deepinfra',
+    model: 'deepseek-ai/DeepSeek-V3.2',
+    cases: 20,
+    state: 'finished',
+    passed,
+    startedAt: now,
+    finishedAt: now,
+  },
+  cases: [
+    { runId: runId as EvalRunId, caseId: 'stacked-merge-branch-loss', attempts: 3, passes: 3, pass: true, score: 1, detail: 'ok', updatedAt: now },
+  ],
+})
+
+describe('run: evals compare', () => {
+  it('reads both runs by id and puts them side by side', async () => {
+    const before = evalRun('evr_1111111111111111', 18)
+    const after = evalRun('evr_2222222222222222', 20)
+    const { deps, out, calls } = harness({ evals: (params) => ((params as { runId: string }).runId === before.run.runId ? before : after) })
+    assert.equal(await run(argv('evals', 'compare', before.run.runId, after.run.runId), deps), 0)
+    assert.deepEqual(calls, [
+      { method: 'evals', params: { runId: before.run.runId } },
+      { method: 'evals', params: { runId: after.run.runId } },
+    ])
+    assert.match(out[0] ?? '', /18 of 20 cases passed/)
+    assert.match(out[0] ?? '', /\+2 cases/)
+  })
+
+  it('refuses a run id the contract would refuse, without a round trip', async () => {
+    const { deps, err, calls } = harness({})
+    assert.equal(await run(argv('evals', 'compare', 'judge', 'evr_2222222222222222'), deps), 2)
+    assert.match(err[0] ?? '', /run id: expected/)
+    assert.deepEqual(calls, [])
+  })
+
+  it('a verb that is neither run nor compare names both', async () => {
+    const { deps, err } = harness({})
+    assert.equal(await run(argv('evals', 'diff', 'a', 'b'), deps), 2)
+    assert.match(err[0] ?? '', /usage: fleet evals run <suite> \| fleet evals compare <runA> <runB>/)
+  })
+
+  it('--json prints both runs as the daemon answered them', async () => {
+    const before = evalRun('evr_1111111111111111', 18)
+    const { deps, out } = harness({ evals: () => before })
+    await run(argv('evals', 'compare', before.run.runId, before.run.runId, '--json'), deps)
+    assert.deepEqual(JSON.parse(out[0] ?? '{}'), { a: before, b: before })
+  })
+
+  it('reports a run the log does not have as not_found, and exits 1', async () => {
+    const missing = new FleetError('not_found', 'no eval run evr_1111111111111111')
+    const { deps, err } = harness({
+      evals: (params) => {
+        if ((params as { runId: string }).runId === 'evr_1111111111111111') throw missing
+        return evalRun('evr_2222222222222222', 20)
+      },
+    })
+    assert.equal(await run(argv('evals', 'compare', 'evr_1111111111111111', 'evr_2222222222222222'), deps), 1)
+    assert.match(err[0] ?? '', /no eval run/)
+  })
+})
+
+describe('run: down', () => {  it('reports the daemon stopped', async () => {
     const { deps, out } = harness({ down: () => ({ stopped: true }) })
     assert.equal(await run(argv('down'), deps), 0)
     assert.equal(out[0], 'fleetd stopped')

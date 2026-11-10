@@ -37,6 +37,8 @@ import type {
   DaemonApi,
   DaemonStatus,
   Decision,
+  EvalsParams,
+  EvalsResult,
   EventSink,
   Mailbox,
 } from '@fleet/foundation-contracts'
@@ -238,6 +240,19 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       // projection: answering with the row as it now stands is what makes the
       // reply say `answered` (§6.1) instead of the question's last state.
       return (await read.decisions.get(input.id)) ?? decision
+    },
+
+    async evals(input: EvalsParams): Promise<EvalsResult> {
+      // §17's comparison is two reads of the projections and nothing else: no
+      // event walk, and no verdict computed here — the CLI puts the two side by
+      // side, so the daemon never has to decide what "worse" means.
+      const run = await read.evals.get(input.runId)
+      if (run === undefined) {
+        throw fleetError('not_found', `no eval run ${String(input.runId)}; the projections hold every run the log recorded`, {
+          details: { runId: String(input.runId) },
+        })
+      }
+      return run
     },
 
     async usage(input) {

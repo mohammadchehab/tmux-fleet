@@ -138,6 +138,9 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
     pullRequests: { all: async () => current.pullRequests },
     worktrees: { all: async () => current.worktrees },
     routines: { all: async () => current.routines },
+    // No evals are seeded: no routine compares two runs, and the CLI's `evals
+    // compare` reads the real store, not this fake.
+    evals: { get: async () => undefined },
     put: (next) => {
       Object.assign(current, next)
     },

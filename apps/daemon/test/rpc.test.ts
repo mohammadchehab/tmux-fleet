@@ -14,9 +14,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import type { MessageId, PeerId, Seq } from '@fleet/foundation-core'
+import type { MessageId, PeerId, Seq, Sha } from '@fleet/foundation-core'
 import type { DaemonApi, Decision } from '@fleet/foundation-contracts'
 import { decodeRequest, dispatch, encodeLine, handleLine } from '../src/rpc.ts'
+
+const SHA = 'ffcd0091a2b3c4d5' as Sha
 
 const status = {
   profile: 'test',
@@ -58,6 +60,23 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
     async eventsAppend(input) {
       calls.push(`events.append:${String(input.events.length)}`)
       return { seqs: input.events.map((_, index) => (index + 1) as Seq) }
+    },
+    async evals(input) {
+      calls.push(`evals:${String(input.runId)}`)
+      return {
+        run: {
+          runId: input.runId,
+          suite: 'judge' as const,
+          sha: SHA,
+          provider: 'deepinfra',
+          model: 'deepseek-ai/DeepSeek-V3.2',
+          cases: 1,
+          state: 'finished' as const,
+          passed: 1,
+          startedAt: '2026-11-10T10:00:00.000Z',
+        },
+        cases: [],
+      }
     },
     async decide(input) {
       calls.push(`decide:${String(input.id)}:${input.decision}`)
@@ -102,8 +121,15 @@ test('usage decodes its report strictly and a bad field is named', async () => {
   await assert.rejects(() => dispatch(subject, { method: 'usage', params: { ...report, contextLimit: 0 } }), /contextLimit/)
 })
 
-test('a bad peer id names the field, not just "params is invalid"', async () => {
-  await assert.rejects(
+test('evals takes a run id, and a run id is what it takes', async () => {
+  const subject = api()
+  await dispatch(subject, { method: 'evals', params: { runId: 'evr_4c1d9a7b2e5f6038' } })
+  assert.deepEqual(subject.calls, ['evals:evr_4c1d9a7b2e5f6038'])
+  // The id is not a free string: a suite name or a bare number is the client's mistake, named.
+  await assert.rejects(() => dispatch(api(), { method: 'evals', params: { runId: 'judge' } }), /runId/)
+})
+
+test('a bad peer id names the field, not just "params is invalid"', async () => {  await assert.rejects(
     () => dispatch(api(), { method: 'send', params: { to: 'Engineer 1', kind: 'info', body: 'x' } }),
     /to/,
   )
