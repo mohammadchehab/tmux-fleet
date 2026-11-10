@@ -119,8 +119,9 @@ export const createWakingSink = (deps: WakingSinkDeps): WakingSink => {
       // Read back rather than echoing the batch: a wake has to see the envelope the
       // store assigned — seq included — because that is the event every reader and
       // every replay will see (§5.4). It is also the same shape `rebuild` wakes with.
-      if (seqs.length === 0) return seqs
-      const committed = await deps.read(seqs[0], seqs.length)
+      const [first] = seqs
+      if (first === undefined) return seqs
+      const committed = await deps.read(first, seqs.length)
       for (const event of committed) await wakeOne(event)
       return seqs
     },

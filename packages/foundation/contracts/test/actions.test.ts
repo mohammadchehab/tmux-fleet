@@ -64,7 +64,7 @@ for (const kind of pmActionKinds) {
     assert.equal(result.ok, false, 'the executor refuses it at its boundary')
     if (result.ok) return
     assert.equal(result.error.issues.length, 1, `one mutation, one issue: ${result.error.message}`)
-    assert.equal(result.error.issues[0].path, path, 'the refusal names the field that was mutated')
+    assert.equal(result.error.issues[0]?.path, path, 'the refusal names the field that was mutated')
   })
 }
 

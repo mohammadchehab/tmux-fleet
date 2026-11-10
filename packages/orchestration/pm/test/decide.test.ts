@@ -585,8 +585,9 @@ const stuck = (over: { blockedOn?: 'user' | 'contract' | 'peer' | 'external'; bl
 /** The one action of a kind, failing the test when the tick produced none. */
 const only = <K extends PmAction['kind']>(actions: readonly PmAction[], kind: K): Extract<PmAction, { kind: K }> => {
   const found = actions.filter((action): action is Extract<PmAction, { kind: K }> => action.kind === kind)
-  assert.equal(found.length, 1, `expected exactly one ${kind}, got ${kinds(actions).join(', ') || 'nothing'}`)
-  return found[0]
+  const [one, ...rest] = found
+  assert.ok(one !== undefined && rest.length === 0, `expected exactly one ${kind}, got ${kinds(actions).join(', ') || 'nothing'}`)
+  return one
 }
 
 test('a block only the user can clear becomes one decision in the inbox, naming the peer and why', () => {
