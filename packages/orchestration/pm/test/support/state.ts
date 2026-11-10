@@ -9,13 +9,14 @@
 import type {
   Decision,
   FleetState,
+  Message,
   Notification,
   Peer,
   PullRequest,
   PullRequestRef,
   Work,
 } from '@fleet/foundation-contracts'
-import type { DecisionId, NotificationKey, PeerId, Sha, WorkId } from '@fleet/foundation-core'
+import type { DecisionId, MessageId, NotificationKey, PeerId, Sha, WorkId } from '@fleet/foundation-core'
 import type { PmTick, RoutineKind, RoutineTrigger } from '@fleet/foundation-contracts'
 
 /** The instant everything in a test happens at unless it says otherwise. */
@@ -73,6 +74,18 @@ export const decision = (over: Partial<Decision> = {}): Decision => ({
   options: ['merge', 'hold'],
   inputsHash: '0123456789abcdef',
   requestedAt: T0,
+  ...over,
+})
+
+export const message = (over: Partial<Message> = {}): Message => ({
+  msgId: 'msg_0000000000000001' as MessageId,
+  to: 'engineer-1' as PeerId,
+  from: 'pm',
+  kind: 'answer',
+  briefVersion: 1,
+  body: 'What the PM said',
+  state: 'acked',
+  sentAt: T0,
   ...over,
 })
 

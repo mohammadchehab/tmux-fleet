@@ -6,9 +6,9 @@
 
 import { array, boolean, object, objectAs, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
 import { briefId, contractId, peerId, workId } from '@fleet/foundation-core'
-import { workState } from '../work-state.ts'
+import { blockReason, workState } from '../work-state.ts'
 import { externalRef, line, pullRequestRef } from '../shapes.ts'
-import type { WorkState } from '../work-state.ts'
+import type { BlockReason, WorkState } from '../work-state.ts'
 import type { BriefId, ContractId, PeerId, WorkId } from '@fleet/foundation-core'
 import type { ExternalRef, PullRequestRef } from '../shapes.ts'
 
@@ -29,6 +29,12 @@ export interface Work {
   readonly briefId?: BriefId
   readonly briefVersion?: number
   readonly blockedReason?: string
+  /**
+   * Who can unblock it: §5.2's `unblock` rule routes by this, and by nothing else.
+   * The reason text is for a human; this is the field a rule can branch on. Set only
+   * while the Work is `blocked` — the projection clears it on any other transition.
+   */
+  readonly blockedOn?: BlockReason
   readonly createdAt: string
   readonly updatedAt: string
 }
@@ -48,6 +54,7 @@ export const work = (): Schema<Work> =>
     briefId: optional(briefId()),
     briefVersion: optional(positiveInt()),
     blockedReason: optional(text(1000)),
+    blockedOn: optional(blockReason()),
     createdAt: timestamp(),
     updatedAt: timestamp(),
   })

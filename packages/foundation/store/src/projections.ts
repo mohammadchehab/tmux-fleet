@@ -213,6 +213,10 @@ const writeSession = (db: Sqlite, session: Session): void =>
 // ------------------------------------------------------------------------- work
 
 const writeWork = (db: Sqlite, work: Work): void => {
+  // `blockedOn` describes a blocked Work and nothing else. Dropping it here — the one
+  // write every transition funnels through — means no handler can leave a stale "who
+  // unblocks this" behind for the PM's `unblock` rule to route on.
+  const row: Work = work.state === 'blocked' ? work : { ...work, blockedOn: undefined }
   writeRow(
     db,
     'work',
@@ -230,17 +234,17 @@ const writeWork = (db: Sqlite, work: Work): void => {
       'data',
     ],
     [
-      work.workId,
-      work.title,
-      work.state,
-      work.role ?? null,
-      work.assignee ?? null,
-      work.contractId ?? null,
-      work.briefId ?? null,
-      work.briefVersion ?? null,
-      work.createdAt,
-      work.updatedAt,
-      JSON.stringify(work),
+      row.workId,
+      row.title,
+      row.state,
+      row.role ?? null,
+      row.assignee ?? null,
+      row.contractId ?? null,
+      row.briefId ?? null,
+      row.briefVersion ?? null,
+      row.createdAt,
+      row.updatedAt,
+      JSON.stringify(row),
     ],
     ['work_id'],
   )
@@ -990,7 +994,12 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       updateWork(db, event.data.workId, { state: 'cleaned' }, ts)
       return
     case 'work.blocked':
-      updateWork(db, event.data.workId, { state: 'blocked', blockedReason: event.data.reason }, ts)
+      updateWork(
+        db,
+        event.data.workId,
+        { state: 'blocked', blockedReason: event.data.reason, blockedOn: event.data.blockedOn },
+        ts,
+      )
       return
     case 'work.cancelled':
       updateWork(db, event.data.workId, { state: 'cancelled', blockedReason: event.data.reason }, ts)
