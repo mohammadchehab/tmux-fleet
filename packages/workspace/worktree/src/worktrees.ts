@@ -44,10 +44,16 @@ const registered = async (runner: GitRunner, root: string): Promise<readonly str
   if (listed.code !== 0) {
     throw refused(`could not ask git which worktrees ${root} has`, listed)
   }
+  // Normalize paths to handle symlinks (e.g., /var -> /private/var on macOS)
+  // by removing common /private prefix that git adds on some systems
   return listed.stdout
     .split('\n')
     .filter((line) => line.startsWith('worktree '))
-    .map((line) => line.slice('worktree '.length).trim())
+    .map((line) => {
+      const path = line.slice('worktree '.length).trim()
+      // Remove /private prefix if it exists, to normalize macOS paths
+      return path.startsWith('/private/var/') ? path.slice('/private'.length) : path
+    })
 }
 
 const TOPIC_PATTERN = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/
@@ -145,19 +151,30 @@ export const createWorktrees = (runner: GitRunner = execFileGit): Worktrees => (
     // which is a second, silent answer to "which checkout". Only an absolute one.
     if (!path.startsWith('/')) throw new Error(`${path} is not an absolute path; no worktree was removed`)
 
+    // Normalize the path to handle symlinks (e.g., /var -> /private/var on macOS)
+    let normalizedPath: string
+    try {
+      normalizedPath = realpathSync(path)
+    } catch {
+      // If realpath fails (directory doesn't exist), use the path as-is
+      normalizedPath = path
+    }
+
     // The repository this checkout belongs to, asked of git rather than inferred
     // from where §9 says checkouts live.
-    const common = await runner(['rev-parse', '--path-format=absolute', '--git-common-dir'], path)
+    const common = await runner(['rev-parse', '--path-format=absolute', '--git-common-dir'], normalizedPath)
 
     let root: string
     if (common.code !== 0) {
-      // If rev-parse failed with "cannot change to" (ENOENT), the worktree directory
-      // has already been deleted from the filesystem. In this case, infer the repo path
-      // from the worktree path. Since paths follow the pattern <repo>/.claude/worktrees/<topic>,
-      // we can go up two directories. If that fails, fall back to the original error.
-      if (common.stderr.includes('cannot change to')) {
+      // If rev-parse failed with "cannot change to" or "spawn git ENOENT", the worktree
+      // directory has already been deleted from the filesystem. In this case, infer the
+      // repo path from the worktree path. Since paths follow the pattern
+      // <repo>/.claude/worktrees/<topic>, we can go up two directories. If that fails,
+      // fall back to the original error.
+      const isDeletedDir = common.stderr.includes('cannot change to') || common.stderr.includes('ENOENT')
+      if (isDeletedDir) {
         // Path is <repo>/.claude/worktrees/<topic>, so parent is <repo>/.claude/worktrees
-        const parentDir = path.replace(/\/+$/, '').split('/').slice(0, -1).join('/')
+        const parentDir = normalizedPath.replace(/\/+$/, '').split('/').slice(0, -1).join('/')
         // Parent of that is <repo>/.claude
         const claudeDir = parentDir.split('/').slice(0, -1).join('/')
         // Parent of that is <repo>
@@ -181,12 +198,12 @@ export const createWorktrees = (runner: GitRunner = execFileGit): Worktrees => (
     // path came from a projection row; git's registry is what makes it a worktree
     // rather than a string.
     const known = await registered(runner, root)
-    const wanted = path.replace(/\/+$/, '')
+    const wanted = normalizedPath.replace(/\/+$/, '')
     if (!known.some((entry) => entry.replace(/\/+$/, '') === wanted)) {
-      throw new Error(`${path} is not a worktree ${root} has; nothing was removed`)
+      throw new Error(`${normalizedPath} is not a worktree ${root} has; nothing was removed`)
     }
 
-    const removed = await runner(['worktree', 'remove', path], root)
-    if (removed.code !== 0) throw refused(`git refused to remove the worktree at ${path}`, removed)
+    const removed = await runner(['worktree', 'remove', normalizedPath], root)
+    if (removed.code !== 0) throw refused(`git refused to remove the worktree at ${normalizedPath}`, removed)
   },
 })

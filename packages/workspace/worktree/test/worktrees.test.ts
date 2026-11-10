@@ -9,7 +9,12 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import { execSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { GitResult, GitRunner } from '../src/git.ts'
+import { execFileGit } from '../src/git.ts'
 import { createWorktrees } from '../src/worktrees.ts'
 
 const path = '/repo/.claude/worktrees/fleet-work-1'
@@ -309,5 +314,52 @@ describe('createWorktrees', () => {
     }), {
       message: /must be the git repository root/,
     })
+  })
+
+  it('removes a worktree even if its directory was already deleted (TASK-59: real git repo)', async () => {
+    // Create a temporary git repository
+    const tmpDir = mkdtempSync(join(tmpdir(), 'fleet-worktree-test-'))
+    try {
+      // Initialize a bare repo as the "remote" and a normal repo as the main checkout
+      const remoteDir = join(tmpDir, 'remote.git')
+      const repoDir = join(tmpDir, 'repo')
+
+      // Pin the branch: the runner's git defaults to `master`, so a fixture that relies on the
+      // ambient init.defaultBranch names no branch the test can check out or push.
+      execSync(`git init --bare --initial-branch=main ${remoteDir}`)
+      execSync(`git clone ${remoteDir} ${repoDir}`)
+
+      // Create a commit so HEAD is valid
+      execSync(`cd ${repoDir} && git config user.email "test@example.com" && git config user.name "Test"`)
+      execSync(`cd ${repoDir} && echo "test" > file.txt && git add file.txt && git commit -m "test commit"`)
+      execSync(`cd ${repoDir} && git push -u origin HEAD:refs/heads/main`, { stdio: 'pipe' })
+
+      // Create a worktree using the current commit (detached)
+      const worktreeDir = join(repoDir, '.claude', 'worktrees', 'task-59')
+      execSync(`cd ${repoDir} && git worktree add --detach ${worktreeDir} HEAD`, {
+        stdio: 'pipe',
+      })
+
+      // Verify the worktree exists
+      const listBefore = execSync(`cd ${repoDir} && git worktree list --porcelain`, {
+        encoding: 'utf8',
+      })
+      assert.ok(listBefore.includes(worktreeDir), 'worktree should be listed before deletion')
+
+      // Delete the worktree directory
+      rmSync(worktreeDir, { recursive: true, force: true })
+
+      // Now try to remove it via the Worktrees adapter
+      // This should succeed by inferring the repo path and running `git worktree remove`
+      await createWorktrees(execFileGit).remove(worktreeDir)
+
+      // Verify the worktree is no longer listed
+      const listAfter = execSync(`cd ${repoDir} && git worktree list --porcelain`, {
+        encoding: 'utf8',
+      })
+      assert.ok(!listAfter.includes(worktreeDir), 'worktree should not be listed after removal')
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
   })
 })
