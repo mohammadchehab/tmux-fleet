@@ -129,6 +129,16 @@ const servedBy = async (socketPath: string, pid: number): Promise<boolean> => {
   return status?.pid === pid
 }
 
+/**
+ * The locks this process wrote and has not released, as `<path>\0<pid>`. A pid is
+ * unique among live processes, so a lock file naming *our* pid is either ours (it is in
+ * here) or a crashed predecessor's that the kernel gave the same pid to — the usual
+ * case after a reboot or a container restart over a persistent state volume. The pid
+ * alone cannot tell the two apart; this can.
+ */
+const heldHere = new Set<string>()
+const heldKey = (lockPath: string, pid: number): string => `${lockPath}\0${String(pid)}`
+
 /** What the lock's holder turned out to be: a fleetd, demonstrably something else, or unreadable. */
 type HolderVerdict = 'fleetd' | 'not-fleetd' | 'unknown'
 
@@ -183,8 +193,12 @@ export const acquireFleetLock = async (lockPath: string, options: FleetLockOptio
       }
       if (holder !== undefined && alive(holder)) {
         // This very process is the holder: no evidence to gather, and taking
-        // over its own lock would be handing it away.
-        const verdict = holder === pid ? 'fleetd' : await holderVerdict(holder, options)
+        // over its own lock would be handing it away. But only when it really is
+        // its own: a file naming our pid that this process never wrote is a dead
+        // predecessor's with a recycled pid, and refusing it would refuse every
+        // restart until someone deleted the file by hand.
+        const verdict =
+          holder === pid ? (heldHere.has(heldKey(lockPath, pid)) ? 'fleetd' : 'not-fleetd') : await holderVerdict(holder, options)
         // The pid dying between the two reads is a leftover, not a holder: the
         // verdict is re-read rather than trusting evidence about a process that
         // was alive a moment ago.
@@ -216,11 +230,13 @@ export const acquireFleetLock = async (lockPath: string, options: FleetLockOptio
     } finally {
       await handle.close()
     }
+    heldHere.add(heldKey(lockPath, pid))
 
     return {
       path: lockPath,
       pid,
       async release() {
+        heldHere.delete(heldKey(lockPath, pid))
         // Only if it is still ours: a lock a newer fleetd took over is not this
         // one's to remove, and removing it would hand the store to a third.
         if ((await pidIn(lockPath)) === pid) await rm(lockPath, { force: true })
