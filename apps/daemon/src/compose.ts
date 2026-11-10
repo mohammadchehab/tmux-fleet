@@ -11,14 +11,15 @@
  * 3. **Providers, then the supervisor.** Concrete providers are constructed
  *    here and handed to the supervisor as a map by id; nothing below this file
  *    names `ClaudeProvider` or `DeepInfraProvider` (§2, §4).
- * 4. **Mailbox, executor, scheduler, server.** Each takes only the ports it
- *    needs (§1.1).
+ * 4. **Mailbox, Judge, executor, scheduler, server.** Each takes only the ports
+ *    it needs (§1.1).
  *
- * Two things a profile may ask for but this build cannot yet deliver are named
- * as such rather than silently replaced: `integrations/github` (the gate's
- * port) and the PM. A daemon composed without a `pullRequests` port has no
- * `merge` executor at all, so a merge action fails with "no executor is wired
- * for 'merge'" instead of pretending.
+ * Two things a profile may ask for but this build cannot yet deliver are
+ * named as such rather than silently replaced: `integrations/github` (the
+ * gate's port) and `orchestration/briefs` (the `assign` and `supersede_brief`
+ * executors). A daemon composed without a `pullRequests` port has no `merge`
+ * executor at all, so a merge action fails with "no executor is wired for
+ * 'merge'" instead of pretending.
  */
 
 import { mkdir } from 'node:fs/promises'
@@ -28,14 +29,17 @@ import type { ProjectManager, ProviderRegistry, PullRequests } from '@fleet/foun
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
+import type { JudgeService } from '@fleet/orchestration-judge'
 import { createProjectManager } from '@fleet/orchestration-pm'
 import { createScheduler, installedFactories, type Scheduler } from '@fleet/orchestration-routines'
 import { createMailbox } from '@fleet/runtime-mailbox'
-import { ClaudeProvider } from '@fleet/runtime-provider-claude'
+import { ClaudeProvider, createStructuredCompletion } from '@fleet/runtime-provider-claude'
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createExecutorRouter, type KindExecutor } from './executor.ts'
+import { createDaemonExecutors } from './executors.ts'
+import { createDaemonJudge } from './judge.ts'
 import { createNotifyFactory, notifierFor } from './notify.ts'
 import { persistentDirs, profilePaths, type PathRoots } from './paths.ts'
 import { loadProfile, type Profile } from './profile.ts'
@@ -63,7 +67,18 @@ export interface ComposeDeps {
   readonly pullRequests?: PullRequests
   /** Providers to construct instead of the built-in set, by the profile's `provider` name. */
   readonly providers?: ReadonlyMap<string, Provider>
-  /** Extra executors — the judge, the notifier — one per kind (§5.2). */
+  /**
+   * The Judge (§5.3). Defaults to one over a one-shot Claude structured call, in
+   * the profile's state directory. A test passes a scripted one; a profile that
+   * wants DeepInfra's endpoint supplies its own, because only the caller knows
+   * that credential.
+   */
+  readonly judge?: (wiring: Wiring & { readonly supervisor: Supervisor }) => JudgeService
+  /**
+   * Extra executors for kinds this file does not own — the notifier (§6.1), and
+   * `assign`/`supersede_brief` once `orchestration/briefs` lands. A kind claimed
+   * twice is refused by the router rather than carried out twice (§5.2).
+   */
   readonly executors?: (wiring: Wiring & { readonly supervisor: Supervisor }) => readonly KindExecutor[]
   /**
    * The channel notifications ring on (§6.1). Defaults to the profile's
@@ -148,6 +163,31 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     ...(gate === undefined ? [] : [{ kinds: gate.kinds, executor: gate }]),
     ...(deps.executors?.({ ...wiring, supervisor }) ?? []),
   ]
+
+  // §5.2's actions are performed by whoever holds the dependency they need, and
+  // `apps/daemon` holds the Mailbox, the Judge and the projections — so those
+  // five executors are always wired, not opt-in. An action with no home fails
+  // visibly instead (§5.2).
+  const judge =
+    deps.judge?.({ ...wiring, supervisor }) ??
+    createDaemonJudge({
+      store,
+      // §5.3's transport: one schema-constrained call, run in the profile's own
+      // directory with no session, no tools and no settings. The Judge's own
+      // default model is the cheap one (§5.3) until a profile names another.
+      transport: createStructuredCompletion({ cwd: paths.stateDir }),
+      clock,
+    })
+  executors.push(
+    ...createDaemonExecutors({
+      store: { append: (batch) => store.append(batch) },
+      read: store.reader(),
+      mailbox,
+      judge,
+      clock,
+    }),
+  )
+
   const executor = createExecutorRouter({ executors })
 
   // §6.1: the profile names the channel, and a profile that names none gets no

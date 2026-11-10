@@ -35,6 +35,9 @@ importers:
       '@fleet/orchestration-gate':
         specifier: workspace:*
         version: link:../../packages/orchestration/gate
+      '@fleet/orchestration-judge':
+        specifier: workspace:*
+        version: link:../../packages/orchestration/judge
       '@fleet/orchestration-pm':
         specifier: workspace:*
         version: link:../../packages/orchestration/pm
