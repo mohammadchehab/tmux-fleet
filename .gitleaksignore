@@ -4,3 +4,9 @@
 # Format: <commit>:<path>:<rule>:<line>
 # Fingerprints come from the finding itself (JSON report "Fingerprint", or code scanning's alert). They survive a line
 # shift, since the commit and the rule are in them. See docs/runbook/ci.md.
+
+# A fixed phrase the resume probe tells a real session to remember (a word, a dash and four digits), matched by the
+# generic-api-key heuristic. It is test input, it was quoted here no further so it does not match again, and it grants
+# access to nothing. The spike that held it was deleted (#103) and main scans the whole history, so the fingerprint stays
+# after the path is gone: deleting it is what turned this back into a CRITICAL finding.
+e257e145443d7baca9a919d26869d8d91c6271ec:spikes/agent-sdk/probe.mjs:generic-api-key:515
