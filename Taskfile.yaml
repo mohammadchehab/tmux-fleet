@@ -1,11 +1,10 @@
 version: '3'
 
-# Two worlds live in this checkout during the v2 rebuild:
-#   v2 — the TypeScript workspace under packages/ and apps/, checked by `pnpm typecheck` and `pnpm test`;
-#   v1 — the bash fleet in legacy/v1/, still what is installed and running until phase 3.
+# The TypeScript workspace under packages/ and apps/, checked by `pnpm typecheck` and `pnpm test`.
 #
-# The v1 targets are delegated with `task -t legacy/v1/Taskfile.yaml <target>`, which runs the v1 Taskfile with the
-# working directory set to legacy/v1/ — so every v1 script keeps resolving its own root the way it always has.
+# v1 — the bash fleet that this checkout used to carry under legacy/v1/ — has been deleted, and its git history is
+# where it now lives (`git log -- legacy/v1`). Its Taskfile, its smoke suite and its install targets went with it:
+# `task test` runs the TypeScript suite and nothing else, which is the one gate on a PR.
 
 tasks:
   default:
@@ -14,9 +13,7 @@ tasks:
     cmds:
       - task --list
 
-  # ---- v2 ---------------------------------------------------------------------------------------------------------
-
-  install:node:
+  install:
     desc: Install the TypeScript packages' dev dependencies (pnpm) and link @fleet/* to the sibling packages
     cmds:
       - pnpm install --frozen-lockfile
@@ -31,62 +28,8 @@ tasks:
     cmds:
       - pnpm test
 
-  # ---- v1 (delegated; still the live fleet until phase 3) ---------------------------------------------------------
-
   test:
-    desc: Smoke-test the v1 scripts with a fake tmux and a fake backlog CLI, then run the v2 tests and typecheck
+    desc: Run the TypeScript tests and the typecheck — the whole gate, and the only one that exists since v1 was removed
     cmds:
-      - task -t legacy/v1/Taskfile.yaml test
       - task: test:node
       - task: typecheck
-
-  lint:
-    desc: shellcheck every v1 script, check skill frontmatter (name equals folder name), that profiles repeat no AGENTS.md fact
-    cmds:
-      - task -t legacy/v1/Taskfile.yaml lint
-
-  install:
-    desc: Install the node workspace and the v1 fleet — the skills, the fleet command and the pinned board CLI — from legacy/v1
-    cmds:
-      - task: install:node
-      - task -t legacy/v1/Taskfile.yaml install
-
-  install:claude:
-    desc: Symlink every legacy/v1/skills/<name> into ~/.claude/skills (real folders are left alone and reported)
-    cmds:
-      - task -t legacy/v1/Taskfile.yaml install:claude
-
-  install:cursor:
-    desc: Symlink every legacy/v1/skills/<name> into ~/.cursor/skills (a Cursor chat loads the fleet skill and reads roles/<role>.md)
-    cmds:
-      - task -t legacy/v1/Taskfile.yaml install:cursor
-
-  install:backlog:
-    desc: Install the board CLI (Backlog.md, npm -g) at the version the v1 fleet pins
-    cmds:
-      - task -t legacy/v1/Taskfile.yaml install:backlog
-
-  install:bin:
-    desc: Put the fleet command on PATH (~/.local/bin/fleet -> legacy/v1/bin/fleet, or FLEET_BIN); see `fleet help`
-    cmds:
-      - task -t legacy/v1/Taskfile.yaml install:bin
-
-  uninstall:
-    desc: Remove the v1 fleet's symlinks from ~/.claude/skills and ~/.cursor/skills, and the fleet command from ~/.local/bin
-    cmds:
-      - task -t legacy/v1/Taskfile.yaml uninstall
-
-  update:
-    desc: Fast-forward main in this checkout (main only, clean tree), link any new skills and install the pinned board CLI
-    cmds:
-      - task -t legacy/v1/Taskfile.yaml update
-
-  profile:init:
-    desc: Create ~/.config/fleet/profiles/<NAME>.env for a repo (task profile:init NAME=<name> REPO=<path> [SQUAD=<squad>]); never overwrites
-    cmds:
-      - task -t legacy/v1/Taskfile.yaml profile:init NAME="{{.NAME}}" REPO="{{.REPO}}" SQUAD="{{.SQUAD}}"
-
-  clean:
-    desc: List stale fleet worktrees (fleet wt prune) and tmux sessions; "-- --force" removes worktrees, "-- --force --sessions" also kills sessions
-    cmds:
-      - task -t legacy/v1/Taskfile.yaml clean -- {{.CLI_ARGS}}

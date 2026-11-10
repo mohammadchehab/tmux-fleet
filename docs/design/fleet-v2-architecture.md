@@ -112,9 +112,7 @@ tmux-fleet/
 │  ├─ decisions/                  # ADRs
 │  ├─ ideas/                      # the E13 idea map and lessons (§14.1)
 │  └─ runbook/                    # operating the fleet
-├─ legacy/
-│  └─ v1/                         # skills/, bin/, dev-tasks/, profiles/, hooks/ moved unchanged; frozen (below)
-└─ package.json  tsconfig.json  Taskfile.yaml  AGENTS.md  README.md   # workspace root; `task test`/`task lint` run both worlds until v1 is removed
+└─ package.json  tsconfig.json  Taskfile.yaml  AGENTS.md  README.md   # workspace root; `task test` is the gate
 ```
 
 ### Dependency direction, by group

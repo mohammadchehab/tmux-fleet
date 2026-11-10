@@ -6,15 +6,15 @@ deterministic supervisor, not a set of chat sessions, is what actually runs the 
 **The design is [`docs/design/fleet-v2-architecture.md`](docs/design/fleet-v2-architecture.md).** Read it before
 touching anything here; it is the authority on layout, dependency direction and what each phase adds.
 
-## Two worlds, one checkout
+## One checkout
 
-| | where | what it is | state |
-|---|---|---|---|
-| **v1** | `legacy/v1/` | the bash fleet — `skills/`, `bin/`, `dev-tasks/`, `profiles/` — moved here unchanged | **live.** It is what is installed and running; frozen except for the fixes that keep it running |
-| **v2** | `packages/`, `apps/`, `tests/` | the rebuild: one event-sourced store, one supervisor process, peers behind a typed `Provider` | phase 0 — scaffolding and dependency rules |
+| | where | what it is |
+|---|---|---|
+| **v2** | `packages/`, `apps/`, `tests/` | one event-sourced store, one supervisor process, peers behind a typed `Provider` |
 
-`task install`, `task update` and friends still install **v1**, out of `legacy/v1/`. How to use the fleet today is
-[`legacy/v1/README.md`](legacy/v1/README.md).
+The bash fleet that lived here as `legacy/v1/` was deleted once the v2 fleet took over (design §1.1, "what happens to
+the old bash"). It is not gone from history: `git log -- legacy/v1` has it, and the last commit that carried it can be
+checked out whole.
 
 ## Working in v2
 
@@ -22,14 +22,14 @@ Node ≥22.18 runs the TypeScript directly — there is no build step, and a pac
 `src/index.ts`.
 
 ```sh
-task install:node     # pnpm install --frozen-lockfile
+task install          # pnpm install --frozen-lockfile
 task typecheck        # tsc --noEmit — the compiler is the lint; there is no eslint (§14)
 task test:node        # node --test: tests/ and every package's own test/
-task test             # the v1 smoke suite, then test:node, then typecheck
-task lint             # shellcheck + skill frontmatter for v1
+task test             # test:node, then typecheck — the whole gate
 ```
 
-`task test` runs **both worlds** until v1 is removed at the end of phase 3. Cross-package tests live in `tests/` — that
+`task test` is the gate, and it is the only one: the shellcheck and skill-frontmatter lint went with v1. Cross-package
+tests live in `tests/` — that
 is where the §1.1 rules live — and a package's own unit tests sit beside it as `test/*.test.ts`, run in the same sweep,
 so a new package needs no task of its own.
 
@@ -54,7 +54,6 @@ packages/integrations/   github, trackers
 apps/                    daemon (fleetd), clients/, hooks/
 tests/architecture/      the import-direction rules, enforced as a test
 spikes/                  experiments, outside the workspace (not installed, not tested)
-legacy/v1/               the running bash fleet
 ```
 
 The dependency rules are not a convention, they are a test: `tests/architecture/` walks the real workspace, resolves

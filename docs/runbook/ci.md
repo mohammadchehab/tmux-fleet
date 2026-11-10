@@ -11,7 +11,6 @@ a public release, and the only credential is the workflow's own `GITHUB_TOKEN`.
 | workflow | job | runs on | ~time | required on main |
 | :- | :- | :- | -: | :- |
 | `CI` | `checks` | every PR, every push to main | 1 min | **yes** |
-| `CI` | `legacy-v1` | every PR, every push to main | 4 min | no (advisory) |
 | `Security` | `security` | every PR, every push to main, nightly 05:17 UTC | 2 min | no (advisory, see below) |
 
 ### `checks` — the gate
@@ -27,20 +26,9 @@ rules — is part of this job. A sideways import fails the merge, not just a rev
 This is the whole reason the job is required: typecheck, the unit and cross-package tests, and the dependency rules are
 mechanical, and a person reviewing a diff is a poor substitute for them.
 
-### `legacy-v1` — v1, still the live fleet
-
-`task lint` (shellcheck every script, skill frontmatter, profiles restate no `AGENTS.md` fact) and the v1 smoke suite via
-`task -t legacy/v1/Taskfile.yaml test`. `legacy/v1/` is frozen but running (§1.1), so the rule for it is: no change
-without its own suite green.
-
-**Quarantined: `resume.sh`.** The job runs the smoke suite with `FLEET_SMOKE_SKIP_RESUME=1`, which skips
-`dev-tasks/scripts/test/resume.sh` and prints a line saying so
-([#28](https://github.com/mohammadchehab/tmux-fleet/issues/28): a timing race in fleet-scale add flaked 5 of 10 runs).
-A local `task test` still runs it — a flake a developer sees beats a flake CI hides. It comes back when #28 is fixed;
-re-enabling it on a green run is not a fix, because the pass would be a rerun of a race.
-
-shellcheck is pinned to 0.11.0 rather than the runner's own copy: its rule set moves between releases, and a lint that is
-green locally and red in CI (or the reverse) teaches people to skip it.
+There was a second job, `legacy-v1`, that ran shellcheck and v1's smoke suite. It went with `legacy/v1/` when that tree
+was deleted, along with the `resume.sh` quarantine it carried ([#28](https://github.com/mohammadchehab/tmux-fleet/issues/28),
+closed as obsolete with it). `checks` is now the only job in `ci.yml`.
 
 ### `security` — §6.2, by mechanism
 
@@ -111,10 +99,10 @@ purpose: with a branch that must be current, every merge knocks every other open
 stalls on rebase rounds. The trade is that two PRs touching the same lines can each be green alone and still conflict
 after the first lands; the second's own run catches it, and its merge is what fails.
 
-`legacy-v1` and `security` are advisory: they run on every PR, their result is on the PR, and they do not block the
-merge. They are not required because both depend on the network and a third party's availability (several tool
+`security` is advisory: it runs on every PR, its result is on the PR, and it does not block the
+merge. It is not required because it depends on the network and a third party's availability (several tool
 downloads, the OSV database, the semgrep registry) — a required check that can fail because a CDN was slow is a check
-people learn to bypass. If either proves reliable over a few dozen runs, promote it:
+people learn to bypass. If it proves reliable over a few dozen runs, promote it:
 
 ```sh
 gh api -X PATCH repos/mohammadchehab/tmux-fleet/branches/main/protection/required_status_checks \

@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# fleet-handoff: kept for the project-manager role and old habits; the handoff lives in the fleet-handoff skill.
-exec "$(cd -P "$(dirname "$0")" && pwd)/../../fleet-handoff/scripts/fleet-handoff" "$@"
