@@ -16,6 +16,12 @@
  *   read by people; a description or a token must not arrive there by accident.
  * - **A timeout is a `timeout`, a network failure is `external_failed`.** A
  *   socket that never answers must not stall a routine for the daemon's life.
+ * - **The site is https, from an origin, and does not redirect.** The token
+ *   rides in a header, which a redirect would carry to whatever host answered,
+ *   and a plain-http site puts it on the wire in the clear; both are refused
+ *   once, at construction, and every request is built against that origin.
+ * - **A body is read against a bound, never into memory.** A site that answers
+ *   with a gigabyte is a failed call, not an out-of-memory in the daemon.
  */
 
 import { fleetError } from '@fleet/foundation-core'
@@ -28,6 +34,16 @@ const defaultFetch: FetchLike = (url, init) => globalThis.fetch(url, init)
 
 /** Enough of a failed body to recognise it; a Jira error is a short JSON object. */
 const SNIPPET = 200
+
+/** The largest successful body this client will hold. A search page is far under it. */
+const MAX_BODY = 8 * 1024 * 1024
+
+/**
+ * A body is whatever the site chose to send: a newline forges a second line in
+ * the event log and an escape sequence repaints a terminal. Control characters
+ * become spaces before any of it reaches a message people read.
+ */
+const oneLine = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim()
 
 export interface JiraRequest {
   readonly method: 'GET' | 'POST'
@@ -43,7 +59,16 @@ export interface JiraRequest {
 export interface JiraCall {
   readonly status: number
   readonly ok: boolean
-  read(): Promise<string>
+  /**
+   * The first `limit` bytes of the body, cut rather than refused. An error wants
+   * a snippet, so a body over the limit is still worth the start of it.
+   */
+  head(limit: number): Promise<string>
+  /**
+   * The whole body, or `external_failed` once it passes `limit` (default
+   * `MAX_BODY`) — a body cut short must never come back as a parse failure.
+   */
+  read(limit?: number): Promise<string>
 }
 
 export interface JiraClientOptions {
@@ -54,6 +79,14 @@ export interface JiraClientOptions {
   readonly fetch?: FetchLike
   /** Defaults to 20s: a search that hangs is a failed routine, not a slow one. */
   readonly timeoutMillis?: number
+  /**
+   * Allow a plain-http site. Off by default: the token is a header on every
+   * call, and http puts it on the wire for anyone on the path. For a local
+   * install in a test, not for a site anyone else can reach.
+   */
+  readonly allowInsecureHttp?: boolean
+  /** Defaults to 8 MiB. The bound on one successful body, so a test can make it small. */
+  readonly maxBodyBytes?: number
 }
 
 export interface JiraClient {
@@ -71,8 +104,33 @@ export interface JiraClient {
 
 const trimSlash = (url: string): string => url.replace(/\/+$/, '')
 
-const urlOf = (baseUrl: string, request: JiraRequest): string => {
-  const url = `${trimSlash(baseUrl)}${request.path}`
+/**
+ * The one place a base URL is trusted. Kept as origin *and* path, because a
+ * Server/DC install may live at a context path (`https://host/jira`) — dropping
+ * it would silently send every call to the wrong place.
+ */
+const siteOf = (options: JiraClientOptions): { readonly base: string; readonly origin: string } => {
+  let parsed: URL
+  try {
+    parsed = new URL(options.baseUrl)
+  } catch {
+    throw fleetError('invalid_input', `jira baseUrl "${options.baseUrl}" is not a URL`)
+  }
+  if (parsed.protocol !== 'https:' && !(options.allowInsecureHttp === true && parsed.protocol === 'http:')) {
+    const scheme = parsed.protocol.replace(':', '')
+    throw fleetError('invalid_input', `jira baseUrl must be https, not ${scheme}`, { details: { baseUrl: options.baseUrl } })
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw fleetError('invalid_input', 'jira baseUrl must not carry a username or password — the credential comes from the profile')
+  }
+  if (parsed.search !== '' || parsed.hash !== '') {
+    throw fleetError('invalid_input', 'jira baseUrl must not carry a query or a fragment', { details: { baseUrl: options.baseUrl } })
+  }
+  return { base: `${parsed.origin}${trimSlash(parsed.pathname)}`, origin: parsed.origin }
+}
+
+const urlOf = (base: string, request: JiraRequest): string => {
+  const url = `${base}${request.path}`
   const pairs = Object.entries(request.query ?? {}).flatMap(([key, value]) =>
     value === undefined ? [] : [`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`],
   )
@@ -81,16 +139,46 @@ const urlOf = (baseUrl: string, request: JiraRequest): string => {
 
 /** What a failed call says about itself: the method, the path, the status, and a short body. */
 const failed = (request: JiraRequest, status: number, body: string) => {
-  const snippet = body.trim().slice(0, SNIPPET)
+  const snippet = oneLine(body).slice(0, SNIPPET)
   return fleetError('external_failed', `jira ${request.method} ${request.path} answered ${status}${snippet === '' ? '' : `: ${snippet}`}`, {
     details: { method: request.method, path: request.path, status },
   })
+}
+
+/**
+ * Read a body no further than `limit` bytes, and say whether there was more.
+ * The stream is cancelled the moment the bound is passed, so the rest of a
+ * hostile body is never pulled into memory.
+ */
+const readAtMost = async (response: Response, limit: number): Promise<{ readonly text: string; readonly cut: boolean }> => {
+  const body = response.body
+  if (body === null) return { text: '', cut: false }
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  let size = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) return { text: text + decoder.decode(), cut: false }
+      size += value.byteLength
+      if (size > limit) {
+        await reader.cancel()
+        return { text: text + decoder.decode(), cut: true }
+      }
+      text += decoder.decode(value, { stream: true })
+    }
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 export const createJiraClient = (options: JiraClientOptions): JiraClient => {
   const fetchImpl = options.fetch ?? defaultFetch
   const authorization = authorizationHeader(options.auth)
   const timeout = options.timeoutMillis ?? 20_000
+  const site = siteOf(options)
+  const maxBody = options.maxBodyBytes ?? MAX_BODY
 
   const send = async (request: JiraRequest): Promise<JiraCall> => {
     const headers: Record<string, string> = {
@@ -98,16 +186,25 @@ export const createJiraClient = (options: JiraClientOptions): JiraClient => {
       accept: 'application/json',
     }
     if (request.body !== undefined) headers['content-type'] = 'application/json'
+    const url = urlOf(site.base, request)
+    // Belt and braces: every path this adapter builds is relative to the site,
+    // and a path that somehow resolved off it would carry the token there.
+    if (new URL(url).origin !== site.origin) {
+      throw fleetError('internal', `jira ${request.method} ${request.path} resolved off the site`, { details: { path: request.path } })
+    }
     let response: Response
     try {
-      response = await fetchImpl(urlOf(options.baseUrl, request), {
+      response = await fetchImpl(url, {
         method: request.method,
         headers,
         ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
         signal: AbortSignal.timeout(timeout),
+        // A redirect would replay the authorisation header at a host the site
+        // named, so a moved site is a failure to report, not a hop to follow.
+        redirect: 'error',
       })
     } catch (thrown) {
-      const reason = thrown instanceof Error ? thrown.message : String(thrown)
+      const reason = oneLine(thrown instanceof Error ? thrown.message : String(thrown))
       // An abort is the one failure with an obvious next step, so it keeps its own code.
       const code = thrown instanceof Error && thrown.name === 'TimeoutError' ? 'timeout' : 'external_failed'
       throw fleetError(code, `jira ${request.method} ${request.path} could not be reached: ${reason}`, {
@@ -115,7 +212,20 @@ export const createJiraClient = (options: JiraClientOptions): JiraClient => {
         details: { method: request.method, path: request.path },
       })
     }
-    return { status: response.status, ok: response.ok, read: () => response.text() }
+    return {
+      status: response.status,
+      ok: response.ok,
+      head: async (limit) => (await readAtMost(response, limit)).text,
+      read: async (limit = maxBody) => {
+        const { text, cut } = await readAtMost(response, limit)
+        if (cut) {
+          throw fleetError('external_failed', `jira ${request.method} ${request.path} answered more than ${limit} bytes`, {
+            details: { method: request.method, path: request.path, status: response.status },
+          })
+        }
+        return text
+      },
+    }
   }
 
   const parse = (request: JiraRequest, call: JiraCall, body: string): unknown => {
@@ -135,16 +245,20 @@ export const createJiraClient = (options: JiraClientOptions): JiraClient => {
     send,
     async json(request) {
       const call = await send(request)
-      const body = await call.read()
-      if (!call.ok) throw failed(request, call.status, body)
-      return parse(request, call, body)
+      // Read the snippet, not the body: a failing site's answer is unbounded too.
+      if (!call.ok) throw failed(request, call.status, await call.head(SNIPPET))
+      return parse(request, call, await call.read())
     },
     async optional(request) {
       const call = await send(request)
-      const body = await call.read()
-      if (call.status === 404) return undefined
-      if (!call.ok) throw failed(request, call.status, body)
-      return { body: parse(request, call, body) }
+      if (call.status === 404) {
+        // Drain the answer so the connection is not left half-read; the body of
+        // a 404 is nothing anyone needs.
+        await call.head(SNIPPET)
+        return undefined
+      }
+      if (!call.ok) throw failed(request, call.status, await call.head(SNIPPET))
+      return { body: parse(request, call, await call.read()) }
     },
   }
 }
