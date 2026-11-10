@@ -1,6 +1,6 @@
 # Shared fleets: pooled budgets across people, with no server
 
-**Status**: design, under security review. Supersedes PR #159 (a Backlog.md board synced through a shared remote).
+**Status**: design. Security: approved for phase 1; Legal sign-off required before task metadata (§7). Supersedes PR #159 (a Backlog.md board synced through a shared remote).
 **Builds on**: [`fleet-v2-architecture.md`](fleet-v2-architecture.md) — one `fleetd` per person, event-sourced store,
 typed questions only (§5.3), the Mailbox (§7), the build ledger (§11).
 
@@ -192,14 +192,15 @@ coord: { engagement: eng-07, team: <org>/<team>, repo: <org>/fleet-coord }
 ## 7. Security review
 
 Reviewed by the security session on 2026-11-10 against an earlier draft whose key was derived from the customer
-workspace repo's root commit. Verdict: **approve with changes**.
+workspace repo's root commit: **approve with changes**. Re-reviewed the same day against §5 as written here:
+**approved for phase 1; Legal sign-off required before task metadata ships.**
 
 | finding | status |
 | :- | :- |
-| 1. key from an unprotected source — needs rotation, audit, authenticated delivery | **addressed by §5**: a random key, rotated on every departure, rotations in git history and team changes in the org audit log, delivered only to the holder of a member's SSH key. Awaiting re-review. |
-| 2. customer-derived metadata on the company's GitHub needs written InfoSec, Legal and customer sign-off | **open**. Policy, not design. If sign-off is not obtained, the fallback is §9's reduced scope. |
-| 3. metadata visible to every org member | addressed: a per-engagement team, not org-wide access; access reviewed monthly. |
-| 4. no cross-fleet revocation | addressed: removal from the team revokes access and rotates the key (§5.2). |
+| 1. key from an unprotected source — needs rotation, audit, authenticated delivery | **approved** (critical → low-medium): a random key, rotated on every departure, rotations in git history and team changes in the org audit log, delivered only to the holder of a member's SSH key. Residual: a member's SSH private key is the root of their copy (standard SSH model). |
+| 2. customer-derived metadata on the company's GitHub needs written InfoSec, Legal and customer sign-off | **approved for phase 1**, which publishes nothing customer-derived. **Legal sign-off required** before any phase that publishes task metadata (§9, phases 3–5). |
+| 3. metadata visible to every org member | **approved** (medium → low): a per-engagement team, not org-wide access. |
+| 4. no cross-fleet revocation | **approved** (medium → low): removal from the team revokes access at once and rotates the key within a poll (§5.2). |
 | 5. deterministic masking shows repetition | accepted: payloads are encrypted; masking alone was never the control. |
 | 6. prompt injection via peer messages | accepted as-is (§4). |
 | 7. claim races | accepted: ref creation is atomic. |
