@@ -63,7 +63,8 @@ export const PACKAGE_ORDER: Readonly<Record<string, readonly string[]>> = {
   notify: ['core', 'channels/macos'],
   // §3: the boards are adapters over one port, so they sit beside each other and none imports another; the port
   // itself is `foundation/contracts`, which is where the shape they must agree on lives.
-  integrations: ['github', 'gitlab', 'trackers', 'trackers/backlog', 'trackers/jira'],
+  // shared-fleet.md §2: the coordination repository is a medium, not a board or a forge, so it imports none of them.
+  integrations: ['github', 'gitlab', 'trackers', 'trackers/backlog', 'trackers/jira', 'coordination'],
   // §17: the eval suites are dev tooling, not a product surface. Within the group a suite may use the adapter that
   // turns its results into events, which is the only edge there is.
   evals: ['adapter', 'suites/judge'],

@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/integrations-coordination",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A shared fleet's coordination repository over `git` (shared-fleet.md §2): the Coordination port — one ls-remote per poll, fetch only what moved, a fleet branch replaced by one commit, create-once refs, and every write pinned to the sha it was decided on.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
