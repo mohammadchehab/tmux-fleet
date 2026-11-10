@@ -46,6 +46,4 @@ There is no `task lint` any more: shellcheck and the skill-frontmatter check wer
 - Package names are `@fleet/<group>-<name>` — e.g. `@fleet/foundation-store`, `@fleet/runtime-provider-sdk`.
 - Cross-package tests live in `tests/`; unit tests sit next to their package as `test/*.test.ts`. One `task test` runs
   both sweeps, so a new package needs no task of its own.
-- `spikes/` is outside the workspace on purpose: not installed, not type-checked, not tested. A spike proves something;
-  the proof gets promoted into a package.
 - Never push to `main`; every change goes through a pull request.

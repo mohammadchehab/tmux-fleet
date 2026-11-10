@@ -1,4 +1,0 @@
-
---- probe: resume-write / deepinfra ---
-elapsed_ms 2496
-PROBE_RESULT {"probe":"resume-write","provider":"deepinfra","evidence":{"session_id":"cdcc000d-0c53-49b8-a372-779cbfffc0e0","turn1":{"text":"REMEMBERED","is_error":false,"modelUsage":{"deepseek-ai/DeepSeek-V4.1-Flash-1017":{"inputTokens":149,"outputTokens":91,"cacheReadInputTokens":8320,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.00408,"contextWindow":200000,"maxOutputTokens":32000,"thinkingTokens":0,"cacheCreationEphemeral5mInputTokens":0,"cacheCreationEphemeral1hInputTokens":0,"canonicalModel":"deepseek-ai/deepseek-v4.1-flash-1017","provider":"firstParty","costBasis":"unknown"}}}}}
