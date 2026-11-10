@@ -19,13 +19,28 @@ import { remoteDefault } from './refs.ts'
 const SHA = /^[0-9a-f]{40}$/
 
 /**
- * The repo's git config is shared with every worktree, so a peer can write it. Two
- * keys make a *network* command run a program of the config's choosing; they are
- * reset on the two commands that touch the remote. `credential.helper` is left as
- * it is on purpose: it is how a private repository authenticates, and stripping it
- * would make this fail for exactly the repos that need it.
+ * The repo's git config is shared with every worktree, so a peer can write it.
+ * Network commands must bypass or override the shared config to prevent a peer from
+ * running programs of its choosing. Keys reset here:
+ * - `core.sshCommand`, `core.askPass`, `core.gitProxy`: can run programs
+ * - `remote.origin.uploadpack`, `remote.origin.receivepack`: can run programs
+ * - `protocol.*`: control which transports are allowed
+ *
+ * `credential.helper` is left as-is: it is how a private repository authenticates,
+ * and stripping it would make this fail for exactly the repos that need it. A peer
+ * runs as fleetd's own OS user, so this reader is a guard against drift and accident,
+ * not a sandbox; what keeps one from rewriting its rules is its tool policy.
  */
-const TRANSPORT = ['-c', 'core.sshCommand=ssh', '-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never'] as const
+const TRANSPORT = [
+  '-c', 'core.sshCommand=ssh',
+  '-c', 'core.askPass=',
+  '-c', 'core.gitProxy=',
+  '-c', 'core.fsmonitor=false',
+  '-c', 'remote.origin.uploadpack=git-upload-pack',
+  '-c', 'protocol.ext.allow=never',
+  '-c', 'protocol.https.allow=always',
+  '-c', 'protocol.ssh.allow=always',
+] as const
 
 export const createRepoFiles = (runner: GitRunner = execFileGit): RepoFiles => ({
   async read(cwd, path) {
