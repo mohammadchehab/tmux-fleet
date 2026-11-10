@@ -51,6 +51,7 @@ import {
   purgeSaved,
   purgeStarted,
   routineFailed,
+  routineFailing,
   routineFinished,
   routineStarted,
   trackerSynced,
@@ -121,6 +122,7 @@ export const EVENT_SCHEMAS = {
   'routine.started': routineStarted,
   'routine.finished': routineFinished,
   'routine.failed': routineFailed,
+  'routine.failing': routineFailing,
   // §3's trackers: the board is a source and a sink, and the run says what it heard.
   'tracker.synced': trackerSynced,
   'worktree.created': worktreeCreated,

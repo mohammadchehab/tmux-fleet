@@ -709,6 +709,10 @@ const keyPart = (value: string): string => value.replace(/[^A-Za-z0-9._:-]/g, '-
 const notificationKeyOf = (prefix: 'decision' | 'failure' | 'standup', ...parts: readonly string[]): NotificationKey =>
   `${prefix}:${parts.map(keyPart).join(':')}` as NotificationKey
 
+/** The key a broken routine raises and a recovered one resolves (§6.1's `failure` class). */
+const routineFailureKey = (routineId: string, kind: string): NotificationKey =>
+  notificationKeyOf('failure', routineId, kind)
+
 /**
  * The projection's half of §6.1: one row per key, and a recurrence bumps
  * `occurrences` instead of opening a second row. Whether a recurrence is worth
@@ -1405,6 +1409,9 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     }
     case 'routine.finished':
       updateRoutine(db, event.data.routineId, { state: 'finished', lastRunAt: ts }, event)
+      // A routine that finished has recovered, so its failure banner has nothing
+      // left to say: resolve it and §6.1's close rule withdraws it (§6, §6.1).
+      resolveNotification(db, routineFailureKey(event.data.routineId, event.data.kind), ts)
       return
     case 'routine.failed': {
       const routineId = event.data.routineId
@@ -1414,6 +1421,21 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
         lastRunAt: ts,
         failures: (current?.failures ?? 0) + 1,
       }, event)
+      return
+    }
+    /**
+     * §6.1's `failure` class, raised by the scheduler when it decides a routine is
+     * broken rather than unlucky. The row carries its own words because the key
+     * cannot: `failure:<routine>:<kind>` says which routine, and nothing about
+     * what broke or when it will be tried again, which is exactly what a person
+     * needs to decide whether to care.
+     */
+    case 'routine.failing': {
+      const { routineId, kind, error, failures, retryAt } = event.data
+      raiseNotification(db, routineFailureKey(routineId, kind), 'failure', ts, {
+        title: `Routine ${routineId} keeps failing`,
+        body: `${error}\n\n${failures} attempts in a row have failed. The next retry is ${retryAt}.`,
+      })
       return
     }
     case 'worktree.created': {

@@ -1,0 +1,20 @@
+{
+  "input": {
+    "seq": 36,
+    "ts": "2026-11-10T09:35:00.000Z",
+    "type": "routine.failing",
+    "subject": "worktree-gc",
+    "actor": "scheduler",
+    "causedBy": [
+      35
+    ],
+    "data": {
+      "routineId": "worktree-gc",
+      "kind": "worktree-gc",
+      "error": 42,
+      "failures": 3,
+      "retryAt": "2026-11-10T09:35:40.000Z"
+    }
+  },
+  "path": "data.error"
+}

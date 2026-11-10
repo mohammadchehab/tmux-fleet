@@ -444,6 +444,15 @@ A routine declares `{id, trigger, run(ctx)}`; its runs are events (`routine.star
 silent routine is visible. Per-profile enable/disable lives in the profile; the defaults are all on. Peers never
 need to be told about any of them.
 
+**A failing routine is not retried on every tick.** Success is what moves `lastRun`, so a routine that fails is
+still due — which, left alone, means a broken routine hits its remote every tick, forever, in silence. The scheduler
+therefore records the failed attempt too and holds the next try off for a backoff: **double the tick interval**,
+capped at the routine's own period (a day for a scheduled routine; an hour for a heartbeat or event routine, whose
+"period" is too short to be a cap). `lastRun` itself stays a record of success — the backoff only spaces retries.
+At the **third consecutive failure** the scheduler appends `routine.failing`, which §6.1 projects into a `failure`
+notification naming the routine, the error and the next retry; it says it again only when the error changes or the
+routine recovers, so a broken remote rings once, not once a retry.
+
 ## 6.1 Notifications and the decision inbox
 
 Notifications are a **projection and a routine over the event store**, never ad-hoc calls from the PM. The PM only

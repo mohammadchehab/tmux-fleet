@@ -147,6 +147,30 @@ export interface Scheduler {
 
 const MAX_ERROR = 2000
 
+/** The longest a retry is held off for a routine whose own period gives no better answer (§6). */
+const HOUR_MS = 60 * 60 * 1000
+/** A daily routine's period, which is what a daily routine's backoff may grow to (§6). */
+const DAY_MS = 24 * HOUR_MS
+/** Failures in a row that mean "broken", not "unlucky" — the one that is worth a banner (§6, §6.1). */
+const ESCALATE_AFTER = 3
+
+/**
+ * One routine's run of failures, as the scheduler remembers it between ticks
+ * (§6). `lastRun` only ever moves on success, which is what makes a routine due
+ * *now*, and is also why a routine that kept failing used to be due on every
+ * tick forever: nothing recorded the attempt that failed. This does.
+ */
+interface Attempt {
+  /** Attempts in a row that ended in a failure, this one included. */
+  readonly failures: number
+  /** When the last attempt ended, successful or not, in millis: the backoff is measured from here. */
+  readonly atMillis: number
+  /** The error the last attempt failed with. A *different* one is worth saying again (§6.1). */
+  readonly error: string
+  /** The error the last escalation named, which is what keeps a repeat from ringing twice (§6.1). */
+  readonly escalated?: string
+}
+
 /** `text(2000)`: an error message is appended, so it is trimmed at the schema's edge, not by luck. */
 const messageOf = (error: FleetError): string => {
   const text = error.code === 'internal' ? error.message : `${error.code}: ${error.message}`
@@ -176,6 +200,8 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
    * period rather than on the very next tick.
    */
   const lastRun = new Map<string, Timestamp>()
+  /** The last *attempt* of each failing routine, which spaces its retries out (§6). */
+  const attempts = new Map<string, Attempt>()
   /** The per-routine overlap guard (§6). Checked and set synchronously, before any await. */
   const inFlight = new Set<string>()
   let timer: unknown
@@ -192,6 +218,34 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
   const windowOf = (routineId: string, now: Timestamp): { readonly lastRunAt?: Timestamp; readonly now: Timestamp } => {
     const last = lastRun.get(routineId)
     return last === undefined ? { now } : { lastRunAt: last, now }
+  }
+
+  /**
+   * The longest a retry may be spaced out: the routine's own period (§6). A
+   * routine with a daily schedule has that day; a heartbeat or event routine has
+   * no period worth waiting for, so an hour.
+   */
+  const backoffCapMs = (routine: PlannedRoutine): number =>
+    routine.triggers.some((trigger) => trigger.kind === 'schedule') ? DAY_MS : HOUR_MS
+
+  /**
+   * Double from the tick interval, capped at the routine's period (§6): 10 s, 20,
+   * 40, … so a broken routine costs one attempt per doubling instead of one per
+   * tick. `failures` is how many have already failed — the delay before the next
+   * try.
+   */
+  const backoffMs = (routine: PlannedRoutine, failures: number): number => {
+    const cap = backoffCapMs(routine)
+    let delay = tickIntervalMs
+    for (let doubled = 0; doubled < failures && delay < cap; doubled += 1) delay *= 2
+    return Math.min(delay, cap)
+  }
+
+  /** Whether the last failed attempt still holds this routine's next try off (§6). */
+  const retryDue = (routine: PlannedRoutine, now: Timestamp): boolean => {
+    const attempt = attempts.get(routine.id)
+    if (attempt === undefined) return true
+    return Date.parse(now) - attempt.atMillis >= backoffMs(routine, attempt.failures)
   }
 
   const startedEvent = (
@@ -219,6 +273,47 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
     actor: 'scheduler',
     data: { routineId: routine.id, kind: routine.kind, error },
   })
+
+  /** The escalation (§6.1): a routine that is broken, with what broke and when it is tried again. */
+  const failingEvent = (
+    routine: PlannedRoutine,
+    ts: Timestamp,
+    error: string,
+    failures: number,
+    retryAt: Timestamp,
+  ): AppendEvent => ({
+    type: 'routine.failing',
+    ts,
+    subject: routine.id,
+    actor: 'scheduler',
+    data: { routineId: routine.id, kind: routine.kind, error, failures, retryAt },
+  })
+
+  /**
+   * Remember an attempt that failed, and answer whether it is one to say out
+   * loud (§6, §6.1). The escalation is written on the third failure in a row and
+   * then only when the error itself changes: a routine whose remote is down
+   * answers the same way every time, and a banner per retry is the spam §6.1
+   * exists to prevent.
+   */
+  const recordFailure = (routine: PlannedRoutine, at: Timestamp, error: string): AppendEvent | undefined => {
+    const previous = attempts.get(routine.id)
+    const failures = (previous?.failures ?? 0) + 1
+    const escalate = failures >= ESCALATE_AFTER && previous?.escalated !== error
+    const escalated = escalate ? error : previous?.escalated
+    const atMillis = Date.parse(at)
+    attempts.set(routine.id, {
+      failures,
+      atMillis,
+      error,
+      ...(escalated === undefined ? {} : { escalated }),
+    })
+    // The next try is what the banner promises, so it is computed from the same
+    // backoff the tick will judge the retry against — not estimated again there.
+    return escalate
+      ? failingEvent(routine, at, error, failures, new Date(atMillis + backoffMs(routine, failures)).toISOString())
+      : undefined
+  }
 
   const finishedEvent = (
     routine: PlannedRoutine,
@@ -275,12 +370,17 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
       } catch (thrown) {
         // A run that cannot be seen must not happen: refuse the body rather than
         // act invisibly (§6).
+        const error = messageOf(toFleetError(thrown, 'store_failed'))
+        // Still an attempt that failed, so it still spaces the next one out. The
+        // escalation is dropped rather than appended: the store just refused a
+        // write, and a second one would only fail the same way.
+        recordFailure(routine, clock.now(), error)
         return record({
           actions: 0,
           actionsFailed: 0,
           durationMs: 0,
           ok: false,
-          error: messageOf(toFleetError(thrown, 'store_failed')),
+          error,
         })
       }
 
@@ -303,13 +403,17 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
       } catch (thrown) {
         const error = messageOf(toFleetError(thrown))
         const failedAt = clock.now()
-        await deps.store.append([failedEvent(routine, failedAt, error)])
+        const failing = recordFailure(routine, failedAt, error)
+        // The failure and its escalation go in one batch: a banner that outran
+        // the fact it is about would be the ledger telling two stories (§6, §6.1).
+        await deps.store.append([
+          failedEvent(routine, failedAt, error),
+          ...(failing === undefined ? [] : [failing]),
+        ])
         // A failed run is a run: the projection stamps `lastRunAt` with it
         // (`projections.ts`, `routine.failed`) and a restart seeds `lastRun` from
-        // that row. Leaving the map unset here made the two disagree, and the
-        // routine was due again on the next tick — for a body that reaches the
-        // forge, not one retry a period but one forge call every tick, for as
-        // long as the failure lasted.
+        // that row, so the map and the log must agree here too — leaving it unset
+        // is what made a broken routine due on every tick (#132).
         lastRun.set(routine.id, failedAt)
         return record({
           actions: 0,
@@ -324,6 +428,9 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
       const durationMs = clock.millis() - startedMillis
       await deps.store.append([finishedEvent(routine, finishedAt, durationMs, actions, actionsFailed)])
       lastRun.set(routine.id, finishedAt)
+      // It recovered, so the next failure is a first failure again — and if it
+      // ever reaches three, worth a banner of its own (§6.1).
+      attempts.delete(routine.id)
       return record({ actions, actionsFailed, inputsHash, durationMs, ok: true })
     } finally {
       inFlight.delete(routine.id)
@@ -334,9 +441,19 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
     const now = clock.now()
     const records: RunRecord[] = []
     for (const routine of installed) {
-      // A routine runs at most once per tick, however many of its triggers are due.
-      const due = routine.triggers.find((trigger) => isRecurring(trigger) && isDue(trigger, windowOf(routine.id, now)))
-      if (due !== undefined) records.push(await run(routine, due.kind))
+      // A routine runs at most once per tick, however many of its triggers are
+      // due — and a routine that just failed waits out its backoff first (§6).
+      //
+      // The backoff is not an extra gate laid over the window, it *replaces* it
+      // for a routine that is failing: `lastRun` moves on a failure too (the
+      // projection stamps `lastRunAt` with it), so a daily routine that failed
+      // would otherwise wait a day for its retry and the backoff — 2×, 4×, 8× the
+      // tick, capped at the period — would never get to fire at all. Whichever
+      // comes first, the routine's own window or its retry, is the next attempt.
+      const recurring = routine.triggers.find(isRecurring)
+      if (recurring === undefined) continue
+      const due = isDue(recurring, windowOf(routine.id, now)) || attempts.has(routine.id)
+      if (due && retryDue(routine, now)) records.push(await run(routine, recurring.kind))
     }
     return records
   }
@@ -344,6 +461,9 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
   const wake = async (event: FleetEvent): Promise<readonly RunRecord[]> => {
     const records: RunRecord[] = []
     for (const routine of installed) {
+      // Deliberately not gated by `retryDue`: the backoff spaces the *poll* of a
+      // routine that keeps failing, and an event is not a poll. Something real
+      // happened, and it gets one honest try (§6).
       const listens = routine.triggers.some((trigger: Trigger) => triggeredBy(trigger, event.type))
       if (listens) records.push(await run(routine, 'event', event))
     }
@@ -398,7 +518,7 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
     for (const routine of installed) {
       if (ran.has(routine.id)) continue
       const due = routine.triggers.find((trigger) => isRecurring(trigger) && isDue(trigger, windowOf(routine.id, at)))
-      if (due !== undefined) {
+      if (due !== undefined && retryDue(routine, at)) {
         records.push(await run(routine, due.kind))
         ran.add(routine.id)
       }
