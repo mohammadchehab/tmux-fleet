@@ -688,6 +688,14 @@ It is never edited; a change is a new Brief and `brief.superseded` on the old on
 - **Events first, then the send.** A failed send leaves a published brief and an assigned Work, which is true; the
   retry is safe because a brief that is already the Work's current one is treated as done and the send is skipped when
   the same brief is already in the peer's mailbox.
+- **A standing brief** (the peer's rules, not a Work's): `peer.standards_set {peerId, version, briefId, digest, sources}`.
+  A peer never reads the repo's `AGENTS.md`/`CLAUDE.md` or its skills on its own (the claude provider runs with
+  `settingSources: []`), so the daemon reads them — from the default branch's commit, not a working tree a peer can
+  edit — and hands them over in `systemPromptAppend`. The event is written **only when the digest of what was read
+  differs** from the peer's last, before the session that carries it starts; its `version` goes up on the same
+  per-peer counter a Work's brief moves, and the projection sets `peer.briefVersion` from it. Filesystem reads are not
+  deterministic and the event is what makes them so: `sources` records what was read (size, truncation, commit).
+  `brief.published` stays Work-scoped.
 - **The store follows `brief.published`:** the peer's `briefVersion` (for the Mailbox's stale check, §7) and the
   Work's current `briefId`/`briefVersion` (for the `stale` rule), without moving the Work's state.
 - Contract gating stays the PM's (`needs_contract`): the executor does not re-derive it; a `ContractReader` port is
