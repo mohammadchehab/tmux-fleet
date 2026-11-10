@@ -90,6 +90,13 @@ export const evalRunFinished = event(
 )
 
 /**
+ * §17 runs a case N=3 times because the model is not deterministic. The number
+ * is in the contract so an attempt number cannot be a value no run produces: a
+ * tally is a ratio, and a poison number in it outlives the run it came from.
+ */
+export const EVAL_ATTEMPTS = 3
+
+/**
  * One attempt at one case. A case is run N=3 times because the model is not
  * deterministic (§17), so `attempt` is 1-based and the attempt, not the case,
  * is the unit the log records.
@@ -104,7 +111,7 @@ export const evalCaseScored = event(
   object({
     runId: evalRunId(),
     caseId: evalCaseId(),
-    attempt: positiveInt(),
+    attempt: number({ int: true, min: 1, max: EVAL_ATTEMPTS }),
     pass: boolean(),
     score: number({ min: 0, max: 1 }),
     detail: string({ minLength: 1, maxLength: 2000 }),

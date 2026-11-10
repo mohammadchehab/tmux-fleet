@@ -7,7 +7,7 @@
  * does not route on an eval result, so `decide()` is not handed them.
  */
 
-import { boolean, count, number, objectAs, oneOf, optional, positiveInt, refine, string, text, timestamp, type Schema } from '@fleet/foundation-core'
+import { boolean, count, number, objectAs, oneOf, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
 import { evalRunId, sha } from '@fleet/foundation-core'
 import type { EvalRunId, Sha } from '@fleet/foundation-core'
 import { providerId } from '../provider.ts'
@@ -76,21 +76,20 @@ export interface EvalCase {
   readonly updatedAt: string
 }
 
+/**
+ * `passes <= attempts` is the store's tally to keep, not this schema's to
+ * enforce: a projection that refuses a stored row would make `append` and
+ * `rebuild` fail over a number in a report, and the store's rule is that a
+ * projection degrades and records an anomaly rather than refusing the log (§3).
+ */
 export const evalCase = (): Schema<EvalCase> =>
-  // A case cannot pass more attempts than it had. The store's tally already keeps
-  // that true, but the pass rate is what §17 gates on, so the row itself refuses
-  // to be a number no run could have produced.
-  refine(
-    objectAs<EvalCase>()({
-      runId: evalRunId(),
-      caseId: evalCaseId(),
-      attempts: positiveInt(),
-      passes: count(),
-      pass: boolean(),
-      score: number({ min: 0, max: 1 }),
-      detail: text(2000),
-      updatedAt: timestamp(),
-    }),
-    (row) => row.passes <= row.attempts,
-    'a case that passed more attempts than it had',
-  )
+  objectAs<EvalCase>()({
+    runId: evalRunId(),
+    caseId: evalCaseId(),
+    attempts: positiveInt(),
+    passes: count(),
+    pass: boolean(),
+    score: number({ min: 0, max: 1 }),
+    detail: text(2000),
+    updatedAt: timestamp(),
+  })
