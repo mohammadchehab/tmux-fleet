@@ -7,6 +7,10 @@
 # this checkout that it could prove.
 #
 # Security scanning is its own workflow (security.yml) because it also runs nightly on main.
+#
+# The second job, `stale-squash`, is about the history a PR was branched from rather than about its code: a check that
+# a squash merge would not quietly delete work already on main (#179's squash reverted seven merged PRs, tests and
+# all, and CI stayed green because the tests went with the code; #187 is the restore). See docs/runbook/ci.md.
 name: CI
 
 on:
@@ -65,7 +69,32 @@ jobs:
             exit 1
           fi
 
-  # Evals (§17) are phase 2 and are not wired. When they land they belong here, as a second job gated on paths, so the
+  # A PR that deletes lines main gained after it branched is either stale or reverting on purpose, and neither should
+  # be found by reading the diff after the merge. It is a separate job because it needs history, not a toolchain: no
+  # install, no Node setup beyond the runner's, about two seconds.
+  stale-squash:
+    name: stale-squash
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The PR's own head, not the merge commit: the merge contains main, so nothing could ever look deleted.
+      # fetch-depth: 0 gets the head's whole history; `git fetch main` below gets the part the head does not have,
+      # which is exactly the part this check is about.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: fetch the base branch
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+
+      # The PR body arrives through GITHUB_EVENT_PATH, so a declared revert can pass without the body being
+      # interpolated into a shell.
+      - name: nothing main gained since the merge-base is dropped
+        run: node .github/scripts/stale-squash-guard.ts --base origin/main --head HEAD
+
+  # Evals (§17) are phase 2 and are not wired. When they land they belong here, as a further job gated on paths, so the
   # cost only falls on PRs that can move an eval:
   #
   #   evals:
