@@ -86,6 +86,19 @@ importers:
         specifier: workspace:*
         version: link:../../foundation/core
 
+  packages/orchestration/pm:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../foundation/core
+    devDependencies:
+      '@fleet/foundation-store':
+        specifier: workspace:*
+        version: link:../../foundation/store
+
   packages/orchestration/routines:
     dependencies:
       '@fleet/foundation-contracts':

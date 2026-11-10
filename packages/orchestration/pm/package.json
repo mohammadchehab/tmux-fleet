@@ -1,0 +1,20 @@
+{
+  "name": "@fleet/orchestration-pm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The deterministic project manager (architecture §5.2, §5.4): decide(state, event) → actions, pure and synchronous, no store and no I/O.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@fleet/foundation-store": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
