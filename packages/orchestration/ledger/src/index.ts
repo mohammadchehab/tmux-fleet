@@ -1,9 +1,10 @@
 /**
- * The build ledger and the remote runner (§11), plus the eval task encoding that
- * makes §17's eval runs the ledger's first consumer.
+ * The build ledger and the remote runner (§11). The spellings a caller and the ledger
+ * share — `evalBuildTask`, `buildStdoutPath` — are in `@fleet/foundation-contracts`,
+ * where the CLI can reach them (§1.1).
  */
 
-export { buildTaskClass, evalBuildTask, EVAL_TASK_CLASS, type EvalBuildIdentity } from './task.ts'
+export { buildTaskClass } from './task.ts'
 export { type BuildRouting, routeBuildHost, validateRouting } from './host.ts'
 export {
   buildLogPath,

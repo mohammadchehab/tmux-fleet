@@ -21,6 +21,9 @@ export * from './actions.ts'
 // the PM's tick, as the routines call it (§5.2, §6)
 export * from './pm.ts'
 
+// what a build is called and where its answer is (§11, §17)
+export * from './builds.ts'
+
 // the event registry: every type in §3, §5, §6, §7, §8
 export * from './events/registry.ts'
 export * from './events/peer.ts'

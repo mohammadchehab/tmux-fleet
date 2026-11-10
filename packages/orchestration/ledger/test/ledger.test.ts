@@ -79,6 +79,21 @@ describe('the build ledger', () => {
     assert.equal(outcome.build.host, 'local')
     assert.equal(local.runs.length, 1)
 
+    // The runner is told where the log goes and where the answer goes beside it:
+    // a build that answers with data (§17's eval run) does not have to derive a
+    // path the ledger already decided.
+    assert.deepEqual(local.runs, [
+      {
+        buildId: 'bld-1',
+        repo: repo(),
+        sha: sha(),
+        task: 'test:unit',
+        command: { bin: 'pnpm', args: ['test'] },
+        logPath: '/logs/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678-test-unit.log',
+        stdoutPath: '/logs/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678-test-unit.out',
+      },
+    ])
+
     const [requested] = store.ofType('build.requested')
     assert.deepEqual(requested?.data, {
       buildId: 'bld-1',

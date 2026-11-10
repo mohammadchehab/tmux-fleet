@@ -23,6 +23,7 @@ const build = (overrides: Partial<BuildRun> = {}): BuildRun => ({
   task: 'evals:judge:claude:opus',
   command: { bin: 'pnpm', args: ['evals', 'run', 'judge'], env: { MODEL: 'opus' } },
   logPath: '/logs/sha-evals.log',
+  stdoutPath: '/logs/sha-evals.out',
   ...overrides,
 })
 
@@ -63,6 +64,14 @@ describe('remoteScript', () => {
 
   it('carries the command env as exports', () => {
     assert.ok(script.includes(`export MODEL='opus'`))
+  })
+
+  it("puts the checkout's own bins ahead of the host's, after the checkout", () => {
+    // A workspace bin is only on PATH in the tree that installed it, and the tree
+    // is not there until the checkout above has run.
+    const path = lines.findIndex((line) => line.startsWith('export PATH='))
+    assert.ok(path > lines.findIndex((line) => line.startsWith('git checkout')))
+    assert.equal(lines[path], `export PATH='/srv/fleet/backbase-me-services-fleet/node_modules/.bin':"$PATH"`)
   })
 
   it('execs the command, each argument quoted', () => {
@@ -112,6 +121,8 @@ describe('createRemoteRunner', () => {
     assert.equal(seen[0]?.file, 'ssh')
     assert.deepEqual(seen[0]?.args, remoteArgv('hetzner', remoteScript(options, build())))
     assert.equal(seen[0]?.logPath, '/logs/sha-evals.log')
+    // ssh keeps the remote's streams apart, so the answer file is filled on this side.
+    assert.equal(seen[0]?.stdoutPath, '/logs/sha-evals.out')
     assert.deepEqual(outcome, { status: 'succeeded', durationMs: 900, exitCode: 0 })
   })
 

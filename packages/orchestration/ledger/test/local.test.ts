@@ -17,6 +17,7 @@ const run = (overrides: Partial<BuildRun> = {}): BuildRun => ({
   task: 'test:unit',
   command: { bin: 'pnpm', args: ['test'], cwd: '/src/tmux-fleet', env: { CI: '1' } },
   logPath: '/logs/sha-test.log',
+  stdoutPath: '/logs/sha-test.out',
   ...overrides,
 })
 
@@ -47,6 +48,7 @@ describe('createLocalRunner', () => {
         env: { CI: '1' },
         cwd: '/src/tmux-fleet',
         logPath: '/logs/sha-test.log',
+        stdoutPath: '/logs/sha-test.out',
       },
     ])
     assert.deepEqual(outcome, { status: 'succeeded', durationMs: 12, exitCode: 0 })
