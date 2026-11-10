@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { newDecisionId, type DecisionId, type PeerId } from '../../../packages/foundation/core/src/index.ts'
+import { newDecisionId, newEvalRunId, type DecisionId, type PeerId, type Sha } from '../../../packages/foundation/core/src/index.ts'
 import { callDaemon, callerFor, isUnreachable } from '../../../apps/clients/cli/src/client.ts'
 import { createSandbox } from '../support/sandbox.ts'
 import type { Sandbox } from '../support/sandbox.ts'
@@ -101,6 +101,66 @@ test('every method of the port round-trips: the CLI decodes what the daemon answ
     toolCalls: { grep: 1, glob: 0, read: 2, codegraph: 3 },
   })
   assert.deepEqual(usage, { recorded: true })
+
+  // `events.append`: an eval run's rows, handed over rather than written by the run
+  // itself, because the store has one writer (§17). The start comes back with a seq,
+  // and the rows and the total cite it — the same two batches `fleet evals run` sends.
+  const runId = newEvalRunId()
+  const at = new Date().toISOString()
+  const sha = 'a1b2c3d' as Sha
+  const row = { ts: at, subject: runId, actor: 'scheduler' as const }
+  const [startSeq] = (
+    await call('events.append', {
+      events: [
+        {
+          ...row,
+          type: 'eval.run_started',
+          data: { runId, suite: 'judge', sha, provider: 'deepinfra', model: 'a-model', cases: 1 },
+        },
+      ],
+    })
+  ).seqs
+  assert.equal(typeof startSeq, 'number')
+  const restSeqs = (
+    await call('events.append', {
+      events: [
+        {
+          ...row,
+          type: 'eval.case_scored',
+          causedBy: [startSeq as number],
+          data: { runId, caseId: 'case-a', attempt: 1, pass: true, score: 1, detail: 'answered route_question:peerId=engineer-1' },
+        },
+        {
+          ...row,
+          type: 'eval.run_finished',
+          causedBy: [startSeq as number],
+          data: {
+            runId,
+            suite: 'judge',
+            sha,
+            provider: 'deepinfra',
+            model: 'a-model',
+            cases: 1,
+            passed: 1,
+            tokensIn: 0,
+            tokensOut: 0,
+            latencyMs: 5,
+          },
+        },
+      ],
+    })
+  ).seqs
+  assert.equal(restSeqs.length, 2)
+  assert.ok((restSeqs[0] as number) > (startSeq as number), 'the rows follow the start they cite')
+
+  // And the port is eval-only: a row from any other part of the log is refused by name.
+  await assert.rejects(
+    () =>
+      call('events.append', {
+        events: [{ ...row, type: 'turn.usage_recorded', data: {} }],
+      } as never),
+    /eval\./,
+  )
 
   // `down` answers before the socket goes away, so the CLI is not left hanging.
   assert.deepEqual(await call('down', {}), { stopped: true })

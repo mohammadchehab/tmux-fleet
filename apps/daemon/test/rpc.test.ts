@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import type { MessageId, PeerId } from '@fleet/foundation-core'
+import type { MessageId, PeerId, Seq } from '@fleet/foundation-core'
 import type { DaemonApi, Decision } from '@fleet/foundation-contracts'
 import { decodeRequest, dispatch, encodeLine, handleLine } from '../src/rpc.ts'
 
@@ -54,6 +54,10 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
     async usage(input) {
       calls.push(`usage:${String(input.peerId)}`)
       return { recorded: true } as const
+    },
+    async eventsAppend(input) {
+      calls.push(`events.append:${String(input.events.length)}`)
+      return { seqs: input.events.map((_, index) => (index + 1) as Seq) }
     },
     async decide(input) {
       calls.push(`decide:${String(input.id)}:${input.decision}`)
@@ -162,4 +166,25 @@ test('methods that take no params refuse params', async () => {
 
 test('decide validates the decision id format before calling the daemon', async () => {
   await assert.rejects(() => dispatch(api(), { method: 'decide', params: { id: 'nope', decision: 'yes' } }), /id/)
+})
+
+test('events.append hands a run its seqs, in order, and refuses a non-eval event', async () => {
+  const subject = api()
+  const event = {
+    type: 'eval.case_scored',
+    ts: '2026-11-10T10:00:00.000Z',
+    subject: 'evr_0123456789abcdef',
+    actor: 'judge:some-model',
+    data: { runId: 'evr_0123456789abcdef', caseId: 'stale-brief', attempt: 1, pass: true, score: 1, detail: 'ok' },
+  }
+  const result = await dispatch(subject, { method: 'events.append', params: { events: [event, event] } })
+  assert.deepEqual(subject.calls, ['events.append:2'])
+  assert.deepEqual(result, { seqs: [1, 2] })
+
+  // The daemon is not the one keeping evals out: the contract does, and it does it
+  // at the wire, before a single event reaches the store (§17).
+  await assert.rejects(
+    () => dispatch(subject, { method: 'events.append', params: { events: [{ ...event, type: 'turn.usage_recorded' }] } }),
+    /eval\./,
+  )
 })

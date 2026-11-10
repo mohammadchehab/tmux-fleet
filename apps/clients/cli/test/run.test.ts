@@ -254,6 +254,148 @@ describe('run: down', () => {
   })
 })
 
+describe('run: evals run', () => {
+  /** The runner's stdout: one object, of the shape `packages/evals/suites/judge` writes. */
+  const evalAnswer = (gate: unknown, over: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      runId: 'evr_0123456789abcdef',
+      report: {
+        suite: 'judge',
+        provider: 'deepinfra',
+        model: 'a-model',
+        sha: 'a1b2c3d4e5f6',
+        cases: 2,
+        passed: 1,
+        tokens: { input: 0, output: 0 },
+        latencyMs: [10, 20],
+        retries: 0,
+      },
+      gate,
+      events: {
+        started: { type: 'eval.run_started', ts: now, subject: 'evr_0123456789abcdef', actor: 'scheduler', data: {} },
+        scored: [
+          { type: 'eval.case_scored', ts: now, subject: 'evr_0123456789abcdef', actor: 'scheduler', data: {} },
+          { type: 'eval.case_scored', ts: now, subject: 'evr_0123456789abcdef', actor: 'scheduler', data: {} },
+        ],
+        finished: { type: 'eval.run_finished', ts: now, subject: 'evr_0123456789abcdef', actor: 'scheduler', data: {} },
+      },
+      ...over,
+    })
+
+  /** A harness with the daemon answering `events.append` and the suite answering on stdout. */
+  const evals = (
+    answer: { readonly stdout: string; readonly stderr?: string; readonly exitCode: number },
+    over: Partial<RunDeps> = {},
+  ): Harness =>
+    harness(
+      { 'events.append': (params) => ({ seqs: (params as { events: unknown[] }).events.map((_, i) => i + 1) }) },
+      { runEvals: () => Promise.resolve({ stderr: '', ...answer }), ...over },
+    )
+
+  it('runs the suite, prints through the report formatter, and passes', async () => {
+    const { deps, out, err } = evals({ stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), exitCode: 0 })
+    assert.equal(await run(argv('evals', 'run', 'judge'), deps), 0)
+    const text = out[0] ?? ''
+    assert.match(text, /judge: deepinfra\/a-model at a1b2c3d/)
+    assert.match(text, /1 of 2 cases passed/)
+    assert.match(text, /cost {6}n\/a \(the provider does not report it\)/)
+    assert.deepEqual(err, [])
+  })
+
+  it('sends the rows through events.append in the two batches the citation rule asks for', async () => {
+    const { deps, calls } = evals({ stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), exitCode: 0 })
+    assert.equal(await run(argv('evals', 'run', 'judge'), deps), 0)
+    assert.deepEqual(
+      calls.map((c) => c.method),
+      ['events.append', 'events.append'],
+    )
+    const [start, rest] = calls.map((c) => (c.params as { events: { type: string; causedBy?: number[] }[] }).events)
+    assert.deepEqual(
+      start?.map((e) => e.type),
+      ['eval.run_started'],
+    )
+    assert.deepEqual(
+      rest?.map((e) => e.type),
+      ['eval.case_scored', 'eval.case_scored', 'eval.run_finished'],
+    )
+    // every row after the start cites it, which is how a reader joins the run
+    assert.deepEqual(
+      rest?.map((e) => e.causedBy),
+      [[1], [1], [1]],
+    )
+    assert.equal(start?.[0]?.causedBy, undefined)
+  })
+
+  it('exits with the suite\'s code when the run fell below its baseline', async () => {
+    const gate = {
+      kind: 'regressed',
+      exitCode: 1,
+      regressions: [{ caseId: 'case-b', passes: 1, attempts: 3, baselinePasses: 3, baselineAttempts: 3 }],
+    }
+    const { deps, out } = evals({ stdout: evalAnswer(gate), exitCode: 1 })
+    assert.equal(await run(argv('evals', 'run', 'judge'), deps), 1)
+    assert.match(out[0] ?? '', /below the baseline:/)
+    assert.match(out[0] ?? '', /case-b: 1\/3 attempts, baseline 3\/3/)
+  })
+
+  it('says there is no baseline yet, and passes, on a first run', async () => {
+    const { deps, out } = evals({ stdout: evalAnswer({ kind: 'no-baseline', exitCode: 0 }), exitCode: 0 })
+    assert.equal(await run(argv('evals', 'run', 'judge'), deps), 0)
+    assert.match(out[0] ?? '', /no baseline yet; run with --save-baseline/)
+  })
+
+  it('reports where the baseline went when it was asked to save one', async () => {
+    const stdout = evalAnswer({ kind: 'saved', exitCode: 0 }, { baselinePath: 'tests/evals/baselines/judge.json' })
+    const { deps, out } = evals({ stdout, exitCode: 0 })
+    assert.equal(await run(argv('evals', 'run', 'judge', '--save-baseline'), deps), 0)
+    assert.match(out[0] ?? '', /baseline written to tests\/evals\/baselines\/judge\.json/)
+  })
+
+  it('hands the suite the provider and model it was given', async () => {
+    const seen: unknown[] = []
+    const { deps } = evals(
+      { stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), exitCode: 0 },
+      { runEvals: (options) => {
+        seen.push(options)
+        return Promise.resolve({ stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), stderr: '', exitCode: 0 })
+      } },
+    )
+    assert.equal(await run(argv('evals', 'run', 'judge', '--provider', 'claude', '--model', 'a-model'), deps), 0)
+    assert.deepEqual(seen, [
+      { suite: 'judge', saveBaseline: false, provider: 'claude', model: 'a-model', env: { FLEET_PROFILE: 'squad' } },
+    ])
+  })
+
+  it('forwards the run\'s own narration, and keeps the answer when the ledger refuses the rows', async () => {
+    const { deps, out, err } = evals({ stdout: evalAnswer({ kind: 'pass', exitCode: 0 }), stderr: 'judge: case-a\n', exitCode: 0 })
+    const refused: RunDeps = {
+      ...deps,
+      call: () => () => {
+        throw new FleetError('store_failed', 'the store is at its row limit')
+      },
+    }
+    // the answer still prints, and the suite's code still decides the exit: losing a
+    // ledger row is a fleet problem, not a verdict on the model
+    assert.equal(await run(argv('evals', 'run', 'judge'), refused), 0)
+    assert.match(out[0] ?? '', /1 of 2 cases passed/)
+    assert.match(err.join('\n'), /judge: case-a/)
+    assert.match(err.join('\n'), /did not reach the ledger: the store is at its row limit/)
+  })
+
+  it('refuses a suite with no runner, and a `evals` with no subcommand', async () => {
+    const { deps, err, calls } = harness({})
+    assert.equal(await run(argv('evals'), deps), 2)
+    assert.equal(await run(argv('evals', 'run', 'briefs'), deps), 2)
+    assert.equal(await run(argv('evals', 'run', 'nonsense'), deps), 2)
+    assert.equal(await run(argv('evals', 'run'), deps), 2)
+    const said = err.join('\n')
+    assert.match(said, /usage: fleet evals run <suite>/)
+    assert.match(said, /the briefs suite has no runner yet; judge is the one that runs/)
+    assert.match(said, /suite "nonsense" is not one of judge, briefs/)
+    assert.deepEqual(calls, [])
+  })
+})
+
 describe('run: up', () => {
   it('attaches to a daemon that is already up, and starts nothing', async () => {
     const { deps, out, started } = harness({ up: () => status })

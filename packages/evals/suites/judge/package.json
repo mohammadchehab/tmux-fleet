@@ -7,7 +7,11 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "bin": {
+    "fleet-evals-judge": "./src/main.ts"
+  },
   "dependencies": {
+    "@fleet/evals-adapter": "workspace:*",
     "@fleet/foundation-contracts": "workspace:*",
     "@fleet/foundation-core": "workspace:*",
     "@fleet/orchestration-judge": "workspace:*",

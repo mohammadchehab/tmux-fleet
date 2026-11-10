@@ -10,10 +10,12 @@
 
 import { callerFor } from './client.ts'
 import { spawnFleetd } from './daemon.ts'
+import { runEvals } from './evals.ts'
 import { run } from './run.ts'
 
 process.exitCode = await run(process.argv, {
   call: (socketPath) => callerFor({ socketPath }),
   startFleetd: (profile) => spawnFleetd({ profile, env: process.env }),
+  runEvals: (options) => runEvals(options),
   env: process.env,
 })

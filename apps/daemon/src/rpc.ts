@@ -81,6 +81,8 @@ export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<
       return api.decide(decode(daemonParamsFor('decide'), params))
     case 'usage':
       return api.usage(decode(daemonParamsFor('usage'), params))
+    case 'events.append':
+      return api.eventsAppend(decode(daemonParamsFor('events.append'), params))
   }
 }
 

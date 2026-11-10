@@ -29,6 +29,15 @@ import {
   type DaemonMethod,
 } from '../src/index.ts'
 
+/** One `eval.case_scored`, the shape the eval runner hands the daemon (§17). */
+const evalCaseScoredEvent = {
+  type: 'eval.case_scored',
+  ts: '2026-11-10T10:00:00.000Z',
+  subject: 'evr_0123456789abcdef',
+  actor: 'judge:some-model',
+  data: { runId: 'evr_0123456789abcdef', caseId: 'stale-brief', attempt: 1, pass: true, score: 1, detail: 'matched' },
+}
+
 /** Params that must be accepted for a method; `{}` for the four that take nothing. */
 const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
   up: [{}],
@@ -51,10 +60,11 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
     },
   ],
   decide: [{ id: 'dec_0123456789abcdef', decision: 'yes' }, { id: 'dec_0123456789abcdef', decision: 'no', note: 'later' }],
+  'events.append': [{ events: [evalCaseScoredEvent] }],
 }
 
-test('the method set is the six a client builds against, and the usage report a hook sends', () => {
-  assert.deepEqual([...daemonMethods], ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage'])
+test('the method set is the seven a client builds against, and the usage report a hook sends', () => {
+  assert.deepEqual([...daemonMethods], ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage', 'events.append'])
 })
 
 for (const method of daemonMethods) {
@@ -89,6 +99,30 @@ test('a decision id must be a decision id', () => {
   const refused = decodeStrict(daemonParamsFor('decide'), { id: 'yes-or-no', decision: 'yes' })
   assert.equal(refused.ok, false)
   if (!refused.ok) assert.match(refused.error.message, /^id:/)
+})
+
+test('events.append is the evals\' door only: another event type is refused', () => {
+  // §17: the runner is dev tooling that may not import the daemon, so this is the
+  // one write it gets. It is not a general append with a narrower name — the
+  // prefix is the suite's, and a client that widened it would be writing the log.
+  const refused = decodeStrict(daemonParamsFor('events.append'), {
+    events: [{ ...evalCaseScoredEvent, type: 'peer.registered' }],
+  })
+  assert.equal(refused.ok, false)
+  if (!refused.ok) assert.match(refused.error.message, /eval\./)
+})
+
+test('events.append refuses an empty batch', () => {
+  assert.equal(decodeStrict(daemonParamsFor('events.append'), { events: [] }).ok, false)
+})
+
+test('events.append validates each event against its own schema, not just its prefix', () => {
+  // A type that is `eval.*` but carries the wrong fields is still not appendable:
+  // the store would refuse it, and the wire should say so where the client is.
+  const refused = decodeStrict(daemonParamsFor('events.append'), {
+    events: [{ ...evalCaseScoredEvent, data: { runId: 'evr_0123456789abcdef' } }],
+  })
+  assert.equal(refused.ok, false)
 })
 
 // ------------------------------------------------------------------ envelope
