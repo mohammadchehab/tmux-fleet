@@ -48,17 +48,17 @@ describe('the defaults are all on', () => {
 
 describe('a profile names only what it changes', () => {
   it('leaves everything it does not mention enabled', () => {
-    const planned = planRoutines({ routines: { standup: { at: '07:30' } } })
+    const planned = planRoutines({ standup: { at: '07:30' } })
     assert.deepEqual(kindsOf(planned), routineKinds)
   })
 
   it('removes a routine that is disabled', () => {
-    const planned = planRoutines({ routines: { 'security-scan': { enabled: false }, notify: { enabled: false } } })
+    const planned = planRoutines({ 'security-scan': { enabled: false }, notify: { enabled: false } })
     assert.deepEqual(kindsOf(planned), routineKinds.filter((kind) => kind !== 'security-scan' && kind !== 'notify'))
   })
 
   it('overrides a heartbeat period in place', () => {
-    const dispatch = planRoutines({ routines: { dispatch: { everyMinutes: 5 } } }).find(
+    const dispatch = planRoutines({ dispatch: { everyMinutes: 5 } }).find(
       (routine) => routine.kind === 'dispatch',
     )
     const heartbeat = dispatch?.triggers.find((trigger) => trigger.kind === 'heartbeat')
@@ -68,7 +68,7 @@ describe('a profile names only what it changes', () => {
   })
 
   it('overrides a schedule in place', () => {
-    const standup = planRoutines({ routines: { standup: { at: '07:30' } } }).find(
+    const standup = planRoutines({ standup: { at: '07:30' } }).find(
       (routine) => routine.kind === 'standup',
     )
     const schedule = standup?.triggers.find((trigger) => trigger.kind === 'schedule')
@@ -76,7 +76,7 @@ describe('a profile names only what it changes', () => {
   })
 
   it('adds a trigger a routine does not have by default', () => {
-    const keepBusy = planRoutines({ routines: { 'keep-busy': { everyMinutes: 15 } } }).find(
+    const keepBusy = planRoutines({ 'keep-busy': { everyMinutes: 15 } }).find(
       (routine) => routine.kind === 'keep-busy',
     )
     assert.deepEqual(
@@ -99,20 +99,20 @@ describe('a bad profile fails at config time', () => {
   }
 
   it('refuses a routine the fleet does not have', () => {
-    assert.equal(codeOf(() => planRoutines({ routines: { dispatchh: { enabled: true } } as never })), 'invalid_input')
+    assert.equal(codeOf(() => planRoutines({ dispatchh: { enabled: true } } as never)), 'invalid_input')
   })
 
   it('refuses an unparseable schedule', () => {
-    assert.equal(codeOf(() => planRoutines({ routines: { standup: { at: '9am' } } })), 'invalid_input')
+    assert.equal(codeOf(() => planRoutines({ standup: { at: '9am' } })), 'invalid_input')
   })
 
   it('refuses a schedule that is not a time of day', () => {
-    assert.equal(codeOf(() => planRoutines({ routines: { standup: { at: '24:00' } } })), 'invalid_input')
+    assert.equal(codeOf(() => planRoutines({ standup: { at: '24:00' } })), 'invalid_input')
   })
 
   it('refuses a heartbeat of zero or a fraction of a minute', () => {
-    assert.equal(codeOf(() => planRoutines({ routines: { dispatch: { everyMinutes: 0 } } })), 'invalid_input')
-    assert.equal(codeOf(() => planRoutines({ routines: { dispatch: { everyMinutes: 1.5 } } })), 'invalid_input')
+    assert.equal(codeOf(() => planRoutines({ dispatch: { everyMinutes: 0 } })), 'invalid_input')
+    assert.equal(codeOf(() => planRoutines({ dispatch: { everyMinutes: 1.5 } })), 'invalid_input')
   })
 })
 

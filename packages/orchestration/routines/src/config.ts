@@ -20,12 +20,16 @@ export interface RoutineSettings {
 }
 
 /**
- * The profile's `routines` block. Partial, so a profile names only what it
- * changes; a kind it does not name keeps §6's default.
+ * The profile's `routines` block, one entry per kind. Partial, so a profile
+ * names only what it changes; a kind it does not name keeps §6's default.
+ *
+ * The file's block and this type are the same shape on purpose: an earlier
+ * version wrapped it one level deeper (`{routines: {...}}`), which made the
+ * documented spelling `routines: {dispatch: {enabled: false}}` decode into an
+ * object whose every routine was `undefined` — every routine then ran with its
+ * defaults, and the profile looked like it had turned them off.
  */
-export interface RoutinesConfig {
-  readonly routines?: Partial<Record<RoutineKind, RoutineSettings>>
-}
+export type RoutinesConfig = Partial<Record<RoutineKind, RoutineSettings>>
 
 /** A routine as the scheduler will run it: its id, its kind, and every way it can be woken. */
 export interface PlannedRoutine {
@@ -146,7 +150,7 @@ const resolveTriggers = (kind: RoutineKind, settings: RoutineSettings | undefine
  * silently does nothing is a routine that quietly never runs.
  */
 export const planRoutines = (config: RoutinesConfig = {}): readonly PlannedRoutine[] => {
-  const settings = config.routines ?? {}
+  const settings = config
   for (const key of Object.keys(settings)) {
     if (!(routineKinds as readonly string[]).includes(key)) {
       throw fleetError('invalid_input', `unknown routine "${key}"; the fleet has: ${routineKinds.join(', ')}`)
