@@ -17,7 +17,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { createSandbox } from '../support/sandbox.ts'
-import { DEFAULT_DEEPINFRA_TOKEN_ENV, defaultDeepInfraTokenFile } from '../../../apps/daemon/src/deepinfra-env.ts'
+import { DEFAULT_DEEPINFRA_TOKEN_ENV, defaultDeepInfraTokenFile } from '../../../apps/daemon/src/env/deepinfra-env.ts'
 
 const MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
 /** Not a key, and shaped so that a substring search cannot be a coincidence. */

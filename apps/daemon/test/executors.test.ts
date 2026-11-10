@@ -53,8 +53,8 @@ import {
   createMailboxExecutor,
   createStandupExecutor,
   NO_WORK_KIND,
-} from '../src/executors.ts'
-import { createExecutorRouter } from '../src/executor.ts'
+} from '../src/execution/executors.ts'
+import { createExecutorRouter } from '../src/execution/executor.ts'
 
 /** A value of a shape this test only partly fills; the fields used are the ones named. */
 const row = <T>(value: unknown): T => value as T

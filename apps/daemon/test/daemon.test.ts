@@ -33,14 +33,14 @@ import {
   type TurnId,
 } from '@fleet/foundation-core'
 import type { AppendEvent, PeerSessionLease, Turn } from '@fleet/foundation-contracts'
-import { createDaemonBuilds } from '../src/builds.ts'
+import { createDaemonBuilds } from '../src/wiring/builds.ts'
 import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import { createMailbox } from '@fleet/runtime-mailbox'
 import type { Scheduler } from '@fleet/orchestration-routines'
 
-import { createDaemon } from '../src/daemon.ts'
-import type { Supervisor } from '../src/sessions.ts'
-import type { Profile } from '../src/profile.ts'
+import { createDaemon } from '../src/wiring/daemon.ts'
+import type { Supervisor } from '../src/execution/sessions.ts'
+import type { Profile } from '../src/config/profile.ts'
 
 const roots = await mkdtemp(join(tmpdir(), 'fleet-daemon-'))
 after(async () => {

@@ -10,7 +10,7 @@ in the profile can be "the state of a ticket" — there is no such field.
 Two packages: `packages/integrations/trackers/backlog` (the adapter over the `backlog` CLI, one argv per call, an
 injectable runner and no network in its tests) and `packages/orchestration/routines/src/routines/tracker-sync.ts` (the
 routine body: pull, dedupe, propose, move). The daemon is the only place the two halves meet (§1.1), and it is what
-turns the profile's block into a `Tracker` (`apps/daemon/src/compose.ts`).
+turns the profile's block into a `Tracker` (`apps/daemon/src/wiring/compose.ts`).
 
 ## Turning it on
 

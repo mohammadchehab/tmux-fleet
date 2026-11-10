@@ -27,8 +27,8 @@ import type { AppendEvent, FleetEvent, PeerSessionLease, Turn } from '@fleet/fou
 import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import { createMailbox } from '@fleet/runtime-mailbox'
 
-import type { Supervisor } from '../src/sessions.ts'
-import { createWakingSink, deliverOnSessionStart, type WakingSinkDeps } from '../src/wake.ts'
+import type { Supervisor } from '../src/execution/sessions.ts'
+import { createWakingSink, deliverOnSessionStart, type WakingSinkDeps } from '../src/execution/wake.ts'
 
 const roots = await mkdtemp(join(tmpdir(), 'fleet-wake-'))
 after(async () => {

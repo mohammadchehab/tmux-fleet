@@ -23,7 +23,7 @@
  *
  * What is *not* substituted is the part clause 3 exists to prove: the gate merges
  * what §10 allows, the `pr.merged` it writes advances the Work through the listener
- * in `apps/daemon/src/work-sync.ts`, and the Work is `merged` in the projections.
+ * in `apps/daemon/src/execution/work-sync.ts`, and the Work is `merged` in the projections.
  */
 
 import assert from 'node:assert/strict'

@@ -64,5 +64,5 @@ to dedupe against. A run of `notify.failed` for one key means the channel is bro
 | `packages/notify/core/src/deliver.ts` | the plan → `notify.sent` / `notify.failed` / `notify.withdrawn`, one atomic batch |
 | `packages/notify/core/src/notifier.ts` | the `Notifier` port a channel implements |
 | `packages/notify/channels/macos/src/macos.ts` | `terminal-notifier` or `osascript`, behind an injected `execFile` |
-| `apps/daemon/src/notify.ts` | the `notify` routine body the daemon registers, and the channel a profile picks |
-| `apps/daemon/src/compose.ts` | where the factory is handed to the scheduler, and nowhere else (§1.1) |
+| `apps/daemon/src/routines/notify.ts` | the `notify` routine body the daemon registers, and the channel a profile picks |
+| `apps/daemon/src/wiring/compose.ts` | where the factory is handed to the scheduler, and nowhere else (§1.1) |

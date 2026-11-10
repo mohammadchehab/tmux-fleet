@@ -17,7 +17,7 @@ import { appendIssues, type AppendEvent, type FleetEvent } from '@fleet/foundati
 import type { EventStore } from '@fleet/foundation-store'
 import { hashInputs, type JudgeTransport, type JudgeRequest } from '@fleet/orchestration-judge'
 
-import { createDaemonJudge, createJudgeLog, DEFAULT_JUDGE_MODEL } from '../src/judge.ts'
+import { createDaemonJudge, createJudgeLog, DEFAULT_JUDGE_MODEL } from '../src/execution/judge.ts'
 
 /** A value of a shape this test only partly fills; the fields used are the ones named. */
 const row = <T>(value: unknown): T => value as T

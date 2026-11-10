@@ -21,8 +21,8 @@ import type { BriefId, Clock, MessageId, PeerId, ProviderSessionRef, Repo, Sessi
 import type { AppendEvent, WorkId } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 
-import { createWakingSink } from '../src/wake.ts'
-import { catchUpWork, syncWork, type WorkSyncDeps } from '../src/work-sync.ts'
+import { createWakingSink } from '../src/execution/wake.ts'
+import { catchUpWork, syncWork, type WorkSyncDeps } from '../src/execution/work-sync.ts'
 
 const roots = await mkdtemp(join(tmpdir(), 'fleet-work-sync-'))
 after(async () => {

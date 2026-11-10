@@ -15,7 +15,7 @@
 
 import { parseProfileName, profilePaths } from '@fleet/foundation-core'
 
-import { compose } from './compose.ts'
+import { compose } from './wiring/compose.ts'
 
 const profileNameOf = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>): string => {
   const named = argv.slice(2).find((arg) => !arg.startsWith('-'))

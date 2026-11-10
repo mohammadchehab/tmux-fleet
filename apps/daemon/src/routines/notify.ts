@@ -19,7 +19,7 @@ import { runNotify, type Notifier, type NotifyReadModel, type StandupNotice } fr
 import { createMacNotifier } from '@fleet/notify-macos'
 import { shortHash } from '@fleet/orchestration-pm'
 import type { RoutineContext, RoutineFactory, RoutineOutcome } from '@fleet/orchestration-routines'
-import type { Profile } from './profile.ts'
+import type { Profile } from '../config/profile.ts'
 
 /** What the body needs that the scheduler does not hand a routine: the sink and the channel (§1.1). */
 export interface NotifyWiring {

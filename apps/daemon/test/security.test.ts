@@ -21,7 +21,7 @@ import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import type { RoutineContext } from '@fleet/orchestration-routines'
 import type { ScanRequest } from '@fleet/security-findings'
 import type { ScannerId, ToolIo } from '@fleet/security-scanners'
-import { createSecurityScanFactory, prTargetsOf, scanTargets, securityScanned } from '../src/security.ts'
+import { createSecurityScanFactory, prTargetsOf, scanTargets, securityScanned } from '../src/routines/security.ts'
 
 const repo = 'acme/fleet' as Repo
 const sha = 'a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0' as Sha

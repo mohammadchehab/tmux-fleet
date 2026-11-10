@@ -20,8 +20,8 @@ import {
   defaultDeepInfraTokenFile,
   readDeepInfraToken,
   type DeepInfraEnvOptions,
-} from '../src/deepinfra-env.ts'
-import { decodeProfile, type PeerProfile, type Profile } from '../src/profile.ts'
+} from '../src/env/deepinfra-env.ts'
+import { decodeProfile, type PeerProfile, type Profile } from '../src/config/profile.ts'
 
 const MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
 const TOKEN = 'not-a-real-deepinfra-key-0000'

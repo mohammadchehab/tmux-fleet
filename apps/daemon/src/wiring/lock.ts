@@ -26,7 +26,7 @@ import { mkdir, open, readFile, rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { fleetError } from '@fleet/foundation-core'
 
-import { rpcCall } from './server.ts'
+import { rpcCall } from '../api/server.ts'
 
 export interface FleetLock {
   readonly path: string

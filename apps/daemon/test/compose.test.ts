@@ -20,8 +20,8 @@ import { describe, it } from 'node:test'
 import { profilePaths } from '@fleet/foundation-core'
 import type { Tracker } from '@fleet/foundation-contracts'
 
-import { buildProviders, compose } from '../src/compose.ts'
-import { decodeProfile, type Profile } from '../src/profile.ts'
+import { buildProviders, compose } from '../src/wiring/compose.ts'
+import { decodeProfile, type Profile } from '../src/config/profile.ts'
 
 const MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
 const OTHER = 'deepseek-ai/DeepSeek-V3.2'

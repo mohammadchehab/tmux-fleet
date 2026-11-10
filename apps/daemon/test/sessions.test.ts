@@ -22,8 +22,8 @@ import { fixedClock, profilePaths, type PeerId, type Seq, type TurnId } from '@f
 import type { AppendEvent, EventSink, ProviderEvent, SessionSpec, Turn } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
 
-import { decodeProfile, type Profile } from '../src/profile.ts'
-import { createSupervisor, type Supervisor } from '../src/sessions.ts'
+import { decodeProfile, type Profile } from '../src/config/profile.ts'
+import { createSupervisor, type Supervisor } from '../src/execution/sessions.ts'
 
 const peerId = 'engineer-1' as PeerId
 const turnId = 'trn_0123456789abcdef' as TurnId

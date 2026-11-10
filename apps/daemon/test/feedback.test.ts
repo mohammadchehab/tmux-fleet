@@ -42,7 +42,7 @@ import { defaultTriggers, installedFactories } from '@fleet/orchestration-routin
  * through the Mailbox (`packages/runtime/mailbox/src/mailbox.ts`);
  * `request_judge` is two events (`packages/orchestration/judge/src/judge.ts`);
  * `merge` and `retarget` are the gate's (`packages/orchestration/gate/src/gate.ts`);
- * the rest are `apps/daemon/src/executors.ts`. `flag_capacity` appends nothing:
+ * the rest are `apps/daemon/src/execution/executors.ts`. `flag_capacity` appends nothing:
  * §5.2 calls it a capacity fact, already in the log as `peer.state_changed`.
  */
 const tickEmits: readonly FleetEventType[] = [

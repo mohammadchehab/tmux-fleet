@@ -19,9 +19,9 @@ import { describe, it } from 'node:test'
 
 import { profilePaths } from '@fleet/foundation-core'
 
-import { compose } from '../src/compose.ts'
-import { acquireFleetLock } from '../src/lock.ts'
-import { rpcCall } from '../src/server.ts'
+import { compose } from '../src/wiring/compose.ts'
+import { acquireFleetLock } from '../src/wiring/lock.ts'
+import { rpcCall } from '../src/api/server.ts'
 
 const code = (thrown: unknown): string | undefined => (thrown as { code?: string }).code
 
