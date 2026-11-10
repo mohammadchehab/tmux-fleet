@@ -282,7 +282,11 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // gets that far. A compose that throws from here on leaves the file behind
   // with this process's pid in it, which is the state the lock's next starter
   // already knows how to read — the pid is dead as soon as this process is.
-  const lock = await acquireFleetLock(paths.lockPath)
+  // A live pid in the lock is not proof of a live fleetd — after a reboot the
+  // number can belong to anything — so the socket is handed over: a daemon that
+  // answers there and names that pid is the evidence, and a pid that is neither
+  // serving nor looks like `fleetd` is taken over (§2).
+  const lock = await acquireFleetLock(paths.lockPath, { socketPath: paths.socketPath })
   const stop = deps.exit ?? (() => process.exit(0))
 
   const store = await (deps.openStore ?? openSqliteStore)({ path: paths.storePath, clock })
