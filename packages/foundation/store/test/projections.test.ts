@@ -7,6 +7,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import type { PeerId, WorkId } from '@fleet/foundation-core'
 import type { AppendEvent } from '@fleet/foundation-contracts'
@@ -23,6 +24,22 @@ const event = (
   ts = '2026-11-10T10:00:00.000Z',
   actor = 'pm',
 ): AppendEvent => ({ ts, type, subject, actor, data }) as unknown as AppendEvent
+
+/** The misses a projection recorded, read straight from the table until `health()` exposes them. */
+const anomalies = (path: string): readonly unknown[] => {
+  const db = new DatabaseSync(path, { readOnly: true })
+  try {
+    return db
+      .prepare(
+        `SELECT event_seq, projection, event_type, subject, detail, at
+           FROM projection_anomalies ORDER BY event_seq, projection`,
+      )
+      .all()
+      .map((row) => ({ ...row }))
+  } finally {
+    db.close()
+  }
+}
 
 test('the golden corpus replays into a read model of every projection', async () => {
   const store = await open()
@@ -381,5 +398,35 @@ test('a blocked Work says who can unblock it, and only while it is blocked', asy
   const ready = await store.reader().work.get(workId)
   assert.equal(ready?.state, 'ready')
   assert.equal(ready?.blockedOn, undefined, 'a Work that is no longer blocked has nobody to route to')
+  await store.close()
+})
+
+test('an event about an entity the log never opened is recorded, not silently dropped', async () => {
+  const path = tempStorePath()
+  const store = await openSqliteStore({ path, clock: fixedClock })
+  // `events` is append-only, so this cannot be refused at the boundary; and the projection
+  // has no row to write. Dropping it quietly would make a broken log look like a healthy one.
+  const absent = 'wrk_ffffffffffffffff' as WorkId
+  await store.append([
+    event('work.started', absent, { workId: absent, peerId: 'engineer-1', sessionId: 'ses_1a2b3c4d5e6f7081' }),
+  ])
+
+  const recorded = [
+    {
+      event_seq: 1,
+      projection: 'work',
+      event_type: 'work.started',
+      subject: absent,
+      detail: `no work row for ${absent}`,
+      at: '2026-11-10T10:00:00.000Z',
+    },
+  ]
+  assert.deepEqual(await anomalies(path), recorded)
+  assert.equal(await store.reader().work.get(absent), undefined, 'the miss is recorded, not invented')
+
+  // The row is itself a projection, keyed `(seq, projection)`: a replay has to land on exactly
+  // the same one, or `append` and `rebuild` would disagree about how sick the log is (§5.4).
+  await store.rebuild()
+  assert.deepEqual(await anomalies(path), recorded)
   await store.close()
 })
