@@ -139,14 +139,18 @@ export const checksFrom = (value: unknown): { readonly state: ChecksState; reado
 
 /**
  * `/merge_requests/:iid/approvals` as §10's review. `approved` is the field that
- * answers the question; `approved_by` is read for the reviewer the record cites.
+ * answers the question, and it is the only one that can: it is GitLab's own
+ * verdict, computed against the approval count the project *requires*.
+ * `approved_by` is who approved, not whether the project is satisfied — a
+ * project that needs two approvals reports `approved: false` beside a single
+ * entry, so reading the list as the verdict would open the gate on half the
+ * approvals it asks for. The list is read for the reviewer the record cites.
  */
 export const reviewFrom = (value: unknown): ReviewObservation => {
   const row = record(value)
-  const approvedBy = list(row?.['approved_by'])
-  if (row?.['approved'] !== true && approvedBy.length === 0) return { state: 'pending' }
+  if (row?.['approved'] !== true) return { state: 'pending' }
 
-  const login = text(record(approvedBy.at(-1)?.['user'])?.['username'])
+  const login = text(record(list(row['approved_by']).at(-1)?.['user'])?.['username'])
   return login === undefined ? { state: 'approved' } : { state: 'approved', reviewer: login }
 }
 
