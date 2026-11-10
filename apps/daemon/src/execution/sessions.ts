@@ -48,6 +48,7 @@ import {
   mechanicalStateFile,
   selfPurge,
   sessionIdOf,
+  type BookkeepingFailure,
   type MechanicalFacts,
   type SessionRecord,
 } from '@fleet/runtime-supervisor'
@@ -99,6 +100,13 @@ export interface SupervisorDeps {
   readonly providerEnv?: (peer: PeerProfile) => Promise<Readonly<Record<string, string>>>
   /** Where the page reports what it cannot do, so a failed session is visible rather than silent. */
   readonly onError?: (peer: PeerId, error: unknown) => void
+  /**
+   * Where a bookkeeping append the store refused is reported (TASK-57). Kept apart
+   * from `onError` on purpose: `onError` is about a session that failed, and this
+   * is about one that stayed alive while a row about it was lost. `compose.ts` wires
+   * it to the daemon log.
+   */
+  readonly onBookkeepingFailure?: (failure: BookkeepingFailure) => void
 }
 
 /**
@@ -325,6 +333,9 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       limits: purgeLimitsOf(deps.profile),
       clock,
       record,
+      // TASK-57: the supervisor keeps the session and hands the refusal here; the
+      // daemon's job is only to let it out of the process.
+      ...(deps.onBookkeepingFailure === undefined ? {} : { onBookkeepingFailure: deps.onBookkeepingFailure }),
       purge: async (input) =>
         selfPurge({
           provider,

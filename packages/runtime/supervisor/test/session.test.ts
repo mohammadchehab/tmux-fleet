@@ -11,7 +11,13 @@ import { fixedClock, type PeerId, type QuestionId, type TurnId } from '@fleet/fo
 import { appendIssues, type ProviderEvent, type Usage } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle, TurnSpend } from '@fleet/runtime-provider-sdk'
 
-import { PeerSession, PurgeRestartFailed, type PurgeOutcome, type SessionRecord } from '../src/index.ts'
+import {
+  PeerSession,
+  PurgeRestartFailed,
+  type BookkeepingFailure,
+  type PurgeOutcome,
+  type SessionRecord,
+} from '../src/index.ts'
 
 const peerId = 'engineer-1' as PeerId
 const turnId = 'trn_0123456789abcdef' as TurnId
@@ -485,6 +491,92 @@ test('a store that rejects the usage row does not fail a healthy session', async
     r.records.map((record) => (record.type === 'peer.state_changed' ? record.data.state : record.type)),
     ['session.started', 'working', 'idle', 'ended', 'session.ended'],
   )
+})
+
+test('the refused usage row is reported, once, naming the peer, the turn and the error', async () => {
+  // Swallowing the append was the right call in TASK-4 and the wrong one to leave
+  // there: a fleet that measures turns for its spend cap had no way to learn that
+  // a measurement was never filed. The port is what makes it visible without
+  // making it fatal — the session ends as its provider said, and one line says why
+  // the row is missing.
+  const r = rig(() => ({ contextTokens: 4_096, contextLimit: 200_000 }), {
+    spend: { inputTokens: 900, outputTokens: 120, cachedTokens: 0 },
+  })
+  const failures: BookkeepingFailure[] = []
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      if (record.type === 'turn.usage_recorded') return Promise.reject(new Error('the store refused the append'))
+      r.records.push(record)
+    },
+    onBookkeepingFailure: (failure) => {
+      failures.push(failure)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), {
+    type: 'session.ended',
+    reason: 'exit',
+    code: 0,
+  })
+  await until(() => session.state === 'ended', 'the session to end as its provider said')
+  await run
+
+  assert.equal(failures.length, 1, 'one refused append is one failure reported, not a stream of them')
+  assert.equal(failures[0]?.peerId, peerId)
+  assert.equal(failures[0]?.turnId, turnId)
+  assert.equal((failures[0]?.error as Error).message, 'the store refused the append')
+  assert.equal(session.state, 'ended', 'reporting the failure does not bring the session down')
+})
+
+test('a bookkeeping port that throws does not fail the session it is reporting on', async () => {
+  // The port is a log. If the log itself throws — a closed stderr, a bad hook —
+  // the session must still not be sacrificed to it: that is the whole point of
+  // catching the append, and re-raising it one layer up would undo TASK-4.
+  const r = rig(() => ({ contextTokens: 4_096, contextLimit: 200_000 }), {
+    spend: { inputTokens: 900, outputTokens: 120, cachedTokens: 0 },
+  })
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      if (record.type === 'turn.usage_recorded') return Promise.reject(new Error('the store refused the append'))
+      r.records.push(record)
+    },
+    onBookkeepingFailure: () => {
+      throw new Error('the log is broken too')
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), {
+    type: 'session.ended',
+    reason: 'exit',
+    code: 0,
+  })
+  await until(() => session.state === 'ended', 'the session to end as its provider said')
+  await run
+
+  assert.equal(session.state, 'ended')
+  assert.deepEqual(r.recovered, [], 'a broken log is not a session the wrapper recovers')
 })
 
 test('a provider that cannot answer usage() does not cost the session either', async () => {
