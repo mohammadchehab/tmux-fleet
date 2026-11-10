@@ -15,7 +15,8 @@
       "providerSessionRef": 42,
       "model": "claude-sonnet-5-5",
       "permissionMode": "acceptEdits",
-      "resumed": false
+      "resumed": false,
+      "endpoint": "https://api.deepinfra.com/anthropic"
     }
   },
   "path": "data.providerSessionRef"

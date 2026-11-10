@@ -105,7 +105,14 @@ export const peerFailed = event(
   ),
 )
 
-/** A session came up. `resumed` is true when it continued a `ProviderSessionRef`. */
+/**
+ * A session came up. `resumed` is true when it continued a `ProviderSessionRef`.
+ * `model`, `permissionMode` and `endpoint` are what the session is *running*,
+ * read from its first init and the adapter's own record, never echoed from the
+ * request: a spec can be wrong and a leaked environment can silently change the
+ * endpoint (§4, §13). `endpoint` is present only when the adapter recorded the
+ * base URL it set, since an SDK does not expose it.
+ */
 export const sessionStarted = event(
   'session.started',
   object({
@@ -115,6 +122,7 @@ export const sessionStarted = event(
     providerSessionRef: providerSessionRef(),
     model: string({ minLength: 1 }),
     permissionMode: permissionMode(),
+    endpoint: optional(string({ minLength: 1, maxLength: 500 })),
     resumed: boolean(),
   }),
 )

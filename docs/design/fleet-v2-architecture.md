@@ -255,6 +255,7 @@ interface Provider {
   usage(h: SessionHandle): Promise<{ contextTokens: number; contextLimit: number; costUsd?: number }>
   model(h: SessionHandle): Promise<{ id: string; endpoint?: string }>   // the LATEST init's model, never a UI string
   events(h: SessionHandle): AsyncIterable<ProviderEvent> // plain data only: turn.started/ended{reason}, tool.use, question.asked, approval.requested, session.ended, error, compaction
+  setModel(h: SessionHandle, model: string): Promise<void>   // always present; rejects FleetError("unsupported") when capabilities.modelSwitch is false; confirmed one turn late (next init)
   resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle>   // always present; rejects FleetError("unsupported") when capabilities.resume is false (untested: both live providers report true)
 }
 ```
@@ -286,6 +287,17 @@ The shared types (`SessionSpec`, `Turn`, `ProviderEvent`, `PermissionMode`, `Pro
   launch-mode check reads the **first** init event (`model()` follows the **latest**, which is how a model switch
   shows); a capture variable that just keeps overwriting reports neither correctly. The conformance suite asserts the
   first init carries the requested mode and that a write in `default` reaches the approval path.
+- **Peers run in `default` with a tool policy, never `bypassPermissions`** (decided 2026-11-10): bypass shadows the
+  approval path (`canUseTool` is never called), so a question is auto-approved with no answer and the decision inbox is
+  blind. `SessionSpec.toolPolicy` (`{defaultAction, rules: [{tool, pattern?, action}]}`, first match wins, default
+  `ask`) stands in for it: `allow` runs silently, `deny` emits `tool.denied` and tells the model, only `ask` and
+  `AskUserQuestion` reach `waiting_input`. A Bash `allow` rule never matches a command with a control construct
+  (`;` `&` `|` backtick `$(` `<(` `<` `>` newline: that is `ask`); matching sees the whole string (over 64 KB is `ask`),
+  file paths are resolved before matching, and `allow` patterns must be fully anchored. It is a guard rail, not a
+  sandbox: "no production" is enforced by the peer's environment, never by a regex.
+- **`SessionHandle.briefTurnId`** is the turn the brief was sent as (some SDKs say nothing until a first user message);
+  the first `turn.started` refers to it. The stored `session.started` event records the *effective* model, permission
+  mode and (when the adapter recorded it) endpoint.
 - **Env is built, never inherited.** The adapter never spreads `process.env`; it builds the child environment from an
   explicit allowlist (PATH, HOME, TERM, LANG, TMPDIR, …) plus `SessionSpec.env`, and starts with
   `settingSources: []` so the developer's own settings, hooks and env do not leak in (a bare run fired 13 hook frames

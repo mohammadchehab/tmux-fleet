@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { test } from 'node:test'
-import { decodeStrict, parse, SchemaError, type Schema } from '@fleet/foundation-core'
+import { decode, decodeStrict, parse, SchemaError, type Schema } from '@fleet/foundation-core'
 import {
   briefHandoff,
   mcpServer,
@@ -18,6 +18,8 @@ import {
   stateFile,
   turn,
   usage,
+  toolPolicy,
+  defaultToolPolicy,
 } from '../src/index.ts'
 
 const providerEventsDir = new URL('./fixtures/provider-events/', import.meta.url)
@@ -39,6 +41,7 @@ const providerEventTypes = [
   'question.asked',
   'question.abandoned',
   'session.ended',
+  'tool.denied',
   'tool.use',
   'turn.ended',
   'turn.started',
@@ -51,6 +54,7 @@ const contracts: Readonly<Record<string, () => Schema<unknown>>> = {
   'provider-capabilities': providerCapabilities as () => Schema<unknown>,
   'session-spec': sessionSpec as () => Schema<unknown>,
   'state-file': stateFile as () => Schema<unknown>,
+  'tool-policy': toolPolicy as () => Schema<unknown>,
   turn: turn as () => Schema<unknown>,
   usage: usage as () => Schema<unknown>,
 }
@@ -68,8 +72,8 @@ for (const type of providerEventTypes) {
   })
 }
 
-test('the provider stream vocabulary is nine events, and none is missing', () => {
-  assert.equal(providerEventTypes.length, 9)
+test('the provider stream vocabulary is ten events, and none is missing', () => {
+  assert.equal(providerEventTypes.length, 10)
   assert.equal(new Set(providerEventTypes).size, providerEventTypes.length)
 })
 
@@ -150,4 +154,29 @@ test('a state file needs a goal and a brief version, the two things a resumed pe
   const value = fixture(providerDir, 'state-file') as Record<string, unknown>
   assert.throws(() => parse(stateFile(), { ...value, goal: undefined }), SchemaError)
   assert.throws(() => parse(stateFile(), { ...value, briefVersion: 0 }), SchemaError)
+})
+
+test('a tool policy refuses an unknown action, an empty tool name and too many rules', () => {
+  const schema = toolPolicy()
+  assert.equal(decodeStrict(schema, { defaultAction: 'maybe', rules: [] }).ok, false)
+  assert.equal(decodeStrict(schema, { defaultAction: 'allow', rules: [{ tool: '', action: 'deny' }] }).ok, false)
+  assert.equal(decodeStrict(schema, { defaultAction: 'allow', rules: [{ tool: 'Bash', action: 'sometimes' }] }).ok, false)
+  const many = Array.from({ length: 201 }, () => ({ tool: 'Bash', action: 'ask' }))
+  assert.equal(decodeStrict(schema, { defaultAction: 'allow', rules: many }).ok, false)
+})
+
+test('a tool policy is strict on write and keeps first-match order on read', () => {
+  const schema = toolPolicy()
+  const policy = {
+    defaultAction: 'ask',
+    rules: [
+      { tool: 'Bash', pattern: '^git status$', action: 'allow' },
+      { tool: '*', action: 'deny' },
+    ],
+  }
+  const read = decode(schema, policy)
+  assert.ok(read.ok)
+  assert.deepEqual(read.value.rules.map((r) => r.action), ['allow', 'deny'])
+  assert.equal(decodeStrict(schema, { ...policy, extra: 1 }).ok, false)
+  assert.deepEqual(defaultToolPolicy, { defaultAction: 'ask', rules: [] })
 })

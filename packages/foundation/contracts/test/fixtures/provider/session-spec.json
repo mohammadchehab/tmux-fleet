@@ -23,23 +23,45 @@
   "stateFile": {
     "peerId": "engineer-1",
     "goal": "Retarget stacked PRs before merging",
-    "done": ["gate reads stackParent"],
-    "inFlight": ["integration test for a three-PR stack"],
-    "next": ["reply to the review thread"],
-    "decisions": ["retarget before merge, not after"],
-    "openQuestions": ["does the gate merge a two-deep stack at once?"],
+    "done": [
+      "gate reads stackParent"
+    ],
+    "inFlight": [
+      "integration test for a three-PR stack"
+    ],
+    "next": [
+      "reply to the review thread"
+    ],
+    "decisions": [
+      "retarget before merge, not after"
+    ],
+    "openQuestions": [
+      "does the gate merge a two-deep stack at once?"
+    ],
     "briefVersion": 1
   },
   "mcp": [
     {
       "id": "codegraph",
       "command": "codegraph",
-      "args": ["mcp"],
+      "args": [
+        "mcp"
+      ],
       "env": {
         "CODEGRAPH_ROOT": "/Users/mohammads/Dev/tmux-fleet"
       }
     }
   ],
   "resumeRef": "sess_9f8e7d6c5b4a39281706",
-  "systemPromptAppend": "Use codegraph before grep when .codegraph/ exists."
+  "systemPromptAppend": "Use codegraph before grep when .codegraph/ exists.",
+  "toolPolicy": {
+    "defaultAction": "allow",
+    "rules": [
+      {
+        "tool": "Bash",
+        "pattern": "kubectl .*prod",
+        "action": "deny"
+      }
+    ]
+  }
 }

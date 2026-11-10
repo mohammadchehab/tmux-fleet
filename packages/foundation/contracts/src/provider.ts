@@ -146,6 +146,57 @@ export const stateFile = (): Schema<StateFile> =>
     briefVersion: positiveInt(),
   })
 
+/** What a tool-policy rule does with a tool call (§4). */
+export const toolActions = ['allow', 'ask', 'deny'] as const
+export type ToolAction = (typeof toolActions)[number]
+
+/**
+ * One rule of a session's tool policy. `tool` is a tool name or `*`; `pattern`
+ * is a JS RegExp source tested against the tool's primary string (Bash: the
+ * command; Read/Write/Edit: the resolved path; any other tool: its input as
+ * JSON). Without a pattern the rule matches every call of the tool.
+ */
+export interface ToolPolicyRule {
+  readonly tool: string
+  readonly pattern?: string
+  readonly action: ToolAction
+}
+
+/**
+ * Which tool calls a peer may make without asking (§4). Peers run in the
+ * provider's `default` permission mode and this policy stands in for
+ * `bypassPermissions`, which would shadow the approval path and leave the
+ * decision inbox blind. Rules are evaluated in order and the first match wins;
+ * no match means `defaultAction`. `AskUserQuestion` is never evaluated: a
+ * question always reaches a human.
+ *
+ * This is a guard rail, not a sandbox. "No production" (fleet rule 2) is
+ * enforced by what is in the peer's environment, never by a deny pattern.
+ */
+export interface ToolPolicy {
+  readonly defaultAction: ToolAction
+  readonly rules: readonly ToolPolicyRule[]
+}
+
+/** What a spec without a `toolPolicy` gets: everything asks. */
+export const defaultToolPolicy: ToolPolicy = Object.freeze({
+  defaultAction: 'ask',
+  rules: Object.freeze([]),
+})
+
+export const toolPolicy = (): Schema<ToolPolicy> =>
+  objectAs<ToolPolicy>()({
+    defaultAction: oneOf(toolActions),
+    rules: array(
+      objectAs<ToolPolicyRule>()({
+        tool: string({ minLength: 1, maxLength: 80 }),
+        pattern: optional(string({ minLength: 1, maxLength: 500 })),
+        action: oneOf(toolActions),
+      }),
+      { maxItems: 200 },
+    ),
+  })
+
 /**
  * Everything a provider needs to start one session. Env and permission mode
  * are here, in the spec of *that one process*, which is what removes v1's
@@ -168,6 +219,8 @@ export interface SessionSpec {
   readonly resumeRef?: ProviderSessionRef
   /** Appended to the provider's system prompt; the codegraph guard policy, for instance (§6.2). */
   readonly systemPromptAppend?: string
+  /** Which tool calls run without asking; absent means `defaultToolPolicy` (§4). */
+  readonly toolPolicy?: ToolPolicy
 }
 
 export const sessionSpec = (): Schema<SessionSpec> =>
@@ -184,6 +237,7 @@ export const sessionSpec = (): Schema<SessionSpec> =>
     mcp: optional(array(mcpServer())),
     resumeRef: optional(providerSessionRef()),
     systemPromptAppend: optional(text()),
+    toolPolicy: optional(toolPolicy()),
   })
 
 /** The kinds of message a turn can carry; they match `Message.kind` (§3, §7). */
@@ -291,6 +345,14 @@ export type ProviderEvent =
       /** A short, already-redacted summary of what the tool would do. */
       readonly summary?: string
     }
+  /** The session's tool policy denied a call; nothing was run and nobody was asked (§4). */
+  | {
+      readonly type: 'tool.denied'
+      readonly turnId: TurnId
+      readonly tool: string
+      /** A short, already-redacted summary of what the tool would have done. */
+      readonly summary?: string
+    }
   | {
       readonly type: 'session.ended'
       readonly reason: ProviderSessionEndReason
@@ -344,6 +406,12 @@ export const providerEvent = (): Schema<ProviderEvent> =>
       type: literal('approval.requested'),
       turnId: turnId(),
       requestId: string({ minLength: 1, maxLength: 80 }),
+      tool: string({ minLength: 1 }),
+      summary: optional(string({ maxLength: 500 })),
+    }),
+    object({
+      type: literal('tool.denied'),
+      turnId: turnId(),
       tool: string({ minLength: 1 }),
       summary: optional(string({ maxLength: 500 })),
     }),

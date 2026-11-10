@@ -148,4 +148,30 @@ export const resumeChecks = (): readonly SessionCheck[] => [
       return null
     },
   },
+  {
+    name: 'setModel() does what capabilities.modelSwitch says',
+    because:
+      'the interface is uniform — setModel() is always callable — so the capability must not lie: false rejects unsupported, true accepts the switch and model() then reports the requested model (§4)',
+    run: async ({ provider, handle }) => {
+      const requested = `${handle.model}-switched`
+      try {
+        await provider.setModel(handle, requested)
+      } catch (thrown) {
+        const error = toFleetError(thrown, 'provider_failed')
+        if (provider.capabilities.modelSwitch) {
+          return `setModel() rejected with ${error.code} although capabilities.modelSwitch is true: ${error.message}`
+        }
+        return error.code === 'unsupported'
+          ? null
+          : `setModel() must reject FleetError('unsupported') when capabilities.modelSwitch is false, got ${error.code}: ${error.message}`
+      }
+      if (!provider.capabilities.modelSwitch) {
+        return 'setModel() succeeded although capabilities.modelSwitch is false'
+      }
+      const reported = await provider.model(handle)
+      return reported.id === requested
+        ? null
+        : `model() reports ${reported.id} after setModel(${requested}); it must report the requested model`
+    },
+  },
 ]
