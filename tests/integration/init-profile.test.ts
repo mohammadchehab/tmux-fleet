@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
+import { parseStrict, repo } from '../../packages/foundation/core/src/index.ts'
 import { writeStarter } from '../../apps/clients/cli/src/init.ts'
 import { loadProfile } from '../../apps/daemon/src/profile.ts'
 
@@ -31,9 +32,13 @@ describe('a profile written by `fleet init`', () => {
     const { profileFile } = await writeStarter('starter', { home })
     const profile = await loadProfile(profileFile, 'starter')
     assert.equal(profile.profile, 'starter')
-    // The placeholder is what the person is meant to replace; it decodes, and it
-    // is deliberately not a path that exists.
-    assert.deepEqual(profile.repos, ['/path/to/a/repo'])
+    // The placeholder is what the person is meant to replace, and `loadProfile`
+    // alone does not prove it is usable: the daemon parses each entry as a
+    // `Repo` when it composes, which is one step further than decoding. A
+    // starter of `/path/to/a/repo` passed the check above and was refused on the
+    // first `fleet up` — so the placeholder is checked here as the daemon will.
+    assert.deepEqual(profile.repos, ['owner/name'])
+    for (const name of profile.repos) assert.equal(parseStrict(repo(), name), name)
     assert.ok(profile.peers.length > 0)
     for (const peer of profile.peers) assert.ok(peer.id.length > 0)
   })
