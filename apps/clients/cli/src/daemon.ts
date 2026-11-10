@@ -82,7 +82,7 @@ export const spawnFleetd = (options: SpawnOptions): Promise<void> =>
         fleetError(
           'external_failed',
           error.code === 'ENOENT'
-            ? `cannot start fleetd: "${command}" is not on PATH; set FLEET_DAEMON_BIN to an absolute one (a checkout runs it as node apps/daemon/src/main.ts <profile>)`
+            ? `cannot start fleetd: "${command}" is not on PATH; set FLEET_DAEMON_BIN to a fleetd binary (a checkout's is apps/daemon/src/main.ts, wrapped in a script that execs node)`
             : `cannot start fleetd: ${error.message}`,
           { cause: error, details: { command } },
         ),
