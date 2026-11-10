@@ -579,6 +579,10 @@ The Worktree manager is the only thing that creates or deletes worktrees; peers 
   Work's worktree (§9), recording `branch.deleted {repo, branch, sha, by}` — the sha is the commit to restore the branch
   from. A nightly sweep deletes only branches whose head equals a merged PR's head; anything else (closed without merge,
   no PR, commits after the merge) is left alone and the owner is told.
+- **Trunk is whatever the forge says it is.** Both triggers refuse to delete the repository's default branch, asked of
+  the forge (`defaultBranch`) rather than assumed: `main` and `master` are conventions, and a repo on `develop` or
+  `release/2.x` is the same fact under another name. A forge that will not name its trunk is a refusal, not a guess —
+  the one branch a bad rule must never take is the one everything else is based on.
 - Merge ownership is a profile policy the gate enforces; with no reviewer role running the gate asks the user, it does
   not stall silently.
 

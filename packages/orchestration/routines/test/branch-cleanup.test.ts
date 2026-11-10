@@ -166,6 +166,8 @@ const fakeForge = (
     readonly prs?: readonly PullRequest[]
     readonly branches?: readonly Branch[]
     readonly closed?: readonly PullRequest[]
+    /** What the forge reports as trunk. `main` unless a test says otherwise. */
+    readonly defaultBranch?: string
   } = {},
 ): FakeForge => {
   const deleted: { branch: string; sha: Sha }[] = []
@@ -204,6 +206,7 @@ const fakeForge = (
     dependents: async () => [],
     merge: async () => ({}),
     branches: async (named: Repo) => branches.filter(() => String(named) === String(REPO)),
+    defaultBranch: async () => options.defaultBranch ?? 'main',
     deleteBranch: async (named: Repo, branch: string, expectedSha: Sha) => {
       if (failure !== undefined) {
         const message = failure
@@ -474,6 +477,32 @@ describe('the nightly sweep (§6)', () => {
     await seen.run(scheduleContext())
 
     assert.deepEqual(seen.forge.deleted, [])
+  })
+
+  it('never deletes the trunk a repository actually has, whatever it is called', async () => {
+    // `develop` is trunk here, and no denylist of conventions would have said so.
+    const seen = harness(
+      fakeForge({ prs: [mergedPr({ head: 'develop', base: 'release' })], branches: [{ name: 'develop', sha: HEAD }], defaultBranch: 'develop' }),
+      { projection: [mergedPr({ head: 'develop', base: 'release' })] },
+    )
+    await seen.run(scheduleContext())
+
+    // A trunk branch is not a mistake to report: nothing happens, and nobody is told.
+    assert.deepEqual(seen.forge.deleted, [])
+    assert.equal(seen.mailbox.sent.length, 0)
+  })
+
+  it('keeps the checkout when the delete failed, because the branch is still there', async () => {
+    const seen = harness(fakeForge({ prs: [mergedPr()] }), {
+      projection: [mergedPr()],
+      worktrees: [worktreeRow()],
+    })
+    seen.forge.breakDelete('gh: HTTP 403')
+    const outcome = await seen.run(scheduleContext())
+
+    assert.deepEqual(seen.forge.deleted, [])
+    assert.deepEqual(seen.worktrees.removed, [])
+    assert.equal(outcome.actionsFailed, 1)
   })
 
   it('asks for the branches and the closed PRs, once per repo', async () => {

@@ -300,6 +300,21 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
     },
 
     /**
+     * The project's trunk, as GitLab names it. A project setting, not a
+     * convention: `main`, `master` and `develop` are all trunk somewhere.
+     */
+    async defaultBranch(repo) {
+      const raw = await api(projectPath(repo))
+      const name = raw === null || typeof raw !== 'object' ? undefined : (raw as { default_branch?: unknown }).default_branch
+      if (typeof name !== 'string' || name === '') {
+        throw fleetError('external_failed', `${String(repo)} reports no default branch`, {
+          details: { repo: String(repo) },
+        })
+      }
+      return name
+    },
+
+    /**
      * Delete, pinned to `expectedSha`, with the same read-check-delete sequence the
      * GitHub adapter uses and the same honest caveat: GitLab's delete endpoint takes
      * no conditional header, so the window between the calls is narrowed by the

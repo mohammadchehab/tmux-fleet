@@ -70,11 +70,23 @@ export interface BranchCleanupDeps {
 }
 
 /**
- * Branches no merge may delete, whatever the log says. The sweep's rule already
- * refuses anything no merged PR owns; this is the cheap guard against the case
- * that rule does not cover — a PR whose *head* is the repo's trunk.
+ * The names that are trunk in practice, used only as a fallback next to the one
+ * the forge reports: a repo on `develop` or `release/2.x` is trunk under another
+ * name, and a guard that knows two spellings fails open on every other.
  */
-const trunkBranches: ReadonlySet<string> = new Set(['main', 'master'])
+const trunkConventions: ReadonlySet<string> = new Set(['main', 'master'])
+
+/**
+ * Branches no merge may delete, whatever the log says. The sweep's rule already
+ * refuses anything no merged PR owns; this is the guard against the case that
+ * rule does not cover — a PR whose *head* is the repo's trunk — and against the
+ * sweep retargeting work off trunk to make it deletable.
+ *
+ * The forge is asked for the default branch, and a forge that will not say is a
+ * refusal: guessing it is the fail-open this guard exists to close.
+ */
+const protectedBranches = async (deps: BranchCleanupDeps, repo: Repo): Promise<ReadonlySet<string>> =>
+  new Set([...trunkConventions, await deps.pullRequests.defaultBranch(repo)])
 
 /** A PR as every event names it: the repo and the number. */
 const refOf = (pr: PullRequest): PullRequestRef => ({ repo: pr.repo, number: pr.number })
@@ -355,7 +367,7 @@ const onMerge = async (deps: BranchCleanupDeps, context: RoutineContext): Promis
   const sha = data.headSha ?? row.headSha
   const workId = workIdOf(row.workId) ?? data.workId
 
-  if (trunkBranches.has(branch) || branch === row.base) {
+  if ((await protectedBranches(deps, row.repo)).has(branch) || branch === row.base) {
     const refused = await explain(deps, row.repo, branch, `it is a trunk branch, and the fleet does not delete those`, workId)
     return { outcome: { actions: refused.actions, actionsFailed: refused.failed, inputsHash: hashOf(observations) }, observations }
   }
@@ -394,6 +406,7 @@ const sweep = async (deps: BranchCleanupDeps, context: RoutineContext): Promise<
 
   for (const repo of deps.repos) {
     const all = await deps.pullRequests.list(repo, { state: 'all' })
+    const trunk = await protectedBranches(deps, repo)
     const branches = [...(await deps.pullRequests.branches(repo))].sort((left, right) => left.name.localeCompare(right.name))
 
     for (const branch of branches) {
@@ -401,7 +414,7 @@ const sweep = async (deps: BranchCleanupDeps, context: RoutineContext): Promise<
       const merged = mine.filter((pr) => pr.merged)
       const owner = workIdOf(mine.find((pr) => pr.workId !== undefined)?.workId)
 
-      if (trunkBranches.has(branch.name)) {
+      if (trunk.has(branch.name)) {
         observations.push({ repo: String(repo), branch: branch.name, sha: String(branch.sha), verdict: 'trunk' })
         continue
       }
@@ -445,9 +458,18 @@ const sweep = async (deps: BranchCleanupDeps, context: RoutineContext): Promise<
         continue
       }
 
-      observations.push({ repo: String(repo), branch: branch.name, sha: String(branch.sha), verdict: 'deleted' })
-      tally = plus(tally, await deleteBranch(deps, ts, repo, branch.name, branch.sha, 'sweep', owner))
-      tally = plus(tally, await cleanWorktree(deps, ts, repo, branch.name, owner))
+      const deleted = await deleteBranch(deps, ts, repo, branch.name, branch.sha, 'sweep', owner)
+      tally = plus(tally, deleted)
+      // The same parity the merge path has: the checkout is the branch's, and a
+      // branch that is still on the remote is a checkout someone may still use.
+      const gone = deleted.failed === 0 && deleted.actions === 1
+      observations.push({
+        repo: String(repo),
+        branch: branch.name,
+        sha: String(branch.sha),
+        verdict: gone ? 'deleted' : 'delete-failed',
+      })
+      if (gone) tally = plus(tally, await cleanWorktree(deps, ts, repo, branch.name, owner))
     }
   }
 
