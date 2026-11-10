@@ -49,6 +49,7 @@ import { createSecurityScanFactory } from './security.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
 import { createSupervisor, type Supervisor } from './sessions.ts'
 import { createWakingSink, deliverOnSessionStart } from './wake.ts'
+import { syncWork } from './work-sync.ts'
 
 export interface Wiring {
   readonly profile: Profile
@@ -124,6 +125,12 @@ export interface Composed {
    * what ran, not what is installed.
    */
   readonly scheduler: Scheduler
+  /**
+   * The waking sink's own append. A composed fleet's writes have to wake the same
+   * way the daemon's do — a test that appended straight to the store would be
+   * testing a log nothing is listening to (§5.2).
+   */
+  readonly append: EventSink['append']
 }
 
 /**
@@ -191,6 +198,11 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // the one a resume produces — is what retries it. See `deliverOnSessionStart` for
   // why a delivery already in flight for that peer is left alone.
   wake.listen(deliverOnSessionStart(mailbox))
+
+  // §5.1: the Work state machine advances on the events the fleet already writes.
+  // Registered after delivery so the brief reaches the peer before the Work is said
+  // to have started — a listener added later cannot see an event before an earlier one.
+  wake.listen(syncWork({ read: store.reader(), append: wake.append, clock }))
 
   // §10: the gate is the only executor that merges, and it needs the GitHub port.
   // Building the port runs nothing: `gh` starts only when a merge or retarget
@@ -308,7 +320,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     },
   })
 
-  return { daemon, server, store, supervisor, scheduler }
+  return { daemon, server, store, supervisor, scheduler, append: wake.append }
 }
 
 /** The log path a supervisor writes to; exported so the log line and §2's layout cannot drift apart. */
