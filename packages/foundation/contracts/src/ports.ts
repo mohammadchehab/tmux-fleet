@@ -27,6 +27,8 @@ import type { PullRequest, Worktree } from './projections/delivery.ts'
 import type { Decision, Finding, Notification, Routine } from './projections/ops.ts'
 import type { Peer, Session } from './projections/peers.ts'
 import type { Work } from './projections/work.ts'
+import type { ExternalItem } from './shapes.ts'
+import type { WorkState } from './work-state.ts'
 
 /**
  * The PR surface `gate`, `pr-babysit` and the `dedupe` rule need (§5.2, §10).
@@ -73,6 +75,42 @@ export interface PullRequests {
     number: number,
     options: { readonly method: 'merge' | 'squash' | 'rebase'; readonly deleteBranch: boolean; readonly headSha: Sha },
   ): Promise<{ readonly mergeSha?: Sha }>
+}
+
+/**
+ * An external tracker, as a source and a sink (§3): the board a fleet was asked
+ * to mirror, never the state of the fleet itself. Implemented by
+ * `@fleet/integrations-trackers-*` over the vendor's own CLI, and injected by
+ * `apps/daemon`.
+ *
+ * The port speaks `WorkState`, not the tracker's statuses: the mapping from one
+ * to the other is the *profile's* (`trackers.statuses`), handed to the adapter
+ * when the daemon builds it. So a Jira board with its own columns needs no new
+ * port, and a `transition` a profile said nothing about is a no-op the adapter
+ * documents rather than a status invented here.
+ */
+export interface Tracker {
+  /**
+   * The tickets matching the profile's query. The query is opaque to the fleet —
+   * each adapter documents its own dialect (Backlog.md: statuses, comma
+   * separated; Jira: JQL) — and `tracker-sync` only ever passes the profile's
+   * string through.
+   */
+  pull(query: string): Promise<readonly ExternalItem[]>
+
+  /** One ticket, or `undefined` when the tracker says it does not exist. */
+  get(key: string): Promise<ExternalItem | undefined>
+
+  /**
+   * Move the ticket to the status the profile maps `to` onto. A state the
+   * profile does not map is left alone: the fleet has no opinion about the
+   * tracker's vocabulary, and guessing one would rewrite a board nobody asked
+   * it to touch.
+   */
+  transition(key: string, to: WorkState): Promise<void>
+
+  /** Point the ticket at the PR that implements it (§10). Idempotent: the same URL twice adds nothing. */
+  link(key: string, prUrl: string): Promise<void>
 }
 
 /**

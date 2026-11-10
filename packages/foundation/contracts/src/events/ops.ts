@@ -34,6 +34,7 @@ export const routineKinds = [
   'reconcile',
   'security-scan',
   'notify',
+  'tracker-sync',
 ] as const
 export type RoutineKind = (typeof routineKinds)[number]
 
@@ -75,6 +76,39 @@ export const routineFailed = event(
     routineId: string({ minLength: 1, maxLength: 80 }),
     kind: oneOf(routineKinds),
     error: text(2000),
+  }),
+)
+
+// ----------------------------------------------------------------- trackers
+
+/**
+ * One `tracker-sync` run, as the fleet saw it (§3). The routine's own
+ * `routine.finished` says a run happened and how many actions it produced; this
+ * says what the board *said* — how many tickets came back, how many were new,
+ * and what the tracker answered when it was told to move. It is the difference
+ * between "the sync ran" and "the sync agreed with the board", which is the only
+ * way to see a drift between the two before a human does.
+ */
+export const trackerSynced = event(
+  'tracker.synced',
+  object({
+    system: text(40),
+    query: text(500),
+    /** Tickets `pull` returned. */
+    pulled: count(),
+    /** `work.proposed` events appended for keys the fleet had never seen. */
+    proposed: count(),
+    /** `transition` calls the tracker accepted. */
+    transitioned: count(),
+    /** PR links the tracker accepted. */
+    linked: count(),
+    /**
+     * Calls the tracker refused or that threw. Counted here and carried in
+     * `error` rather than thrown: one ticket the board will not move does not
+     * make the other nine lies, and the run still records what it did.
+     */
+    failed: count(),
+    error: optional(text(1000)),
   }),
 )
 

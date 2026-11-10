@@ -55,6 +55,16 @@ export const briefText = ({ work, peer, version, contractVersions, reason }: Bri
     contractsLine(work, contractVersions),
   ]
 
+  // §3's read-only context: a Work that came from a board says which card it is,
+  // so a peer can read the ticket a human actually filed — and put the key in
+  // the PR — without being handed the board as writable. The title and body
+  // above are already the card's, read with `Tracker.get` when it was proposed;
+  // this line is the key and where to open it.
+  if (work.external !== undefined) {
+    const { system, key, url } = work.external
+    lines.push(url === undefined ? `Ticket: ${system} ${key}` : `Ticket: ${system} ${key} — ${url}`)
+  }
+
   if (work.dependsOn.length > 0) lines.push(`Waits for: ${work.dependsOn.join(', ')}`)
   if (work.prs.length > 0) lines.push(`Pull requests: ${work.prs.map((pr) => prKey(pr)).join(', ')}`)
 

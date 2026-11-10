@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
 import { profilePaths } from '@fleet/foundation-core'
+import type { Tracker } from '@fleet/foundation-contracts'
 
 import { buildProviders, compose } from '../src/compose.ts'
 import { decodeProfile, type Profile } from '../src/profile.ts'
@@ -101,6 +102,75 @@ providers:
       await composed.server.close().catch(() => {})
       await composed.store.close().catch(() => {})
       await rm(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('the profile’s tracker block, as the daemon builds it', () => {
+  /** A fleet with one peer and, when `trackers` is given, the YAML block for a board. */
+  const withTrackers = async (trackers?: string): Promise<{ home: string; composed: Awaited<ReturnType<typeof compose>> }> => {
+    const home = await mkdtemp(join(tmpdir(), 'fleet-trackers-'))
+    const configHome = join(home, '.config')
+    const paths = profilePaths('board', { home, configHome })
+    await mkdir(join(configHome, 'fleet', 'profiles'), { recursive: true })
+    await writeFile(
+      paths.profileFile,
+      `profile: board
+repos: [backbase/me-services-fleet]
+peers:
+  - id: engineer-1
+    role: engineer
+    provider: claude
+    model: claude-sonnet-5-5
+${trackers ?? ''}`,
+      'utf8',
+    )
+    const composed = await compose({
+      profileName: 'board',
+      roots: { home, configHome },
+      ...(trackers === undefined ? {} : { tracker: neverAsked() }),
+    })
+    return { home, composed }
+  }
+
+  /** A tracker that would fail the test if the body ever reached the CLI: nothing in this file polls a board. */
+  const neverAsked = (): Tracker => ({
+    pull: async () => assert.fail('a composed fleet must not pull a board before it is started'),
+    get: async () => assert.fail('a composed fleet must not read a card before it is started'),
+    transition: async () => assert.fail('a composed fleet must not move a card before it is started'),
+    link: async () => assert.fail('a composed fleet must not link a PR before it is started'),
+  })
+
+  const clean = async (home: string, composed: Awaited<ReturnType<typeof compose>>): Promise<void> => {
+    await composed.daemon.down().catch(() => {})
+    await composed.server.close().catch(() => {})
+    await composed.store.close().catch(() => {})
+    await rm(home, { recursive: true, force: true })
+  }
+
+  it('installs tracker-sync when the profile names a board', async () => {
+    const { home, composed } = await withTrackers(`trackers:
+  system: backlog
+  query: To Do,In Progress
+  path: ./board
+  statuses:
+    in_progress: In Progress
+`)
+    try {
+      assert.ok(composed.scheduler.plan.installed.includes('tracker-sync'))
+      assert.equal(composed.scheduler.plan.unimplemented.includes('tracker-sync'), false)
+    } finally {
+      await clean(home, composed)
+    }
+  })
+
+  it('installs no tracker-sync when it names none, rather than one that polls nothing', async () => {
+    const { home, composed } = await withTrackers()
+    try {
+      assert.equal(composed.scheduler.plan.installed.includes('tracker-sync'), false)
+      assert.ok(composed.scheduler.plan.unimplemented.includes('tracker-sync'))
+    } finally {
+      await clean(home, composed)
     }
   })
 })

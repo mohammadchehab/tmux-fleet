@@ -82,6 +82,14 @@ export const defaultTriggers: Readonly<Record<RoutineKind, readonly Trigger[]>> 
     { kind: 'schedule', at: '02:00' },
     { kind: 'event', types: ['pr.opened'] },
   ],
+  // §3: the board polled on a heartbeat, and the Work's own movement echoed back
+  // on the three events that mean a column changed. The pull is a heartbeat and
+  // not a schedule because a board is a queue: five minutes of a ticket nobody
+  // picked up is the difference the sync exists to remove.
+  'tracker-sync': [
+    { kind: 'heartbeat', everyMs: 300_000 },
+    { kind: 'event', types: ['work.started', 'work.review_requested', 'work.merged'] },
+  ],
   notify: [
     { kind: 'heartbeat', everyMs: 300_000 },
     {

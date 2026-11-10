@@ -28,6 +28,7 @@ import {
   type Schema,
 } from '@fleet/foundation-core'
 import type { PeerId } from '@fleet/foundation-core'
+import { workStates, type WorkState } from '@fleet/foundation-contracts'
 import { parse as parseYaml } from 'yaml'
 import type { RoutinesConfig } from '@fleet/orchestration-routines'
 
@@ -126,6 +127,44 @@ export interface ForgeProfile {
   readonly host?: string
 }
 
+/** §3's trackers this daemon can wire up today. A profile names one; Jira lands on the same port. */
+export const profileTrackerSystems = ['backlog'] as const
+export type ProfileTrackerSystem = (typeof profileTrackerSystems)[number]
+
+/**
+ * §3's board, as a profile declares it: a **source and a sink**, never the state
+ * of the fleet. A card is read into a `Work` (`Work.external` names it from then
+ * on) and the Work's own transitions are written back, but the fleet's state
+ * stays in the store — a profile that pointed at a board would be a second
+ * source of truth for something the log already owns.
+ *
+ * The poll's period is not here: it is `routines.tracker-sync.everyMinutes`,
+ * because when a routine runs is the scheduler's business and a second spelling
+ * of it would be a second answer.
+ */
+export interface TrackerProfile {
+  /** Which adapter. This build ships `backlog`. */
+  readonly system: ProfileTrackerSystem
+  /**
+   * The board's own query, handed to `Tracker.pull` unchanged. Each adapter
+   * documents its dialect; for Backlog.md it is the statuses to read, comma
+   * separated (`"To Do,In Progress"`).
+   */
+  readonly query: string
+  /**
+   * `WorkState` → the board's status. A state the profile omits is left alone:
+   * the fleet has no opinion about the tracker's vocabulary, and inventing a
+   * column would rewrite a board nobody asked it to touch.
+   */
+  readonly statuses?: Partial<Record<WorkState, string>>
+  /** The project directory the CLI runs in. Backlog.md keeps a board per directory. */
+  readonly path: string
+  /** A prefix a card's path becomes a URL under — a repo's blob URL, typically. */
+  readonly urlBase?: string
+  /** The role a Work proposed from a card asks for (§5.2's `assign`). */
+  readonly role?: string
+}
+
 /** §6.2's tools, as a profile may name them: the four adapters this daemon ships. */
 export const profileScanners = ['semgrep', 'gitleaks', 'osv-scanner', 'trivy'] as const
 export type ProfileScanner = (typeof profileScanners)[number]
@@ -155,6 +194,12 @@ export interface Profile {
    * programs on every PR.
    */
   readonly security?: { readonly scanners: readonly ProfileScanner[] }
+  /**
+   * §3: the board to mirror. Its presence is what installs `tracker-sync`, for
+   * `security`'s reason — a profile that named no board has nothing to poll, and
+   * a routine that silently polled nothing would read as a sync that agreed.
+   */
+  readonly trackers?: TrackerProfile
   readonly limits?: {
     /** How many sessions may be live at once (§6's `keep-busy` and self-purge). */
     readonly maxSessions?: number
@@ -246,6 +291,44 @@ const securityBlock = (): Schema<{ readonly scanners: readonly ProfileScanner[] 
     ),
   })
 
+/**
+ * The status map, decoded by hand so its *keys* are checked against §5.1's
+ * states: a misspelt `in_progres` would otherwise be a transition the fleet
+ * believes it configured and a board that never sees.
+ */
+const statusesBlock = (): Schema<Partial<Record<WorkState, string>>> => ({
+  tag: 'TrackerStatuses',
+  decode: (value, path, issues) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      issues.push({ path, message: 'must be a mapping of work state to the tracker status' })
+      return {}
+    }
+    const statuses: Partial<Record<WorkState, string>> = {}
+    for (const [state, status] of Object.entries(value as Record<string, unknown>)) {
+      if (!(workStates as readonly string[]).includes(state)) {
+        issues.push({ path: `${path}.${state}`, message: `not a work state; the fleet has: ${workStates.join(', ')}` })
+        continue
+      }
+      if (typeof status !== 'string' || status.trim() === '') {
+        issues.push({ path: `${path}.${state}`, message: 'must be the tracker\'s status name, not empty' })
+        continue
+      }
+      statuses[state as WorkState] = status
+    }
+    return statuses
+  },
+})
+
+const trackerBlock = (): Schema<TrackerProfile> =>
+  objectAs<TrackerProfile>()({
+    system: oneOf(profileTrackerSystems),
+    query: text(500),
+    statuses: optional(statusesBlock()),
+    path: text(400),
+    urlBase: optional(text(400)),
+    role: optional(text(60)),
+  })
+
 export const profileSchema = (): Schema<Profile> =>
   objectAs<Profile>()({
     profile: text(60),
@@ -256,6 +339,7 @@ export const profileSchema = (): Schema<Profile> =>
     forge: optional(forgeBlock()),
     notify: optional(notifyBlock()),
     security: optional(securityBlock()),
+    trackers: optional(trackerBlock()),
     limits: optional(limitsBlock()),
     tickIntervalMs: optional(positiveInt()),
     deleteMergedBranches: optional(boolean()),

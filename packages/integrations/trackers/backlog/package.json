@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/integrations-trackers-backlog",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Backlog.md over its own CLI (architecture §3): the Tracker port, the mapping from `backlog task --json` to the contract's shapes, and the profile's WorkState-to-status map applied on the way out.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

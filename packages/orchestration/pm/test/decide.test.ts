@@ -698,3 +698,58 @@ test('a waiting peer with no blocked Work is the provider s business, not the PM
   })
   assert.deepEqual(decide({ state: snapshot, tick: tick() }).actions, [])
 })
+
+// -------------------------------------------------------------- the brief (§3)
+
+test('a Work that came from a board gives the peer the ticket key and where to open it', () => {
+  const request: DecideRequest = {
+    state: state({
+      peers: [peer({ peerId: 'engineer-1' as never })],
+      work: [
+        work({
+          role: 'engineer',
+          external: { system: 'backlog', key: 'TASK-12', url: 'https://github.com/acme/widgets/blob/main/backlog/tasks/task-12.md' },
+        }),
+      ],
+    }),
+    tick: tick(),
+  }
+
+  const assign = decide(request).actions[0]
+  assert.equal(assign?.kind, 'assign')
+  if (assign?.kind !== 'assign') return
+  assert.match(
+    assign.brief.text,
+    /Ticket: backlog TASK-12 — https:\/\/github\.com\/acme\/widgets\/blob\/main\/backlog\/tasks\/task-12\.md/,
+  )
+})
+
+test('a ticket with no url is named by system and key alone, with no dangling dash', () => {
+  const request: DecideRequest = {
+    state: state({
+      peers: [peer({ peerId: 'engineer-1' as never })],
+      work: [work({ role: 'engineer', external: { system: 'backlog', key: 'TASK-12' } })],
+    }),
+    tick: tick(),
+  }
+
+  const assign = decide(request).actions[0]
+  assert.equal(assign?.kind, 'assign')
+  if (assign?.kind !== 'assign') return
+  assert.match(assign.brief.text, /^Ticket: backlog TASK-12$/m)
+})
+
+test('a Work with no ticket says nothing about one', () => {
+  const request: DecideRequest = {
+    state: state({
+      peers: [peer({ peerId: 'engineer-1' as never })],
+      work: [work({ role: 'engineer' })],
+    }),
+    tick: tick(),
+  }
+
+  const assign = decide(request).actions[0]
+  assert.equal(assign?.kind, 'assign')
+  if (assign?.kind !== 'assign') return
+  assert.doesNotMatch(assign.brief.text, /Ticket:/)
+})

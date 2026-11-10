@@ -96,13 +96,15 @@ const decidedFor = (pm: ReturnType<typeof fakePm>): readonly (string | undefined
   pm.requests.map((request) => request.tick?.kind)
 
 describe('registered from config, nothing hand-wired', () => {
-  it('installs the four phase 1 bodies and reports the four still waiting for one', () => {
+  it('installs the four phase 1 bodies and reports the rest still waiting for one', () => {
     const { deps } = harness()
     const scheduler = createScheduler(deps)
     assert.deepEqual([...scheduler.plan.installed].sort(), ['dispatch', 'keep-busy', 'reconcile', 'standup'])
     assert.deepEqual(
       [...scheduler.plan.unimplemented].sort(),
-      ['notify', 'pr-babysit', 'security-scan', 'worktree-gc'],
+      // `tracker-sync` is a body this package ships but does not install: `apps/daemon`
+      // registers it, because only it knows the profile's tracker (§1.1).
+      ['notify', 'pr-babysit', 'security-scan', 'tracker-sync', 'worktree-gc'],
     )
   })
 
