@@ -737,6 +737,20 @@ test('a session that dies with work open leaves none of it to its replacement', 
   await until(() => r.recovered.length === 1, 'the recovery to be asked for')
   await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
 
+  // The peer was moved off `waiting_input` too, not just the session ended. The
+  // store's end projection writes the *session's* row and clears its
+  // `currentSessionId`; it does not touch `peers.state`, so without this the peer
+  // goes on reading as a person still being waited on for as long as the store
+  // lives — in the one place a person looks.
+  const failedAt = r.records.findIndex(
+    (record) => record.type === 'peer.state_changed' && record.data.state === 'failed',
+  )
+  const endedAt = r.records.findIndex(
+    (record) => record.type === 'session.ended' && record.data.endReason === 'crashed',
+  )
+  assert.notEqual(failedAt, -1, 'the peer is recorded as failed, not left waiting on a dead question')
+  assert.ok(failedAt < endedAt, 'the state is written before the end, as a real `session.ended` writes it')
+
   // The replacement's own turn, over the limit: it purges. A foreign turn id on
   // purpose — ids are minted per turn, so the replacement's ending says nothing
   // about the turn the question was asked on.
@@ -887,6 +901,10 @@ test('a boundary that finds work another session raised is recorded, and stops t
     r.records.filter((record) => record.type === 'session.ended' && record.subject === 'ses_bbbbbbbbbbbbbbbb'),
     [],
   )
+  // The pump is gone for good, so the peer is not left showing the state it
+  // happened to be in when the fault was found (§8).
+  const lastState = r.records.filter((record) => record.type === 'peer.state_changed').at(-1)
+  assert.equal(lastState?.type === 'peer.state_changed' ? lastState.data.state : undefined, 'failed')
 })
 
 test('a turn still in flight at a turn boundary does not trigger a purge', async () => {

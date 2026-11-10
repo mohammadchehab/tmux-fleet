@@ -342,11 +342,20 @@ export class PeerSession {
       // healthy and the fleet's bookkeeping is not. Recorded as a fault by
       // `#assertOnlyOwnedBy`, so it leaves here as what it is — a lie in the
       // store, `crashed`, would be worse than no record at all.
-      if (this.#faulted) throw failed
+      if (this.#faulted) {
+        // The pump is stopping for good either way, so the peer is failed and
+        // not whatever it was in the middle of (§8).
+        await this.#recordPeerState('failed').catch(() => {})
+        throw failed
+      }
       // A stream that threw never got to synthesise its own `session.ended`, so
       // this session ends here: whatever it still owned is abandoned with it,
       // exactly as a `session.ended` would have done (§8).
       this.#abandonAllOwnedBy(sessionId)
+      // State first, then the end, in the order `#apply` writes a real
+      // `session.ended`: the store's end projection moves the *session*, it does
+      // not move the peer (§4).
+      await this.#recordPeerState('failed').catch(() => {})
       // A store that cannot take this record must not swallow the failure that
       // caused it: the caller still has to recover, or report, the dead session.
       await this.#recordEnd(handle, 'crashed').catch(() => {})
@@ -592,6 +601,33 @@ export class PeerSession {
       // what is lost, and an absent field says exactly that.
       return undefined
     }
+  }
+
+  /**
+   * The peer's own state, written when the stream that would have carried it is
+   * gone (§4, §8).
+   *
+   * A provider that ends cleanly sends its own `session.ended`, and `#apply`
+   * turns that into a state change like any other event. A stream that throws
+   * sends nothing — and a `session.ended` recorded on its behalf does not move
+   * the peer either: the store's projection writes the *session's* row and
+   * clears its `currentSessionId`, while `peers.state` keeps whatever the last
+   * `peer.state_changed` said. A crash with a question open would therefore
+   * leave the peer reading `waiting_input` for as long as the store lives, on a
+   * question its session took with it — the orphan §8 bans, one layer up where
+   * a person actually reads it.
+   */
+  async #recordPeerState(state: PeerState): Promise<void> {
+    if (state === this.#state) return
+    this.#state = state
+    const { clock, peerId, record } = this.#ports
+    await record({
+      type: 'peer.state_changed',
+      ts: clock.now(),
+      subject: peerId,
+      actor: peerActor(peerId),
+      data: { peerId, state },
+    })
   }
 
   /**
