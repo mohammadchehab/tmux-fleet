@@ -7,7 +7,17 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { buildCommands, hasSessionCommand, paneCommand, showCommand, viewSessionName, WINDOW } from '../src/tmux.ts'
+import {
+  buildCommands,
+  hasSessionCommand,
+  killSessionCommand,
+  paneBaseIndexCommand,
+  paneCommand,
+  parsePaneBaseIndex,
+  showCommand,
+  viewSessionName,
+  WINDOW,
+} from '../src/tmux.ts'
 
 const options = {
   command: ['/usr/bin/node', '/repo/apps/clients/view/src/main.ts'],
@@ -69,6 +79,26 @@ describe('tmux: one pane per peer', () => {
     assert.deepEqual(buildCommands({ ...options, peers: [] }), [])
   })
 
+  it('titles panes from the pane-base-index, not from zero', () => {
+    // With `pane-base-index 1` the panes are .1 .2 .3; a `select-pane -t .0` names
+    // nothing, tmux exits non-zero, and main.ts kills the session it just built.
+    const commands = buildCommands({ ...options, peers: ['engineer-1', 'engineer-2', 'engineer-3'], paneBaseIndex: 1 })
+    const titles = commands.filter((argv) => argv[0] === 'select-pane')
+    assert.deepEqual(titles, [
+      ['select-pane', '-t', `fleet-firstrun:${WINDOW}.1`, '-T', 'engineer-1'],
+      ['select-pane', '-t', `fleet-firstrun:${WINDOW}.2`, '-T', 'engineer-2'],
+      ['select-pane', '-t', `fleet-firstrun:${WINDOW}.3`, '-T', 'engineer-3'],
+    ])
+  })
+
+  it('reads the base index and falls back to 0 when tmux will not say', () => {
+    assert.deepEqual(paneBaseIndexCommand(), ['show-options', '-gwv', 'pane-base-index'])
+    assert.equal(parsePaneBaseIndex('1\n'), 1)
+    assert.equal(parsePaneBaseIndex('0'), 0)
+    assert.equal(parsePaneBaseIndex(''), 0, 'a tmux that does not know the option numbers panes from 0')
+    assert.equal(parsePaneBaseIndex('not-a-number\n'), 0)
+  })
+
   it('leaves a dead pane on screen instead of re-tiling the grid around it', () => {
     const commands = buildCommands({ ...options, peers: ['engineer-1', 'engineer-2'] })
     const remain = commands.find((argv) => argv[0] === 'set-window-option')
@@ -85,6 +115,18 @@ describe('tmux: which session', () => {
   it('attaches outside tmux and switches inside it', () => {
     assert.deepEqual(showCommand('fleet-firstrun', false), ['attach-session', '-t', 'fleet-firstrun'])
     assert.deepEqual(showCommand('fleet-firstrun', true), ['switch-client', '-t', 'fleet-firstrun'])
-    assert.deepEqual(hasSessionCommand('fleet-firstrun'), ['has-session', '-t', 'fleet-firstrun'])
+  })
+
+  it('asks for the session by exact name, so a peer session is never mistaken for the view', () => {
+    // `has-session -t fleet-firstrun` also matches `fleet-firstrun-engineer-1` by
+    // prefix, and tmux then attaches the view to that peer's window instead of
+    // building the grid.
+    assert.deepEqual(hasSessionCommand('fleet-firstrun'), ['has-session', '-t', '=fleet-firstrun'])
+  })
+
+  it('kills only the session it built, never a prefix match of it', () => {
+    // The kill runs after a failed build, when the view's session may not exist at
+    // all — the worst moment to let `-t` match an engineer's session by prefix.
+    assert.deepEqual(killSessionCommand('fleet-firstrun'), ['kill-session', '-t', '=fleet-firstrun'])
   })
 })

@@ -25,7 +25,16 @@ import { toFleetError } from '@fleet/foundation-core'
 import { parseArgv, usage, type ViewCommand } from './args.ts'
 import { callerFor, type Caller } from './client.ts'
 import { socketPathOf, type SocketChoice } from './socket.ts'
-import { buildCommands, hasSessionCommand, showCommand, viewSessionName, type BuildOptions } from './tmux.ts'
+import {
+  buildCommands,
+  hasSessionCommand,
+  killSessionCommand,
+  paneBaseIndexCommand,
+  parsePaneBaseIndex,
+  showCommand,
+  viewSessionName,
+  type BuildOptions,
+} from './tmux.ts'
 import { paneLines, tableOnce } from './view.ts'
 
 /** Command names exit 2, an unreadable fleet exits 1; the same split the `fleet` CLI makes. */
@@ -54,6 +63,27 @@ const tmux = (args: readonly string[]): Promise<{ readonly code: number; readonl
     })
     child.once('close', (code) => {
       resolve({ code: code ?? 1, stderr })
+    })
+  })
+
+/**
+ * One tmux command, keeping what it printed. Separate from `tmux` above because
+ * that one inherits stdout — right for a session being handed to the terminal,
+ * useless for a question whose answer is a line of text.
+ */
+const tmuxOutput = (args: readonly string[]): Promise<string> =>
+  new Promise((resolve) => {
+    const child = spawn('tmux', [...args], { stdio: ['ignore', 'pipe', 'ignore'] })
+    let stdout = ''
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk
+    })
+    child.once('error', () => {
+      resolve('')
+    })
+    child.once('close', () => {
+      resolve(stdout)
     })
   })
 
@@ -142,6 +172,10 @@ const runGrid = async (command: ViewCommand & { kind: 'live' }, socket: SocketCh
     intervalMs: command.intervalMs,
     session,
     peers: result.peers.map((peer) => peer.peerId),
+    // Read from tmux rather than assumed: with `pane-base-index 1` the panes are
+    // .1 .2 .3, and titling them as .0 .1 .2 would name the wrong panes and then
+    // fail the build on a pane that does not exist.
+    paneBaseIndex: parsePaneBaseIndex(await tmuxOutput(paneBaseIndexCommand())),
   }
   for (const argv of buildCommands(plan)) {
     const built = await tmux(argv)
@@ -149,7 +183,7 @@ const runGrid = async (command: ViewCommand & { kind: 'live' }, socket: SocketCh
     write(built.code === 127 ? tmuxMissing(built.stderr) : `tmux ${argv.join(' ')} failed: ${built.stderr.trim()}`)
     // Leave nothing half-built: the panes are renderers for a fleet you asked to
     // see, and a partial grid would show some peers and silently drop others.
-    await tmux(['kill-session', '-t', session])
+    await tmux(killSessionCommand(session))
     return 1
   }
 
