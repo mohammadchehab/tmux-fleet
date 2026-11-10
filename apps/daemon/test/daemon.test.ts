@@ -185,6 +185,8 @@ const harness = async (
     readonly profile?: Profile
     /** What the providers `compose.ts` would have built can do. */
     readonly providerCapabilities?: (provider: string) => { readonly effort: boolean } | undefined
+    /** The shared fleet's loop, when the profile is in an engagement (shared-fleet.md §2.2). */
+    readonly coordination?: { start(): void; stop(): void }
   } = {},
 ) => {
   const declared = options.profile ?? profile()
@@ -229,6 +231,7 @@ const harness = async (
     ...(options.providerCapabilities === undefined
       ? {}
       : { providerCapabilities: options.providerCapabilities }),
+    ...(options.coordination === undefined ? {} : { coordination: options.coordination }),
   })
   return { daemon, store, supervisor, scheduler, paths }
 }
@@ -716,4 +719,29 @@ test('a fleet that asked for no effort carries no warnings, even on a provider t
   // something when it is empty.
   assert.equal(daemon.status.warnings, undefined)
   await daemon.down()
+})
+
+test('a shared fleet starts publishing once it is up, and stops before the scheduler on down', async () => {
+  const order: string[] = []
+  const coordination = {
+    start: () => {
+      order.push('coordination.start')
+    },
+    stop: () => {
+      order.push('coordination.stop')
+    },
+  }
+  const { daemon } = await harness({ order, coordination })
+
+  await daemon.up()
+  assert.ok(
+    order.indexOf('scheduler.start') < order.indexOf('coordination.start'),
+    `the pool hears from a fleet that is up, not one coming up: ${order.join(', ')}`,
+  )
+
+  await daemon.down()
+  assert.ok(
+    order.indexOf('coordination.stop') < order.indexOf('scheduler.stop'),
+    `a fleet going down stops telling the pool its peers are idle first: ${order.join(', ')}`,
+  )
 })

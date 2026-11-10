@@ -58,6 +58,9 @@ importers:
       '@fleet/foundation-store':
         specifier: workspace:*
         version: link:../../packages/foundation/store
+      '@fleet/integrations-coordination':
+        specifier: workspace:*
+        version: link:../../packages/integrations/coordination
       '@fleet/integrations-github':
         specifier: workspace:*
         version: link:../../packages/integrations/github
@@ -79,6 +82,9 @@ importers:
       '@fleet/orchestration-briefs':
         specifier: workspace:*
         version: link:../../packages/orchestration/briefs
+      '@fleet/orchestration-coordination':
+        specifier: workspace:*
+        version: link:../../packages/orchestration/coordination
       '@fleet/orchestration-gate':
         specifier: workspace:*
         version: link:../../packages/orchestration/gate

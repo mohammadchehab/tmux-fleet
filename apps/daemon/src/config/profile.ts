@@ -17,6 +17,7 @@ import {
   array,
   boolean,
   fleetError,
+  literal,
   number,
   objectAs,
   oneOf,
@@ -27,6 +28,7 @@ import {
   record,
   refine,
   SchemaError,
+  string,
   text,
   unionAs,
   type Schema,
@@ -471,6 +473,36 @@ export interface Profile {
   readonly tickIntervalMs?: number
   /** §10: the user's choice, so the daemon never deletes a branch on its own initiative. */
   readonly deleteMergedBranches?: boolean
+  /**
+   * shared-fleet.md §6: the engagement this fleet pools its budget with. Absent,
+   * the fleet is on its own and talks to no coordination repository.
+   */
+  readonly coord?: CoordProfile
+}
+
+/**
+ * A shared fleet's engagement (shared-fleet.md §2, §6, §9). The namespace is a
+ * code name, never the customer's: the repository is the company's, and every ref
+ * a fleet writes carries it.
+ */
+export interface CoordProfile {
+  /** The engagement's code name, `eng-07`: the namespace of every ref this fleet writes. */
+  readonly engagement: string
+  /** `<org>/<team>`: the GitHub team that is the engagement's membership. */
+  readonly team: string
+  /** `<org>/<repo>`: the private coordination repository. */
+  readonly repo: string
+  /**
+   * This fleet's GitHub login, which names its branch. Absent, it is read from
+   * `gh` at `fleet up`, so nobody types it — but a machine with two accounts says
+   * which one here.
+   */
+  readonly user?: string
+  /**
+   * §9: whether task data is shared. Only `false` exists in this build: `true`
+   * needs Legal sign-off (§7, finding 2), and nothing here would honour it.
+   */
+  readonly taskData?: false
 }
 
 /**
@@ -561,6 +593,19 @@ const routinesBlock = (): Schema<RoutinesConfig> => ({
 
 const notifyBlock = (): Schema<{ readonly channel: 'macos' | 'none' }> =>
   objectAs<{ readonly channel: 'macos' | 'none' }>()({ channel: oneOf(['macos', 'none'] as const) })
+
+const ORG_SLASH_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/
+
+const coordBlock = (): Schema<CoordProfile> =>
+  objectAs<CoordProfile>()({
+    // A ref segment as the transport accepts one, kept to lower case and short so a
+    // code name cannot smuggle a customer's name in by length alone.
+    engagement: string({ pattern: /^[a-z0-9][a-z0-9-]{1,31}$/ }),
+    team: string({ pattern: ORG_SLASH_NAME, maxLength: 200 }),
+    repo: string({ pattern: ORG_SLASH_NAME, maxLength: 200 }),
+    user: optional(string({ pattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/ })),
+    taskData: optional(literal(false)),
+  })
 
 /** A cap of 0 would ask the moment the first turn is billed; it is a number, but not a budget. */
 const budgetBlock = (): Schema<{ readonly usd: number }> =>
@@ -825,6 +870,7 @@ export const profileSchema = (): Schema<Profile> =>
     limits: optional(limitsBlock()),
     tickIntervalMs: optional(positiveInt()),
     deleteMergedBranches: optional(boolean()),
+    coord: optional(coordBlock()),
   })
 
 /** The `roles` entry a peer's role names, if the profile has one (TASK-12). */
@@ -960,6 +1006,12 @@ export const loadProfile = async (file: string, expectedName: string): Promise<P
   }
   if (profile.peers.length === 0) {
     throw fleetError('invalid_input', `${file} declares no peers, so the fleet would have nothing to run`)
+  }
+  if (profile.coord !== undefined && profile.budget === undefined) {
+    // shared-fleet.md §3: a fleet's pace is its spend against its cap, and a fleet
+    // with no cap would have no pace to publish — it would sit in the pool
+    // looking like it never spends.
+    throw fleetError('invalid_input', `${file} has a \`coord\` block but no \`budget\`; a shared fleet publishes its pace against \`budget.usd\``)
   }
   const ids = new Set(profile.peers.map((peer) => peer.id))
   if (ids.size !== profile.peers.length) {
