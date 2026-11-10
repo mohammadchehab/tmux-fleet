@@ -109,4 +109,104 @@ describe('createWorktrees', () => {
     const { runner } = fakeGit({ 'rev-parse': ok('\n') })
     await assert.rejects(createWorktrees(runner).remove(path), { message: /named no common directory/ })
   })
+
+  it('creates a worktree at <checkout>/.claude/worktrees/<topic> on a fresh branch', async () => {
+    const { runner, calls } = fakeGit({
+      'rev-parse': ok('origin/main\n'),
+      checkout: ok(),
+      push: ok(),
+    })
+
+    const result = await createWorktrees(runner).create({
+      repo: 'owner/repo' as any,
+      checkoutPath: '/repo',
+      topic: 'fleet-work-1',
+      workId: 'wrk_abc123',
+    })
+
+    assert.equal(result.path, '/repo/.claude/worktrees/fleet-work-1')
+    assert.equal(result.branch, 'work-fleet-work-1')
+
+    // Verify call sequence: get default branch, create worktree, create branch, push
+    assert.deepEqual(
+      calls.map((call) => call.args[0]),
+      ['rev-parse', 'worktree', 'checkout', 'push'],
+    )
+  })
+
+  it('rejects invalid topic slugs', async () => {
+    const { runner } = fakeGit({})
+
+    const invalid = ['Topic', 'fleet_work', 'fleet-work-', '-fleet-work', '', 'a'.repeat(41)]
+    for (const topic of invalid) {
+      await assert.rejects(createWorktrees(runner).create({
+        repo: 'owner/repo' as any,
+        checkoutPath: '/repo',
+        topic,
+        workId: 'wrk_abc123',
+      }), {
+        message: /invalid topic/,
+      })
+    }
+  })
+
+  it('accepts valid topic slugs: lowercase alphanumeric and hyphens, 1-40 chars', async () => {
+    const { runner } = fakeGit({
+      'rev-parse': ok('origin/main\n'),
+      checkout: ok(),
+      push: ok(),
+    })
+
+    const valid = ['a', 'fleet-work-1', 'work', '1', 'abc-def-ghi-123']
+    for (const topic of valid) {
+      const result = await createWorktrees(runner).create({
+        repo: 'owner/repo' as any,
+        checkoutPath: '/repo',
+        topic,
+        workId: 'wrk_abc123',
+      })
+      assert.ok(result.path.includes(topic))
+    }
+  })
+
+  it('cleans up the worktree if branch creation fails', async () => {
+    const { runner, calls } = fakeGit({
+      'rev-parse': ok('origin/main\n'),
+      checkout: failed('ref already exists'),
+      worktree: ok(),
+    })
+
+    await assert.rejects(createWorktrees(runner).create({
+      repo: 'owner/repo' as any,
+      checkoutPath: '/repo',
+      topic: 'fleet-work-1',
+      workId: 'wrk_abc123',
+    }), {
+      message: /git refused to create branch/,
+    })
+
+    // Verify cleanup was attempted: worktree remove after checkout failed
+    assert.ok(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'remove'))
+  })
+
+  it('cleans up the worktree if push fails', async () => {
+    const { runner, calls } = fakeGit({
+      'rev-parse': ok('origin/main\n'),
+      checkout: ok(),
+      push: failed('failed to push'),
+      worktree: ok(),
+    })
+
+    await assert.rejects(createWorktrees(runner).create({
+      repo: 'owner/repo' as any,
+      checkoutPath: '/repo',
+      topic: 'fleet-work-1',
+      workId: 'wrk_abc123',
+    }), {
+      message: /git refused to push branch/,
+    })
+
+    // Verify cleanup was attempted: worktree remove after push failed
+    assert.ok(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'remove'))
+  })
 })

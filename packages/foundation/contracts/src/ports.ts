@@ -232,6 +232,18 @@ export interface BranchHead {
  */
 export interface Worktrees {
   /**
+   * Create a worktree for a Work topic. The worktree is created under
+   * `<checkout>/.claude/worktrees/<topic>` on a fresh branch cut from the
+   * remote's default branch. The caller records `worktree.created` (§9).
+   */
+  create(input: {
+    readonly repo: Repo
+    readonly checkoutPath: string
+    readonly topic: string
+    readonly workId: string
+  }): Promise<{ readonly path: string; readonly branch: string }>
+
+  /**
    * Remove the checkout at `path`, and nothing else: a path git does not know, or
    * one holding changes, throws instead of being forced. §9's rule — nothing is
    * deleted with local-only work — is enforced by git as well as by the caller.
