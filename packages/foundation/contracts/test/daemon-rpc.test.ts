@@ -64,6 +64,21 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
   evals: [{ runId: 'evr_4c1d9a7b2e5f6038' }],
   replay: [{}, { from: 3 }, { from: 3, to: 9 }, { from: 1, to: 1 }],
   work: [{}],
+  builds: [
+    {
+      repo: 'backbase/me-services-fleet',
+      sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+      task: 'evals:judge:claude:opus',
+      command: { bin: 'pnpm', args: ['evals', 'run', 'judge'], env: { MODEL: 'opus' } },
+    },
+    {
+      repo: 'backbase/me-services-fleet',
+      sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+      task: 'test:unit',
+      command: { bin: 'pnpm', args: ['test'], cwd: '/src/tmux-fleet' },
+      requestedBy: 'peer-1',
+    },
+  ],
 }
 
 test('the method set is the one a client builds against, and the usage report a hook sends', () => {
@@ -79,6 +94,7 @@ test('the method set is the one a client builds against, and the usage report a 
     'evals',
     'replay',
     'work',
+    'builds',
   ])
 })
 

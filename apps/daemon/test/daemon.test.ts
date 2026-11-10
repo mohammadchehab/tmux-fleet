@@ -29,6 +29,7 @@ import {
   type TurnId,
 } from '@fleet/foundation-core'
 import type { AppendEvent, PeerSessionLease, Turn } from '@fleet/foundation-contracts'
+import { createDaemonBuilds } from '../src/builds.ts'
 import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import { createMailbox } from '@fleet/runtime-mailbox'
 import type { Scheduler } from '@fleet/orchestration-routines'
@@ -149,7 +150,17 @@ const harness = async (options: { readonly reachable?: boolean } = {}) => {
     sessions: supervisor,
     briefs: supervisor.briefs,
   })
-  const daemon = createDaemon({ profile: profile(), paths, store, supervisor, mailbox, scheduler, pid: 99 })
+  // A real ledger over the real store, with the process faked: this suite is
+  // about what the API writes, and a build that actually spawned `pnpm` would
+  // be testing the machine it runs on.
+  const ledger = createDaemonBuilds({
+    profile: profile(),
+    sink: { append: (batch) => store.append(batch) },
+    builds: store.reader().builds,
+    logDir: join(paths.artifactsDir, 'builds'),
+    process: async () => ({ code: 0, durationMs: 1 }),
+  })
+  const daemon = createDaemon({ profile: profile(), paths, store, supervisor, mailbox, scheduler, ledger, pid: 99 })
   return { daemon, store, supervisor, scheduler, paths }
 }
 

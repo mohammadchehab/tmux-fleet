@@ -55,6 +55,7 @@ import { createJiraTracker } from '@fleet/integrations-trackers-jira'
 import { readJiraAuth, type JiraCredentialSources } from './jira-env.ts'
 import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
+import type { RunProcess } from '@fleet/orchestration-ledger'
 import type { JudgeService } from '@fleet/orchestration-judge'
 import { createProjectManager } from '@fleet/orchestration-pm'
 import { createScheduler, installedFactories, type RoutineFactory, type Scheduler } from '@fleet/orchestration-routines'
@@ -67,6 +68,7 @@ import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } fro
 import { createBranchHead, createWorktrees } from '@fleet/workspace-worktree'
 import { createBranchCleanupFactory } from './branch-cleanup.ts'
 import { createDaemon, type Daemon } from './daemon.ts'
+import { createDaemonBuilds } from './builds.ts'
 import { createProviderEnv } from './deepinfra-env.ts'
 import { createExecutorRouter, type KindExecutor } from './executor.ts'
 import { createDaemonExecutors } from './executors.ts'
@@ -170,6 +172,12 @@ export interface ComposeDeps {
    * would take the test runner with it.
    */
   readonly exit?: () => void
+  /**
+   * How a build reaches a process (§11). Defaults to `spawn`, which is what a
+   * composed fleet uses; a test passes a fake, so a suite never runs a build or
+   * an `ssh`.
+   */
+  readonly buildProcess?: RunProcess
 }
 
 export interface Composed {
@@ -515,7 +523,19 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     ...(profile.tickIntervalMs === undefined ? {} : { tickIntervalMs: profile.tickIntervalMs }),
   })
 
-  const daemon = createDaemon({ profile, paths, store, append: wake.append, supervisor, mailbox, scheduler, clock })
+  // §11's ledger, wired here and nowhere else: the profile names the remote
+  // host, this file builds the `ssh` runner for it, and the ledger appends
+  // through `wake` so a finished build wakes the routines like any other event.
+  const ledger = createDaemonBuilds({
+    profile,
+    sink: { append: wake.append },
+    builds: store.reader().builds,
+    logDir: join(paths.artifactsDir, 'builds'),
+    clock,
+    ...(deps.buildProcess === undefined ? {} : { process: deps.buildProcess }),
+  })
+
+  const daemon = createDaemon({ profile, paths, store, append: wake.append, supervisor, mailbox, scheduler, ledger, clock })
   const server = await createDaemonServer({
     api: daemon,
     socketPath: paths.socketPath,

@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/orchestration-ledger",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The build ledger and the remote runner (architecture §11): one build per (repo, sha, task), heavy tasks routed to the remote host, evals the first consumer (§17).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

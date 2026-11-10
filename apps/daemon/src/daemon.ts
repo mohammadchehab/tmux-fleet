@@ -34,6 +34,8 @@ import {
 } from '@fleet/foundation-core'
 import type {
   AppendEvent,
+  BuildsParams,
+  BuildsResult,
   DaemonApi,
   DaemonStatus,
   Decision,
@@ -46,6 +48,7 @@ import type {
   ReplayResult,
 } from '@fleet/foundation-contracts'
 import type { EventStore } from '@fleet/foundation-store'
+import type { BuildLedger } from '@fleet/orchestration-ledger'
 import type { Profile, PeerProfile } from './profile.ts'
 import type { Scheduler } from '@fleet/orchestration-routines'
 import type { Supervisor } from './sessions.ts'
@@ -64,6 +67,12 @@ export interface DaemonDeps {
   /** Built by `main.ts` from the store, the supervisor and the router (§7). */
   readonly mailbox: Mailbox
   readonly scheduler: Scheduler
+  /**
+   * §11's ledger. Composed by `compose.ts` from the profile's `builds` block,
+   * so the fleet has one answer per `(repo, sha, task)` rather than one per
+   * caller: two peers asking for the same build wait on the same promise.
+   */
+  readonly ledger: BuildLedger
   readonly clock?: Clock
   /** Injected so a test states its pid instead of inventing one. */
   readonly pid?: number
@@ -272,6 +281,14 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
         })
       }
       return run
+    },
+
+    async builds(input: BuildsParams): Promise<BuildsResult> {
+      // §11: the ledger asks the projection first, so the second request for a
+      // triple costs one read and no process. What the daemon adds is nothing —
+      // it does not decide whether a build is worth running, and a daemon that
+      // did would be a second ledger.
+      return deps.ledger.request(input)
     },
 
     async usage(input) {

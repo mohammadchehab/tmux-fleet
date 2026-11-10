@@ -82,6 +82,9 @@ importers:
       '@fleet/orchestration-judge':
         specifier: workspace:*
         version: link:../../packages/orchestration/judge
+      '@fleet/orchestration-ledger':
+        specifier: workspace:*
+        version: link:../../packages/orchestration/ledger
       '@fleet/orchestration-pm':
         specifier: workspace:*
         version: link:../../packages/orchestration/pm
@@ -259,6 +262,15 @@ importers:
         version: link:../../foundation/core
 
   packages/orchestration/judge:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../foundation/core
+
+  packages/orchestration/ledger:
     dependencies:
       '@fleet/foundation-contracts':
         specifier: workspace:*

@@ -22,6 +22,7 @@
     "@fleet/notify-macos": "workspace:*",
     "@fleet/orchestration-gate": "workspace:*",
     "@fleet/orchestration-judge": "workspace:*",
+    "@fleet/orchestration-ledger": "workspace:*",
     "@fleet/orchestration-pm": "workspace:*",
     "@fleet/orchestration-routines": "workspace:*",
     "@fleet/runtime-mailbox": "workspace:*",

@@ -1,48 +1,78 @@
 /**
- * `fleet evals run`'s two mechanical halves, tested without spawning anything: the
- * command it would run, and the decode of the JSON the runner prints.
+ * `fleet evals run`'s mechanical halves, tested without a daemon or a model: the
+ * command it asks the ledger to run, the file it reads the answer from, and the decode
+ * of what the suite prints.
  *
- * The run itself is not spawned here — that would need a model — so what is pinned is
- * the contract at the process boundary: which bin, which arguments, which environment,
- * and what counts as an answer.
+ * What is pinned is the contract at the process boundary — which bin, which arguments,
+ * and which environment (only two variables, because they cross a socket) — plus what
+ * counts as an answer.
  */
 
 import assert from 'node:assert/strict'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
 import { FleetError } from '@fleet/foundation-core'
-import { evalsCommand, readEvalsOutput } from '../src/evals.ts'
+import { evalsBuildCommand, readEvalsAnswer, readEvalsOutput } from '../src/evals.ts'
 
 const now = '2026-11-10T09:00:00.000Z'
 
-describe('evalsCommand: the process the CLI spawns', () => {
-  it('is the suite\'s own bin, named for it, with no arguments', () => {
-    const command = evalsCommand({ suite: 'judge' })
-    assert.equal(command.command, 'fleet-evals-judge')
+describe('evalsBuildCommand: the build the CLI asks for', () => {
+  const run = { suite: 'judge', provider: 'claude', model: 'a-model', saveBaseline: false }
+
+  it("is the suite's own bin, named for it, with no arguments", () => {
+    const command = evalsBuildCommand(run)
+    assert.equal(command.bin, 'fleet-evals-judge')
     assert.deepEqual(command.args, [])
   })
 
   it('passes --save-baseline through as the one argument a run has', () => {
-    assert.deepEqual(evalsCommand({ suite: 'judge', saveBaseline: true }).args, ['--save-baseline'])
-    assert.deepEqual(evalsCommand({ suite: 'judge', saveBaseline: false }).args, [])
+    assert.deepEqual(evalsBuildCommand({ ...run, saveBaseline: true }).args, ['--save-baseline'])
   })
 
   it('names the model under test in the environment, the spelling the suite documents', () => {
-    const { env } = evalsCommand({ suite: 'judge', provider: 'claude', model: 'a-model' })
+    const { env } = evalsBuildCommand(run)
     assert.equal(env['FLEET_EVAL_PROVIDER'], 'claude')
     assert.equal(env['FLEET_EVAL_MODEL'], 'a-model')
   })
 
-  it('carries PATH over, because spawn replaces the environment rather than extending it', () => {
-    const { env } = evalsCommand({ suite: 'judge', env: { PATH: '/usr/bin', FLEET_EVALS_BIN: '/repo/bin/judge.ts' } })
-    assert.equal(env['PATH'], '/usr/bin')
-    assert.equal(env['FLEET_EVALS_BIN'], '/repo/bin/judge.ts')
+  it('carries nothing else: the environment crosses a socket and is exported into a script', () => {
+    // The daemon exports a build's env on the remote host, so a copied environment
+    // would be a copied `AWS_TOKEN`. `spawnToLog` still gives the child this process's
+    // environment for a local build, so nothing is lost by not sending it.
+    const { env } = evalsBuildCommand({
+      ...run,
+      env: { PATH: '/usr/bin', GITHUB_TOKEN: 'secret', FLEET_EVALS_BIN: '/repo/bin/judge.ts' },
+    })
+    assert.deepEqual(env, { FLEET_EVAL_PROVIDER: 'claude', FLEET_EVAL_MODEL: 'a-model' })
   })
 
   it('lets FLEET_EVALS_BIN name the binary, and an explicit one win over it', () => {
     const env = { FLEET_EVALS_BIN: '/repo/bin/judge.ts' }
-    assert.equal(evalsCommand({ suite: 'judge', env }).command, '/repo/bin/judge.ts')
-    assert.equal(evalsCommand({ suite: 'judge', env, bin: '/other/judge.ts' }).command, '/other/judge.ts')
+    assert.equal(evalsBuildCommand({ ...run, env }).bin, '/repo/bin/judge.ts')
+    assert.equal(evalsBuildCommand({ ...run, env, bin: '/other/judge.ts' }).bin, '/other/judge.ts')
+  })
+})
+
+describe('readEvalsAnswer: the file the ledger kept', () => {
+  it('reads the answer the build left beside its log', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-cli-evals-'))
+    const answerPath = join(dir, 'run.out')
+    await writeFile(answerPath, '{"runId":"evr_1"}\n')
+    assert.equal(await readEvalsAnswer(answerPath, join(dir, 'run.log')), '{"runId":"evr_1"}\n')
+  })
+
+  it('names the log when there is no answer, because that is where the reason is', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-cli-evals-'))
+    await assert.rejects(
+      () => readEvalsAnswer(join(dir, 'run.out'), join(dir, 'run.log')),
+      (error: Error & { code?: string }) =>
+        error.code === 'external_failed' &&
+        error.message.includes('left no answer') &&
+        error.message.includes(join(dir, 'run.log')),
+    )
   })
 })
 

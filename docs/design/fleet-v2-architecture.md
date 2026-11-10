@@ -627,6 +627,14 @@ The Worktree manager is the only thing that creates or deletes worktrees; peers 
 or runs it once. Heavy tasks route to the remote host (hetzner) by task class in the profile; light ones run locally.
 The same SHA+task never runs twice and results are shared by all peers.
 
+A build keeps two files under `artifacts/builds/`. `<sha>-<task>.log` is everything the build said — both streams, in
+order — which is the only account of a build that ran on another host. `<sha>-<task>.out` is stdout alone, for a caller
+that asked for an answer and not for narration; `fleet evals run` is the first such caller, and the path is derived from
+`logPath` so a reader needs the one path the ledger already sends (`buildStdoutPath`, in `foundation` beside `buildKey`
+— a client may import foundation and nothing else, §1.1). A remote build checks the sha out and then puts that
+checkout's `node_modules/.bin` ahead of the host's PATH: a workspace bin is on no PATH but its own tree's, and a build
+should run the tools its lockfile pins rather than whatever the box happens to have.
+
 ## 12. Contracts before work
 
 A `Work` that depends on shared structure declares `contractId`. The PM does not assign it until that `Contract`
@@ -818,9 +826,14 @@ case count, never a percentage on fewer than 20 cases. Grader: temperature 0, pi
 rubric item is yes/no so scores are countable; 10% of graded cases are spot-checked by a human whenever a baseline
 changes. Always recorded: tokens in/out, cost (only when `capabilities.usageCost`, else n/a), latency, retries.
 
-**How it runs.** `fleet evals run <suite> [--provider X --model Y]`. Heavy runs go to hetzner through the build ledger
-(§11), unique on `(repo, sha, suite, provider, model)` so an identical run never repeats. Triggers: on demand; nightly
-on `main`; and **required on any PR that touches** `config/definitions/roles`, the Judge prompts or question schemas,
+**How it runs.** `fleet evals run <suite> --provider X --model Y --repo <owner/name> --sha <sha>`. The run *is* a build
+(§11): the CLI forms the task `evals:<suite>:<provider>:<model>` and asks the ledger for it, so a heavy run goes to
+hetzner by task class and an identical one never repeats — unique on `(repo, sha, suite, provider, model)`, which is
+§11's three-tuple key with §17's five-tuple identity written inside it. The caller names all five parts because a
+default for any of them is a *different* key: a run would either open a second row for the same work or reuse an older
+row's answer for something it never measured. What crosses the socket is only the run's command and the two variables
+its provider reads — never the calling shell's environment, which would be exported on the remote host.
+Triggers: on demand; nightly on `main`; and **required on any PR that touches** `config/definitions/roles`, the Judge prompts or question schemas,
 model or limits config, or the `StateFile` schema (path-based, the same mechanism as the security-scan routine, §6.2).
 **Gate:** no suite regresses beyond its tolerance against its committed baseline in `tests/evals/baselines/<suite>.json`;
 raising a baseline is a deliberate commit with the run attached.

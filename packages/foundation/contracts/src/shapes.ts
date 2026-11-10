@@ -3,7 +3,7 @@
  * PR reference or a severity has exactly one spelling across the fleet.
  */
 
-import { number, object, objectAs, oneOf, optional, positiveInt, refine, string, text, type Schema } from '@fleet/foundation-core'
+import { array, number, object, objectAs, oneOf, optional, positiveInt, record, refine, string, text, type Schema } from '@fleet/foundation-core'
 import { repo, timestamp, type Repo, type Timestamp } from '@fleet/foundation-core'
 
 /** A PR as everything refers to it: the repo and the number. */
@@ -14,6 +14,33 @@ export interface PullRequestRef {
 
 export const pullRequestRef = (): Schema<PullRequestRef> =>
   objectAs<PullRequestRef>()({ repo: repo(), number: positiveInt() })
+
+/**
+ * What a build runs when it has to run (§11): argv, never a shell string.
+ *
+ * It lives here rather than in the ledger because it crosses the socket — a
+ * peer asks the daemon for a build and names the command — and
+ * `foundation/contracts` is what both ends of that socket may import (§1.1).
+ * The ledger's runner takes this shape unchanged, so the two cannot drift.
+ */
+export interface BuildCommand {
+  readonly bin: string
+  readonly args?: readonly string[]
+  /** Extra environment, merged over the daemon's own. */
+  readonly env?: Readonly<Record<string, string>>
+  /** The working directory, for a local build. A remote build runs in the host's checkout. */
+  readonly cwd?: string
+}
+
+export const buildCommand = (): Schema<BuildCommand> =>
+  objectAs<BuildCommand>()({
+    bin: text(200),
+    // A build's argv is short: these limits are here so a client cannot use the
+    // socket as a way to fill the log's filename or the daemon's memory.
+    args: optional(array(text(500), { maxItems: 100 })),
+    env: optional(record(string({ maxLength: 2000 }))),
+    cwd: optional(text(500)),
+  })
 
 /** An external tracker key (Jira, Backlog.md); a sink and a source, not the state (§3). */
 export interface ExternalRef {

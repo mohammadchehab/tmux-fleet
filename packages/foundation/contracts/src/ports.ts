@@ -25,7 +25,7 @@ import type { EvalRunWithCases } from './projections/evals.ts'
 import type { Message } from './projections/mailbox.ts'
 import type { MessageAckState } from './events/messages.ts'
 import type { ProviderHandle, Turn } from './provider.ts'
-import type { PullRequest, Worktree } from './projections/delivery.ts'
+import type { Build, PullRequest, Worktree } from './projections/delivery.ts'
 import type { Decision, Finding, Notification, Routine } from './projections/ops.ts'
 import type { Peer, PeerCompactions, Session } from './projections/peers.ts'
 import type { Work } from './projections/work.ts'
@@ -205,6 +205,21 @@ export interface ProviderRegistry<P extends ProviderHandle = ProviderHandle> {
 }
 
 /**
+ * The build ledger's read side (§11). The ledger is unique on `(repo, sha,
+ * task)`, so `find` is the whole dedupe: a build that already exists answers a
+ * second request and nothing is appended.
+ *
+ * A port rather than a store import, for the §1.1 reason: `orchestration` may
+ * not import `store`, and `apps/daemon` hands it `store.reader().builds`.
+ */
+export interface BuildReader {
+  /** The build for a key, or `undefined` when the log has never seen it. */
+  find(repo: Repo, sha: Sha, task: string): Promise<Build | undefined>
+  /** One build by its id; what `build.finished` names and what a caller is handed back. */
+  get(id: string): Promise<Build | undefined>
+}
+
+/**
  * A read-only view of the store's projections, so the PM, the standup and the
  * CLI read state without holding a store handle or the ability to append (§3,
  * §5.2, §5.4).
@@ -251,6 +266,8 @@ export interface ReadModel {
   readonly worktrees: {
     all(): Promise<readonly Worktree[]>
   }
+  /** §11's ledger, read back: `fleet build` reports what a deduped request found. */
+  readonly builds: BuildReader
   readonly routines: {
     all(): Promise<readonly Routine[]>
   }
