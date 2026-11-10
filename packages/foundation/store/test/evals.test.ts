@@ -179,12 +179,19 @@ test('a repeated attempt number is not a second attempt', async () => {
     scored(1, true, 'attempt 1: exact match'),
   ])
 
-  const [row] = snapshot(path).cases as { attempts: number; passes: number; pass: number; detail: string }[]
+  const { cases, anomalies } = snapshot(path)
+  const [row] = cases as { attempts: number; passes: number; pass: number; detail: string }[]
   // One pass over two attempts, not three over one: a pass rate no run produced is what §17
   // gates on, so the row must not be able to hold one.
   assert.deepEqual([row?.attempts, row?.passes], [2, 1])
   assert.equal(row?.pass, 0, 'a stale attempt 1 does not un-fail attempt 2')
   assert.equal(row?.detail, 'attempt 2: escalate')
+  // Discarded, not forgotten: the log said something the tally cannot take, and that is a row.
+  assert.deepEqual(
+    anomalies.map((one) => (one as { event_seq: number }).event_seq),
+    [3, 5],
+    'the two ignored arrivals, and nothing for the start or the attempts that counted',
+  )
   await store.close()
 })
 
@@ -201,6 +208,23 @@ test('a start that arrives after the run finished does not erase the result', as
   assert.deepEqual(after, before, 'a start is idempotent, and never a way back to running')
   assert.equal(after?.state, 'finished')
   assert.equal(after?.passed, 2)
+  assert.deepEqual(snapshot(path).anomalies, [], 'the same run opening twice is the expected repeat')
+  await store.close()
+})
+
+test('a second start for the same id with a different identity is an anomaly, not an overwrite', async () => {
+  const path = tempStorePath()
+  const store = await openSqliteStore({ path, clock: fixedClock })
+  await store.append([started(3), scored(1, true, 'attempt 1: exact match')])
+
+  // A reused runId: another suite and a different denominator under an id that already has a
+  // scored case. Rewriting the row would move the `cases` the pass count was measured against.
+  await store.append([{ ...started(10), data: { ...started(10).data, suite: 'briefs' } } as AppendEvent])
+  const [row] = snapshot(path).runs as { suite: string; cases: number }[]
+  assert.deepEqual([row?.suite, row?.cases], ['judge', 3], 'the row keeps what it was opened as')
+  assert.deepEqual(snapshot(path).anomalies, [
+    { event_seq: 3, projection: 'evalRun', event_type: 'eval.run_started' },
+  ])
   await store.close()
 })
 
@@ -212,6 +236,9 @@ test('replaying the eval events rebuilds exactly the rows append wrote', async (
     scored(1, true, 'attempt 1: exact match'),
     scored(2, false, 'attempt 2: escalate'),
     scored(3, true, 'attempt 3: exact match'),
+    // Kept in the replay on purpose: an anomaly is a row the projection wrote, so a rebuild
+    // that dropped it would rebuild the tables and not the store.
+    scored(3, false, 'attempt 3: escalate'),
     finished(3, 2),
   ])
   const before = snapshot(path)
@@ -226,5 +253,5 @@ test('replaying the eval events rebuilds exactly the rows append wrote', async (
   assert.deepEqual(snapshot(path), before)
   const [row] = before.cases as { attempts: number; passes: number }[]
   assert.deepEqual([row?.attempts, row?.passes], [3, 2])
-  assert.deepEqual(seqs, [1, 2, 3, 4, 5])
+  assert.deepEqual(seqs, [1, 2, 3, 4, 5, 6])
 })

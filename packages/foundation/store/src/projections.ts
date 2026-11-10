@@ -1583,22 +1583,36 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     case 'eval.run_started': {
       const { runId, suite, sha, provider, model, cases } = event.data
       const current = evalRunById(db, runId)
+      if (current !== undefined) {
+        // A start is identity, not a reset: the row it finds — running or finished — keeps its
+        // state, its aggregates and its denominator, so a replayed append, or a runner that
+        // resumed with the runId it already used, cannot put a finished run back to running or
+        // shrink the `cases` its `passed` was measured against.
+        if (
+          current.suite !== suite ||
+          current.sha !== sha ||
+          current.provider !== provider ||
+          current.model !== model ||
+          current.cases !== cases
+        ) {
+          // Not an idempotent repeat but a different run wearing the same id, which would
+          // otherwise rewrite a scored run's identity silently. The log keeps the event; the
+          // row keeps what it measured; the disagreement is why anomalies exist (§3).
+          recordAnomaly(db, event, 'evalRun', `run ${runId} was already opened as ${current.suite}@${current.sha}`)
+        }
+        return
+      }
       writeEvalRun(
         db,
         parse(PROJECTION_SCHEMAS.evalRun, {
-          // A start is identity, not a reset. A second start for a run that already has a
-          // row — a replayed append, or a runner that resumed with the same runId — keeps
-          // the state and aggregates that row has, so a finished result cannot be erased
-          // by its own start arriving late.
-          ...current,
           runId,
           suite,
           sha,
           provider,
           model,
           cases,
-          state: current?.state ?? 'running',
-          startedAt: current?.startedAt ?? ts,
+          state: 'running',
+          startedAt: ts,
         }),
       )
       return
@@ -1618,8 +1632,15 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       // Only a number above every one already tallied is a new attempt: that is the attempt
       // the row's verdict belongs to, and the only one that can count a pass. Counting any
       // arrival would let `passes` outrun `attempts` — a pass rate no run produced, over a
-      // number §17 gates on. A repeat is projected as no-op, so a replay is still a no-op.
-      if (attempt <= attempts) return
+      // number §17 gates on.
+      if (attempt <= attempts) {
+        // Not a silent no-op: a repeat is expected, but an attempt numbered below one already
+        // tallied is the adapter disagreeing with itself, and the tally it disagrees with is
+        // what a baseline is compared against. The anomaly is keyed by event seq, so a replay
+        // records exactly the same row.
+        recordAnomaly(db, event, 'evalCase', `attempt ${attempt} of ${caseId} is not above the ${attempts} tallied`)
+        return
+      }
       writeEvalCase(
         db,
         parse(PROJECTION_SCHEMAS.evalCase, {
