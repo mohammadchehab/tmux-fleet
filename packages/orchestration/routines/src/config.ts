@@ -62,11 +62,6 @@ export const defaultTriggers: Readonly<Record<RoutineKind, readonly Trigger[]>> 
         'peer.registered',
         'peer.state_changed',
         'contract.published',
-        // A Judge answer is the only record of what a `thin_card` question found (§5.3
-        // keeps answers out of the projections), so the tick that promotes an
-        // answered card has to be the one the answer wakes. A heartbeat would find a
-        // `proposed` card and nothing to read, and the answer would sit unread.
-        'judge.answered',
       ],
     },
   ],

@@ -8,9 +8,17 @@
  * is "the" match (dedupe, assign) then cannot depend on how the store happened to answer.
  */
 
-import type { DecisionId, PeerId } from '@fleet/foundation-core'
+import type { DecisionId, PeerId, QuestionId } from '@fleet/foundation-core'
 import { isWorkTerminal } from '@fleet/foundation-contracts'
-import type { Decision, FleetState, Peer, PullRequest, PullRequestRef, Work } from '@fleet/foundation-contracts'
+import type {
+  Decision,
+  FleetState,
+  JudgeQuestionRecord,
+  Peer,
+  PullRequest,
+  PullRequestRef,
+  Work,
+} from '@fleet/foundation-contracts'
 
 /** `repo#number`: a PR's identity in a claim, a log line and a `PullRequestRef` lookup. */
 export const prKey = (pr: PullRequestRef): string => `${String(pr.repo)}#${pr.number}`
@@ -40,6 +48,11 @@ export interface StateIndex {
   readonly work: (id: string) => Work | undefined
   readonly pr: (ref: PullRequestRef) => PullRequest | undefined
   readonly decision: (id: DecisionId) => Decision | undefined
+  /**
+   * §5.3's question by id, answer or not. A `thin_card` question's answer is what
+   * makes a proposed card ready; an `escalate` one is what the inbox asks about.
+   */
+  readonly judge: (id: QuestionId) => JudgeQuestionRecord | undefined
   /** Every peer holding a role, live or not: the caller decides whether a dead one counts. */
   readonly peersWithRole: (role: string) => readonly Peer[]
   /** The Work a PR belongs to, when the PR named one. */
@@ -56,6 +69,7 @@ export const indexOf = (state: FleetState): StateIndex => {
   const work = new Map<string, Work>(state.work.map((row) => [String(row.workId), row]))
   const prs = new Map(state.pullRequests.map((row) => [prKey(refOf(row)), row]))
   const decisions = new Map(state.decisions.map((row) => [row.decisionId, row]))
+  const judge = new Map(state.judge.map((row) => [row.questionId, row]))
 
   const peersWithRole = (role: string): readonly Peer[] =>
     state.peers.filter((row) => row.role === role).sort(byOrder((row) => row.peerId))
@@ -72,6 +86,7 @@ export const indexOf = (state: FleetState): StateIndex => {
     work: (id) => work.get(id),
     pr: (ref) => prs.get(prKey(ref)),
     decision: (id) => decisions.get(id),
+    judge: (id) => judge.get(id),
     peersWithRole,
     workOfPr,
     openPrsOf,

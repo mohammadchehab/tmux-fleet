@@ -110,6 +110,7 @@ export const state = (over: Partial<FleetState> = {}): FleetState => ({
   routines: [],
   findings: [],
   notifications: [],
+  judge: [],
   ...over,
 })
 

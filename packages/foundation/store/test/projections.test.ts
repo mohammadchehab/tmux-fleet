@@ -772,3 +772,73 @@ test('latest(type, subject) is the newest event of that type about that subject,
   assert.equal(await store.latest('peer.standards_set', 'engineer-2'), undefined, 'another subject has none')
   assert.equal(await store.latest('peer.registered', 'engineer-1').then((e) => e?.type), 'peer.registered')
 })
+
+test('a Judge question is one row, and the answer fills it in rather than replacing it', async () => {
+  const store = await open()
+  const questionId = 'qst_2b7c9d1e4f6a8b0c'
+  await store.append([
+    event('judge.requested', questionId, {
+      questionId,
+      kind: 'thin_card',
+      input: { kind: 'thin_card', title: 'Retarget the stacked children', goal: 'Keep the stack honest.', acceptance: [] },
+      inputsHash: 'sha256:4c1d7e9a0b2f3568',
+    }),
+  ])
+
+  const asked = await store.reader().judge.get(questionId as never)
+  assert.equal(asked?.askedAt, '2026-11-10T10:00:00.000Z')
+  assert.equal(asked?.answer, undefined, 'asked, not yet answered: the row exists either way')
+
+  await store.append([
+    event(
+      'judge.answered',
+      questionId,
+      {
+        questionId,
+        kind: 'thin_card',
+        answer: { kind: 'thin_card', thin: false, missing: [], why: 'It names the goal and its acceptance.' },
+        model: 'claude-haiku-4-5',
+        durationMs: 900,
+        retries: 0,
+      },
+      undefined,
+      'judge:claude-haiku-4-5',
+    ),
+  ])
+
+  const answered = await store.reader().judge.get(questionId as never)
+  assert.equal(answered?.answer?.kind, 'thin_card')
+  assert.equal(answered?.model, 'claude-haiku-4-5')
+  assert.equal(answered?.answeredAt, '2026-11-10T10:00:00.000Z')
+  assert.equal(answered?.askedAt, '2026-11-10T10:00:00.000Z', 'the question keeps when it was asked')
+  assert.equal((await store.reader().judge.all()).length, 1, 'an answer is not a second question')
+})
+
+test('an answer with no question on file is an anomaly, not an invented question', async () => {
+  const path = tempStorePath()
+  const store = await openSqliteStore({ path, clock: fixedClock })
+  const questionId = 'qst_9e8d7c6b5a493827'
+  await store.append([
+    event('judge.answered', questionId, {
+      questionId,
+      kind: 'thin_card',
+      answer: { kind: 'thin_card', thin: true, missing: ['a goal'], why: 'the body is one line' },
+      model: 'claude-haiku-4-5',
+      durationMs: 700,
+      retries: 0,
+    }),
+  ])
+
+  assert.equal(await store.reader().judge.get(questionId as never), undefined)
+  assert.deepEqual(await anomalies(path), [
+    {
+      event_seq: 1,
+      projection: 'judge',
+      event_type: 'judge.answered',
+      subject: questionId,
+      detail: `no judge row for ${questionId}`,
+      at: '2026-11-10T10:00:00.000Z',
+    },
+  ])
+  await store.close()
+})

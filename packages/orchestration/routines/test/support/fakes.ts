@@ -134,6 +134,9 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
       get: async (key) => current.notifications.find((row) => row.key === key),
     },
     findings: { all: async () => [] },
+    // No questions are seeded: the routines' own tests never read one, and the
+    // snapshot asks once so a routine under test sees an empty question log.
+    judge: { all: async () => [], get: async () => undefined },
     messages: { all: async () => [], forPeer: async () => [] },
     pullRequests: { all: async () => current.pullRequests },
     worktrees: { all: async () => current.worktrees },

@@ -15,7 +15,7 @@
 import type { FleetState, ReadModel } from '@fleet/foundation-contracts'
 
 export const snapshot = async (read: ReadModel): Promise<FleetState> => {
-  const [peers, sessions, work, decisions, messages, pullRequests, worktrees, routines, findings, notifications] =
+  const [peers, sessions, work, decisions, messages, pullRequests, worktrees, routines, findings, notifications, judge] =
     await Promise.all([
       read.peers.all(),
       read.sessions.all(),
@@ -27,6 +27,10 @@ export const snapshot = async (read: ReadModel): Promise<FleetState> => {
       read.routines.all(),
       read.findings.all(),
       read.notifications.all(),
+      // §5.3's question log travels with the snapshot so a rule reads an answer as
+      // state. It is in the same `Promise.all` as everything else because a tick
+      // that read it afterwards would be reading a second fleet (§5.2).
+      read.judge.all(),
     ])
 
   return {
@@ -40,5 +44,6 @@ export const snapshot = async (read: ReadModel): Promise<FleetState> => {
     routines,
     findings,
     notifications,
+    judge,
   }
 }
