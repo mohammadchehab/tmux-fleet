@@ -110,6 +110,19 @@ describe('createWorktrees', () => {
     await assert.rejects(createWorktrees(runner).remove(path), { message: /named no common directory/ })
   })
 
+  it('if the worktree directory is already deleted, prunes the registration anyway (TASK-34)', async () => {
+    const { runner, calls } = fakeGit({
+      'rev-parse': failed('fatal: cannot change to /repo/.claude/worktrees/fleet-work-1: No such file or directory'),
+      worktree: ok(`worktree ${path}\n\nHEAD abc\n\nbranch refs/heads/main\n`),
+    })
+
+    // Should succeed and prune the registration, not throw ENOENT
+    await createWorktrees(runner).remove(path)
+
+    // Verify it called worktree remove despite rev-parse failing
+    assert.ok(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'remove'))
+  })
+
   it('creates a worktree at <checkout>/.claude/worktrees/<topic> on a fresh branch', async () => {
     let revParseCallCount = 0
     const runner: GitRunner = async (args, cwd) => {
