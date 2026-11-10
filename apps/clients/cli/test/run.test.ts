@@ -17,7 +17,7 @@ import {
 } from '@fleet/foundation-core'
 import { buildStdoutPath } from '@fleet/foundation-contracts'
 import type { BuildsResult, DaemonMethod, EvalRunWithCases, LsResult } from '@fleet/foundation-contracts'
-import type { DaemonCaller } from '../src/client.ts'
+import { unreachableError, type DaemonCaller } from '../src/client.ts'
 import { run, type RunDeps } from '../src/run.ts'
 
 const now = '2026-11-10T09:00:00.000Z'
@@ -140,7 +140,7 @@ const harness = (answers: Partial<Record<DaemonMethod, Answer>>, overrides: Part
 const argv = (...words: readonly string[]): readonly string[] => ['node', 'fleet', ...words]
 
 const unreachable = (): never => {
-  throw new FleetError('external_failed', `cannot reach fleetd at ${socketPath}: connect ENOENT`)
+  throw unreachableError(`cannot reach fleetd at ${socketPath}: connect ENOENT`)
 }
 
 describe('run: the command line', () => {

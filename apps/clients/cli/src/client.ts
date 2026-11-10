@@ -16,7 +16,15 @@
 
 import { createConnection } from 'node:net'
 
-import { FleetError, fleetError, isFleetErrorCode, parseStrict, SchemaError, type Schema } from '@fleet/foundation-core'
+import {
+  FleetError,
+  fleetError,
+  isFleetErrorCode,
+  parseStrict,
+  SchemaError,
+  type FleetErrorDetails,
+  type Schema,
+} from '@fleet/foundation-core'
 import {
   daemonParamsFor,
   daemonResponse,
@@ -38,9 +46,19 @@ export type DaemonCaller = <M extends DaemonMethod>(method: M, params: DaemonPar
 /**
  * True for "there is nobody at that socket" — the one failure `fleet up` may
  * answer by starting a daemon instead of by reporting an error. Anything the
- * daemon *said* is not this: a refusal is a refusal.
+ * daemon *said* is not this: a refusal is a refusal. It is a flag on the error
+ * and not its code, because a daemon's own reply can carry `external_failed`
+ * too (a `gh` call that failed inside it) and that daemon is very much alive.
  */
-export const isUnreachable = (error: unknown): boolean => error instanceof FleetError && error.code === 'external_failed'
+export const isUnreachable = (error: unknown): boolean =>
+  error instanceof FleetError && error.details?.['unreachable'] === true
+
+/** The one way to say "nobody is at that socket": `isUnreachable` reads the flag this sets, so nothing else sets it by hand. */
+export const unreachableError = (message: string, details: FleetErrorDetails = {}, cause?: unknown): FleetError =>
+  fleetError('external_failed', message, {
+    details: { ...details, unreachable: true },
+    ...(cause === undefined ? {} : { cause }),
+  })
 
 const refuseParams = <T>(schema: Schema<T>, value: unknown, method: string): T => {
   try {
@@ -126,17 +144,22 @@ export const callDaemon = async <M extends DaemonMethod>(
     )
     socket.on('error', (error: NodeJS.ErrnoException) =>
       fail(
-        fleetError('external_failed', `cannot reach fleetd at ${options.socketPath}: ${error.message}`, {
-          cause: error,
-          details: { socketPath: options.socketPath, errno: error.code },
-        }),
+        unreachableError(
+          `cannot reach fleetd at ${options.socketPath}: ${error.message}`,
+          { socketPath: options.socketPath, errno: error.code },
+          error,
+        ),
       ),
     )
     socket.on('connect', () => {
       socket.write(`${JSON.stringify({ id: method, method, params: checked })}\n`)
     })
     socket.on('close', () =>
-      fail(fleetError('external_failed', `fleetd at ${options.socketPath} closed the connection without answering`)),
+      fail(
+        unreachableError(`fleetd at ${options.socketPath} closed the connection without answering`, {
+          socketPath: options.socketPath,
+        }),
+      ),
     )
     socket.on('data', (chunk: string) => {
       buffer += chunk
