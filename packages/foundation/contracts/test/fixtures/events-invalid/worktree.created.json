@@ -9,13 +9,13 @@
       1
     ],
     "data": {
-      "worktreeId": 42,
+      "worktreeId": "wtr_5e6f708192a3b4c5",
       "repo": "backbase/me-services-fleet",
       "branch": "feat/retarget-stacks",
-      "path": "~/Dev/tmux-fleet/.claude/worktrees/feat-retarget-stacks",
+      "path": 42,
       "ownerPeerId": "engineer-1",
       "class": "active"
     }
   },
-  "path": "data.worktreeId"
+  "path": "data.path"
 }

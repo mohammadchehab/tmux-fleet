@@ -1,8 +1,8 @@
 {
   "input": {
     "type": "turn.ended",
-    "turnId": 42,
-    "at": "2026-11-10T09:04:12.000Z",
+    "turnId": "trn_8192a3b4c5d6e7f8",
+    "at": 42,
     "reason": "completed",
     "usage": {
       "contextTokens": 172400,
@@ -10,5 +10,5 @@
       "costUsd": 0.42
     }
   },
-  "path": "turnId"
+  "path": "at"
 }

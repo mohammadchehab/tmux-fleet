@@ -9,11 +9,11 @@
       40
     ],
     "data": {
-      "peerId": "engineer-1",
-      "fromSessionId": 42,
+      "peerId": 42,
+      "fromSessionId": "ses_1a2b3c4d5e6f7081",
       "toSessionId": "ses_2c3d4e5f60718293",
       "replayedMessages": 1
     }
   },
-  "path": "data.fromSessionId"
+  "path": "data.peerId"
 }

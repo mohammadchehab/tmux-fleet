@@ -6,13 +6,13 @@
     "subject": "engineer-1",
     "actor": "pm",
     "data": {
-      "peerId": 42,
-      "role": "engineer",
+      "peerId": "engineer-1",
+      "role": 42,
       "providerId": "claude-code",
       "model": "claude-sonnet-5-5",
       "permissionMode": "acceptEdits",
       "worktreeId": "wtr_5e6f708192a3b4c5"
     }
   },
-  "path": "data.peerId"
+  "path": "data.role"
 }

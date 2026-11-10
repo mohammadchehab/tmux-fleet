@@ -10,10 +10,10 @@
     ],
     "data": {
       "key": "failure:engineer-1:provider",
-      "class": "not-a-valid-value",
-      "channel": "macos",
+      "class": "failure",
+      "channel": 42,
       "error": "osascript exited 1: notification permission denied"
     }
   },
-  "path": "data.class"
+  "path": "data.channel"
 }

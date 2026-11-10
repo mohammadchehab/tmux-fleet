@@ -11,9 +11,9 @@
     "data": {
       "briefId": "brf_3c4d5e6f708192a3",
       "version": 1,
-      "supersededBy": "brf_4d5e6f708192a3b4",
-      "reason": 42
+      "supersededBy": 42,
+      "reason": "contract v3 changed the gate interface"
     }
   },
-  "path": "data.reason"
+  "path": "data.supersededBy"
 }

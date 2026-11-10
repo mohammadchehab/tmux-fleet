@@ -9,14 +9,14 @@
       45
     ],
     "data": {
-      "decisionId": 42,
+      "decisionId": "dec_6f708192a3b4c5d6",
       "source": "judge",
       "option": "yes",
       "text": "Both change the gate merge order for stacked PRs; one work item.",
       "judgeModel": "claude-sonnet-5-5",
-      "durationMs": 812,
+      "durationMs": "not-a-number",
       "answeredBy": "pm"
     }
   },
-  "path": "data.decisionId"
+  "path": "data.durationMs"
 }

@@ -12,12 +12,12 @@
       "peerId": "engineer-1",
       "sessionId": "ses_1a2b3c4d5e6f7081",
       "providerId": "claude-code",
-      "providerSessionRef": 42,
-      "model": "claude-sonnet-5-5",
+      "providerSessionRef": "sess_9f8e7d6c5b4a39281706",
+      "model": 42,
       "permissionMode": "acceptEdits",
       "resumed": false,
       "endpoint": "https://api.deepinfra.com/anthropic"
     }
   },
-  "path": "data.providerSessionRef"
+  "path": "data.model"
 }

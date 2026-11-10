@@ -9,13 +9,13 @@
       57
     ],
     "data": {
-      "runId": 42,
+      "runId": "evr_4c1d9a7b2e5f6038",
       "caseId": "stacked-merge-branch-loss",
       "attempt": 1,
-      "pass": true,
+      "pass": "not-a-boolean",
       "score": 1,
       "detail": "same_feature: exact match on kind and route target"
     }
   },
-  "path": "data.runId"
+  "path": "data.pass"
 }

@@ -9,9 +9,13 @@
       24
     ],
     "data": {
-      "fromBase": "feat/retarget-stacks",
+      "pr": {
+        "repo": "backbase/me-services-fleet",
+        "number": 42
+      },
+      "fromBase": 42,
       "toBase": "main"
     }
   },
-  "path": "data.pr"
+  "path": "data.fromBase"
 }

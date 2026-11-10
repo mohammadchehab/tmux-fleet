@@ -9,10 +9,10 @@
       43
     ],
     "data": {
-      "worktreeId": "wtr_5e6f708192a3b4c5",
-      "repo": 42,
+      "worktreeId": 42,
+      "repo": "backbase/me-services-fleet",
       "message": "codegraph index exited 1: codegraph.db is locked"
     }
   },
-  "path": "data.repo"
+  "path": "data.worktreeId"
 }

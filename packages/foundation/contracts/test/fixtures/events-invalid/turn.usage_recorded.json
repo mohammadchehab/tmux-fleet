@@ -12,19 +12,13 @@
       "peerId": "engineer-1",
       "sessionId": "ses_1a2b3c4d5e6f7081",
       "workId": "wrk_7f3a91c2d84b0e56",
-      "contextTokens": "not-a-number",
+      "contextTokens": 172400,
       "contextLimit": 200000,
       "inputTokens": 61200,
       "outputTokens": 4180,
       "cachedTokens": 148000,
-      "toolCalls": {
-        "grep": 2,
-        "glob": 1,
-        "read": 6,
-        "codegraph": 9
-      },
       "costUsd": 0.42
     }
   },
-  "path": "data.contextTokens"
+  "path": "data.toolCalls"
 }

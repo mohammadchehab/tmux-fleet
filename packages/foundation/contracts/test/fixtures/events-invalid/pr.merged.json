@@ -9,13 +9,9 @@
       13
     ],
     "data": {
-      "pr": {
-        "repo": "backbase/me-services-fleet",
-        "number": 42
-      },
-      "headSha": 42,
+      "headSha": "9c1d2e3f405162738495a6b7c8d9e0f1023a4b5c",
       "mergeSha": "d36a8b0c1d2e3f405162738495a6b7c8d9e0f102"
     }
   },
-  "path": "data.headSha"
+  "path": "data.pr"
 }

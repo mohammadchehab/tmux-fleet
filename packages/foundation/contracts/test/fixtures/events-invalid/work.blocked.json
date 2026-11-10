@@ -9,10 +9,10 @@
       7
     ],
     "data": {
-      "workId": 42,
+      "workId": "wrk_8a4b02d3e95c1f67",
       "reason": "waiting on the user to pick a definition of \"same feature\"",
-      "blockedOn": "user"
+      "blockedOn": "not-a-valid-value"
     }
   },
-  "path": "data.workId"
+  "path": "data.blockedOn"
 }

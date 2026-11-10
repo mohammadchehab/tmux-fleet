@@ -10,12 +10,12 @@
     ],
     "data": {
       "msgId": "msg_4d5e6f708192a3b4",
-      "to": "engineer-1",
+      "to": 42,
       "from": "pm",
       "kind": "nudge",
-      "briefVersion": "not-a-number",
+      "briefVersion": 1,
       "body": "CI is red on integration/postgres; the failing check is in the log you already have."
     }
   },
-  "path": "data.briefVersion"
+  "path": "data.to"
 }

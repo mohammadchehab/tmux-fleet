@@ -9,10 +9,10 @@
       "runId": "evr_4c1d9a7b2e5f6038",
       "suite": "judge",
       "sha": "ffcd0091a2b3c4d5",
-      "provider": "deepinfra",
-      "model": 42,
+      "provider": 42,
+      "model": "deepseek-ai/DeepSeek-V3.2",
       "cases": 10
     }
   },
-  "path": "data.model"
+  "path": "data.provider"
 }
