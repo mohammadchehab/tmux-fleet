@@ -173,11 +173,26 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     },
 
     async send(input) {
+      // The brief version the message is written against is resolved here, not
+      // defaulted: `0` is not a brief version, and a store that refuses to
+      // append one is a better error than a message the peer cannot judge (§7).
+      // A running session knows its brief; a peer that is not running still has
+      // the version the projection last recorded; anything else is not a peer
+      // this fleet can address.
+      const briefVersion =
+        input.briefVersion ??
+        (await deps.supervisor.briefs.current(input.to)) ??
+        (await read.peers.get(input.to))?.briefVersion
+      if (briefVersion === undefined || briefVersion < 1) {
+        throw fleetError('not_found', `no peer ${String(input.to)} with a brief to send to`, {
+          details: { peerId: String(input.to) },
+        })
+      }
       const result = await deps.mailbox.send({
         to: input.to,
         from: ACTOR,
         kind: input.kind,
-        briefVersion: input.briefVersion ?? (await deps.supervisor.briefs.current(input.to)) ?? 0,
+        briefVersion,
         body: input.body,
       })
       if (!result.ok) throw result.error
