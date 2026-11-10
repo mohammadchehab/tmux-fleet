@@ -371,6 +371,20 @@ test('a cursor key arrives only when the spec carries it, never by inheritance',
   assert.ok(seen.slice(2).every((keys) => keys.includes('CURSOR_API_KEY')), 'the spec’s key arrives')
 })
 
+test('the spec’s cursor key never appears in argv or in the events the session emits (TASK-24)', async () => {
+  const { provider, spec, calls } = harness()
+  const KEY = 'cur-never-printed-0000'
+  const handle = await provider.start(spec({ env: { CURSOR_API_KEY: KEY } }))
+  const seen = watch(provider, handle)
+  await seen.until(ended(handle.briefTurnId))
+
+  // The key is the child's environment and nothing else: not an argument of either process…
+  assert.equal(JSON.stringify(calls()).includes(KEY), false, 'the key was passed as an argument')
+  // …and not in anything the adapter reports about the session.
+  assert.equal(JSON.stringify(seen.events).includes(KEY), false, 'the key reached an event')
+  assert.equal(JSON.stringify(handle).includes(KEY), false, 'the key reached the handle')
+})
+
 test('the standards in systemPromptAppend reach the cursor brief as session policy, after the brief itself (§12.1)', async () => {
   const { provider, spec, calls } = harness()
   const standards = 'Standards you work under\n\n<document name="AGENTS.md">\nNever push to main; open a PR.\n</document>'
