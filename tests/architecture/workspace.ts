@@ -9,7 +9,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { join, posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { locate, type ImportEdge, type PackageRef, type Violation } from './rules.ts'
+import { locate, type ImportEdge, type PackageManifest, type PackageRef, type Violation } from './rules.ts'
 
 export const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
@@ -68,6 +68,28 @@ export async function readPackages(root = REPO_ROOT): Promise<PackageRef[]> {
     packages.push({ name, dir, group: where.group, key: where.key })
   }
   return packages
+}
+
+/** Each package with the dependency lists its package.json declares; the §17 tooling rule reads those. */
+export async function readManifests(
+  root = REPO_ROOT,
+): Promise<{ readonly pkg: PackageRef; readonly manifest: PackageManifest }[]> {
+  const byDir = new Map((await readPackages(root)).map((pkg) => [pkg.dir, pkg]))
+  const out: { pkg: PackageRef; manifest: PackageManifest }[] = []
+  for (const [dir, pkg] of byDir) {
+    const { dependencies, devDependencies } = JSON.parse(await readFile(join(root, dir, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>
+      devDependencies?: Record<string, string>
+    }
+    out.push({
+      pkg,
+      manifest: {
+        ...(dependencies === undefined ? {} : { dependencies }),
+        ...(devDependencies === undefined ? {} : { devDependencies }),
+      },
+    })
+  }
+  return out.sort((a, b) => (a.pkg.dir < b.pkg.dir ? -1 : a.pkg.dir > b.pkg.dir ? 1 : 0))
 }
 
 // `from 'x'` on a line, `import 'x'`, and `import('x')`. Good enough for a dependency guard because every edge in

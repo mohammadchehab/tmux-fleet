@@ -1,0 +1,23 @@
+{
+  "name": "@fleet/evals-suites-judge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The judge eval suite (§17): a promptfoo config whose provider calls the real Judge path — JudgeTransport over the provider's structured completion — and exactly matches the typed answer.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*",
+    "@fleet/orchestration-judge": "workspace:*",
+    "@fleet/runtime-provider-claude": "workspace:*",
+    "@fleet/runtime-provider-deepinfra": "workspace:*"
+  },
+  "devDependencies": {
+    "promptfoo": "^0.125.1"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

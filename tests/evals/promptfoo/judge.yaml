@@ -1,0 +1,37 @@
+# The `judge` suite (§17), first slice: the five `QuestionKind`s through the real Judge path.
+#
+# What a run needs in its environment:
+#   FLEET_EVAL_PROVIDER  claude | deepinfra            (default: claude)
+#   FLEET_EVAL_MODEL     the model under test          (required — a run names what it measures)
+#   DEEPINFRA_API_KEY    deepinfra only; read by the provider, never written anywhere
+#   FLEET_EVAL_CASES     the case directory            (default: tests/evals/cases/judge)
+#
+# Run it from this directory so the `file://` paths resolve:
+#   FLEET_EVAL_MODEL=claude-haiku-4-5 pnpm exec promptfoo eval -c tests/evals/promptfoo/judge.yaml \
+#     -o tests/evals/promptfoo/last-run.json
+#
+# A real run against a model is **not** part of CI: it costs money, needs a credential, and answers differently every
+# time. CI proves the suite's pieces (`packages/evals/*` tests) and §17's layout (`tests/architecture`); the run itself
+# is on demand, nightly on `main`, and on the paths §17 lists.
+description: 'fleet — judge suite (§17): the typed decisions of the real Judge path'
+
+prompts:
+  # The prompt is not what this suite measures: the provider reads the case out of the test's vars and runs it through
+  # the Judge's own prompt builder. It names the case so promptfoo's report and cache keys are per case.
+  - '{{caseId}}'
+
+providers:
+  - file://../../../packages/evals/suites/judge/src/provider.ts
+
+defaultTest:
+  options:
+    # §17: N=3. The model is not deterministic, so one run of a case is not a data point, and the report shows the
+    # pass rate over the repeats with the case count.
+    repeat: 3
+
+# The case list is the case directory, read by `tests.ts` (see the header there).
+tests: file://./tests.ts
+
+evaluateOptions:
+  # A cached answer would score a model that was not called in this run, which is the one thing an eval must not do.
+  cache: false
