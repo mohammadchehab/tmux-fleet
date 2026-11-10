@@ -249,6 +249,13 @@ Core entities (projections), all keyed by **stable ids**, never by tmux names or
 | `Build` | `repo`, `sha`, `task`, `host`, `status`, `logPath`; unique on `(repo, sha, task)` |
 | `Decision` | `decisionId`, `kind`, `inputsHash`, `typedQuestion`, `typedAnswer`, `judgeModel`, `rule?`. Every PM branch is one |
 | `Routine` | `routineId`, `kind`, `trigger`, `lastRun`, `state` |
+| `PeerActivity` | `peerId`, `workId?` (the current Work, by §5.1's rule), `lastTool?`, `lastTarget?`, `lastToolAt?`, `lastTurnAt?`, `edits` |
+
+`Peer.state` says `working`; it cannot say at what. `PeerActivity` is the answer, built from a `peer.tool_used` event the
+supervisor writes from the provider's own `tool.use` (§4): the tool's name, and the adapter's short **already-redacted**
+summary of it — a file path, a description — never its arguments. `edits` counts `Edit`/`Write` calls against the Work
+the peer was assigned at that point in the log, which is why the counter is a projection of the log and not a number a
+client keeps.
 
 The board (Backlog.md) and Jira become **sinks and sources via adapters** (`Work.external`), not the state of the
 fleet. A card is created from `Work`, and a Jira change enters as an event.

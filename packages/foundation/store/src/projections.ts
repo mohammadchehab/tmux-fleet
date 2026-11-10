@@ -245,6 +245,7 @@ const currentWorkOf = (db: Sqlite, peerId: string): string | undefined =>
  * (§6.2's `countToolCall` makes the same choice).
  */
 const editToolNames: readonly string[] = ['Edit', 'Write']
+
 const writeSession = (db: Sqlite, session: Session): void =>
   writeRow(
     db,
