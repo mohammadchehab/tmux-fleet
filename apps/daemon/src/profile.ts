@@ -25,10 +25,18 @@ import {
   positiveInt,
   refine,
   text,
+  unionAs,
   type Schema,
 } from '@fleet/foundation-core'
 import type { PeerId } from '@fleet/foundation-core'
 import { workStates, type WorkState } from '@fleet/foundation-contracts'
+import {
+  jiraSearchFlavors,
+  type JiraAuth,
+  type JiraCloudAuth,
+  type JiraPatAuth,
+  type JiraSearchFlavor,
+} from '@fleet/integrations-trackers-jira'
 import { parse as parseYaml } from 'yaml'
 import type { RoutinesConfig } from '@fleet/orchestration-routines'
 
@@ -127,8 +135,8 @@ export interface ForgeProfile {
   readonly host?: string
 }
 
-/** §3's trackers this daemon can wire up today. A profile names one; Jira lands on the same port. */
-export const profileTrackerSystems = ['backlog'] as const
+/** §3's trackers this daemon can wire up today. A profile names one. */
+export const profileTrackerSystems = ['backlog', 'jira'] as const
 export type ProfileTrackerSystem = (typeof profileTrackerSystems)[number]
 
 /**
@@ -141,14 +149,17 @@ export type ProfileTrackerSystem = (typeof profileTrackerSystems)[number]
  * The poll's period is not here: it is `routines.tracker-sync.everyMinutes`,
  * because when a routine runs is the scheduler's business and a second spelling
  * of it would be a second answer.
+ *
+ * What a board needs depends on which board it is — a Backlog.md project is a
+ * directory on disk, a Jira site is a URL and a credential — so the type is a
+ * union rather than one shape with every field optional. A profile is then
+ * refused for naming another system's keys, instead of half-configuring both.
  */
-export interface TrackerProfile {
-  /** Which adapter. This build ships `backlog`. */
-  readonly system: ProfileTrackerSystem
+interface TrackerProfileBase {
   /**
    * The board's own query, handed to `Tracker.pull` unchanged. Each adapter
-   * documents its dialect; for Backlog.md it is the statuses to read, comma
-   * separated (`"To Do,In Progress"`).
+   * documents its dialect: for Backlog.md it is the statuses to read, comma
+   * separated (`"To Do,In Progress"`); for Jira it is JQL.
    */
   readonly query: string
   /**
@@ -157,13 +168,39 @@ export interface TrackerProfile {
    * column would rewrite a board nobody asked it to touch.
    */
   readonly statuses?: Partial<Record<WorkState, string>>
+  /** The role a Work proposed from a card asks for (§5.2's `assign`). */
+  readonly role?: string
+}
+
+/** A Backlog.md board: markdown files in a directory, read and written by its CLI. */
+export interface BacklogTrackerProfile extends TrackerProfileBase {
+  readonly system: 'backlog'
   /** The project directory the CLI runs in. Backlog.md keeps a board per directory. */
   readonly path: string
   /** A prefix a card's path becomes a URL under — a repo's blob URL, typically. */
   readonly urlBase?: string
-  /** The role a Work proposed from a card asks for (§5.2's `assign`). */
-  readonly role?: string
 }
+
+/** A Jira site: REST v3 over HTTPS, in whichever flavour its release serves. */
+export interface JiraTrackerProfile extends TrackerProfileBase {
+  readonly system: 'jira'
+  /** The site, e.g. `https://acme.atlassian.net`. The credential is never part of it. */
+  readonly baseUrl: string
+  /**
+   * Which of the two credentials this install issues. The shape comes from the
+   * adapter rather than being restated here, so a token cannot end up decoded
+   * into a field the adapter does not read.
+   */
+  readonly auth: JiraAuth
+  /**
+   * Which search endpoint this release serves. Defaults from `auth.kind` — an
+   * API token is Cloud's, a PAT is a Server install's — and is named only for a
+   * release where the two disagree (the adapter's `tracker.ts` says why).
+   */
+  readonly search?: JiraSearchFlavor
+}
+
+export type TrackerProfile = BacklogTrackerProfile | JiraTrackerProfile
 
 /** §6.2's tools, as a profile may name them: the four adapters this daemon ships. */
 export const profileScanners = ['semgrep', 'gitleaks', 'osv-scanner', 'trivy'] as const
@@ -319,15 +356,52 @@ const statusesBlock = (): Schema<Partial<Record<WorkState, string>>> => ({
   },
 })
 
-const trackerBlock = (): Schema<TrackerProfile> =>
-  objectAs<TrackerProfile>()({
-    system: oneOf(profileTrackerSystems),
-    query: text(500),
-    statuses: optional(statusesBlock()),
+/** What both boards read the same way, whichever system they belong to. */
+const trackerBase = {
+  query: text(500),
+  statuses: optional(statusesBlock()),
+  role: optional(text(60)),
+} as const
+
+const backlogTrackerBlock = (): Schema<BacklogTrackerProfile> =>
+  objectAs<BacklogTrackerProfile>()({
+    system: oneOf(['backlog'] as const),
+    ...trackerBase,
     path: text(400),
     urlBase: optional(text(400)),
-    role: optional(text(60)),
   })
+
+/** Cloud with an email and an API token, or Server/DC with a PAT. Which one is `kind`. */
+const jiraAuthBlock = (): Schema<JiraAuth> =>
+  unionAs<JiraAuth>()([
+    objectAs<JiraCloudAuth>()({
+      kind: oneOf(['cloud'] as const),
+      email: text(200),
+      token: text(500),
+    }),
+    objectAs<JiraPatAuth>()({
+      kind: oneOf(['pat'] as const),
+      token: text(500),
+    }),
+  ])
+
+const jiraTrackerBlock = (): Schema<JiraTrackerProfile> =>
+  objectAs<JiraTrackerProfile>()({
+    system: oneOf(['jira'] as const),
+    ...trackerBase,
+    baseUrl: text(400),
+    auth: jiraAuthBlock(),
+    search: optional(oneOf(jiraSearchFlavors)),
+  })
+
+/**
+ * A union rather than two optional halves, so `system` decides which keys are
+ * read: a Jira block that also carries `path` is refused, not quietly ignored.
+ * `union` reports the member that came closest, so the message names the field
+ * the profile actually got wrong.
+ */
+const trackerBlock = (): Schema<TrackerProfile> =>
+  unionAs<TrackerProfile>()([backlogTrackerBlock(), jiraTrackerBlock()])
 
 export const profileSchema = (): Schema<Profile> =>
   objectAs<Profile>()({

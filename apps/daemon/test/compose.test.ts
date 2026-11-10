@@ -107,8 +107,15 @@ providers:
 })
 
 describe('the profile’s tracker block, as the daemon builds it', () => {
-  /** A fleet with one peer and, when `trackers` is given, the YAML block for a board. */
-  const withTrackers = async (trackers?: string): Promise<{ home: string; composed: Awaited<ReturnType<typeof compose>> }> => {
+  /**
+   * A fleet with one peer and, when `trackers` is given, the YAML block for a
+   * board. `ownTracker: false` leaves `deps.tracker` unset, so the adapter the
+   * profile names is the one that gets built.
+   */
+  const withTrackers = async (
+    trackers?: string,
+    options: { readonly ownTracker?: boolean } = {},
+  ): Promise<{ home: string; composed: Awaited<ReturnType<typeof compose>> }> => {
     const home = await mkdtemp(join(tmpdir(), 'fleet-trackers-'))
     const configHome = join(home, '.config')
     const paths = profilePaths('board', { home, configHome })
@@ -128,7 +135,7 @@ ${trackers ?? ''}`,
     const composed = await compose({
       profileName: 'board',
       roots: { home, configHome },
-      ...(trackers === undefined ? {} : { tracker: neverAsked() }),
+      ...(trackers === undefined || options.ownTracker === false ? {} : { tracker: neverAsked() }),
     })
     return { home, composed }
   }
@@ -162,6 +169,49 @@ ${trackers ?? ''}`,
     } finally {
       await clean(home, composed)
     }
+  })
+
+  it('wires the Jira adapter when the profile names a site, with no board directory in sight', async () => {
+    // No `deps.tracker`, so the adapter the profile names is the one built: had
+    // this still gone to Backlog.md, there is no `path` for it to run in.
+    const { home, composed } = await withTrackers(
+      `trackers:
+  system: jira
+  query: project = FLEET AND status != Done
+  baseUrl: https://acme.atlassian.net
+  auth:
+    kind: cloud
+    email: fleet@acme.test
+    token: s3cr3t
+  statuses:
+    in_progress: In Progress
+`,
+      { ownTracker: false },
+    )
+    try {
+      assert.ok(composed.scheduler.plan.installed.includes('tracker-sync'))
+      assert.equal(composed.scheduler.plan.unimplemented.includes('tracker-sync'), false)
+    } finally {
+      await clean(home, composed)
+    }
+  })
+
+  it('refuses a Jira site that is not https, at compose, before any routine can run', async () => {
+    await assert.rejects(
+      () =>
+        withTrackers(
+          `trackers:
+  system: jira
+  query: project = FLEET
+  baseUrl: http://acme.atlassian.net
+  auth:
+    kind: pat
+    token: p4t
+`,
+          { ownTracker: false },
+        ),
+      /must be https/,
+    )
   })
 
   it('installs no tracker-sync when it names none, rather than one that polls nothing', async () => {

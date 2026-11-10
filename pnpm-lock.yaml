@@ -49,6 +49,9 @@ importers:
       '@fleet/integrations-trackers-backlog':
         specifier: workspace:*
         version: link:../../packages/integrations/trackers/backlog
+      '@fleet/integrations-trackers-jira':
+        specifier: workspace:*
+        version: link:../../packages/integrations/trackers/jira
       '@fleet/notify-core':
         specifier: workspace:*
         version: link:../../packages/notify/core
