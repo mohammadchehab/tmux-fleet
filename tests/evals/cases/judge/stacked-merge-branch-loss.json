@@ -1,0 +1,18 @@
+{
+  "id": "stacked-merge-branch-loss",
+  "suite": "judge",
+  "input": {
+    "kind": "escalate",
+    "situation": "Part B of a two-part change was opened on top of part A's branch and marked \"retarget to main once part A merges\". Part A was squash-merged and its branch was deleted by the merge. Part B is now closed, its base branch no longer exists, and its commits are not in main. The log does not say whether part B was ever meant to ship.",
+    "options": [
+      "reopen the branch from the reflog and retarget it at main",
+      "drop part B and re-file it as its own Work",
+      "leave it closed and record why in the contract"
+    ]
+  },
+  "expected": {
+    "kind": "escalate",
+    "escalate": true
+  },
+  "source": "v1: isnadi-bot #101 (squash-merged, branch deleted) and #102 (stacked on it, closed, commits lost) - the stacked-merge branch loss in the architecture's problem table. §10's retarget rule did not exist then; whether the work should ship at all is a scope call, which §5.3 escalates."
+}

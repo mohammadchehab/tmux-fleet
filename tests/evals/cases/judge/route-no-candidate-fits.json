@@ -1,0 +1,26 @@
+{
+  "id": "route-no-candidate-fits",
+  "suite": "judge",
+  "input": {
+    "kind": "route_question",
+    "question": "Our customers bill on a cycle the usage projection does not model: some are monthly from signup, some are prepaid. Which of them should a mid-cycle upgrade be prorated against, and does finance accept it?",
+    "candidates": [
+      {
+        "peerId": "engineer-1",
+        "role": "implements the usage projection"
+      },
+      {
+        "peerId": "devops",
+        "role": "owns hosts, tmux and deployment"
+      },
+      {
+        "peerId": "security-architect",
+        "role": "owns the scanner set and the definition of critical"
+      }
+    ]
+  },
+  "expected": {
+    "kind": "route_question"
+  },
+  "source": "v1: a question about product and billing that was routed to an engineer, who answered it wrongly. No candidate is placed to answer, so the answer omits peerId and the user is asked - the routing task's documented fallback."
+}

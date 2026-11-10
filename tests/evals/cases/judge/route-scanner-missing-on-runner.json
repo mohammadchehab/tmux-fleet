@@ -1,0 +1,27 @@
+{
+  "id": "route-scanner-missing-on-runner",
+  "suite": "judge",
+  "input": {
+    "kind": "route_question",
+    "question": "The nightly scan skipped instead of running: the runner reports the scanner binary is not on PATH. Where is that installed, and how did it go missing between runs?",
+    "candidates": [
+      {
+        "peerId": "devops",
+        "role": "owns hosts, runners and the tools installed on them"
+      },
+      {
+        "peerId": "security-architect",
+        "role": "owns the scanner set and the definition of critical"
+      },
+      {
+        "peerId": "architect",
+        "role": "owns the runtime design and the merge rules"
+      }
+    ]
+  },
+  "expected": {
+    "kind": "route_question",
+    "peerId": "devops"
+  },
+  "source": "v1: a scheduled scan that silently degraded to a skip because its binary was not on the runner. The finding is a security fact; the missing binary is an infrastructure one, and only one candidate owns the machine."
+}
