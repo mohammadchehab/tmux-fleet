@@ -17,7 +17,7 @@ import { describe, it } from 'node:test'
 import { planRoutines } from '@fleet/orchestration-routines'
 import { defaultPurgeLimits } from '@fleet/runtime-supervisor'
 
-import { decodeProfile, loadProfile, purgeLimitsOf, type Profile } from '../src/profile.ts'
+import { decodeProfile, loadProfile, purgeLimitsOf, type Profile } from '../src/config/profile.ts'
 
 const minimal = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   profile: 'engineer',

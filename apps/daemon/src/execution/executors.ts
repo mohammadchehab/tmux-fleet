@@ -45,7 +45,7 @@ import type {
 } from '@fleet/foundation-contracts'
 import type { JudgeService } from '@fleet/orchestration-judge'
 import type { KindExecutor } from './executor.ts'
-import { renderStandup } from './standup.ts'
+import { renderStandup } from '../routines/standup.ts'
 
 /** The states a message is still waiting to be acted on in, for the standup's pending count (§7). */
 const unacked: readonly MessageAckState[] = ['pending', 'delivered']

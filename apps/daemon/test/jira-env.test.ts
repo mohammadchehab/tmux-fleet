@@ -16,8 +16,8 @@ import {
   defaultJiraTokenFile,
   readJiraAuth,
   type JiraEnvOptions,
-} from '../src/jira-env.ts'
-import type { JiraAuthProfile } from '../src/profile.ts'
+} from '../src/env/jira-env.ts'
+import type { JiraAuthProfile } from '../src/config/profile.ts'
 
 const CONFIG_HOME = '/home/tester/.config'
 const CLOUD: JiraAuthProfile = { kind: 'cloud', email: 'fleet@acme.test' }

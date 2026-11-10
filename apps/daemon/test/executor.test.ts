@@ -12,7 +12,7 @@ import { test } from 'node:test'
 import type { ActionOutcome, ExecuteRequest, PmAction, PmActionKind } from '@fleet/foundation-contracts'
 import type { Seq } from '@fleet/foundation-core'
 
-import { createExecutorRouter, type KindExecutor } from '../src/executor.ts'
+import { createExecutorRouter, type KindExecutor } from '../src/execution/executor.ts'
 
 const action = (kind: PmActionKind): PmAction =>
   ({

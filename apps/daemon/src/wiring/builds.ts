@@ -24,7 +24,7 @@ import {
   type RunProcess,
 } from '@fleet/orchestration-ledger'
 
-import type { Profile, ProfileBuilds } from './profile.ts'
+import type { Profile, ProfileBuilds } from '../config/profile.ts'
 
 /** The routing a profile asks for, as the ledger takes it. */
 export const routingOf = (builds: ProfileBuilds | undefined): BuildRouting => ({

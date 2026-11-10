@@ -49,10 +49,10 @@ import type {
 } from '@fleet/foundation-contracts'
 import type { EventStore } from '@fleet/foundation-store'
 import type { BuildLedger } from '@fleet/orchestration-ledger'
-import type { Profile, PeerProfile } from './profile.ts'
+import type { Profile, PeerProfile } from '../config/profile.ts'
 import type { Scheduler } from '@fleet/orchestration-routines'
-import type { Supervisor } from './sessions.ts'
-import { catchUpWork } from './work-sync.ts'
+import type { Supervisor } from '../execution/sessions.ts'
+import { catchUpWork } from '../execution/work-sync.ts'
 
 export interface DaemonDeps {
   readonly profile: Profile

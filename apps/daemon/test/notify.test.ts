@@ -19,7 +19,7 @@ import type { AppendEvent, FleetEvent } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import type { Notifier, NotifierMessage } from '@fleet/notify-core'
 import type { RoutineContext } from '@fleet/orchestration-routines'
-import { createNotifyFactory, notifierFor } from '../src/notify.ts'
+import { createNotifyFactory, notifierFor } from '../src/routines/notify.ts'
 
 const decisionId = 'dec_0123456789abcdef' as DecisionId
 const key = `decision:${decisionId}` as NotificationKey

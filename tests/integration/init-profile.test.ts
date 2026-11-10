@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { parseStrict, repo } from '../../packages/foundation/core/src/index.ts'
 import { writeStarter } from '../../apps/clients/cli/src/init.ts'
-import { loadProfile } from '../../apps/daemon/src/profile.ts'
+import { loadProfile } from '../../apps/daemon/src/config/profile.ts'
 
 let home: string
 

@@ -16,7 +16,7 @@ import { test } from 'node:test'
 
 import type { MessageId, PeerId, Seq, Sha } from '@fleet/foundation-core'
 import type { DaemonApi, Decision } from '@fleet/foundation-contracts'
-import { decodeRequest, dispatch, encodeLine, handleLine } from '../src/rpc.ts'
+import { decodeRequest, dispatch, encodeLine, handleLine } from '../src/api/rpc.ts'
 
 const SHA = 'ffcd0091a2b3c4d5' as Sha
 

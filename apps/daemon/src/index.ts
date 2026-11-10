@@ -7,10 +7,10 @@
  * `@fleet/foundation-core`, because the CLI needs the same one.
  */
 
-export * from './profile.ts'
-export * from './rpc.ts'
-export * from './executor.ts'
-export * from './sessions.ts'
-export * from './daemon.ts'
-export * from './server.ts'
-export * from './compose.ts'
+export * from './config/profile.ts'
+export * from './api/rpc.ts'
+export * from './execution/executor.ts'
+export * from './execution/sessions.ts'
+export * from './wiring/daemon.ts'
+export * from './api/server.ts'
+export * from './wiring/compose.ts'

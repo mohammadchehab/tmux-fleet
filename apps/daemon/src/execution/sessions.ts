@@ -46,7 +46,7 @@ import {
   type SessionRecord,
 } from '@fleet/runtime-supervisor'
 
-import { purgeLimitsOf, type PeerProfile, type Profile } from './profile.ts'
+import { purgeLimitsOf, type PeerProfile, type Profile } from '../config/profile.ts'
 
 /** What the pump needs that only the composition root can supply. */
 export interface SupervisorDeps {

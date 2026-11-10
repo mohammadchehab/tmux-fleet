@@ -30,7 +30,7 @@ import { join } from 'node:path'
 import { fleetError } from '@fleet/foundation-core'
 import type { JiraAuth } from '@fleet/integrations-trackers-jira'
 
-import type { JiraAuthProfile } from './profile.ts'
+import type { JiraAuthProfile } from '../config/profile.ts'
 
 /** The variable each kind means when a profile does not name one. */
 export const DEFAULT_JIRA_TOKEN_ENV: Readonly<Record<JiraAuthProfile['kind'], string>> = {

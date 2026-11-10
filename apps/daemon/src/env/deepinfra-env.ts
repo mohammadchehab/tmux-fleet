@@ -29,7 +29,7 @@ import { join } from 'node:path'
 import { fleetError } from '@fleet/foundation-core'
 import { deepInfraEnv } from '@fleet/runtime-provider-deepinfra'
 
-import type { Profile, PeerProfile } from './profile.ts'
+import type { Profile, PeerProfile } from '../config/profile.ts'
 
 /** The variable `tokenEnv` means when a profile does not name one. */
 export const DEFAULT_DEEPINFRA_TOKEN_ENV = 'DEEPINFRA_API_KEY'

@@ -36,9 +36,9 @@ import {
   type RoutineKind,
 } from '../../../packages/foundation/contracts/src/index.ts'
 import { profilePaths, type ProfilePaths } from '../../../packages/foundation/core/src/index.ts'
-import { compose, type Composed } from '../../../apps/daemon/src/compose.ts'
-import { stateFilePathOf } from '../../../apps/daemon/src/sessions.ts'
-import { rpcCall } from '../../../apps/daemon/src/server.ts'
+import { compose, type Composed } from '../../../apps/daemon/src/wiring/compose.ts'
+import { stateFilePathOf } from '../../../apps/daemon/src/execution/sessions.ts'
+import { rpcCall } from '../../../apps/daemon/src/api/server.ts'
 import type { Notifier } from '../../../packages/notify/core/src/index.ts'
 import type { RoutinesConfig } from '../../../packages/orchestration/routines/src/index.ts'
 import type { ToolIo } from '../../../packages/security/scanners/src/index.ts'

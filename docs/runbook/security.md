@@ -5,7 +5,7 @@ answers, and what the record means when a scan does not happen.
 
 Three packages: `packages/security/findings` (the fingerprint and the planner — a pure function from scan outcomes to
 events), `packages/security/scanners` (one adapter per tool, each owning its argv and its parse), and
-`apps/daemon/src/security.ts` (the routine body: which checkout, which tools). The daemon is the only place the two
+`apps/daemon/src/routines/security.ts` (the routine body: which checkout, which tools). The daemon is the only place the two
 halves meet (§1.1).
 
 ## Turning it on
@@ -94,5 +94,5 @@ a different finding — copying a vulnerable file does not inherit the original'
 | `packages/security/scanners/src/report.ts` | `runTool`: the four outcomes (ok, skipped, failed, unparseable) and the report readers |
 | `packages/security/scanners/src/*.ts` | one adapter per tool: `semgrep`, `gitleaks`, `osv`, `trivy` |
 | `packages/security/scanners/src/exec.ts` | the injected `exec`/`which`, so no test spawns anything |
-| `apps/daemon/src/security.ts` | the routine body: the checkout, the tool set, the skip when there is no checkout |
-| `apps/daemon/src/compose.ts` | where the factory is handed to the scheduler, and nowhere else (§1.1) |
+| `apps/daemon/src/routines/security.ts` | the routine body: the checkout, the tool set, the skip when there is no checkout |
+| `apps/daemon/src/wiring/compose.ts` | where the factory is handed to the scheduler, and nowhere else (§1.1) |
