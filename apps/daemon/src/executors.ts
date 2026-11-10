@@ -107,7 +107,7 @@ const executor = (
       outcomes.push(
         kinds.includes(action.kind)
           ? await one(action)
-          : failed(action, `this executor does not carry out '${action.kind}'; the daemon routes it elsewhere (§5.2)`),
+          : failed(action, `this executor does not carry out '${action.kind}'; the daemon routes it elsewhere`),
       )
     }
     return {
@@ -157,7 +157,7 @@ export const createMailboxExecutor = (deps: MailboxExecutorDeps): Executor =>
       if (!delivered.ok) return failed(action, `${delivered.error.code}: ${delivered.error.message}`)
       const refusal = delivered.value.failures.find((failure) => failure.msgId === msgId)
       if (refusal !== undefined) {
-        return failed(action, `the message was not delivered (${refusal.reason}); it stays pending in the box (§7)`)
+        return failed(action, `the message was not delivered (${refusal.reason}); it stays pending in the box`)
       }
     } catch (thrown) {
       return failed(action, toFleetError(thrown, 'provider_failed').message)

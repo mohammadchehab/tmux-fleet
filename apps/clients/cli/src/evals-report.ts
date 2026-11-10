@@ -62,7 +62,7 @@ export const formatEvalRun = (report: EvalRunReport): string => {
   const verdict = rate === undefined ? counted : `${counted} (${percent(rate)})`
   const floor =
     rate === undefined
-      ? [`no pass rate under ${String(RATE_FLOOR)} cases (§17): ${String(report.cases)} graded`]
+      ? [`no pass rate under ${String(RATE_FLOOR)} cases: ${String(report.cases)} graded`]
       : []
 
   return [

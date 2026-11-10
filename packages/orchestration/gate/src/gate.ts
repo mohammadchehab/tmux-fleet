@@ -171,7 +171,7 @@ export const createGate = (deps: GateDeps): Gate => {
         const where = ref(dependent)
         const pr = await deps.pullRequests.get(dependent.repo, dependent.number)
         if (pr === undefined) {
-          return { error: `${where} is a dependent that cannot be read; refusing to merge over it (§10)` }
+          return { error: `${where} is a dependent that cannot be read; refusing to merge over it` }
         }
         if (pr.merged || pr.base === base) continue
 
@@ -266,7 +266,7 @@ export const createGate = (deps: GateDeps): Gate => {
       default:
         // The daemon composes executors and routes by kind. A gate that silently ignored the rest would make a
         // mis-wiring look like a quiet tick, so it says so instead.
-        return failed(action, `the gate does not execute '${action.kind}'; the daemon routes it to another executor (§5.2)`)
+        return failed(action, `the gate does not execute '${action.kind}'; the daemon routes it to another executor`)
     }
   }
 

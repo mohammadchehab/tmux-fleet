@@ -218,7 +218,7 @@ export const createBriefExecutor = (deps: BriefExecutorDeps): BriefExecutor => {
         return Promise.resolve(
           failed(
             action,
-            `the briefs executor does not execute '${action.kind}'; the daemon routes it to another executor (§5.2)`,
+            `the briefs executor does not execute '${action.kind}'; the daemon routes it to another executor`,
           ),
         )
     }

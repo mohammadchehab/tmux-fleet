@@ -54,7 +54,7 @@ export const createExecutorRouter = (deps: RouterDeps): Router => {
       if (kinds.has(kind)) {
         throw fleetError(
           'invalid_input',
-          `two executors claim '${kind}'; the daemon wires one per kind so an action cannot be carried out twice (§5.2)`,
+          `two executors claim '${kind}'; the daemon wires one per kind so an action cannot be carried out twice`,
         )
       }
       kinds.set(kind, entry)
@@ -68,7 +68,7 @@ export const createExecutorRouter = (deps: RouterDeps): Router => {
         action,
         ok: false,
         seqs: [],
-        error: `no executor is wired for '${action.kind}'; the daemon is missing a group (§5.2)`,
+        error: `no executor is wired for '${action.kind}'; the daemon is missing a group`,
       }
     }
     try {

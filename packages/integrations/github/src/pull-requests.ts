@@ -230,7 +230,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
         if (isHeadMoved(result)) {
           throw fleetError(
             'head_moved',
-            `${String(repo)}#${String(number)} moved off ${String(mergeOptions.headSha)} before the merge; nothing was merged (§10)`,
+            `${String(repo)}#${String(number)} moved off ${String(mergeOptions.headSha)} before the merge; nothing was merged`,
             { details: { ...details, headSha: mergeOptions.headSha } },
           )
         }

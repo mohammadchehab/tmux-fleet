@@ -29,7 +29,7 @@ test('§17: ten cases report a count and no percentage', () => {
   const text = formatEvalRun(report())
   assert.match(text, /8 of 10 cases passed/)
   assert.doesNotMatch(text, /%/, 'a percentage under the floor is the thing §17 forbids')
-  assert.match(text, new RegExp(`no pass rate under ${String(RATE_FLOOR)} cases \\(§17\\): 10 graded`))
+  assert.match(text, new RegExp(`no pass rate under ${String(RATE_FLOOR)} cases: 10 graded`))
 })
 
 test('§17: at the floor the rate appears, and the floor line does not', () => {

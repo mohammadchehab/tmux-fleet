@@ -71,12 +71,12 @@ export const describeBriefRefusal = (refusal: BriefRefusal, what: string): strin
     case 'peer_missing':
       return `${what}: the peer is not registered`
     case 'work_not_assignable':
-      return `${what}: the Work is not ready, so it is not assigned (§5.2)`
+      return `${what}: the Work is not ready, so it is not assigned`
     case 'work_assigned_elsewhere':
       return `${what}: the Work belongs to another peer`
     case 'version_not_newer':
-      return `${what}: the brief version is not above the one the peer carries; versions only go up (§12)`
+      return `${what}: the brief version is not above the one the peer carries; versions only go up`
     case 'superseding_something_else':
-      return `${what}: the Work's current brief is not the one this decision was made against, so the inputs moved (§5.4)`
+      return `${what}: the Work's current brief is not the one this decision was made against, so the inputs moved`
   }
 }
