@@ -21,6 +21,7 @@ import {
 } from '../src/index.ts'
 import type { RuleContext } from '../src/index.ts'
 import type { DecideRequest, FleetEvent, FleetState, PmAction, PullRequest } from '@fleet/foundation-contracts'
+import type { QuestionId } from '@fleet/foundation-core'
 import {
   architect,
   decision,
@@ -404,22 +405,97 @@ test('a proposed card with no goal is a thin card', () => {
   assert.deepEqual(question.input.acceptance, [])
 })
 
+test('a card the Judge found not thin becomes ready, read from the question rather than its answer event', () => {
+  const card = work({ state: 'proposed', title: 'Do the store', body: 'soon' })
+
+  // Ask first: the id the rule derives is the one the question is recorded under.
+  const asking = decide({ state: state({ peers: [peer()], work: [card] }), tick: tick() })
+  const asked = asking.actions[0]
+  if (asked?.kind !== 'request_judge') return assert.fail('expected the card to be questioned')
+
+  const answered = decide({
+    state: state({
+      peers: [peer()],
+      work: [card],
+      judge: [
+        {
+          questionId: asked.questionId,
+          kind: 'thin_card',
+          inputsHash: 'sha256:4c1d7e9a0b2f3568',
+          workId: card.workId,
+          askedAt: T0,
+          answer: { kind: 'thin_card', thin: false, missing: [], why: 'The card names its goal.' },
+          model: 'claude-haiku-4-5',
+          answeredAt: T0,
+        },
+      ],
+    }),
+    tick: tick(),
+  })
+
+  const ready = answered.actions.find((action) => action.kind === 'mark_ready')
+  if (ready?.kind !== 'mark_ready') return assert.fail('expected the answered card to become ready')
+  assert.equal(ready.workId, card.workId)
+  assert.match(ready.reason ?? '', /found no missing goal/)
+})
+
+test('a card the Judge called thin stays proposed', () => {
+  const card = work({ state: 'proposed', title: 'Do the store', body: 'soon' })
+  const asking = decide({ state: state({ peers: [peer()], work: [card] }), tick: tick() })
+  const asked = asking.actions[0]
+  if (asked?.kind !== 'request_judge') return assert.fail('expected the card to be questioned')
+
+  const answered = decide({
+    state: state({
+      peers: [peer()],
+      work: [card],
+      judge: [
+        {
+          questionId: asked.questionId,
+          kind: 'thin_card',
+          inputsHash: 'sha256:4c1d7e9a0b2f3568',
+          workId: card.workId,
+          askedAt: T0,
+          answer: { kind: 'thin_card', thin: true, missing: ['a goal'], why: 'The body is one line.' },
+          model: 'claude-haiku-4-5',
+          answeredAt: T0,
+        },
+      ],
+    }),
+    tick: tick(),
+  })
+
+  // A thin card is re-asked on every tick, and that is the question rules' own business
+  // (`questionThinCards` derives the same `questionId`, so a repeat collapses in the
+  // executor). What must not happen is a promotion: a thin verdict is an answer, not a
+  // flavour of yes.
+  assert.ok(!kinds(answered.actions).includes('mark_ready'), 'a thin verdict is an answer, not a flavour of yes')
+})
+
 test('an escalated Judge answer becomes the user s decision, carrying its question', () => {
+  // The answer is stated as a *row on the question*, and the tick is given no
+  // `judge.answered` event at all: reading it from the projection is what lets a
+  // heartbeat ask this, not only the tick that saw the answer arrive (§5.3, §6).
   const request: DecideRequest = {
-    state: state({ peers: [peer()] }),
-    event: event('judge.answered', 'qst_0000000000000001', {
-      questionId: 'qst_0000000000000001',
-      kind: 'escalate',
-      answer: {
-        kind: 'escalate',
-        escalate: true,
-        question: 'Two stores are in play. Which one is the source of truth?',
-        options: ['sqlite', 'json'],
-        why: 'the card names both',
-      },
-      model: 'claude-haiku-4-5',
-      durationMs: 1200,
-      retries: 0,
+    state: state({
+      peers: [peer()],
+      judge: [
+        {
+          questionId: 'qst_0000000000000001' as QuestionId,
+          kind: 'escalate',
+          inputsHash: 'sha256:0000000000000001',
+          askedAt: T0,
+          answer: {
+            kind: 'escalate',
+            escalate: true,
+            question: 'Two stores are in play. Which one is the source of truth?',
+            options: ['sqlite', 'json'],
+            why: 'the card names both',
+          },
+          model: 'claude-haiku-4-5',
+          answeredAt: T0,
+        },
+      ],
     }),
   }
 

@@ -5,10 +5,12 @@
  */
 
 import { array, boolean, count, number, object, objectAs, oneOf, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
-import { decisionId, findingId, notificationKey, peerId, workId } from '@fleet/foundation-core'
+import { decisionId, findingId, notificationKey, peerId, questionId, workId } from '@fleet/foundation-core'
 import { severity } from '../shapes.ts'
+import { judgeAnswer, questionKind } from '../judge.ts'
 import { routineKinds, routineTriggers } from '../events/ops.ts'
 import { notificationClasses } from '../events/signals.ts'
+import type { JudgeAnswer, QuestionKind } from '../judge.ts'
 import type { RoutineKind, RoutineTrigger } from '../events/ops.ts'
 import type { NotificationClass } from '../events/signals.ts'
 import type { Severity } from '../shapes.ts'
@@ -17,6 +19,7 @@ import type {
   FindingId,
   NotificationKey,
   PeerId,
+  QuestionId,
   WorkId,
 } from '@fleet/foundation-core'
 
@@ -222,6 +225,49 @@ export const tokenReport = (): Schema<TokenReport> =>
     toolCalls: object({ grep: count(), glob: count(), read: count(), codegraph: count() }),
     redirects: count(),
     updatedAt: timestamp(),
+  })
+
+// ---------------------------------------------------------- judge questions
+
+/**
+ * A typed question and the answer it got (§5.3, §5.4), as a row rather than an
+ * event in the log.
+ *
+ * The question log was never projected while the only rule that acted on an
+ * answer was the tick that saw `judge.answered`: the answer travelled in that
+ * event, so a snapshot had nothing to read and the trigger carried it instead.
+ * The cost of that was a rule woken by an event its own body appends (§6) —
+ * `dispatch` asks, the Judge answers through the same sink, and the tick wakes
+ * itself. Projecting the pair is what lets the trigger go: the rule reads the
+ * question's *state*, and any tick may be the one that finds it answered.
+ */
+export interface JudgeQuestionRecord {
+  readonly questionId: QuestionId
+  readonly kind: QuestionKind
+  /** §5.4: the hash of the inputs, so a replay recognises a question it already asked. */
+  readonly inputsHash: string
+  readonly workId?: WorkId
+  /** The peer whose work raised it, when one did. */
+  readonly askedFor?: PeerId
+  readonly askedAt: string
+  /** Absent while the question is open. */
+  readonly answer?: JudgeAnswer
+  /** The model that answered; the event's actor is `judge:<model>` (§3). */
+  readonly model?: string
+  readonly answeredAt?: string
+}
+
+export const judgeQuestion = (): Schema<JudgeQuestionRecord> =>
+  objectAs<JudgeQuestionRecord>()({
+    questionId: questionId(),
+    kind: questionKind(),
+    inputsHash: string({ minLength: 8, maxLength: 200 }),
+    workId: optional(workId()),
+    askedFor: optional(peerId()),
+    askedAt: timestamp(),
+    answer: optional(judgeAnswer()),
+    model: optional(string({ minLength: 1, maxLength: 80 })),
+    answeredAt: optional(timestamp()),
   })
 
 /** The share of exploration that went through codegraph, 0..1; `0` when there was none. */

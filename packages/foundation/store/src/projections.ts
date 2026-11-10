@@ -27,6 +27,7 @@ import {
   type Finding,
   type FleetEvent,
   type Holder,
+  type JudgeQuestionRecord,
   type Message,
   type Notification,
   type Peer,
@@ -66,6 +67,7 @@ export const PROJECTION_TABLES = [
   'routines',
   'notifications',
   'findings',
+  'judge_questions',
   'token_report',
   'messages',
   'eval_runs',
@@ -827,6 +829,43 @@ const resolveNotification = (db: Sqlite, key: NotificationKey, ts: string): void
   const current = notificationByKey(db, key)
   if (current === undefined || current.state === 'resolved') return
   writeNotification(db, parse(PROJECTION_SCHEMAS.notification, { ...current, state: 'resolved', resolvedAt: ts }))
+}
+
+const JUDGE_QUESTION_COLUMNS = [
+  'question_id',
+  'kind',
+  'inputs_hash',
+  'work_id',
+  'asked_for',
+  'asked_at',
+  'answered_at',
+  'model',
+  'data',
+] as const
+
+const writeJudgeQuestion = (db: Sqlite, question: JudgeQuestionRecord): void => {
+  writeRow(
+    db,
+    'judge_questions',
+    JUDGE_QUESTION_COLUMNS,
+    [
+      question.questionId,
+      question.kind,
+      question.inputsHash,
+      question.workId ?? null,
+      question.askedFor ?? null,
+      question.askedAt,
+      question.answeredAt ?? null,
+      question.model ?? null,
+      JSON.stringify(question),
+    ],
+    ['question_id'],
+  )
+}
+
+const judgeQuestionById = (db: Sqlite, id: string): JudgeQuestionRecord | undefined => {
+  const row = db.get<{ data: string }>('SELECT data FROM judge_questions WHERE question_id = ?', id)
+  return row === undefined ? undefined : json(PROJECTION_SCHEMAS.judgeQuestion, row.data)
 }
 
 const writeFinding = (db: Sqlite, finding: Finding): void =>
@@ -1911,16 +1950,44 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
 
+    case 'judge.requested': {
+      const { questionId, kind, inputsHash, workId, askedFor } = event.data
+      // The `input` the question was formed from is deliberately not kept: it is
+      // the card's own text, already in the `work` row, and storing it again would
+      // make every answer's row carry a copy of the fleet's longest fields. The
+      // hash is what §5.4 needs a replay to recognise.
+      writeJudgeQuestion(
+        db,
+        parse(PROJECTION_SCHEMAS.judgeQuestion, {
+          questionId,
+          kind,
+          inputsHash,
+          workId,
+          askedFor,
+          askedAt: ts,
+        }),
+      )
+      return
+    }
+    case 'judge.answered': {
+      const { questionId, answer, model } = event.data
+      const current = judgeQuestionById(db, questionId)
+      // An answer with no question is a log that lost its head: `missing` records
+      // the anomaly rather than inventing a question to hang the answer on.
+      if (current === undefined) {
+        missing(db, event, 'judge', questionId)
+        return
+      }
+      writeJudgeQuestion(db, parse(PROJECTION_SCHEMAS.judgeQuestion, { ...current, answer, model, answeredAt: ts }))
+      return
+    }
     // ---------------------------------------------- recorded, not projected yet
-    // `judge.requested`/`judge.answered` are the typed question log (§5.3);
     // `purge.*`, `index.*` and `scan.skipped` describe a process, not a row the
     // PM or the board reads. They stay in `events` and are read from there.
     //
     // Named one by one, never caught by a `default`: a new type in the registry
     // then has to be *decided* here — projected above, or recorded-only in this
     // list — because the `satisfies` below makes forgetting it a typecheck error.
-    case 'judge.requested':
-    case 'judge.answered':
     case 'purge.started':
     case 'purge.saved':
     case 'purge.degraded':
@@ -2063,6 +2130,11 @@ export const readers = (db: Sqlite): ReadModel => {
     notifications: {
       all: async () => rows(PROJECTION_SCHEMAS.notification, 'SELECT data FROM notifications ORDER BY created_at, key'),
       get: async (key) => notificationByKey(db, key),
+    },
+    judge: {
+      all: async () =>
+        rows(PROJECTION_SCHEMAS.judgeQuestion, 'SELECT data FROM judge_questions ORDER BY asked_at, question_id'),
+      get: async (id) => judgeQuestionById(db, id),
     },
     findings: {
       all: async () => rows(PROJECTION_SCHEMAS.finding, 'SELECT data FROM findings ORDER BY raised_at, finding_id'),

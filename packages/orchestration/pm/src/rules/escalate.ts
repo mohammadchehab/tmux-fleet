@@ -7,7 +7,8 @@
  * - **An approval the gate cannot get** (§10): checks are green, the review is still `pending`, and no peer
  *   running the reviewer role is in the fleet. §10 says the gate asks rather than stalling silently.
  * - **An escalated Judge question** (§5.3): a malformed answer that survived one retry becomes `escalate`. The
- *   answer is an event, so the tick that sees `judge.answered` turns it into the user's question.
+ *   answer is a row in the question projection, so any tick — not only the one that saw `judge.answered` — turns
+ *   it into the user's question. The inbox is keyed by the question, so a later tick finds the row and asks once.
  * - **A role nobody holds** (§5.2 `assign`): a ready Work for a role the squad does not have can never be assigned,
  *   and silence about that is how a card rots.
  *
@@ -27,25 +28,30 @@ export const requestDecisions: Rule = (ctx) => [...judgeEscalations(ctx), ...app
 
 /** §5.3: a Judge answer that escalated becomes the user's decision, carrying the question the Judge formed. */
 const judgeEscalations = (ctx: RuleContext): readonly Draft[] => {
-  const event = ctx.event
-  if (event?.type !== 'judge.answered') return []
-  const { questionId, answer } = event.data
-  if (answer.kind !== 'escalate' || !answer.escalate) return []
+  const drafts: Draft[] = []
+  // Read from the projection, not from `ctx.event`: the answer is a row on the
+  // question, so the tick that finds it need not be the tick that saw it arrive.
+  for (const question of ctx.state.judge) {
+    const answer = question.answer
+    if (answer?.kind !== 'escalate' || !answer.escalate) continue
 
-  const decisionId = deriveId('dec', { kind: 'escalate', questionId }) as DecisionId
-  if (ctx.index.decision(decisionId) !== undefined) return []
+    const { questionId } = question
+    const decisionId = deriveId('dec', { kind: 'escalate', questionId }) as DecisionId
+    if (ctx.index.decision(decisionId) !== undefined) continue
 
-  return [
-    draft(`decision:${decisionId}`, {
-      kind: 'request_decision',
-      causedBy: ctx.causedBy,
-      decisionId,
-      decisionKind: 'escalate',
-      question: answer.question ?? `A Judge question could not be answered: ${answer.why}`,
-      options: answer.options ?? [],
-      inputsHash: shortHash({ questionId, answer }),
-    }),
-  ]
+    drafts.push(
+      draft(`decision:${decisionId}`, {
+        kind: 'request_decision',
+        causedBy: ctx.causedBy,
+        decisionId,
+        decisionKind: 'escalate',
+        question: answer.question ?? `A Judge question could not be answered: ${answer.why}`,
+        options: answer.options ?? [],
+        inputsHash: shortHash({ questionId, answer }),
+      }),
+    )
+  }
+  return drafts
 }
 
 /** §10: green, unreviewed, and nobody in the fleet may review it. */

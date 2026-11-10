@@ -114,6 +114,7 @@ describe('a routine is a seam onto the PM', () => {
     assert.deepEqual(Object.keys(only(deps.pm.requests).state).sort(), [
       'decisions',
       'findings',
+      'judge',
       'messages',
       'notifications',
       'peers',

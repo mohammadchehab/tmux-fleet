@@ -386,6 +386,28 @@ CREATE TABLE IF NOT EXISTS peer_tool_counts (
 `
 
 /**
+ * §5.3's typed question log, projected so a rule reads an answer as state rather
+ * than as the event that carried it. One row per question, not two: the answer
+ * fills the row in when it arrives, so an open question is the row with no
+ * `answered_at` rather than a row that is not there yet. A rule asking "was this
+ * card called thin?" therefore reads one row either way.
+ */
+const JUDGE_QUESTIONS = `
+CREATE TABLE IF NOT EXISTS judge_questions (
+  question_id TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  inputs_hash TEXT NOT NULL,
+  work_id     TEXT,
+  asked_for   TEXT,
+  asked_at    TEXT NOT NULL,
+  answered_at TEXT,
+  model       TEXT,
+  data        TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS judge_questions_work ON judge_questions (work_id);
+`
+
+/**
  * Migrations, in order. A store records the highest applied version in
  * `store_meta` and applies everything above it; version 1 is the initial
  * schema (architecture §3).
@@ -445,6 +467,15 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 7,
     name: 'peer_activity',
     statements: [PEER_ACTIVITY],
+  },
+  {
+    // additive: the question log was projectable all along — `judge.requested`
+    // and `judge.answered` have been in the events table since version 1 — so a
+    // replay fills this table from a log an older store already holds, and
+    // nothing needs backfilling at upgrade time.
+    version: 8,
+    name: 'judge_questions',
+    statements: [JUDGE_QUESTIONS],
   },
 ]
 

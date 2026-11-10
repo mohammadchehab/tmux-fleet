@@ -475,11 +475,7 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
       // routine that keeps failing, and an event is not a poll. Something real
       // happened, and it gets one honest try (§6).
       const listens = routine.triggers.some((trigger: Trigger) => triggeredBy(trigger, event.type))
-      // § 6: a routine that appends an event its own trigger listens for is prevented
-      // from re-entering itself by the one-hop guard: if the routine is currently
-      // in flight (running), an event it appends does not wake it again. The heartbeat
-      // or next trigger will catch it on the next tick.
-      if (listens && !inFlight.has(routine.id)) records.push(await run(routine, 'event', event))
+      if (listens) records.push(await run(routine, 'event', event))
     }
     return records
   }

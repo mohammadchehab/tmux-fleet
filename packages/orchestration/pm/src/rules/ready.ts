@@ -6,10 +6,11 @@
  *
  * 1. **It states its own goal.** `questionThinCards` only asks the Judge about a card whose body is shorter than
  *    `thinCardChars`; a card above that line was never questioned, so waiting for an answer waits forever.
- * 2. **The Judge said it is not thin.** The answer to a `thin_card` question is `judge.answered`, and the tick that
- *    sees it is the only tick that can act on it: a snapshot holds no Judge log (§5.3 keeps answers out of the
- *    projections), so a later heartbeat has no record to read. That is why `judge.answered` is one of `dispatch`'s
- *    triggers (`config.ts`) — the answer wakes the tick that promotes the card, and `work.ready` wakes the next one.
+ * 2. **The Judge said it is not thin.** The answer is a row on the question the card was asked about, so it is part
+ *    of the snapshot the tick already holds (`FleetState.judge`). Any tick can therefore promote the card: the one
+ *    that saw the answer, or the next heartbeat. Reading it as state rather than from the `judge.answered` event is
+ *    also what keeps `dispatch` from waking on an event its own body causes the Judge to append (§6), which would
+ *    be the tick re-entering itself.
  *
  * A card the Judge called thin stays `proposed`: the answer names what is missing, and asking the user for exactly
  * that is a decision question this rule does not own. It is also not silently "just try it": §5.3 asked because the
@@ -30,11 +31,8 @@ const thinCardQuestion = (work: Work): QuestionId =>
 const readyReason = (card: Work, ctx: RuleContext): string | undefined => {
   if ((card.body ?? '').trim().length >= ctx.options.thinCardChars) return 'the card states its own goal'
 
-  const event = ctx.event
-  if (event?.type !== 'judge.answered') return undefined
-  const { questionId, answer } = event.data
-  if (questionId !== thinCardQuestion(card)) return undefined
-  if (answer.kind !== 'thin_card' || answer.thin) return undefined
+  const answer = ctx.index.judge(thinCardQuestion(card))?.answer
+  if (answer?.kind !== 'thin_card' || answer.thin) return undefined
   return `the Judge found no missing goal: ${answer.why}`.slice(0, 500)
 }
 

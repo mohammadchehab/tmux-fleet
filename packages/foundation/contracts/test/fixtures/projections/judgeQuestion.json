@@ -1,0 +1,16 @@
+{
+  "questionId": "qst_2b7c9d1e4f6a8b0c",
+  "kind": "thin_card",
+  "inputsHash": "sha256:4c1d7e9a0b2f3568",
+  "workId": "wrk_8a4b02d3e95c1f67",
+  "askedFor": "engineer-3",
+  "askedAt": "2026-11-10T09:41:00.000Z",
+  "answer": {
+    "kind": "thin_card",
+    "thin": false,
+    "missing": [],
+    "why": "The card names the goal and its acceptance criteria."
+  },
+  "model": "claude-haiku-4-5-20251001",
+  "answeredAt": "2026-11-10T09:41:06.000Z"
+}

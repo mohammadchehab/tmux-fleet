@@ -59,6 +59,7 @@ test('every table the design names exists', () => {
     'eval_runs',
     'events',
     'findings',
+    'judge_questions',
     'messages',
     'notifications',
     'peer_activity',

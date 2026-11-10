@@ -11,6 +11,7 @@ import type {
   FleetError,
   NotificationKey,
   PeerId,
+  QuestionId,
   Repo,
   Result,
   Seq,
@@ -26,7 +27,7 @@ import type { Message } from './projections/mailbox.ts'
 import type { MessageAckState } from './events/messages.ts'
 import type { ProviderHandle, Turn } from './provider.ts'
 import type { Build, PullRequest, Worktree } from './projections/delivery.ts'
-import type { Decision, Finding, Notification, Routine, TokenReport } from './projections/ops.ts'
+import type { Decision, Finding, JudgeQuestionRecord, Notification, Routine, TokenReport } from './projections/ops.ts'
 import type { Peer, PeerActivity, PeerCompactions, Session } from './projections/peers.ts'
 import type { Work } from './projections/work.ts'
 import type { ExternalItem } from './shapes.ts'
@@ -326,6 +327,16 @@ export interface ReadModel {
   }
   readonly findings: {
     all(): Promise<readonly Finding[]>
+  }
+  /**
+   * §5.3's typed question log, projected so a rule reads an answer as state
+   * rather than as the event that carried it. That is what lets `dispatch` stop
+   * waking on `judge.answered` — an event its own body causes to be appended,
+   * and so a tick it would be re-entering itself to run (§6).
+   */
+  readonly judge: {
+    all(): Promise<readonly JudgeQuestionRecord[]>
+    get(id: QuestionId): Promise<JudgeQuestionRecord | undefined>
   }
   /** §7's projection: what the Mailbox wrote, and what `fleet peek` reads. */
   readonly messages: {

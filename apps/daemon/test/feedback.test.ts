@@ -52,17 +52,12 @@ const tickEmits: readonly FleetEventType[] = [
   'message.sent',
   'message.delivered',
   'judge.requested',
+  'judge.answered',
   'decision.requested',
   'pr.merged',
   'pr.retargeted',
   'standup.rendered',
 ]
-
-/** What a PM tick can directly append; excludes `judge.answered` because the Judge service
- * appends it, not the tick itself. The tick calls `request_judge` which may trigger the Judge
- * to emit, but the tick doesn't directly control that append.
- */
-const directTickEmits = tickEmits
 
 interface BodyEmissions {
   /** Every event type the body can append. */
@@ -79,11 +74,7 @@ interface BodyEmissions {
 /** The body of each routine this build can run, and what running it can append. */
 const bodyEmits: Readonly<Partial<Record<RoutineKind, BodyEmissions>>> = {
   // A plain PM tick: src/routines/{dispatch,keep-busy,reconcile,standup}.ts.
-  // `dispatch` wakes on `judge.answered` to read the Judge's answer, but `judge.answered`
-  // is appended by the Judge service, not by the dispatch tick itself. So dispatch's direct
-  // emissions are disjoint from its triggers, and the one-hop guard in the scheduler (§6)
-  // prevents self-reentrance through `judge.requested` if needed.
-  dispatch: { types: directTickEmits, wakes: true },
+  dispatch: { types: tickEmits, wakes: true },
   'keep-busy': { types: tickEmits, wakes: true },
   reconcile: { types: tickEmits, wakes: true },
   standup: { types: tickEmits, wakes: true },
