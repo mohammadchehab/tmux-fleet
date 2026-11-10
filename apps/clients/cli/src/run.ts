@@ -63,8 +63,8 @@ const usage = (): string =>
     '',
     '  fleet init <profile>                write a starter profile, once; it never overwrites',
     '  fleet up [profile]                  start the fleet, or reattach to the one already running',
-    '  fleet down                          stop it',
-    '  fleet ls                            peers, routines and the decisions waiting on you',
+    '  fleet down [profile]                stop it',
+    '  fleet ls [profile]                  peers, routines and the decisions waiting on you',
     '  fleet send <peer> <kind> <body>     message a peer',
     '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first (--limit keeps the newest N)',
     '  fleet decide <id> [answer]          show an open decision, or answer it',
@@ -298,12 +298,14 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       arity('up', rest, '[profile]', (count) => count <= 1)
       return { command: { kind: 'up' }, how: how(rest[0]) }
     }
-    case 'down':
-      arity('down', rest, '', (count) => count === 0)
-      return { command: { kind: 'down' }, how: how() }
-    case 'ls':
-      arity('ls', rest, '', (count) => count === 0)
-      return { command: { kind: 'ls' }, how: how() }
+    case 'down': {
+      arity('down', rest, '[profile]', (count) => count <= 1)
+      return { command: { kind: 'down' }, how: how(rest[0]) }
+    }
+    case 'ls': {
+      arity('ls', rest, '[profile]', (count) => count <= 1)
+      return { command: { kind: 'ls' }, how: how(rest[0]) }
+    }
     case 'send': {
       arity('send', rest, '<peer> <kind> <body>', (count) => count >= 3)
       const [to, kind, ...words] = rest

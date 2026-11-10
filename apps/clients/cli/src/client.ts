@@ -119,7 +119,9 @@ export const callDaemon = async <M extends DaemonMethod>(
   // Checked before connecting: a bad argument is the CLI's own fault and should
   // not need a daemon to notice it.
   const checked = refuseParams(daemonParamsFor(method), params, method)
-  const timeoutMs = options.timeoutMs ?? 30_000
+  // `up` may need longer: it registers peers, starts supervisor/scheduler, and catches up work.
+  // On slower machines this can take >30s, so give it 60s. Other methods are fast (local projections).
+  const timeoutMs = options.timeoutMs ?? (method === 'up' ? 60_000 : 30_000)
 
   return new Promise<DaemonResults[M]>((resolve, reject) => {
     let buffer = ''

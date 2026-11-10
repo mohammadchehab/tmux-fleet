@@ -226,6 +226,20 @@ describe('run: ls', () => {
     assert.equal(await run(argv('ls', '--json'), deps), 0)
     assert.deepEqual(JSON.parse(out[0] ?? ''), listing)
   })
+
+  it('accepts profile as a positional argument for consistency with up/down', async () => {
+    const { deps, out, sockets } = harness({ ls: () => listing })
+    assert.equal(await run(argv('ls', 'other-fleet'), deps), 0)
+    assert.match(out[0] ?? '', /squad/)
+    assert.match(sockets[0] ?? '', /\/other-fleet\//)
+  })
+
+  it('accepts profile as --profile flag', async () => {
+    const { deps, out, sockets } = harness({ ls: () => listing })
+    assert.equal(await run(argv('ls', '--profile', 'other-fleet'), deps), 0)
+    assert.match(out[0] ?? '', /squad/)
+    assert.match(sockets[0] ?? '', /\/other-fleet\//)
+  })
 })
 
 describe('run: send', () => {
@@ -253,8 +267,8 @@ describe('run: send', () => {
 
   it('ends a command with no arguments at the command, with no dangling space', async () => {
     const { deps, err } = harness({})
-    assert.equal(await run(argv('ls', 'extra'), deps), 2)
-    assert.equal(err[0], 'fleet: usage: fleet ls')
+    assert.equal(await run(argv('ls', 'profile1', 'profile2'), deps), 2)
+    assert.match(err[0] ?? '', /usage: fleet ls/)
   })
 
   it('refuses a peer id the contract would refuse, without a round trip', async () => {
@@ -397,6 +411,20 @@ describe('run: down', () => {  it('reports the daemon stopped', async () => {
     assert.equal(await run(argv('down'), deps), 0)
     assert.equal(out[0], 'squad is not running')
     assert.deepEqual(err, [])
+  })
+
+  it('accepts profile as a positional argument for consistency with up/ls', async () => {
+    const { deps, out, sockets } = harness({ down: () => ({ stopped: true }) })
+    assert.equal(await run(argv('down', 'other-fleet'), deps), 0)
+    assert.equal(out[0], 'fleetd stopped')
+    assert.match(sockets[0] ?? '', /\/other-fleet\//)
+  })
+
+  it('accepts profile as --profile flag', async () => {
+    const { deps, out, sockets } = harness({ down: () => ({ stopped: true }) })
+    assert.equal(await run(argv('down', '--profile', 'other-fleet'), deps), 0)
+    assert.equal(out[0], 'fleetd stopped')
+    assert.match(sockets[0] ?? '', /\/other-fleet\//)
   })
 })
 
