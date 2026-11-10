@@ -1,8 +1,8 @@
 /**
- * The append boundary is strict (architecture §3, §5.4, §15 phase 0). Reads
- * tolerate unknown keys; a write does not, because a misspelt optional field
- * would be dropped and lost instead of reported. The store is phase 1, so the
- * rule is held here by `assertAppendable`, which `append` must call.
+ * The append boundary is strict (architecture §3, §5.4, §15). Reads tolerate
+ * unknown keys; a write does not, because a misspelt optional field would be
+ * dropped and lost instead of reported. `registerEvents` holds the rule here;
+ * `SqliteEventStore.append` calls `assertAppendable` before it writes anything.
  */
 
 import assert from 'node:assert/strict'

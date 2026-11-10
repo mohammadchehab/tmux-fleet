@@ -1,6 +1,6 @@
 /**
- * The store's schema (architecture §3, §5.4, §15). Phase 0 ships the DDL and
- * the migration list; phase 1 wires `node:sqlite` to it.
+ * The store's schema (architecture §3, §5.4, §15). The DDL and the migration
+ * list; `sqlite-store.ts` applies it to a `node:sqlite` handle on open.
  *
  * Two rules shape the tables:
  * 1. `events` is the source of truth and is append-only. Every other table is
