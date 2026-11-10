@@ -163,10 +163,59 @@ which owns them:
 | `standup` | cron (default 09:00 local) and on request | report from projections |
 | `worktree-gc` | daily + on `merged` | §9 |
 | `reconcile` | startup + 10 min | provider `status` vs registry; restart dead sessions, fix drift |
+| `notify` | events + 5 min | §6.1: the notification projection, delivered through `Notifier` |
 
 A routine declares `{id, trigger, run(ctx)}`; its runs are events (`routine.started/finished/failed`), so a
 silent routine is visible. Per-profile enable/disable lives in the profile; the defaults are all on. Peers never
 need to be told about any of them.
+
+## 6.1 Notifications and the decision inbox
+
+Notifications are a **projection and a routine over the event store**, never ad-hoc calls from the PM. The PM only
+appends events (`decision.requested`, `peer.failed`, `ci.failed_final`, `provider.error`, `standup.rendered`); it
+does not know a notifier exists, so channels can be added without touching it.
+
+**Decision inbox.** Anything blocked on the user (a product/scope call, an approval, a judge question that
+escalated) is a `Decision` row in state `open`, with `id`, a one-line question, options, the Work it blocks and the
+event it came from. `fleet decide <id>` shows it and takes the answer (`fleet decide <id> <option>` or free text);
+the answer is an event (`decision.answered`) that unblocks the Work and closes the notification state.
+
+**Events that notify** (Mohammad, 2026-11-10; macOS desktop only for now):
+
+| class | events |
+| :- | :- |
+| needs your decision | `decision.requested` (blocked on the user, escalated judge question, approval needed) |
+| failure | peer crash, a session that will not resume, CI red after retries, provider/auth/budget error |
+| standup | the daily standup summary |
+
+**Not notified:** PR ready to merge (the PR gate acts on it, §10), peer idle, routine runs, purges.
+
+**Notifier interface.**
+
+```ts
+interface Notifier {
+  readonly id: string                                        // "macos"
+  notify(n: Notification): Promise<{ delivered: boolean }>   // {key, class, title, body, action: {cmd: "fleet decide <id>"}}
+  withdraw?(key: string): Promise<void>                      // clear a delivered one when its decision closes
+}
+```
+
+`macos` is the first implementation (`terminal-notifier` if present, else `osascript display notification`; the
+action opens a terminal running `fleet decide <id>`). Phone or Slack later are more `Notifier`s registered in the
+profile; routing by class is profile config.
+
+**Notification state** is a projection keyed by `key` (`decision:<id>`, `failure:<subject>:<kind>`,
+`standup:<date>`): `pending → sent → resolved`. Rules, all pure functions of events and the clock:
+- **Dedupe:** one notification per key. A decision notifies once when opened.
+- **Failure rate limit:** a failure key notifies once, then is suppressed until it resolves or a 6 h window passes with
+  a count appended ("still failing, 4 events"), never one per retry.
+- **Still waiting:** an open decision gets at most one quiet reminder after N hours (default 8), then none.
+- **Close:** `decision.answered`, or the failure's recovery event, moves the key to `resolved` and calls `withdraw`.
+- **Delivery failure** is an event (`notify.failed`); the decision stays visible in `fleet ls` and `fleet decide`, so a
+  missed banner loses nothing.
+
+The `notify` routine (§6) runs on events and a 5 min heartbeat; its runs are events like any routine's, and it replays
+deterministically. **It lands in phase 1**: the decision inbox is how the deterministic PM escalates to the user.
 
 ## 7. Messaging and identity
 
@@ -260,6 +309,7 @@ serial blocker because the PM sees it as a dependency edge and parallelises ever
 | idle peers, unknown capacity | `keep-busy` on idle events; capacity is a projection |
 | duplicate features | `dedupe` rule before assign (§5.2) and in every brief |
 | self-purge | §8, inside the session wrapper, no PM/loop |
+| the user finds out late, or is spammed | §6.1: decision inbox + `Notifier` (macOS first); notify only on decisions, final failures and the daily standup, deduped and rate-limited; `fleet decide <id>` answers and closes it |
 | routines typed by hand | §6, started by `fleetd` |
 
 ## 14. Decision: standalone vs build on IsnadiBot
@@ -301,7 +351,7 @@ Mailbox API as typed files and golden tests. Merged first, small. Everything bel
 **Phase 1: the vertical slice (the usable fleet).**
 `fleetd` + SQLite event store + Registry; **one provider (`claude`, with `deepinfra` as env config)**; Supervisor
 (start, resume, restart, permission-mode check); Mailbox with stable ids; the PM state machine with `assign`, `track
-PR`, `merge` gate and `standup`; Scheduler with `dispatch`, `keep-busy`, `pr-babysit`, `reconcile`; **self-purge**
+PR`, `merge` gate and `standup`; Scheduler with `dispatch`, `keep-busy`, `pr-babysit`, `reconcile`, `notify`; the decision inbox, `fleet decide` and the macOS `Notifier` (§6.1); **self-purge**
 (§8); `fleet up/down/ls/send/peek` as API clients; Judge with `route_question` and `same_feature`. No board sync, no
 worktree GC, no remote builds yet. Exit test: a squad of one architect and two engineers takes three Work items from
 `ready` to `merged` in a sandbox repo with no human and no PM peer, survives killing a peer session mid-turn, and
