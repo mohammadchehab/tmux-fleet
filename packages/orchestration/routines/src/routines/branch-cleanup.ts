@@ -245,9 +245,14 @@ const cleanWorktree = async (
       data: { worktreeId: row.worktreeId, reason: `its branch ${branch} was deleted after the merge` },
     },
   ]
-  // §9: the Work is finished when its checkout is gone. Emitted only when the log
-  // says which Work the checkout belonged to.
-  if (workId !== undefined) {
+  // §9: the Work is finished when its checkout is gone — but only a Work that **merged**
+  // is finished, and `pr.merged` does not imply `work.merged`. `work-sync` turns one into
+  // the other as a committed listener, and `wake.ts` wakes the scheduler *before* its
+  // listeners run, so on the ordinary `pr.merged` wake the Work is still `mergeable` here.
+  // Writing the transition anyway would be refused by the projector and record an anomaly
+  // on the normal path; leaving it out costs nothing, because `worktree-gc` is woken by the
+  // `work.merged` that follows and finishes the Work once the checkout is already gone.
+  if (workId !== undefined && (await deps.read.work.get(workId))?.state === 'merged') {
     batch.push({
       ts,
       type: 'work.cleaned',

@@ -40,7 +40,14 @@ import {
   type Schema,
   type Sha,
 } from '@fleet/foundation-core'
-import type { Branch, ChecksState, PullRequest, ReviewState } from '@fleet/foundation-contracts'
+import { pullRequestStates } from '@fleet/foundation-contracts'
+import type {
+  Branch,
+  ChecksState,
+  ForgePullRequest,
+  PullRequestState,
+  ReviewState,
+} from '@fleet/foundation-contracts'
 
 /** One checks observation. `headSha` is the commit the pipeline ran on — the whole point of §10's pin. */
 export interface GradedChecks {
@@ -190,14 +197,28 @@ export const footersFrom = (
 // -------------------------------------------------------------- merge request
 
 /**
+ * GitLab's own `state` as the contract spells it. GitLab says `opened` where the
+ * contract says `open`; anything it names that is not one of the three is left off
+ * rather than guessed, because §9 removes a checkout only on an explicit `closed`.
+ */
+const stateFrom = (value: unknown): PullRequestState | undefined => {
+  const lower = typeof value === 'string' ? value.toLowerCase() : undefined
+  const named = lower === 'opened' ? 'open' : lower
+  return pullRequestStates.find((state) => state === named)
+}
+
+/**
  * One GitLab merge request as the contract's `PullRequest`.
  *
  * `pipelines` is passed in rather than read off the row: `get` fetches them from
  * the merge request's own pipelines endpoint, and a list row carries at most the
  * embedded `head_pipeline`. When the caller has neither, the row's own
  * `head_pipeline` is what there is, and its absence is `pending` (rule 1).
+ *
+ * `state` travels too, and it is the one field here the log cannot hold: §3 has no
+ * `pr.closed`, so this is where "still open" comes from (§9).
  */
-export const pullRequestFrom = (raw: unknown, on: Repo, pipelines?: unknown): PullRequest => {
+export const pullRequestFrom = (raw: unknown, on: Repo, pipelines?: unknown): ForgePullRequest => {
   const row = record(raw)
   if (row === undefined) throw fleetError('external_failed', 'glab reported a merge request that is not an object')
 
@@ -213,6 +234,7 @@ export const pullRequestFrom = (raw: unknown, on: Repo, pipelines?: unknown): Pu
   const checks = checksFrom(pipelines ?? row['head_pipeline'])
   const review = reviewFrom(row['approvals'] ?? row['approved_by'])
   const merged = row['state'] === 'merged' || (row['merged_at'] !== null && row['merged_at'] !== undefined)
+  const state = stateFrom(row['state'])
   const createdAt = shape(timestamp(), row['created_at'], 'created_at')
   const updatedAt = shape(timestamp(), row['updated_at'], 'updated_at')
 
@@ -227,6 +249,7 @@ export const pullRequestFrom = (raw: unknown, on: Repo, pipelines?: unknown): Pu
     review: review.state,
     ...footersFrom(row['description'], on),
     merged,
+    ...(state === undefined ? {} : { state }),
     createdAt,
     updatedAt,
   }

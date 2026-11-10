@@ -1130,9 +1130,26 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       )
       return
     }
-    case 'work.cleaned':
+    case 'work.cleaned': {
+      const current = workById(db, event.data.workId)
+      if (current === undefined) {
+        missing(db, event, 'work', event.data.workId)
+        return
+      }
+      // `cleaned` is the last step of §5.1's forward path, and only a merged Work has
+      // a path to it. Writing it unconditionally would move a `cancelled` Work —
+      // somebody's "drop this" — to `cleaned`, a decision the log never recorded and
+      // the collector was never asked to make. A producer that emits on `merged`
+      // alone (`branch-cleanup` does) is refused here instead, and refused loudly:
+      // the anomaly is a row, so a replay regenerates it and a reader can see it.
+      if (current.state === 'cleaned') return
+      if (current.state !== 'merged') {
+        recordAnomaly(db, event, 'work', `refused work.cleaned: state is ${current.state}, not merged`)
+        return
+      }
       updateWork(db, event.data.workId, { state: 'cleaned' }, event)
       return
+    }
     case 'work.blocked':
       updateWork(
         db,

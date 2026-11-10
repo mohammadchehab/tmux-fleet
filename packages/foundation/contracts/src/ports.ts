@@ -32,15 +32,47 @@ import type { Work } from './projections/work.ts'
 import type { ExternalItem } from './shapes.ts'
 import type { WorkState } from './work-state.ts'
 
+/** The three states a forge reports for a PR; `merged` is a `closed` one that merged. */
+export const pullRequestStates = ['open', 'closed', 'merged'] as const
+export type PullRequestState = (typeof pullRequestStates)[number]
+
+/**
+ * A `PullRequest` as the forge answered it: the projection's fields, plus the one
+ * fact no projection holds.
+ *
+ * §3 has no `pr.closed`, so a `PullRequest` row — built from events — can say that
+ * a PR merged and never that it is still open. The forge is the only thing that
+ * knows, and it says so here rather than in the row.
+ *
+ * `state` is optional on purpose, and **undefined means unknown, never closed**: a
+ * stored row carries no state at all, and an adapter that was told none has none to
+ * report. A reader that treated absence as "done" would delete a person's checkout
+ * on a forge's silence, which is the failure §9 exists to prevent.
+ */
+export interface ForgePullRequest extends PullRequest {
+  readonly state?: PullRequestState
+}
+
 /**
  * The PR surface `gate`, `pr-babysit` and the `dedupe` rule need (§5.2, §10).
  * Implemented by `@fleet/integrations-github` over `gh` and git (phase 1).
  */
 export interface PullRequests {
-  /** Open PRs for a repo; the gate and the retarget sweep walk these. */
-  list(repo: Repo, options?: { readonly state?: 'open' | 'closed' | 'all' }): Promise<readonly PullRequest[]>
+  /**
+   * Open PRs for a repo; the gate and the retarget sweep walk these.
+   *
+   * **A list is a page, not a set.** Adapters cap it (`DEFAULT_LIMIT`), so a row's
+   * *absence* says nothing at all: the PR may be open on page two. Only presence is
+   * a fact, which is why a caller that needs "is this one open?" asks `get`.
+   */
+  list(repo: Repo, options?: { readonly state?: 'open' | 'closed' | 'all' }): Promise<readonly ForgePullRequest[]>
 
-  get(repo: Repo, number: number): Promise<PullRequest | undefined>
+  /**
+   * One PR, asked directly: `undefined` when the forge says it is not there, a
+   * throw when the call itself failed — the two are deliberately different answers,
+   * because "missing" is a fact and "unreachable" is not (§10, §9).
+   */
+  get(repo: Repo, number: number): Promise<ForgePullRequest | undefined>
 
   /** `dedupe`: search open PRs for the same intent before assigning work (§5.2). */
   searchIntent(repo: Repo, text: string): Promise<readonly PullRequest[]>

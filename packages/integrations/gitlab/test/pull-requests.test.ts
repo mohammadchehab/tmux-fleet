@@ -140,6 +140,9 @@ describe('get: a missing merge request is an answer, a failed call is not', () =
     assert.equal(pr?.number, 7)
     assert.equal(pr?.checks, 'passing')
     assert.equal(pr?.headSha, 'abc1234')
+    // The API answers with the whole merge request, so the state rides along — which is
+    // what makes `get` §9's only way to learn a PR closed (§3 has no `pr.closed`).
+    assert.equal(pr?.state, 'open', 'GitLab says `opened`; the contract says `open`')
   })
 
   it('is undefined when GitLab says the merge request is not there', async () => {

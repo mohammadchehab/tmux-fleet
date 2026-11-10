@@ -154,6 +154,21 @@ describe('pullRequestFrom: one row as the contract’s PR', () => {
     assert.equal(pullRequestFrom(prJson({ mergedAt: '2026-11-03T00:00:00.000Z' }), where).merged, true)
   })
 
+  it('carries gh’s own state, which is the only thing §9 may call a PR done', () => {
+    // `merged: false` only says the log has seen the PR; `state` is the forge's word for
+    // it, and `worktree-gc` collects a checkout on an explicit `closed` and nothing else.
+    assert.equal(pullRequestFrom(prJson({ state: 'CLOSED' }), where).state, 'closed', 'gh shouts, the contract does not')
+    assert.equal(pullRequestFrom(prJson({ state: 'OPEN' }), where).state, 'open')
+    assert.equal(pullRequestFrom(prJson({ state: 'MERGED' }), where).state, 'merged')
+  })
+
+  it('leaves `state` out when gh did not say one, so it reads as unknown and never as closed', () => {
+    // A `--json` that named no state, or a state this contract does not model (`DRAFT`,
+    // a future one): absent, not a guess. `worktree-gc` keeps a checkout on absent.
+    assert.equal('state' in pullRequestFrom(prJson(), where), false)
+    assert.equal('state' in pullRequestFrom(prJson({ state: 'SOMETHING_NEW' }), where), false)
+  })
+
   it('refuses a row it does not model rather than guessing a head sha', () => {
     assert.throws(() => pullRequestFrom(prJson({ headRefOid: 'not-a-sha' }), where), {
       code: 'external_failed',

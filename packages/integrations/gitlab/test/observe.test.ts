@@ -159,6 +159,21 @@ describe('pullRequestFrom: one merge request as the contract shape', () => {
     assert.deepEqual(pr.failingChecks, ['pipeline 5'])
   })
 
+  it('carries GitLab’s own state, in the words the contract uses', () => {
+    // GitLab spells "open" `opened`. The three words `worktree-gc` branches on (§9) are
+    // the contract's, so the adapter translates rather than passing the word along: a
+    // `closed` a caller does not recognise would read as unknown, and unknown keeps —
+    // safe, but a checkout nobody ever collects.
+    assert.equal(pullRequestFrom(mrJson({ state: 'opened' }), where).state, 'open')
+    assert.equal(pullRequestFrom(mrJson({ state: 'closed' }), where).state, 'closed')
+    assert.equal(pullRequestFrom(mrJson({ state: 'merged' }), where).state, 'merged')
+  })
+
+  it('leaves `state` out for a word it does not model, so it reads as unknown and never as closed', () => {
+    assert.equal('state' in pullRequestFrom(mrJson({ state: 'locked' }), where), false)
+    assert.equal('state' in pullRequestFrom(mrJson({ state: undefined }), where), false)
+  })
+
   it('refuses a merge request it cannot model rather than inventing one', () => {
     assert.throws(() => pullRequestFrom(mrJson({ iid: undefined }), where), /no iid/)
     assert.throws(() => pullRequestFrom(mrJson({ sha: 'not-a-sha' }), where), /unusable sha/)

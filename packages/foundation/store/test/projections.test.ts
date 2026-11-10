@@ -404,6 +404,64 @@ test('a blocked Work says who can unblock it, and only while it is blocked', asy
   await store.close()
 })
 
+test('`work.cleaned` finishes a merged Work, and refuses to move any other (§5.1, §9)', async () => {
+  const path = tempStorePath()
+  const store = await openSqliteStore({ path, clock: fixedClock })
+  const merged = 'wrk_1a2b3c4d5e6f7081' as WorkId
+  const cancelled = 'wrk_2b3c4d5e6f708192' as WorkId
+  const repo = 'acme/widgets'
+  await store.append([
+    event('work.proposed', merged, { workId: merged, title: 'collect the checkouts', dependsOn: [] }),
+    event('work.proposed', cancelled, { workId: cancelled, title: 'wire the mailer', dependsOn: [] }),
+    event('work.cancelled', cancelled, { workId: cancelled, reason: 'the mailer shipped in another Work' }),
+  ])
+  await store.append([
+    event('work.merged', merged, {
+      workId: merged,
+      pr: { repo, number: 12 },
+      headSha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+    }),
+  ])
+
+  // The two producers that emit this event (§9's `worktree-gc`, §10's `branch-cleanup`)
+  // both answer "the checkout is gone"; neither is allowed to answer "the Work is
+  // finished" for a Work a person dropped. `cancelled` is terminal and is theirs, so the
+  // projection refuses the step even though the log cannot: `events` is append-only.
+  await store.append([
+    event('work.cleaned', merged, { workId: merged }),
+    event('work.cleaned', cancelled, { workId: cancelled }),
+  ])
+
+  assert.equal((await store.reader().work.get(merged))?.state, 'cleaned', '§5.1’s last step, for the Work that merged')
+  assert.equal(
+    (await store.reader().work.get(cancelled))?.state,
+    'cancelled',
+    'a person’s “drop this” survives the collector that came past the checkout',
+  )
+
+  const recorded = [
+    {
+      event_seq: 6,
+      projection: 'work',
+      event_type: 'work.cleaned',
+      subject: cancelled,
+      detail: `refused work.cleaned: state is cancelled, not merged`,
+      at: '2026-11-10T10:00:00.000Z',
+    },
+  ]
+  assert.deepEqual(await anomalies(path), recorded, 'the refusal is a row, not a silence `fleet status` cannot see')
+  assert.equal((await store.health()).anomalies, 1)
+
+  // The guard is in the reducer, so append and rebuild agree about the log (§5.4): a replay
+  // lands on the same state and regenerates exactly the same one anomaly.
+  await store.rebuild()
+  assert.equal((await store.reader().work.get(cancelled))?.state, 'cancelled')
+  assert.equal((await store.reader().work.get(merged))?.state, 'cleaned')
+  assert.deepEqual(await anomalies(path), recorded)
+  assert.equal((await store.health()).anomalies, 1, 'a replay lands on the same count, not zero and not two')
+  await store.close()
+})
+
 test('an event about an entity the log never opened is recorded, not silently dropped', async () => {
   const path = tempStorePath()
   const store = await openSqliteStore({ path, clock: fixedClock })

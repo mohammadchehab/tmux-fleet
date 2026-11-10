@@ -18,7 +18,7 @@
  */
 
 import { fleetError, type Repo, type Sha } from '@fleet/foundation-core'
-import type { PullRequest, PullRequests, ReviewState } from '@fleet/foundation-contracts'
+import type { ForgePullRequest, PullRequests, ReviewState } from '@fleet/foundation-contracts'
 import { createGh, type Gh, type GhResult } from './gh.ts'
 import {
   branchListFrom,
@@ -31,9 +31,14 @@ import {
   type GradedChecks,
 } from './observe.ts'
 
-/** The fields every read asks for. One list, so a `get` and a `list` row are the same shape (§10). */
+/**
+ * The fields every read asks for. One list, so a `get` and a `list` row are the same
+ * shape (§10). `state` is here for §9's sake and not the gate's: it is the only place
+ * "this PR is still open" can come from, because §3 has no `pr.closed`.
+ */
 const FIELDS = [
   'number',
+  'state',
   'baseRefName',
   'headRefName',
   'headRefOid',
@@ -132,7 +137,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
     FIELDS,
   ]
 
-  const readAll = async (args: readonly string[], repo: Repo): Promise<readonly PullRequest[]> => {
+  const readAll = async (args: readonly string[], repo: Repo): Promise<readonly ForgePullRequest[]> => {
     const raw = await gh.json(args)
     if (!Array.isArray(raw)) throw fleetError('external_failed', 'gh pr list printed something that is not a list')
     return raw.map((row) => pullRequestFrom(row, repo))
@@ -141,7 +146,7 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
   const readOne = async (repo: Repo, number: number, fields = FIELDS): Promise<unknown> =>
     gh.json(['pr', 'view', String(number), '-R', githubRepo(repo), '--json', fields])
 
-  const get = async (repo: Repo, number: number): Promise<PullRequest | undefined> => {
+  const get = async (repo: Repo, number: number): Promise<ForgePullRequest | undefined> => {
     const result = await gh.run(['pr', 'view', String(number), '-R', githubRepo(repo), '--json', FIELDS])
     if (result.code !== 0) {
       // "No such PR" is an answer the gate reports as `missing`; anything else is a failed read and throws.
