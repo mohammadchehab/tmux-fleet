@@ -73,11 +73,17 @@ const pidIn = async (lockPath: string): Promise<number | undefined> => {
 /** How long an empty lock file is believed to be a fleetd mid-acquire: `wx` creates it, the pid is written a moment later. */
 const EMPTY_LOCK_GRACE_MS = 2_000
 
-/** Which file is at `lockPath`: a replaced file is a different inode, whatever it says. */
-const identityOf = async (lockPath: string): Promise<{ readonly dev: number; readonly ino: number; readonly mtimeMs: number } | undefined> => {
+/**
+ * Which file is at `lockPath`. A replaced file is a different file whatever its
+ * inode says — ext4 and tmpfs hand a just-freed inode number straight back — so
+ * the identity is the inode, its times to the nanosecond, its size and what it
+ * says. `mtimeMs` rides along only for the age of an empty lock.
+ */
+const identityOf = async (lockPath: string): Promise<{ readonly key: string; readonly mtimeMs: number } | undefined> => {
   try {
-    const { dev, ino, mtimeMs } = await stat(lockPath)
-    return { dev, ino, mtimeMs }
+    const [exact, content] = await Promise.all([stat(lockPath, { bigint: true }), readFile(lockPath, 'utf8')])
+    const key = [exact.dev, exact.ino, exact.mtimeNs, exact.ctimeNs, exact.size, content].map(String).join('|')
+    return { key, mtimeMs: Number(exact.mtimeNs / 1_000_000n) }
   } catch {
     return undefined
   }
@@ -200,7 +206,7 @@ export const acquireFleetLock = async (lockPath: string, options: FleetLockOptio
       // compare-and-delete; it is microseconds, where it was a whole verdict.
       const now = await identityOf(lockPath)
       if (now === undefined) continue
-      if (now.ino !== judged.ino || now.dev !== judged.dev) continue
+      if (now.key !== judged.key) continue
       await rm(lockPath, { force: true })
       continue
     }
