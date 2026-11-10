@@ -131,8 +131,11 @@ export class ClaudeSession {
     this.#requestedModel = spec.model
     // `SessionSpec.toolPolicy` is held locally until the contracts PR adds it
     // (`policy.ts`); absent means ask-about-everything, which is what §4 did
-    // before the field existed.
-    this.#policy = compilePolicy((spec as SessionSpec & { readonly toolPolicy?: ToolPolicy }).toolPolicy)
+    // before the field existed. The spec's cwd is what relative path rules are
+    // resolved against, so a rule and the tool agree on the file.
+    this.#policy = compilePolicy((spec as SessionSpec & { readonly toolPolicy?: ToolPolicy }).toolPolicy, {
+      cwd: spec.cwd,
+    })
     this.#pending = new PendingRequests(() => config.clock.now())
     this.#input = new InputQueue()
 
