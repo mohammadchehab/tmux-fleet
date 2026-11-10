@@ -418,10 +418,14 @@ export class PeerSession {
         this.#openTurns.set(event.turnId, sessionId)
         break
       case 'tool.use': {
-        // A call reported after its turn ended belongs to no boundary that will
-        // ever be judged, so it counts nothing — and counting it would keep an
-        // entry in `#toolCalls` that nothing clears.
-        if (this.#endedTurn?.turnId === event.turnId) break
+        // A call is counted against the turn that is running, and only that
+        // turn: a call reported after its turn ended belongs to no boundary
+        // that will ever be judged, so it counts nothing — and counting it
+        // would keep an entry in `#toolCalls` that nothing clears. The open
+        // turns are the test, not `#endedTurn`: that slot holds the turn that
+        // ended *most recently*, so a late call for an older one would pass a
+        // comparison against it and leak exactly the entry this guards against.
+        if (!this.#openTurns.has(event.turnId)) break
         this.#toolCalls.set(event.turnId, withToolCall(this.#toolCalls.get(event.turnId) ?? emptyToolCalls, event.tool))
         // What the peer is doing, not only that it is busy (§4). Written here,
         // where the stream says it, so a replay sees the same activity the live
