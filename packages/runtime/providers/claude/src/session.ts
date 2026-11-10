@@ -59,7 +59,7 @@ import type {
 
 import { buildChildEnv, recordedEndpoint } from './env.ts'
 import { isContractEvent, type AdapterEvent } from './events.ts'
-import { mapMessage, questionAnswers, readQuestions, type TurnState } from './messages.ts'
+import { mapMessage, questionAnswers, readQuestions, redactSecrets, redactUrlSecrets, type TurnState } from './messages.ts'
 import { PendingRequests } from './pending.ts'
 import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy } from './policy.ts'
 import {
@@ -668,8 +668,20 @@ const mcpServersOf = (spec: SessionSpec): NonNullable<Options['mcpServers']> => 
 
 /** A short, already-redacted description of a blocked tool call (§4). */
 const summarise = (input: Record<string, unknown>): string | undefined => {
-  const value = input.command ?? input.file_path ?? input.url ?? input.query
-  return typeof value === 'string' && value.length > 0 ? (value.length > 200 ? `${value.slice(0, 199)}…` : value) : undefined
+  const command = typeof input.command === 'string' ? input.command : undefined
+  const filePath = typeof input.file_path === 'string' ? input.file_path : undefined
+  const url = typeof input.url === 'string' ? input.url : undefined
+  const query = typeof input.query === 'string' ? input.query : undefined
+
+  let value = command ?? filePath ?? url ?? query
+  if (!value || value.length === 0) return undefined
+
+  // Redact sensitive data: commands may contain API keys/tokens, URLs may contain query params with secrets
+  if (command) value = redactSecrets(value)
+  else if (url && value.startsWith('http')) value = redactUrlSecrets(value)
+  else if (query) value = redactSecrets(value)
+
+  return value.length > 200 ? `${value.slice(0, 199)}…` : value
 }
 
 const answersFor = (
