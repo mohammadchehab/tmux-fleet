@@ -254,7 +254,7 @@ test('events become peer states, and a completed turn that is under the limit ke
 
   assert.deepEqual(
     r.records.map((record) => (record.type === 'peer.state_changed' ? record.data.state : record.type)),
-    ['working', 'peer.tool_used', 'idle', 'ended', 'session.ended'],
+    ['session.started', 'working', 'peer.tool_used', 'idle', 'ended', 'session.ended'],
   )
   assert.deepEqual(session.state, 'ended')
   // What the wrapper wrote is what the store accepts: the records are the
@@ -347,6 +347,81 @@ test('a provider that counts no tokens records no usage, rather than a row of ze
   assert.deepEqual(
     r.records.filter((record) => record.type === 'turn.usage_recorded'),
     [],
+  )
+})
+
+test('a session says it started, before anything else it does', async () => {
+  const r = rig()
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), { type: 'session.ended', reason: 'exit', code: 0 })
+  await run
+
+  // §4: the stored `session.started` is what the sessions projection, the mailbox's replay on start and
+  // the Work sync all hang off. The adapter keeps its own `session.started` internal, so the supervisor
+  // says it, from the handle: the effective model and mode, the vendor ref, and a session that is new.
+  const first = r.records[0]
+  assert.equal(first?.type, 'session.started')
+  assert.deepEqual(first?.type === 'session.started' ? first.data : undefined, {
+    peerId,
+    sessionId: 'ses_aaaaaaaaaaaaaaaa',
+    providerId: 'claude',
+    providerSessionRef: 'sess_x',
+    model: 'claude-sonnet-5-5',
+    permissionMode: 'default',
+    resumed: false,
+  })
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
+})
+
+test('a session that replaces another after a purge says it started too', async () => {
+  const r = rig((h) =>
+    h.sessionId === 'ses_aaaaaaaaaaaaaaaa'
+      ? { contextTokens: 900, contextLimit: 1_000 }
+      : { contextTokens: 100, contextLimit: 1_000 },
+  )
+  const stub = stubPurge(r.provider)
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: stub.purge,
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  await wait()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended())
+  await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push(started(), ended(), { type: 'session.ended', reason: 'exit' })
+  await run
+
+  // One per session, in order: the mailbox replays unacked mail when the *replacement's* `session.started`
+  // commits (§8), so a purge that never says it is the purge that strands the mail it was meant to hand on.
+  assert.deepEqual(
+    r.records.flatMap((record) => (record.type === 'session.started' ? [record.data.sessionId] : [])),
+    ['ses_aaaaaaaaaaaaaaaa', 'ses_bbbbbbbbbbbbbbbb'],
   )
 })
 
@@ -980,7 +1055,7 @@ test('records are appended in order and awaited before the next event is read', 
 
   // Awaited, so `run()` only resolves once the last append landed — and the
   // appends never overlap, which is what keeps the store's order the stream's.
-  assert.deepEqual(appended, ['working', 'idle', 'ended', 'session.ended'])
+  assert.deepEqual(appended, ['session.started', 'working', 'idle', 'ended', 'session.ended'])
   assert.equal(overlapped, false)
 })
 
