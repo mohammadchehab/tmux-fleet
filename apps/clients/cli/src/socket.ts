@@ -20,6 +20,10 @@
  * so the CLI cannot look for a socket the daemon did not create (§1.1).
  */
 
+import { existsSync, readdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
 import { fleetError, profilePaths } from '@fleet/foundation-core'
 
 export interface SocketRequest {
@@ -45,6 +49,39 @@ export interface SocketChoice {
 const given = (value: string | undefined): string | undefined =>
   value === undefined || value === '' ? undefined : value
 
+/**
+ * The fleets this home has a socket for, sorted. Only used to make "no fleet
+ * named" answerable: someone who has just run `fleet up firstrun` and then
+ * `fleet down` should not have to remember the name they typed a minute ago.
+ * A socket file is not proof of life — `up` poll is — but it is a good enough
+ * noun for a hint, and the wrong guess costs one connection refused.
+ */
+const fleetsWithSockets = (home: string | undefined): readonly string[] => {
+  const root = join(home ?? homedir(), '.fleet')
+  const names = ((): readonly string[] => {
+    try {
+      return readdirSync(root)
+    } catch {
+      return []
+    }
+  })()
+  return names.filter((name) => existsSync(join(root, name, 'daemon', 'fleetd.sock'))).sort()
+}
+
+const noFleetNamed = (home: string | undefined): Error => {
+  const running = fleetsWithSockets(home)
+  if (running.length === 0) {
+    return fleetError(
+      'invalid_input',
+      'no fleet named: pass --socket <path>, or name a profile (fleet up <profile>), or set FLEET_SOCKET',
+    )
+  }
+  return fleetError(
+    'invalid_input',
+    `no fleet named: ${running.join(', ')} ${running.length === 1 ? 'has' : 'have'} a socket here — pass --profile ${running[0] ?? ''}, or --socket <path>, or set FLEET_SOCKET`,
+  )
+}
+
 export const socketPathOf = (request: SocketRequest): SocketChoice => {
   const explicitSocket = given(request.socket)
   const explicitProfile = given(request.profile)
@@ -63,10 +100,7 @@ export const socketPathOf = (request: SocketRequest): SocketChoice => {
   }
 
   if (profile === undefined) {
-    throw fleetError(
-      'invalid_input',
-      'no fleet named: pass --socket <path>, or name a profile (fleet up <profile>), or set FLEET_SOCKET',
-    )
+    throw noFleetNamed(request.home)
   }
 
   // `profilePaths` refuses a name that would become a path, and derives the

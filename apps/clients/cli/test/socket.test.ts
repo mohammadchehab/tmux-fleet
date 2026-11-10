@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
@@ -60,6 +62,16 @@ describe('socketPathOf', () => {
     assert.throws(
       () => socketPathOf({ env: {}, home }),
       (error: unknown) => refused(error) && /no fleet named/.test((error as Error).message),
+    )
+  })
+
+  it('names the fleet that is running, so the name is one copy-paste away', () => {
+    const root = mkdtempSync(join(tmpdir(), 'fleet-socket-'))
+    mkdirSync(join(root, '.fleet', 'squad', 'daemon'), { recursive: true })
+    writeFileSync(join(root, '.fleet', 'squad', 'daemon', 'fleetd.sock'), '')
+    assert.throws(
+      () => socketPathOf({ env: {}, home: root }),
+      (error: unknown) => refused(error) && /pass --profile squad/.test((error as Error).message),
     )
   })
 })

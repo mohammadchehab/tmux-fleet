@@ -16,6 +16,7 @@ import { after, test } from 'node:test'
 
 import {
   err,
+  FleetError,
   fleetError,
   newDecisionId,
   ok,
@@ -220,6 +221,17 @@ test('send writes the message through the Mailbox, hands it to the peer, and pee
   const { messages } = await daemon.peek({ peer: 'engineer-1' as PeerId })
   assert.equal(messages.length, 1)
   assert.equal(messages[0]?.body, 'take #12')
+  await daemon.down()
+})
+
+test('peek refuses a peer this fleet does not have, rather than calling it an empty mailbox', async () => {
+  const { daemon } = await harness()
+  await daemon.up()
+  // "no messages" for a name that is not a peer is a typo read as an answer.
+  await assert.rejects(
+    () => daemon.peek({ peer: 'nobdoy' as PeerId }),
+    (error: unknown) => error instanceof FleetError && error.code === 'not_found' && /no peer nobdoy/.test(error.message),
+  )
   await daemon.down()
 })
 

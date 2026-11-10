@@ -13,7 +13,9 @@
  * again against the same contract.
  */
 
-import { decisionId, evalRunId, fleetError, peerId, toFleetError } from '@fleet/foundation-core'
+import { existsSync } from 'node:fs'
+
+import { decisionId, evalRunId, fleetError, peerId, profilePaths, toFleetError } from '@fleet/foundation-core'
 import {
   evalSuites,
   turnKinds,
@@ -42,7 +44,7 @@ const usage = (): string =>
     '  fleet down                          stop it',
     '  fleet ls                            peers, routines and the decisions waiting on you',
     '  fleet send <peer> <kind> <body>     message a peer',
-    '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first',
+    '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first (--limit keeps the newest N)',
     '  fleet decide <id> [answer]          show an open decision, or answer it',
     '  fleet evals run <suite>             run an eval suite against its baseline',
     '  fleet evals compare <runA> <runB>   two eval runs side by side (a run id is printed by `evals run`)',
@@ -114,7 +116,7 @@ const positiveCount = (name: string, raw: string): number => {
 }
 
 const arity = (command: string, rest: readonly string[], shape: string, accept: (count: number) => boolean): void => {
-  if (!accept(rest.length)) throw usageError(`usage: fleet ${command} ${shape}`)
+  if (!accept(rest.length)) throw usageError(`usage: fleet ${command}${shape === '' ? '' : ` ${shape}`}`)
 }
 
 export const parseArgv = (argv: readonly string[]): Parsed => {
@@ -293,6 +295,8 @@ export interface RunDeps {
   /** How long `up` waits for a daemon it just started. */
   readonly upTimeoutMs?: number
   readonly upIntervalMs?: number
+  /** "Is this profile file there?" — `existsSync` unless a test says otherwise. */
+  readonly profileFileExists?: (path: string) => boolean
 }
 
 interface Answer {
@@ -308,7 +312,13 @@ interface Answer {
 
 const waitForUp = async (
   call: DaemonCaller,
-  options: { readonly timeoutMs: number; readonly intervalMs: number; readonly sleep: (ms: number) => Promise<void> },
+  options: {
+    readonly timeoutMs: number
+    readonly intervalMs: number
+    readonly sleep: (ms: number) => Promise<void>
+    /** The file `spawnFleetd` sent the daemon's own output to, for the timeout line. */
+    readonly logPath?: string
+  },
 ): Promise<UpResult> => {
   const deadline = Date.now() + options.timeoutMs
   for (;;) {
@@ -320,7 +330,7 @@ const waitForUp = async (
       if (Date.now() >= deadline) {
         throw fleetError(
           'timeout',
-          `fleetd did not come up within ${String(options.timeoutMs)} ms; see ~/.fleet/<profile>/daemon/fleetd.log`,
+          `fleetd did not come up within ${String(options.timeoutMs)} ms${options.logPath === undefined ? '' : `; the daemon's own output is in ${options.logPath}`}`,
           { cause: thrown },
         )
       }
@@ -373,17 +383,35 @@ const execute = async (
           timeoutMs: deps.upTimeoutMs ?? 10_000,
           intervalMs: deps.upIntervalMs ?? 50,
           sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+          logPath: profilePaths(profile, deps.home === undefined ? {} : { home: deps.home }).logPath,
         })
         return { text: formatUp(result), value: result }
       }
     }
     case 'down': {
-      const result = await call('down', {})
-      return { text: formatDown(result), value: result }
+      try {
+        const result = await call('down', {})
+        return { text: formatDown(result), value: result }
+      } catch (thrown) {
+        // Stopping a fleet that is not up is what the user asked for. A refusal
+        // from a live daemon is not this, and still throws.
+        if (!isUnreachable(thrown)) throw thrown
+        return { text: `${profile ?? 'the fleet'} is not running`, value: { stopped: false } }
+      }
     }
     case 'ls': {
-      const result = await call('ls', {})
-      return { text: formatLs(result), value: result }
+      try {
+        const result = await call('ls', {})
+        return { text: formatLs(result), value: result }
+      } catch (thrown) {
+        // "connect ENOENT" is the truth and not the remedy; a named profile has one.
+        if (!isUnreachable(thrown) || profile === undefined) throw thrown
+        throw fleetError(
+          'external_failed',
+          `${toFleetError(thrown).message} — that fleet is not running; fleet up ${profile} starts it`,
+          { cause: thrown },
+        )
+      }
     }
     case 'send': {
       const to = asArgument(peerId(), command.to, 'peer')
@@ -489,6 +517,20 @@ export const run = async (argv: readonly string[], deps: RunDeps): Promise<numbe
       env: deps.env ?? process.env,
       ...(deps.home === undefined ? {} : { home: deps.home }),
     })
+    // A profile that is not there is a typed name, not a dead daemon, and the two
+    // read the same from a socket error. Only checked when the socket came from
+    // the profile: `--socket` and `FLEET_SOCKET` name a daemon directly, and a
+    // peer is handed a socket with no profile file of its own (§8).
+    if (choice.profile !== undefined) {
+      const paths = profilePaths(choice.profile, deps.home === undefined ? {} : { home: deps.home })
+      const exists = deps.profileFileExists ?? existsSync
+      if (choice.socketPath === paths.socketPath && !exists(paths.profileFile)) {
+        throw fleetError(
+          'invalid_input',
+          `no profile "${choice.profile}": ${paths.profileFile} is not there; a profile names the fleet's repos and its peers, and fleet up ${choice.profile} reads it`,
+        )
+      }
+    }
     const answer = await execute(parsed.command, deps.call(choice.socketPath), deps, choice.profile, err)
     out(parsed.how.json ? JSON.stringify(answer.value, null, 2) : answer.text)
     return answer.exitCode ?? 0

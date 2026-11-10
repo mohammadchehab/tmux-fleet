@@ -86,6 +86,8 @@ const harness = (answers: Partial<Record<DaemonMethod, Answer>>, overrides: Part
     // itself reads; the test that names no fleet overrides this with `{}`.
     env: { FLEET_PROFILE: 'squad' },
     home: '/home/tester',
+    // The layout under `home` is a string in these tests, not a filesystem.
+    profileFileExists: () => true,
     sleep: () => Promise.resolve(),
     ...overrides,
   }
@@ -128,6 +130,12 @@ describe('run: the command line', () => {
 })
 
 describe('run: ls', () => {
+  it('points at the command that starts the fleet it cannot reach', async () => {
+    const { deps, err } = harness({ ls: unreachable })
+    assert.equal(await run(argv('ls'), deps), 1)
+    assert.match(err[0] ?? '', /that fleet is not running; fleet up squad starts it/)
+  })
+
   it('renders the fleet and the decisions waiting on the user', async () => {
     const { deps, out, calls, sockets } = harness({ ls: () => listing })
     assert.equal(await run(argv('ls'), deps), 0)
@@ -180,6 +188,12 @@ describe('run: send', () => {
     const { deps, err } = harness({})
     assert.equal(await run(argv('send', 'engineer-1', 'info'), deps), 2)
     assert.match(err[0] ?? '', /usage: fleet send/)
+  })
+
+  it('ends a command with no arguments at the command, with no dangling space', async () => {
+    const { deps, err } = harness({})
+    assert.equal(await run(argv('ls', 'extra'), deps), 2)
+    assert.equal(err[0], 'fleet: usage: fleet ls')
   })
 
   it('refuses a peer id the contract would refuse, without a round trip', async () => {
@@ -315,6 +329,28 @@ describe('run: down', () => {  it('reports the daemon stopped', async () => {
     const { deps, out } = harness({ down: () => ({ stopped: true }) })
     assert.equal(await run(argv('down'), deps), 0)
     assert.equal(out[0], 'fleetd stopped')
+  })
+
+  it('treats a fleet that is already down as stopped, not as a failure', async () => {
+    const { deps, out, err } = harness({ down: unreachable })
+    assert.equal(await run(argv('down'), deps), 0)
+    assert.equal(out[0], 'squad is not running')
+    assert.deepEqual(err, [])
+  })
+})
+
+describe('run: a profile that is not there', () => {
+  it('names the file, and never reaches the daemon', async () => {
+    const { deps, err, calls } = harness({}, { profileFileExists: () => false })
+    assert.equal(await run(argv('ls'), deps), 2)
+    assert.match(err[0] ?? '', /no profile "squad": \/home\/tester\/\.config\/fleet\/profiles\/squad\.yaml is not there/)
+    assert.deepEqual(calls, [])
+  })
+
+  it('does not second-guess an explicit socket, which names a daemon and no profile file', async () => {
+    const { deps, out } = harness({ ls: () => listing }, { profileFileExists: () => false })
+    assert.equal(await run(argv('ls', '--socket', '/tmp/elsewhere.sock'), deps), 0)
+    assert.match(out[0] ?? '', /squad/)
   })
 })
 
@@ -486,7 +522,7 @@ describe('run: up', () => {
   it('gives up when fleetd never answers, and says where its log is', async () => {
     const { deps, err } = harness({ up: unreachable }, { upTimeoutMs: 0 })
     assert.equal(await run(argv('up', 'squad'), deps), 1)
-    assert.match(err[0] ?? '', /fleetd did not come up within 0 ms; see ~\/.fleet\/<profile>\/daemon\/fleetd\.log/)
+    assert.match(err[0] ?? '', /fleetd did not come up within 0 ms; the daemon's own output is in \/home\/tester\/\.fleet\/squad\/daemon\/fleetd\.log/)
   })
 
   it('will not start a daemon it has no profile for, but says how to give it one', async () => {
