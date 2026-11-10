@@ -89,16 +89,27 @@ report again. Two places that disagree about what is acceptable is worse than on
 
 ## Merging
 
-Branch protection on `main` requires `checks` and an up-to-date branch, and does **not** enforce the rules for
-administrators — so the way we merge today keeps working:
+Branch protection on `main` requires `checks`, does **not** require an up-to-date branch, requires no reviews, and does
+not enforce the rules for administrators — so the way we merge today keeps working:
 
 ```sh
 gh pr merge --squash --admin
 ```
 
-`--admin` still bypasses required checks and the up-to-date requirement. That is deliberate: one maintained account is
-a smaller surface than a protection rule that a queue of stacked PRs will teach people to route around. A non-admin
-merge, and the GitHub UI, enforce both.
+`--admin` still bypasses the required check. That is deliberate: one maintained account is a smaller surface than a
+protection rule that a queue of stacked PRs will teach people to route around. A non-admin merge, and the GitHub UI,
+enforce it.
+
+Squash is the only merge method the repo allows, and auto-merge is on, so a PR can be queued the moment it is opened:
+
+```sh
+gh pr merge --auto --squash
+```
+
+It merges when `checks` goes green and not before — that is the whole point of arming it early. Up-to-date is off on
+purpose: with a branch that must be current, every merge knocks every other open PR out of date and a queue of them
+stalls on rebase rounds. The trade is that two PRs touching the same lines can each be green alone and still conflict
+after the first lands; the second's own run catches it, and its merge is what fails.
 
 `legacy-v1` and `security` are advisory: they run on every PR, their result is on the PR, and they do not block the
 merge. They are not required because both depend on the network and a third party's availability (several tool
@@ -107,7 +118,7 @@ people learn to bypass. If either proves reliable over a few dozen runs, promote
 
 ```sh
 gh api -X PATCH repos/mohammadchehab/tmux-fleet/branches/main/protection/required_status_checks \
-  -f 'checks[][context]=checks' -f 'checks[][context]=security' -F strict=true
+  -f 'checks[][context]=checks' -f 'checks[][context]=security'
 ```
 
 ## Not wired yet: evals
