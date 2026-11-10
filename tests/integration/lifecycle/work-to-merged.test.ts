@@ -188,7 +188,10 @@ test('§10: a red head is never merged, and its Work stays short of `merged`', a
   t.after(() => sandbox.stop())
   await sandbox.call('up')
 
+  // `works` is a list, and `noUncheckedIndexedAccess` (§29) is right to ask: the
+  // test seeds the first Work, so it says so rather than asserting the index.
   const workId = works[0]
+  assert.ok(workId !== undefined)
   await sandbox.composed.append(workFloor(workId, 1))
 
   forge.open({ repo, number: 1, workId })
