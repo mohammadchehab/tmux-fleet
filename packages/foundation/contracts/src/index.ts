@@ -52,5 +52,8 @@ export * from './ports.ts'
 // shared fleet coordination: pace, capacity, heartbeat (§2, §9)
 export * from './coordination.ts'
 
+// shared fleet engagement and key management (§5, §9)
+export * from './engagement.ts'
+
 // the daemon's local API, the port between `fleetd` and every client (§2)
 export * from './daemon-rpc.ts'

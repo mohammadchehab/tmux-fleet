@@ -545,4 +545,27 @@ export interface Coordination {
     readonly ref: string
     readonly expectedSha: Sha
   }): Promise<void>
+
+  /**
+   * Read the engagement key from the repository (age-encrypted to the reader's
+   * GitHub SSH key). Used by `fleet coord init|status|rotate`.
+   */
+  readEngagementKey(input: {
+    readonly repo: Repo
+    readonly engagement: string
+    readonly peerId: string
+  }): Promise<{ readonly encrypted: string; readonly sha: Sha } | undefined>
+
+  /**
+   * Create or update the engagement key in the repository (age-encrypted).
+   * Fails if expectedSha does not match, protecting against lost writes.
+   */
+  writeEngagementKey(input: {
+    readonly repo: Repo
+    readonly engagement: string
+    readonly peerId: string
+    readonly encrypted: string
+    readonly message: string
+    readonly expectedSha?: Sha
+  }): Promise<Sha>
 }

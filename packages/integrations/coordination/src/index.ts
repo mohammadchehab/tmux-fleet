@@ -124,4 +124,45 @@ export const createCoordination = (): Coordination => ({
       throw new Error(`Failed to delete ref ${input.ref} in ${input.repo}: ${String(e)}`)
     }
   },
+
+  async readEngagementKey(input: {
+    readonly repo: Repo
+    readonly engagement: string
+    readonly peerId: string
+  }): Promise<{ readonly encrypted: string; readonly sha: Sha } | undefined> {
+    try {
+      const path = `keys/${input.engagement}/${input.peerId}.age`
+      const output = gh('api', `repos/${input.repo}/contents/${path}`)
+      const data = JSON.parse(output) as { content?: string; sha: string }
+      if (!data.content) return undefined
+      const encrypted = Buffer.from(data.content, 'base64').toString('utf-8')
+      return { encrypted, sha: data.sha as Sha }
+    } catch {
+      return undefined
+    }
+  },
+
+  async writeEngagementKey(input: {
+    readonly repo: Repo
+    readonly engagement: string
+    readonly peerId: string
+    readonly encrypted: string
+    readonly message: string
+    readonly expectedSha?: Sha
+  }): Promise<Sha> {
+    try {
+      const path = `keys/${input.engagement}/${input.peerId}.age`
+      const content = Buffer.from(input.encrypted).toString('base64')
+      const payload = {
+        message: input.message,
+        content,
+        ...(input.expectedSha ? { sha: input.expectedSha } : {}),
+      }
+      const output = gh('api', `repos/${input.repo}/contents/${path}`, ...Object.entries(payload).flatMap(([k, v]) => ['-f', `${k}=${String(v)}`]))
+      const result = JSON.parse(output) as { commit: { sha: string } }
+      return result.commit.sha as Sha
+    } catch (e) {
+      throw new Error(`Failed to write engagement key for ${input.peerId} in ${input.repo}: ${String(e)}`)
+    }
+  },
 })
