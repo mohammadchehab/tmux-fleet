@@ -47,7 +47,8 @@ tmux-fleet/
 │  │  ├─ routines/                # scheduler + routines: dispatch, keep-busy, pr-babysit, standup, reconcile (§6)
 │  │  ├─ briefs/                  # Contract and Brief publishing, dependency gating, staleness (§12)
 │  │  ├─ gate/                    # PR gate, stack retarget, merge-ownership policy (§10)
-│  │  └─ ledger/                  # Build ledger and the remote (hetzner) runner (§11)
+│  │  ├─ ledger/                  # Build ledger and the remote (hetzner) runner (§11)
+│  │  └─ judge/                   # the Judge: five typed questions, logged and replayable; the daemon injects its model transport (§5.3)
 │  ├─ workspace/                  # the code and the checkouts peers work in
 │  │  ├─ worktree/                # create, classify, holders, GC, link check (§9)
 │  │  └─ codegraph/               # ensure-index, MCP wiring, PreToolUse guard policy, token-report projection (§6.2)
