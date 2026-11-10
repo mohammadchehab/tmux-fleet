@@ -316,6 +316,31 @@ test('a cursor peer starts in the checkout too, and read-only peers may share on
   assert.notEqual(r.starts[0]?.cwd, r.stateDir)
 })
 
+test('a cursor peer whose role asks for an effort still starts exactly as it did, and the request rides the spec', async (t) => {
+  // The daemon warns at `up` that this provider cannot honour the effort
+  // (TASK-12), and then starts the peer anyway: the model and the read-only
+  // mode are right, and a fleet that refused to start over a reasoning level
+  // would be stricter than the profile's own author. What the spec carries is
+  // the *request* — the cursor adapter never reads it.
+  const profile = decodeProfile({
+    profile: 'test',
+    repos: ['acme/widgets'],
+    checkouts: { 'acme/widgets': checkout },
+    roles: { reviewer: { model: 'gpt-5', effort: 'high' } },
+    providers: { cursor: { contextLimits: { 'gpt-5': 200_000 } } },
+    peers: [{ id: 'reviewer-1', role: 'reviewer', provider: 'cursor', permissionMode: 'plan' }],
+  })
+  const r = await rig(profile, { providerId: 'cursor' })
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+
+  const spec = r.starts[0]
+  assert.equal(spec?.model, 'gpt-5', 'the model the role named, not one the daemon invented')
+  assert.equal(spec?.effort, 'high')
+  assert.equal(spec?.permissionMode, 'plan', 'cursor is read-only whatever the profile asks')
+  assert.equal(spec?.cwd, checkout)
+})
+
 test('a peer’s own active worktree is preferred over the repo checkout', async (t) => {
   const worktree = {
     worktreeId: 'wt_0123456789abcdef',

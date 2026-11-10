@@ -433,6 +433,38 @@ test('a session says it started, before anything else it does', async () => {
   assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
 })
 
+test('a session started on an effort records the level it was asked for', async () => {
+  const r = rig()
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    // The profile's request, which the daemon resolved (TASK-12). No provider
+    // reports the level it actually ran at, so the request is what the log can
+    // honestly say — and leaving it out when nothing was asked is the difference
+    // between "no request" and "a request that was not honoured".
+    effort: 'high',
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), { type: 'session.ended', reason: 'exit', code: 0 })
+  await run
+
+  const first = r.records[0]
+  assert.equal(first?.type === 'session.started' ? first.data.effort : undefined, 'high')
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
+})
+
 test('a session that replaces another after a purge says it started too', async () => {
   const r = rig((h) =>
     h.sessionId === 'ses_aaaaaaaaaaaaaaaa'

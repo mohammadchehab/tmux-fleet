@@ -29,6 +29,7 @@ import { join } from 'node:path'
 import { fleetError } from '@fleet/foundation-core'
 import { deepInfraEnv } from '@fleet/runtime-provider-deepinfra'
 
+import { modelFor } from '../config/profile.ts'
 import type { Profile, PeerProfile, ProfileProvider, JudgeProfile } from '../config/profile.ts'
 
 /** The variable `tokenEnv` means when a profile does not name one. */
@@ -44,7 +45,7 @@ export const defaultDeepInfraTokenFile = (configHome: string): string => join(co
 const DEEP_INFRA = 'deepinfra'
 
 export interface DeepInfraEnvOptions {
-  readonly profile: Pick<Profile, 'providers'>
+  readonly profile: Pick<Profile, 'providers' | 'roles'>
   /** fleetd's own environment, so `tokenEnv` is a variable a test can set. */
   readonly environ: Readonly<Record<string, string | undefined>>
   /** The root the default `tokenFile` sits under: the profile's `configHome`. */
@@ -127,7 +128,9 @@ export const providerEnvFor =
 export const createProviderEnv = (options: DeepInfraEnvOptions) => {
   const envFor = providerEnvFor(options)
   return async (peer: PeerProfile): Promise<Readonly<Record<string, string>>> =>
-    envFor(peer.provider, peer.model)
+    // Resolved, because a peer may take its model from its role (TASK-12) and the
+    // endpoint has to be built for the model that is actually going to run.
+    envFor(peer.provider, modelFor(options.profile, peer))
 }
 
 /**

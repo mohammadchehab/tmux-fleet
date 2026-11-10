@@ -72,6 +72,8 @@ export const claudeCapabilities: ProviderCapabilities = Object.freeze({
   usageTokens: true,
   usageCost: true,
   structuredOutput: true,
+  // The Agent SDK takes `effort` per query and the CLI honours it (TASK-12).
+  effort: true,
   permissionModes: Object.freeze([
     'default',
     'acceptEdits',

@@ -17,7 +17,15 @@ import { describe, it } from 'node:test'
 import { planRoutines } from '@fleet/orchestration-routines'
 import { defaultPurgeLimits } from '@fleet/runtime-supervisor'
 
-import { decodeProfile, loadProfile, purgeLimitsOf, type Profile } from '../src/config/profile.ts'
+import {
+  decodeProfile,
+  effortFor,
+  effortWarnings,
+  loadProfile,
+  modelFor,
+  purgeLimitsOf,
+  type Profile,
+} from '../src/config/profile.ts'
 
 const minimal = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   profile: 'engineer',
@@ -256,9 +264,18 @@ describe('decoding a profile', () => {
   })
 
   it('refuses a peer with no model: `peer.registered` carries one, so a default would be an invented policy', () => {
+    // Since TASK-12 the model may also come from the peer's role, so the refusal
+    // names both places it could have been written: a message that said only
+    // "peer engineer-1 has no model" would leave the reader guessing whether the
+    // fix was the peer, or a `roles` block they may never have heard of.
     assert.throws(
       () => decodeProfile(minimal({ peers: [{ id: 'engineer-1', role: 'engineer', provider: 'claude' }] })),
-      /model/,
+      (thrown: unknown) => {
+        const message = (thrown as Error).message
+        assert.match(message, /peer 'engineer-1' declares no model/)
+        assert.match(message, /add `model` to that peer, or a `roles: \{ engineer: \{ model: … \} \}` block/)
+        return true
+      },
     )
   })
 
@@ -454,5 +471,105 @@ describe('the judge block', () => {
       () => decodeProfile(minimal({ judge: { provider: 'claude', model: 'claude-haiku-4-5', temperature: 0.2 } })),
       /unknown field|temperature/,
     )
+  })
+})
+
+/**
+ * TASK-12: the model and the reasoning level every peer of a role starts on.
+ *
+ * The precedence is the whole feature — a peer's own word wins, its role's fills
+ * the gap — and the point of putting the default in the *profile* rather than in
+ * the daemon is that nothing here invents a value: what the file does not say is
+ * either refused (a model) or left to the provider (an effort).
+ */
+describe('a role’s model and effort (TASK-12)', () => {
+  const roleEngineer = { engineer: { model: 'claude-haiku-4-5', effort: 'low' } } as const
+
+  it('takes the model and the effort from the peer first, then from its role', () => {
+    const profile = decodeProfile(
+      minimal({
+        roles: roleEngineer,
+        peers: [
+          // Names neither: the role answers both.
+          { id: 'engineer-1', role: 'engineer', provider: 'claude' },
+          // Names both: the peer wins, which is what lets one peer differ.
+          {
+            id: 'engineer-2',
+            role: 'engineer',
+            provider: 'claude',
+            model: 'claude-opus-5-5',
+            effort: 'high',
+          },
+          // Names only the model: the role still supplies the effort, because
+          // the two are resolved independently and one does not imply the other.
+          { id: 'engineer-3', role: 'engineer', provider: 'claude', model: 'claude-sonnet-5-5' },
+        ],
+      }),
+    )
+    const [fromRole, fromPeer, mixed] = profile.peers
+    assert.equal(modelFor(profile, fromRole!), 'claude-haiku-4-5')
+    assert.equal(effortFor(profile, fromRole!), 'low')
+    assert.equal(modelFor(profile, fromPeer!), 'claude-opus-5-5')
+    assert.equal(effortFor(profile, fromPeer!), 'high')
+    assert.equal(modelFor(profile, mixed!), 'claude-sonnet-5-5')
+    assert.equal(effortFor(profile, mixed!), 'low')
+  })
+
+  it('leaves the effort unset when neither the peer nor the role names one, rather than picking a level', () => {
+    // Absent is a real answer: the provider's own default. A daemon-invented
+    // 'medium' would be a policy about how much a peer may think.
+    const profile = decodeProfile(minimal({ roles: { engineer: { model: 'claude-haiku-4-5' } } }))
+    assert.equal(effortFor(profile, profile.peers[0]!), undefined)
+  })
+
+  it('uses the role’s model for a peer that names none, so a `roles` block alone is enough', () => {
+    // `decodeProfile` resolves every peer's model up front: a `roles` block that
+    // forgot a role is a profile mistake, and `fleet up` is where it belongs.
+    const profile = decodeProfile(
+      minimal({ roles: roleEngineer, peers: [{ id: 'engineer-1', role: 'engineer', provider: 'claude' }] }),
+    )
+    assert.equal(modelFor(profile, profile.peers[0]!), 'claude-haiku-4-5')
+    // A role nobody fills is not an error: a profile may plan a role it has not hired yet.
+    assert.deepEqual(decodeProfile(minimal({ roles: { reviewer: { model: 'gpt-5.2' } } })).roles, {
+      reviewer: { model: 'gpt-5.2' },
+    })
+  })
+
+  it('refuses an effort that is not one of the levels, instead of passing it to a provider', () => {
+    assert.throws(() => decodeProfile(minimal({ roles: { engineer: { effort: 'turbo' } } })), /turbo|one of/)
+    assert.throws(
+      () =>
+        decodeProfile(
+          minimal({ peers: [{ id: 'engineer-1', role: 'engineer', provider: 'claude', model: 'm', effort: 'turbo' }] }),
+        ),
+      /turbo|one of/,
+    )
+    // The block is strict like every other: `efforts` would read as "no opinion".
+    assert.throws(() => decodeProfile(minimal({ roles: { engineer: { efforts: { max: 1 } } } })), /unknown field/)
+  })
+
+  it('warns, naming the peer, when the provider cannot honour the effort — and only then', () => {
+    const profile = decodeProfile(
+      minimal({
+        roles: roleEngineer,
+        peers: [
+          // cursor cannot: the CLI has no reasoning level to set.
+          { id: 'reviewer-1', role: 'engineer', provider: 'cursor', model: 'gpt-5.2' },
+          // claude can, so saying nothing is the truth for the engineer.
+          { id: 'engineer-1', role: 'engineer', provider: 'claude' },
+        ],
+      }),
+    )
+    const capabilities = (provider: string) => (provider === 'cursor' ? { effort: false } : { effort: true })
+    assert.deepEqual(effortWarnings(profile, capabilities), [
+      "peer 'reviewer-1' asks for effort 'low', but provider 'cursor' cannot honour it: the session starts at that provider's own default",
+    ])
+    // A provider this daemon wired none of (a test, or a peer whose provider
+    // block asked for nothing) has no capability to contradict the profile.
+    assert.deepEqual(effortWarnings(profile, () => undefined), [])
+    // And a profile that asks for no effort is never warned about, whichever
+    // provider it is on: the warning is about the request, not the provider.
+    const noEffort = decodeProfile(minimal({ peers: [{ id: 'r-1', role: 'e', provider: 'cursor', model: 'm' }] }))
+    assert.deepEqual(effortWarnings(noEffort, capabilities), [])
   })
 })

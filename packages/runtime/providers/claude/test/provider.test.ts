@@ -28,6 +28,7 @@ test('declares the capabilities the spike measured, and no others', () => {
   assert.deepEqual(provider.capabilities, {
     resume: true,
     modelSwitch: true,
+    effort: true,
     usageTokens: true,
     usageCost: true,
     structuredOutput: true,
@@ -118,6 +119,7 @@ test('capabilities default to what the spike measured, frozen, and are a promise
   assert.deepEqual(fresh.capabilities, {
     resume: true,
     modelSwitch: true,
+    effort: true,
     usageTokens: true,
     usageCost: true,
     structuredOutput: true,

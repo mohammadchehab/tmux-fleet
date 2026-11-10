@@ -52,7 +52,7 @@ import {
   type SessionRecord,
 } from '@fleet/runtime-supervisor'
 
-import { purgeLimitsOf, type PeerProfile, type Profile } from '../config/profile.ts'
+import { effortFor, modelFor, purgeLimitsOf, type PeerProfile, type Profile } from '../config/profile.ts'
 import { roleStatement, type StandingBriefs } from './standards.ts'
 
 /** What the pump needs that only the composition root can supply. */
@@ -148,7 +148,7 @@ export interface Supervisor extends PeerSessions {
  * without restarting the daemon.
  */
 const envFor = async (peer: PeerProfile, deps: SupervisorDeps): Promise<Readonly<Record<string, string>>> => {
-  const limit = deps.providers.get(peer.provider)?.contextLimit?.(peer.model)
+  const limit = deps.providers.get(peer.provider)?.contextLimit?.(modelFor(deps.profile, peer))
   return {
     // The peer's own identity on the line, so a transcript says which peer wrote it.
     FLEET_PEER: String(peer.id),
@@ -295,11 +295,15 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     // before the session that carries it, and a refusal stops the peer here.
     const standing = await deps.standing?.for(peer, cwd)
     const brief = standing?.brief ?? briefFor(peer)
+    // Resolved, not copied: a peer that names only a role takes the role's model
+    // and effort (TASK-12's precedence peer > role > refuse).
+    const effort = effortFor(deps.profile, peer)
     const spec: SessionSpec = {
       peerId: peer.id,
       role: peer.role,
       cwd,
-      model: peer.model,
+      model: modelFor(deps.profile, peer),
+      ...(effort === undefined ? {} : { effort }),
       permissionMode: peer.permissionMode ?? 'default',
       env: await envFor(peer, deps),
       brief,
@@ -311,6 +315,9 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       provider,
       handle,
       peerId: peer.id,
+      // What the profile asked for, so `session.started` can record the request
+      // rather than the provider's silence about whether it honoured it.
+      ...(effort === undefined ? {} : { effort }),
       briefVersion: brief.version,
       // §8's thresholds are the profile's, resolved over the supervisor's
       // defaults and validated at load, so this passes what the user asked for

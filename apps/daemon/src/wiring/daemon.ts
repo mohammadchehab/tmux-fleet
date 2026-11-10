@@ -49,7 +49,7 @@ import type {
 } from '@fleet/foundation-contracts'
 import type { EventStore } from '@fleet/foundation-store'
 import type { BuildLedger } from '@fleet/orchestration-ledger'
-import type { Profile, PeerProfile } from '../config/profile.ts'
+import { effortWarnings, modelFor, type Profile, type ProfileProvider, type PeerProfile } from '../config/profile.ts'
 import type { Scheduler } from '@fleet/orchestration-routines'
 import type { Supervisor } from '../execution/sessions.ts'
 import { catchUpWork } from '../execution/work-sync.ts'
@@ -77,6 +77,12 @@ export interface DaemonDeps {
   readonly clock?: Clock
   /** Injected so a test states its pid instead of inventing one. */
   readonly pid?: number
+  /**
+   * What a provider can do, for the `fleet up` warnings (TASK-12). `compose.ts`
+   * wires the map it built; absent means a daemon that wired no providers of its
+   * own — a test — and then there is no capability to contradict a profile.
+   */
+  readonly providerCapabilities?: (provider: ProfileProvider) => { readonly effort: boolean } | undefined
 }
 
 export interface Daemon extends DaemonApi {
@@ -92,12 +98,18 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
   const store = deps.store
   const read = store.reader()
   const append: EventSink['append'] = deps.append ?? ((batch: readonly AppendEvent[]) => store.append(batch))
+  // What the profile asked for and a provider cannot honour (TASK-12). Said once,
+  // here, which is where `fleet up` reads it; a fleet is not refused over a
+  // reasoning level, but it does not get to look like it was honoured either.
+  const capabilityOf = deps.providerCapabilities ?? (() => undefined)
+  const warnings = effortWarnings(deps.profile, capabilityOf)
   const status: DaemonStatus = {
     profile: deps.profile.profile,
     pid: deps.pid ?? process.pid,
     startedAt: clock.now(),
     socketPath: deps.paths.socketPath,
     storePath: deps.paths.storePath,
+    ...(warnings.length === 0 ? {} : { warnings }),
   }
   let running = false
   let stopping: Promise<void> | undefined
@@ -114,7 +126,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     for (const peer of deps.profile.peers) {
       const existing = await read.peers.get(peer.id)
       if (existing !== undefined) continue
-      pending.push(registeredEvent(peer, clock.now()))
+      pending.push(registeredEvent(deps.profile, peer, clock.now()))
     }
     return pending.length === 0 ? [] : append(pending)
   }
@@ -374,7 +386,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
  * other actor is honest here — the scheduler did not decide it and the PM has
  * not run yet (§3).
  */
-const registeredEvent = (peer: PeerProfile, ts: string): AppendEvent => ({
+const registeredEvent = (profile: Profile, peer: PeerProfile, ts: string): AppendEvent => ({
   type: 'peer.registered',
   ts,
   subject: peer.id,
@@ -383,7 +395,10 @@ const registeredEvent = (peer: PeerProfile, ts: string): AppendEvent => ({
     peerId: peer.id,
     role: peer.role,
     providerId: peer.provider,
-    model: peer.model,
+    // The role's model when the peer names none (TASK-12): `peer.registered`
+    // carries a concrete model, and the event is the peer's identity, not the
+    // profile's shorthand.
+    model: modelFor(profile, peer),
     permissionMode: peer.permissionMode ?? 'default',
   },
 })

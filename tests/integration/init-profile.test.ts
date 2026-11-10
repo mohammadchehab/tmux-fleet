@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { parseStrict, repo } from '../../packages/foundation/core/src/index.ts'
 import { writeStarter } from '../../apps/clients/cli/src/init.ts'
-import { loadProfile } from '../../apps/daemon/src/config/profile.ts'
+import { loadProfile, modelFor } from '../../apps/daemon/src/config/profile.ts'
 
 let home: string
 
@@ -47,6 +47,8 @@ describe('a profile written by `fleet init`', () => {
     const { profileFile } = await writeStarter('starter', { home })
     const profile = await loadProfile(profileFile, 'starter')
     assert.ok(profile.peers.every((peer) => peer.provider === 'claude'))
-    assert.ok(profile.peers.every((peer) => peer.model.startsWith('claude-')))
+    // `model` is optional on a peer since TASK-12 (a role may name it), so the
+    // starter's guarantee is that the *resolved* model is a claude one.
+    assert.ok(profile.peers.every((peer) => modelFor(profile, peer).startsWith('claude-')))
   })
 })

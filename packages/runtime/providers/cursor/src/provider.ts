@@ -59,6 +59,10 @@ export const cursorCapabilities: ProviderCapabilities = Object.freeze({
   usageTokens: true,
   usageCost: false,
   structuredOutput: false,
+  // `cursor-agent` has no reasoning-level flag we have measured; a profile that
+  // asks for one gets a `fleet up` warning rather than a session that pretends
+  // (TASK-12 says false "unless proven").
+  effort: false,
   permissionModes: Object.freeze(['plan'] as const),
 })
 

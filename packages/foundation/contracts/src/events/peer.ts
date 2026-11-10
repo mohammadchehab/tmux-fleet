@@ -24,7 +24,7 @@ import {
 import { briefId, peerId, positiveInt, providerSessionRef, sessionId, worktreeId } from '@fleet/foundation-core'
 import { contentHash } from '../shapes.ts'
 import { peerState } from '@fleet/foundation-core'
-import { compactionTriggers, permissionMode, providerId } from '../provider.ts'
+import { compactionTriggers, effort, permissionMode, providerId } from '../provider.ts'
 
 /** A peer exists. Written once per peer, from the profile's squad (§6, §1.1 config). */
 export const peerRegistered = event(
@@ -234,6 +234,13 @@ export const sessionStarted = event(
     providerId: providerId(),
     providerSessionRef: providerSessionRef(),
     model: string({ minLength: 1 }),
+    /**
+     * The reasoning level the session was asked to start on (TASK-12). It is a
+     * *requested* value, like `model`: absent means the profile asked for none,
+     * not that the provider had no opinion. Whether the provider could honour it
+     * is `fleet up`'s warning, recorded there rather than in this event.
+     */
+    effort: optional(effort()),
     permissionMode: permissionMode(),
     endpoint: optional(string({ minLength: 1, maxLength: 500 })),
     resumed: boolean(),

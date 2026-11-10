@@ -33,7 +33,7 @@ import {
   type SessionId,
   type TurnId,
 } from '@fleet/foundation-core'
-import type { ProviderEvent, SessionEndReason, StateFile, Usage } from '@fleet/foundation-contracts'
+import type { Effort, ProviderEvent, SessionEndReason, StateFile, Usage } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle, Turn } from '@fleet/runtime-provider-sdk'
 
 import { peerStateOf } from './peer-state.ts'
@@ -78,6 +78,14 @@ export interface PeerSessionPorts {
   readonly provider: Provider
   readonly handle: SessionHandle
   readonly peerId: PeerId
+  /**
+   * The reasoning level the profile asked this peer's session to start on
+   * (TASK-12). `handle.model` is what the process *reports* running; effort has
+   * no such report from any provider we run, so what `session.started` records is
+   * the request — absent when the profile asked for nothing, which is not the
+   * same as a provider that disagreed.
+   */
+  readonly effort?: Effort
   /** The brief version the session was started against; carried into the purge (§7, §12). */
   readonly briefVersion: number
   /** Per provider and model, from `config/policies/limits` (§8). */
@@ -690,7 +698,7 @@ export class PeerSession {
    * accident (§3, §4).
    */
   async #recordStart(handle: SessionHandle): Promise<void> {
-    const { clock, peerId, record } = this.#ports
+    const { clock, effort, peerId, record } = this.#ports
     await record({
       type: 'session.started',
       ts: clock.now(),
@@ -702,6 +710,7 @@ export class PeerSession {
         providerId: handle.providerId,
         providerSessionRef: handle.sessionRef,
         model: handle.model,
+        ...(effort === undefined ? {} : { effort }),
         permissionMode: permissionModeOf(handle),
         // Every start here is a new session: a purge or a recovery starts a fresh one carrying a state file.
         resumed: false,
