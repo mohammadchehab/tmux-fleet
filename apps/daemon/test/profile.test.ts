@@ -15,8 +15,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import { planRoutines } from '@fleet/orchestration-routines'
+import { defaultPurgeLimits } from '@fleet/runtime-supervisor'
 
-import { decodeProfile, loadProfile, type Profile } from '../src/profile.ts'
+import { decodeProfile, loadProfile, purgeLimitsOf, type Profile } from '../src/profile.ts'
 
 const minimal = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   profile: 'engineer',
@@ -356,5 +357,52 @@ routines:
       (thrown: unknown) =>
         (thrown as { code?: string }).code === 'invalid_input' && /routines\.dispatchh/.test((thrown as Error).message),
     )
+  })
+})
+
+describe('the purge limits a profile asks for', () => {
+  it('is the supervisor’s defaults when the profile says nothing', () => {
+    // One set of defaults, in `runtime/supervisor`: a second copy here is how
+    // the daemon and the supervisor drifted apart in the first place.
+    assert.deepEqual(purgeLimitsOf(decodeProfile(minimal())), defaultPurgeLimits)
+    assert.deepEqual(purgeLimitsOf(decodeProfile(minimal({ limits: {} }))), defaultPurgeLimits)
+    // The cost lever, as opposed to a safety margin: a peer hands off at 60% of
+    // its window rather than paying to re-read the expensive last 20%.
+    assert.equal(defaultPurgeLimits.contextRatio, 0.6)
+  })
+
+  it('tunes the thresholds it names and keeps the rest', () => {
+    const profile = decodeProfile(minimal({ limits: { purge: { maxTurns: 12 } } }))
+    assert.deepEqual(purgeLimitsOf(profile), { ...defaultPurgeLimits, maxTurns: 12 })
+
+    const all = decodeProfile(
+      minimal({ limits: { purge: { contextRatio: 0.5, maxTurns: 12, maxSessionMinutes: 90 } } }),
+    )
+    assert.deepEqual(purgeLimitsOf(all), {
+      contextRatio: 0.5,
+      autoCompactRatio: defaultPurgeLimits.autoCompactRatio,
+      maxTurns: 12,
+      // Minutes in the profile, milliseconds in the supervisor: a profile is
+      // read by people, and the conversion happens once, here.
+      maxSessionMillis: 90 * 60_000,
+    })
+  })
+
+  it('refuses a ratio outside (0, 1] at decode, not at the first turn', () => {
+    // The schema cannot say this: the range belongs to `checkPurgeLimits`, so a
+    // 1.5 would be a ratio that never triggers, i.e. a fleet that never purges.
+    assert.throws(() => decodeProfile(minimal({ limits: { purge: { contextRatio: 1.5 } } })), /contextRatio/)
+    assert.throws(() => decodeProfile(minimal({ limits: { purge: { contextRatio: 0 } } })), /contextRatio/)
+  })
+
+  it('refuses a misspelt threshold rather than leaving the fleet on the default', () => {
+    assert.throws(() => decodeProfile(minimal({ limits: { purge: { maxTurn: 12 } } })), /unknown field/)
+    // And the block itself is strict: `purges` would otherwise read as "no block".
+    assert.throws(() => decodeProfile(minimal({ limits: { purges: {} } })), /unknown field/)
+  })
+
+  it('refuses a turn count or a duration that is not a positive integer', () => {
+    assert.throws(() => decodeProfile(minimal({ limits: { purge: { maxTurns: 0 } } })), /maxTurns/)
+    assert.throws(() => decodeProfile(minimal({ limits: { purge: { maxSessionMinutes: -5 } } })), /maxSessionMinutes/)
   })
 })

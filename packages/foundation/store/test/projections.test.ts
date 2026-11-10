@@ -511,3 +511,51 @@ test('a compaction is one row a peer, and every one of them raises its own notif
   assert.equal((await store.health()).compactions, 3, 'health counts them too, which is what `fleet status` reads')
   await store.close()
 })
+
+test('a compaction says whether the configured limit was the reason, which is the whole alert', async () => {
+  const store = await open()
+  await store.append([appendable('peer.registered.json')])
+  // The same trigger and the same peer three times over: only the numbers differ,
+  // and the numbers are what a reader needs to act on. A banner that only said
+  // "compacted" would leave the one question it exists to answer — is the limit
+  // I configured wrong for this model? — to the user.
+  await store.append([
+    event('peer.compacted', 'engineer-1', {
+      peerId: 'engineer-1',
+      trigger: 'auto',
+      preTokens: 40_000,
+      contextLimit: 200_000,
+    }),
+  ])
+  await store.append([
+    event('peer.compacted', 'engineer-1', {
+      peerId: 'engineer-1',
+      trigger: 'auto',
+      preTokens: 200_000,
+      contextLimit: 200_000,
+    }),
+  ])
+  // A provider that reports no window at all (§4): nothing to compare against,
+  // and saying "too low" or "too high" here would be inventing the comparison.
+  await store.append([
+    event('peer.compacted', 'engineer-1', { peerId: 'engineer-1', trigger: 'manual', preTokens: 90_000 }),
+  ])
+
+  const raised = (await store.reader().notifications.all())
+    .filter((row) => String(row.key).includes('compacted'))
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+  assert.equal(raised.length, 3)
+
+  // Named with the model, from the peer row: the limit that is wrong is the
+  // limit *for this model*, so the alert has to say which one.
+  assert.match(raised[0]?.body ?? '', /engineer-1 \(claude-sonnet-5-5\)/)
+  assert.match(raised[0]?.body ?? '', /40,000 tokens/)
+  assert.match(raised[0]?.body ?? '', /configured limit is too high for this model/)
+
+  assert.match(raised[1]?.body ?? '', /200,000 tokens/)
+  assert.match(raised[1]?.body ?? '', /limit fits this model/)
+
+  assert.match(raised[2]?.body ?? '', /no context limit/)
+
+  await store.close()
+})

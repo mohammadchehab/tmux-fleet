@@ -43,27 +43,10 @@ import {
   mechanicalStateFile,
   selfPurge,
   type MechanicalFacts,
-  type PurgeLimits,
   type SessionRecord,
 } from '@fleet/runtime-supervisor'
 
-import type { PeerProfile, Profile } from './profile.ts'
-
-/**
- * §8's purge thresholds. A profile names the ones it cares about; the rest come
- * from the model's own limits where they are known (§4 says the window is
- * config, never the SDK's guess), and these defaults are the conservative floor.
- */
-export const defaultPurgeLimits: PurgeLimits = Object.freeze({
-  contextRatio: 0.8,
-  /**
-   * Below 1 on purpose: the purge itself has to run a turn to write the handoff,
-   * and that turn needs headroom under the point the provider would compact at.
-   */
-  autoCompactRatio: 0.9,
-  maxTurns: 400,
-  maxSessionMillis: 6 * 60 * 60 * 1000,
-})
+import { purgeLimitsOf, type PeerProfile, type Profile } from './profile.ts'
 
 /** What the pump needs that only the composition root can supply. */
 export interface SupervisorDeps {
@@ -193,7 +176,10 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       handle,
       peerId: peer.id,
       briefVersion: brief.version,
-      limits: defaultPurgeLimits,
+      // §8's thresholds are the profile's, resolved over the supervisor's
+      // defaults and validated at load, so this passes what the user asked for
+      // rather than a second opinion about what it should have been.
+      limits: purgeLimitsOf(deps.profile),
       clock,
       record,
       purge: async (input) =>
@@ -212,8 +198,13 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
           },
           restart: async (stateFile: StateFile) => {
             // §8: the fresh session starts from role + the same brief + the state
-            // file. The Mailbox replays anything newer, which is why this reports
-            // zero: nothing was measured here, so nothing is claimed.
+            // file, and that is all this does — it does **not** replay the
+            // mailbox. Replay is `deliverOnSessionStart`'s (wake.ts): when the
+            // replacement's `session.started` commits, the wake hands over every
+            // message that is still unacked, including mail that arrived while
+            // the purge was running. So nothing is stranded, and nothing was
+            // measured here either — this reports zero because it replayed zero,
+            // not because there was nothing to replay.
             const fresh = await provider.start({ ...spec, stateFile })
             return { handle: fresh, replayedMessages: 0 }
           },

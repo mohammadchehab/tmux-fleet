@@ -48,12 +48,19 @@ export interface PurgeLimits {
 }
 
 /**
- * The defaults a profile that says nothing gets. Generous enough not to purge a
- * healthy session, tight enough that a long-running one hands off well before
- * the model's window is the reason it fails.
+ * The defaults a profile that says nothing gets. Tight enough that a long
+ * session hands off well before the model's window is the reason it fails, and
+ * loose enough that a productive peer is not interrupted by the fleet's own
+ * bookkeeping.
+ *
+ * `contextRatio` is 0.6 rather than 0.8 because it is the cost lever, not a
+ * safety margin: every turn re-reads the whole context, so the bill scales with
+ * turns × context size, and the last 20% of a window is where a session is
+ * expensive and least likely to gain anything. The remaining headroom is still
+ * ample for the handoff turn, which `autoCompactRatio` guards separately.
  */
 export const defaultPurgeLimits: PurgeLimits = Object.freeze({
-  contextRatio: 0.8,
+  contextRatio: 0.6,
   autoCompactRatio: 0.9,
   maxTurns: 40,
   maxSessionMillis: 3 * 60 * 60 * 1000,

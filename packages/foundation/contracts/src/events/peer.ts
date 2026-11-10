@@ -125,6 +125,15 @@ export const peerCompacted = event(
     /** What the context held afterwards; absent when the provider did not say. */
     postTokens: optional(count()),
     /**
+     * The context window this peer was configured with, next to the tokens it
+     * actually compacted at (§8). The pair is the point: a compaction at 40K
+     * under a limit of 200K says the configured limit is wrong for the model, and
+     * no purge ratio will ever fire in time on a number that size. Absent when
+     * the provider does not report usage, because then there is no limit to
+     * compare against.
+     */
+    contextLimit: optional(count()),
+    /**
      * What the re-send cost at the model's configured price, when one is
      * configured. Absent means "not priced here", never "free" (§11).
      */
@@ -133,7 +142,8 @@ export const peerCompacted = event(
 )
 
 /**
- * A session came up. `resumed` is true when it continued a `ProviderSessionRef`. * `model`, `permissionMode` and `endpoint` are what the session is *running*,
+ * A session came up. `resumed` is true when it continued a `ProviderSessionRef`.
+ * `model`, `permissionMode` and `endpoint` are what the session is *running*,
  * read from its first init and the adapter's own record, never echoed from the
  * request: a spec can be wrong and a leaked environment can silently change the
  * endpoint (§4, §13). `endpoint` is present only when the adapter recorded the

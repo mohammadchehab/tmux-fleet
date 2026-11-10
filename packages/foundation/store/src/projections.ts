@@ -706,6 +706,13 @@ const raiseNotification = (
   key: NotificationKey,
   notificationClass: Notification['class'],
   ts: string,
+  /**
+   * What the banner should say, when the projection knows more than the key does.
+   * A key carries a subject and a kind; a compaction carries numbers, and a
+   * banner that says "compacted" without them is the shrug this event exists to
+   * replace (§6.1, §8). Left out, the `notify` routine renders from the key.
+   */
+  detail?: { readonly title?: string; readonly body?: string },
 ): void => {
   const current = notificationByKey(db, key)
   if (current === undefined) {
@@ -718,6 +725,8 @@ const raiseNotification = (
         deliveryFailed: false,
         occurrences: 1,
         createdAt: ts,
+        ...(detail?.title === undefined ? {} : { title: detail.title }),
+        ...(detail?.body === undefined ? {} : { body: detail.body }),
       }),
     )
     return
@@ -730,6 +739,41 @@ const raiseNotification = (
       occurrences: current.occurrences + 1,
     }),
   )
+}
+
+/** Thousands separators, for a number a person reads on a lock screen. */
+const tokenText = (tokens: number): string => tokens.toLocaleString('en-US')
+
+/**
+ * What a compaction banner says (§6.1, §8).
+ *
+ * The comparison is the point. A compaction at a number well under the window
+ * the peer was *configured* with means the provider gave up long before the
+ * fleet's ratio could fire, and the fix is the profile's `contextLimit`, not a
+ * tighter purge — so the banner says which of the two it is, using the pair the
+ * event carries. With no configured limit to compare against it says only what
+ * it knows, rather than guessing at a verdict.
+ */
+const compactionDetail = (
+  peerId: string,
+  model: string | undefined,
+  trigger: string,
+  preTokens: number,
+  contextLimit: number | undefined,
+): { readonly title: string; readonly body: string } => {
+  const who = model === undefined ? String(peerId) : `${String(peerId)} (${model})`
+  const compacted = `compacted ${tokenText(preTokens)} tokens (${trigger})`
+  const title = `Compaction: ${String(peerId)}`
+  if (contextLimit === undefined) {
+    return { title, body: `${who} — ${compacted}. The provider reported no context limit, so there is nothing to compare it against.` }
+  }
+  return {
+    title,
+    body:
+      preTokens < contextLimit
+        ? `${who} — ${compacted} under a configured limit of ${tokenText(contextLimit)}. The configured limit is too high for this model: the provider compacted well before the purge could fire.`
+        : `${who} — ${compacted} against a configured limit of ${tokenText(contextLimit)}. The limit fits this model; the purge simply did not get there first.`,
+  }
 }
 
 const resolveNotification = (db: Sqlite, key: NotificationKey, ts: string): void => {
@@ -942,20 +986,29 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
     case 'peer.compacted': {
-      const { peerId, trigger, preTokens } = event.data
+      const { peerId, trigger, preTokens, contextLimit } = event.data
       db.run(
-        'INSERT OR REPLACE INTO peer_compactions (seq, peer_id, trigger, pre_tokens, ts) VALUES (?, ?, ?, ?, ?)',
+        `INSERT OR REPLACE INTO peer_compactions (seq, peer_id, trigger, pre_tokens, context_limit, ts)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         event.seq,
         peerId,
         trigger,
         preTokens,
+        contextLimit ?? null,
         ts,
       )
       // §6.1 `failure`: a compaction is not a routine step. It rewrites the peer's
       // context and bills for re-reading it, and the whole point of the alert is
       // that nobody would otherwise notice. Keyed by the event, not the peer, so
       // two compactions are two notifications rather than one that deduped away.
-      raiseNotification(db, notificationKeyOf('failure', peerId, 'compacted', String(event.seq)), 'failure', ts)
+      const model = db.get<{ model: string }>('SELECT model FROM peers WHERE peer_id = ?', peerId)?.model
+      raiseNotification(
+        db,
+        notificationKeyOf('failure', peerId, 'compacted', String(event.seq)),
+        'failure',
+        ts,
+        compactionDetail(peerId, model, trigger, preTokens, contextLimit),
+      )
       return
     }
     case 'session.started': {

@@ -116,17 +116,23 @@ const decisionMessage = (
 }
 
 const failureMessage = (
-  key: string,
-  occurrences: number,
+  row: Notification,
   repeat: boolean,
 ): { readonly title: string; readonly body: string } => {
-  const { subject, kind } = failureParts(key)
-  return repeat
-    ? {
-        title: oneLine(`Still failing: ${kind}`),
-        body: cut(`${subject} — ${occurrences} events since the last notice.`),
-      }
-    : { title: oneLine(`Failure: ${kind}`), body: cut(`${subject} — ${kind}.`) }
+  const { subject, kind } = failureParts(row.key)
+  if (repeat) {
+    return {
+      title: oneLine(`Still failing: ${kind}`),
+      body: cut(`${subject} — ${row.occurrences} events since the last notice.`),
+    }
+  }
+  // A row the projection wrote with its own words knows more than its key does —
+  // a compaction carries the tokens and the limit it was measured against, which
+  // is the whole reason to ring — so its text wins over the generic render.
+  if (row.title !== undefined && row.body !== undefined) {
+    return { title: oneLine(row.title), body: cut(row.body) }
+  }
+  return { title: oneLine(`Failure: ${kind}`), body: cut(`${subject} — ${kind}.`) }
 }
 
 const standupMessage = (
@@ -172,7 +178,7 @@ export const planNotifications = (input: PlanInput): NotificationPlan => {
         row.class === 'decision'
           ? decisionMessage(afterPrefix(row.key, 'decision'), decisions.get(afterPrefix(row.key, 'decision')), false)
           : row.class === 'failure'
-            ? failureMessage(row.key, row.occurrences, false)
+            ? failureMessage(row, false)
             : standupMessage(row, standups.get(afterPrefix(row.key, 'standup')))
       send.push({ key: row.key, class: row.class, ...message, reason: 'first', occurrences: row.occurrences })
       continue
@@ -183,7 +189,7 @@ export const planNotifications = (input: PlanInput): NotificationPlan => {
       send.push({
         key: row.key,
         class: row.class,
-        ...failureMessage(row.key, row.occurrences, true),
+        ...failureMessage(row, true),
         reason: 'repeat',
         occurrences: row.occurrences,
       })

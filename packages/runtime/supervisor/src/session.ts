@@ -336,7 +336,7 @@ export class PeerSession {
         // between turns and a person's `/compact` always does; both rewrite the
         // peer's context and both cost a bill, and neither has a turn to hang
         // the record on (§8).
-        await this.#recordCompaction(event)
+        await this.#recordCompaction(handle, event)
         break
       default:
         break
@@ -363,9 +363,22 @@ export class PeerSession {
    * tokens the provider had to read again to summarise, priced by the profile;
    * when nothing prices them the field is left out rather than set to zero,
    * because "not priced here" and "free" are different claims (§8).
+   *
+   * The configured window is recorded beside the tokens the provider actually
+   * compacted at, because that pair is the only way to see from the store that a
+   * profile's `contextLimit` is too high for its model: the provider compacted
+   * at 40K while the fleet thought it had 200K, so no ratio against 200K would
+   * ever have fired. `usage` is asked at compaction time rather than cached,
+   * since it is the running session's number and the whole point is to catch it
+   * disagreeing with config. A provider that cannot report usage has no window
+   * to compare against, and a failing `usage` must not cost the record.
    */
-  async #recordCompaction(event: Extract<ProviderEvent, { type: 'compaction' }>): Promise<void> {
-    const { clock, peerId, record, estimateCompactionCost } = this.#ports
+  async #recordCompaction(
+    handle: SessionHandle,
+    event: Extract<ProviderEvent, { type: 'compaction' }>,
+  ): Promise<void> {
+    const { clock, peerId, record, provider, estimateCompactionCost } = this.#ports
+    const contextLimit = await this.#contextLimit(handle)
     const estimate = estimateCompactionCost?.(event.contextTokensBefore)
     // Rounded to a ten-thousandth of a dollar: raw float arithmetic on a price
     // produces `0.6000000000000001`, which is not a number anybody should read in
@@ -381,9 +394,23 @@ export class PeerSession {
         trigger: event.trigger,
         preTokens: event.contextTokensBefore,
         ...(event.contextTokensAfter === undefined ? {} : { postTokens: event.contextTokensAfter }),
+        ...(contextLimit === undefined ? {} : { contextLimit }),
         ...(estimated === undefined ? {} : { estimatedCostUsd: estimated }),
       },
     })
+  }
+
+  /** The window this session is configured with, or `undefined` when it cannot be known (§4, §8). */
+  async #contextLimit(handle: SessionHandle): Promise<number | undefined> {
+    const { provider } = this.#ports
+    if (!provider.capabilities.usageTokens) return undefined
+    try {
+      return (await provider.usage(handle)).contextLimit
+    } catch {
+      // A compaction is still news when the usage call fails; the comparison is
+      // what is lost, and an absent field says exactly that.
+      return undefined
+    }
   }
 
   /**

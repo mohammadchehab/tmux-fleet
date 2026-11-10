@@ -698,7 +698,10 @@ test('records are appended in order and awaited before the next event is read', 
 })
 
 test('a compaction on the stream is one peer.compacted, priced when the profile prices it', async () => {
-  const r = rig()
+  // The window is asked for at compaction time, so the record carries the limit
+  // this peer was configured with next to the tokens it compacted at — here, half
+  // the window, which is the pair the notification reads as a verdict (§8).
+  const r = rig(() => ({ contextTokens: 200_000, contextLimit: 400_000 }))
   const session = new PeerSession({
     provider: r.provider,
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
@@ -736,6 +739,7 @@ test('a compaction on the stream is one peer.compacted, priced when the profile 
     trigger: 'auto',
     preTokens: 200_000,
     postTokens: 12_000,
+    contextLimit: 400_000,
     estimatedCostUsd: 0.6,
   })
   // The same records the store is asked to append are the ones the registry validates.
@@ -743,7 +747,7 @@ test('a compaction on the stream is one peer.compacted, priced when the profile 
 })
 
 test('a compaction between turns is recorded, and one with no price carries no cost', async () => {
-  const r = rig()
+  const r = rig(() => ({ contextTokens: 90_000, contextLimit: 200_000 }))
   const session = new PeerSession({
     provider: r.provider,
     handle: handle('ses_aaaaaaaaaaaaaaaa'),
@@ -775,7 +779,7 @@ test('a compaction between turns is recorded, and one with no price carries no c
   assert.equal(compacted.length, 1)
   const record = compacted[0]
   assert.ok(record !== undefined && record.type === 'peer.compacted')
-  assert.deepEqual(record.data, { peerId, trigger: 'manual', preTokens: 90_000 })
+  assert.deepEqual(record.data, { peerId, trigger: 'manual', preTokens: 90_000, contextLimit: 200_000 })
   assert.equal('estimatedCostUsd' in record.data, false, 'no price is not a price of zero')
 })
 
