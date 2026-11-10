@@ -26,19 +26,20 @@ it deliberately in `tests/architecture/rules.ts` — with the design as the argu
 
 ```sh
 task typecheck   # tsc --noEmit; the compiler is the lint, there is no eslint
-task test        # the v1 smoke suite, then the v2 tests, then typecheck
-task lint        # shellcheck and skill frontmatter, for v1
+task test        # the v2 tests, then typecheck
 ```
 
 No build step: Node runs the TypeScript directly, so `erasableSyntaxOnly` is on and a package's entry point is its
 `src/index.ts` via the `exports` map.
 
-## v1 is live; leave it alone
+## v1 is gone; do not resurrect it
 
-`legacy/v1/` is the bash fleet that is **installed and running right now** — `task install` links it into
-`~/.claude/skills`, `~/.cursor/skills` and `~/.local/bin/fleet`. It is frozen until phase 3 removes it. Do not
-"clean it up", restructure it, or change its script paths. A change there is only justified when it keeps v1 working
-through the rebuild, and it needs the smoke suite to prove it (`task test` runs it).
+The bash fleet that this checkout carried as `legacy/v1/` has been deleted, and it is not coming back. It lives in git
+history (`git log -- legacy/v1`), which is where to look when a v2 behaviour needs to explain what it replaced. Do not
+re-add it, do not add a shim that installs it, and do not copy its scripts into a package to "keep them around" — a
+v2 need is met by a v2 package with a test.
+
+There is no `task lint` any more: shellcheck and the skill-frontmatter check were v1's, and the compiler is the lint.
 
 ## Conventions
 

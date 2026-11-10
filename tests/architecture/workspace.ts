@@ -13,7 +13,7 @@ import { locate, type ImportEdge, type PackageRef, type Violation } from './rule
 
 export const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'legacy', 'docs', '.claude', 'dist'])
+const SKIP_DIRS = new Set(['node_modules', '.git', 'docs', '.claude', 'dist'])
 
 /** Every directory that holds a package.json under packages/ and apps/. */
 async function packageDirs(root: string): Promise<string[]> {
