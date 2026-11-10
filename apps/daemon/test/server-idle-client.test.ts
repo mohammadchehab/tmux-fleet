@@ -18,7 +18,9 @@ describe('server.close() with idle clients', () => {
     const home = await mkdtemp(join(tmpdir(), 'fleet-server-'))
     const socketPath = join(home, 'test.sock')
     const pidPath = join(home, 'test.pid')
-    let onDownCalled = false
+
+    let server: DaemonServer | undefined
+    let socket: any
 
     try {
       // Minimal mock API: the test doesn't invoke any methods, just tests socket lifecycle
@@ -27,24 +29,23 @@ describe('server.close() with idle clients', () => {
         down: async () => ({ ok: true, result: { stopped: true } }),
       } as unknown as DaemonApi
 
-      const server = await createDaemonServer({
+      server = await createDaemonServer({
         api,
         socketPath,
         pidPath,
         onDown: () => {
-          onDownCalled = true
+          // onDown hook - test doesn't check this, just verifies it's callable
         },
       })
 
-      // Open a socket connection but keep it idle (never close it)
-      const socket = connect(socketPath)
+      // Open a socket connection but keep it idle (never send data)
+      socket = connect(socketPath)
       await new Promise<void>((resolve) => {
         socket.on('connect', resolve)
       })
 
-      // Measure how long server.close() takes
+      // Measure how long server.close() takes with idle client
       const startClose = Date.now()
-      const closePromise = server.close()
 
       // Set a timeout to detect if close() hangs forever
       const timeoutMs = 5000 // 5 seconds is reasonable for cleanup
@@ -52,15 +53,17 @@ describe('server.close() with idle clients', () => {
         setTimeout(() => reject(new Error(`server.close() timed out after ${timeoutMs}ms`)), timeoutMs)
       )
 
-      await Promise.race([closePromise, timeoutPromise])
+      await Promise.race([server.close(), timeoutPromise])
       const closeTime = Date.now() - startClose
 
       // close() should complete quickly despite the idle client
       assert.ok(closeTime < 1000, `server.close() took ${closeTime}ms, expected < 1000ms`)
-
-      // Cleanup should be able to proceed (onDown would have been called by the daemon layer)
-      socket.destroy()
     } finally {
+      // Ensure socket is destroyed
+      if (socket) socket.destroy()
+      // Ensure server is fully closed
+      if (server) await server.close().catch(() => {})
+      // Clean up temp directory
       await rm(home, { recursive: true, force: true })
     }
   })

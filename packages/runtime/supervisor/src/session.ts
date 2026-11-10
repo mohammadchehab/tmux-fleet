@@ -338,7 +338,12 @@ export class PeerSession {
       for await (const event of stream) {
         await this.#apply(handle, event, purge !== undefined)
 
-        if (event.type === 'session.ended') break
+        if (event.type === 'session.ended') {
+          if (event.reason === 'crash' || event.reason === 'exit') {
+            throw fleetError('provider_failed', `session ended with reason '${event.reason}', triggering recovery`)
+          }
+          break
+        }
         if (event.type !== 'turn.ended') continue
 
         // A turn boundary reached *during* a purge is the peer answering the ask.
