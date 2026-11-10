@@ -517,13 +517,14 @@ const deps = () => {
   }
 }
 
-test('the daemon owns exactly the six kinds it can carry out (§5.2)', () => {
+test('the daemon owns exactly the seven kinds it can carry out (§5.2)', () => {
   const wiring = deps()
   const kinds = createDaemonExecutors(wiring)
     .flatMap((entry) => entry.kinds)
     .sort()
   assert.deepEqual(kinds, [
     'flag_capacity',
+    'mark_ready',
     'raise_no_work',
     'render_standup',
     'request_decision',
@@ -536,7 +537,7 @@ test('the gate stays the only home of merge and retarget, so a kind cannot be ca
   const router = createExecutorRouter({ executors: createDaemonExecutors(deps()) })
   assert.equal(router.kinds.has('merge'), false)
   assert.equal(router.kinds.has('retarget'), false)
-  assert.equal(router.kinds.size, 6)
+  assert.equal(router.kinds.size, 7)
 })
 
 test('an executor called with a kind it does not own says so rather than guessing (§5.2)', async () => {
