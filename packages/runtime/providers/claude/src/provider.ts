@@ -46,6 +46,7 @@ import type {
 
 import { openingMessage } from './brief.ts'
 import { ClaudeSession, defaultSessionConfig, type ClaudeSessionConfig } from './session.ts'
+import { contextLimitFor } from './usage.ts'
 
 export interface ClaudeProviderConfig extends Omit<Partial<ClaudeSessionConfig>, 'usageCost'> {
   /** Defaults to `claude`. The DeepInfra provider sets `deepinfra` and passes its own limits. */
@@ -163,6 +164,22 @@ export class ClaudeProvider implements Provider {
 
   async usage(handle: SessionHandle): Promise<Usage> {
     return this.#session(handle).usage()
+  }
+
+  /**
+   * The configured window for `model`, without a session (§8, §6.2).
+   *
+   * `contextLimitFor` throws for a model this config does not cover, which is
+   * right for `usage()` — a session that cannot say how full it is must not
+   * report the number anyway — but wrong here, where the caller's question is
+   * "what should the hook be told?" and "nothing" is a legitimate answer.
+   */
+  contextLimit(model: string): number | undefined {
+    try {
+      return contextLimitFor(this.#config.limits, model)
+    } catch {
+      return undefined
+    }
   }
 
   async model(handle: SessionHandle): Promise<{ id: string; endpoint?: string }> {

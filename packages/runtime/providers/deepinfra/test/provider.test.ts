@@ -103,6 +103,15 @@ test('the context limit is the vendor’s window, not the 200 000 the SDK guesse
   assert.equal(DEEP_INFRA_CONTEXT_LIMITS[MODEL], 1_048_576)
 })
 
+test('the window a session is told about is the one this endpoint will report (§6.2, §8)', () => {
+  // The Stop hook's `FLEET_CONTEXT_LIMIT` and `usage().contextLimit` are the
+  // same number or the projection and the purge disagree about the same turn.
+  assert.equal(provider.contextLimit(MODEL), DEEP_INFRA_CONTEXT_LIMITS[MODEL])
+  // An unlisted model has no window here: the session carries no limit and the
+  // hook skips, rather than being handed the SDK's 200 000 guess.
+  assert.equal(provider.contextLimit('some-vendor/unlisted-model'), undefined)
+})
+
 test('deepInfraEnv builds the endpoint, the token and the model, and refuses an empty token', () => {
   assert.deepEqual(deepInfraEnv('k', { model: MODEL }), {
     ANTHROPIC_BASE_URL: DEEP_INFRA_BASE_URL,

@@ -107,6 +107,22 @@ export interface Provider extends ProviderHandle {
   /** Context tokens against the model's limit; the self-purge trigger (§8). */
   usage(handle: SessionHandle): Promise<Usage>
 
+  /**
+   * The window this provider is configured to assume for `model` (§8), known
+   * without a session — which is why it sits here rather than on `usage()`.
+   *
+   * §6.2's Stop hook measures a turn from the transcript and compares it against
+   * a limit it must not guess, and a session's env is built *before* the session
+   * exists. So the number has to be answerable from provider config, and it is
+   * the same number `usage()` reports: one configured window, two readers.
+   *
+   * Optional, and `undefined` is a real answer: a provider with no configured
+   * window (or a model it does not know) leaves the variable out of the
+   * session's env, and the hook skips with its reason rather than reporting
+   * against a made-up limit.
+   */
+  contextLimit?(model: string): number | undefined
+
   /** Read from the spawned process or SDK config, never from a UI string (§4, §13). */
   model(handle: SessionHandle): Promise<{ id: string; endpoint?: string }>
 

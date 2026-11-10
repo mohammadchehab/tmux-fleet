@@ -121,6 +121,13 @@ export interface ScriptedOptions {
    */
   readonly usage?: (index: number) => Usage
   /**
+   * The window this provider claims for a model, as `Provider.contextLimit`
+   * answers it (§8, §6.2). Defaults to the same 1 000 `usage()` reports, so the
+   * env a session is started with and the number it later reports agree —
+   * which is the property `FLEET_CONTEXT_LIMIT` exists to keep.
+   */
+  readonly contextLimit?: (model: string) => number | undefined
+  /**
    * Where a peer's state file goes, by peer id. The purge asks for one and then
    * reads the file at this path, so the scripted peer writes there when asked —
    * which is exactly what a real peer's Write tool does.
@@ -271,6 +278,12 @@ export const createScriptedProvider = (options: ScriptedOptions = {}): ScriptedP
     async usage(handle: SessionHandle): Promise<Usage> {
       const session = byId.get(handle.sessionId)
       return usage(session?.index ?? 0)
+    },
+
+    // The number the supervisor puts in a session's env, so a test can assert
+    // that a composed session is one the Stop hook would accept (§6.2, §8).
+    contextLimit(model: string): number | undefined {
+      return options.contextLimit?.(model) ?? usage(0).contextLimit
     },
 
     async model(handle: SessionHandle) {

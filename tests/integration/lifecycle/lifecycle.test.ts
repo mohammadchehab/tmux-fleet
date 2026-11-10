@@ -18,6 +18,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import type { LsResult, PeekResult } from '../../../packages/foundation/contracts/src/index.ts'
+// The other half of the contract this file checks: the hook and the daemon are
+// separate apps, and only the tests may see both at once (§1.1).
+import { buildReport } from '../../../apps/hooks/usage-report/src/report.ts'
 import { createSandbox, until } from '../support/sandbox.ts'
 
 /**
@@ -28,6 +31,15 @@ import { createSandbox, until } from '../support/sandbox.ts'
  * describing the daemon.
  */
 type LsLike = LsResult
+
+/** One turn's transcript, in the shape Claude Code writes: a prompt, then the assistant's message. */
+const ONE_TURN = [
+  JSON.stringify({ type: 'user', message: { role: 'user', content: 'do the thing' } }),
+  JSON.stringify({
+    type: 'assistant',
+    message: { id: 'm1', role: 'assistant', usage: { input_tokens: 10, output_tokens: 5 }, content: [{ type: 'text', text: 'done' }] },
+  }),
+].join('\n')
 
 test('§15: a fleet comes up from a profile, and every peer is a real session', async (t) => {
   const sandbox = await createSandbox()
@@ -62,6 +74,15 @@ test('§15: a fleet comes up from a profile, and every peer is a real session', 
   assert.ok(architect.spec.brief.text.length > 0, 'the brief has text, not just a version')
   assert.equal(architect.spec.permissionMode, 'default')
   assert.equal(architect.spec.env.FLEET_PEER, 'architect')
+  // §6.2's Stop hook is handed this env and skips unless it can reach the daemon
+  // and compare the turn against a configured window. Both are the supervisor's
+  // to provision, and for a long time it provisioned neither.
+  assert.equal(architect.spec.env.FLEET_SOCKET, sandbox.paths.socketPath)
+  assert.equal(architect.spec.env.FLEET_CONTEXT_LIMIT, String(sandbox.scripted.provider.contextLimit?.(architect.spec.model)))
+  // And the env is only worth setting if the hook acts on it: fed a transcript
+  // and this env, §6.2's report is built rather than skipped.
+  const report = buildReport({ stopHookActive: false }, ONE_TURN, architect.spec.env)
+  assert.equal(report.status, 'report', `the Stop hook would skip: ${report.status === 'skip' ? report.reason : ''}`)
   assert.equal(architect.spec.stateFile, undefined, 'a first session has nothing to resume from')
 
   // `fleet up` twice is one registration and three sessions, not six (§2).
