@@ -71,6 +71,12 @@ importers:
       '@fleet/runtime-supervisor':
         specifier: workspace:*
         version: link:../../packages/runtime/supervisor
+      '@fleet/security-findings':
+        specifier: workspace:*
+        version: link:../../packages/security/findings
+      '@fleet/security-scanners':
+        specifier: workspace:*
+        version: link:../../packages/security/scanners
       yaml:
         specifier: ^2.8.1
         version: 2.9.1

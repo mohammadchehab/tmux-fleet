@@ -23,6 +23,7 @@ import {
   parseStrict,
   peerId,
   positiveInt,
+  refine,
   text,
   type Schema,
 } from '@fleet/foundation-core'
@@ -64,6 +65,10 @@ export interface RepoProfile {
   readonly repo: string
 }
 
+/** §6.2's tools, as a profile may name them: the four adapters this daemon ships. */
+export const profileScanners = ['semgrep', 'gitleaks', 'osv-scanner', 'trivy'] as const
+export type ProfileScanner = (typeof profileScanners)[number]
+
 export interface Profile {
   /** The profile's own name; must match the file it was read from (§2). */
   readonly profile: string
@@ -74,6 +79,13 @@ export interface Profile {
   readonly routines?: RoutinesConfig
   /** §6.1: where a notification goes. `none` keeps the ledger and sends nothing. */
   readonly notify?: { readonly channel: 'macos' | 'none' }
+  /**
+   * §6.2: the scanners to run. The block's presence is what installs the
+   * `security-scan` routine — a profile without it scans nothing, and scans
+   * nothing silently, which is the honest default for a tool that spawns three
+   * programs on every PR.
+   */
+  readonly security?: { readonly scanners: readonly ProfileScanner[] }
   readonly limits?: {
     /** How many sessions may be live at once (§6's `keep-busy` and self-purge). */
     readonly maxSessions?: number
@@ -116,6 +128,16 @@ const notifyBlock = (): Schema<{ readonly channel: 'macos' | 'none' }> =>
 const limitsBlock = (): Schema<{ readonly maxSessions?: number }> =>
   objectAs<{ readonly maxSessions?: number }>()({ maxSessions: optional(positiveInt()) })
 
+/** An empty list would install the routine and then scan nothing, which reads as coverage it does not have. */
+const securityBlock = (): Schema<{ readonly scanners: readonly ProfileScanner[] }> =>
+  objectAs<{ readonly scanners: readonly ProfileScanner[] }>()({
+    scanners: refine(
+      array(oneOf(profileScanners), { maxItems: profileScanners.length }),
+      (scanners) => scanners.length > 0,
+      'at least one scanner',
+    ),
+  })
+
 export const profileSchema = (): Schema<Profile> =>
   objectAs<Profile>()({
     profile: text(60),
@@ -123,6 +145,7 @@ export const profileSchema = (): Schema<Profile> =>
     peers: array(peerProfile(), { maxItems: 50 }),
     routines: optional(routinesBlock()),
     notify: optional(notifyBlock()),
+    security: optional(securityBlock()),
     limits: optional(limitsBlock()),
     tickIntervalMs: optional(positiveInt()),
     deleteMergedBranches: optional(boolean()),

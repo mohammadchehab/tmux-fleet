@@ -26,6 +26,8 @@
     "@fleet/runtime-provider-deepinfra": "workspace:*",
     "@fleet/runtime-provider-sdk": "workspace:*",
     "@fleet/runtime-supervisor": "workspace:*",
+    "@fleet/security-findings": "workspace:*",
+    "@fleet/security-scanners": "workspace:*",
     "yaml": "^2.8.1"
   },
   "bin": {
