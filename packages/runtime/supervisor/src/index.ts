@@ -6,6 +6,8 @@
  * - `policy.ts` — when a turn boundary means "purge" (context, turns, clock).
  * - `state.ts` — the typed state file: the ask, its validation, the human copy.
  * - `records.ts` — what the wrapper writes, typed by the contract's registry.
+ * - `tool-calls.ts` — a turn's exploration, counted from the tool names its
+ *   stream reported (§6.2).
  * - `purge.ts` — one purge from trigger to a fresh session in place.
  * - `session.ts` — the wrapper that owns a session's event stream and runs all
  *   of the above at the right moment.
@@ -21,3 +23,4 @@ export * from './purge.ts'
 export * from './records.ts'
 export * from './session.ts'
 export * from './state.ts'
+export * from './tool-calls.ts'

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The Stop hook that reports a finished turn's usage to the daemon (architecture §6.2, §8). Imports foundation and the daemon's socket only.",
+  "description": "The Stop hook that reports a finished turn's usage to the daemon (architecture §6.2, §8), for sessions fleetd does not supervise; under fleetd the supervisor records the same row. Imports foundation and the daemon's socket only.",
   "exports": {
     ".": "./src/index.ts"
   },

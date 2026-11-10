@@ -41,6 +41,7 @@ import type {
   SessionHandle,
   SessionSpec,
   Turn,
+  TurnSpend,
   Usage,
 } from '@fleet/runtime-provider-sdk'
 
@@ -164,6 +165,10 @@ export class ClaudeProvider implements Provider {
 
   async usage(handle: SessionHandle): Promise<Usage> {
     return this.#session(handle).usage()
+  }
+
+  turnSpend(handle: SessionHandle): TurnSpend | undefined {
+    return this.#session(handle).turnSpend()
   }
 
   /**

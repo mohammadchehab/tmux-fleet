@@ -53,6 +53,7 @@ import type {
   QuestionAnswer,
   SessionSpec,
   Turn,
+  TurnSpend,
   Usage,
 } from '@fleet/runtime-provider-sdk'
 
@@ -61,7 +62,15 @@ import { isContractEvent, type AdapterEvent } from './events.ts'
 import { mapMessage, questionAnswers, readQuestions, type TurnState } from './messages.ts'
 import { PendingRequests } from './pending.ts'
 import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy } from './policy.ts'
-import { fallbackTokensFrom, usageFrom, type ContextLimits, type ContextUsageAnswer } from './usage.ts'
+import {
+  fallbackTokensFrom,
+  noSpend,
+  spendFrom,
+  usageFrom,
+  type ContextLimits,
+  type ContextUsageAnswer,
+  type SpendTotals,
+} from './usage.ts'
 
 /** Everything about *how* a Claude session runs that is not part of a `SessionSpec`. */
 export interface ClaudeSessionConfig {
@@ -136,6 +145,14 @@ export class ClaudeSession {
   #turnState: TurnState = { interrupted: false }
   #lastContextTokens: number | undefined
   #lastCostUsd: number | undefined
+  /**
+   * The running totals the boundary message reports, carried from one `result`
+   * to the next: `modelUsage` and `total_cost_usd` are cumulative over the whole
+   * query, so the turn's own spend is the difference. Kept separate from
+   * `#lastCostUsd`, which is what `usage()` reports and stays cumulative.
+   */
+  #reported: SpendTotals = noSpend
+  #spent: TurnSpend | undefined
   #pump: Promise<void> | undefined
 
   constructor(spec: SessionSpec, config: ClaudeSessionConfig, resumeRef: ProviderSessionRef | undefined) {
@@ -292,6 +309,17 @@ export class ClaudeSession {
     return this.#state
   }
 
+  /**
+   * The turn that just ended, measured at its boundary message (§6.2).
+   *
+   * Synchronous on purpose: the numbers arrived on the stream, so this answers
+   * without a control call — including for a session whose CLI has already
+   * exited, where `usage()`'s control call has nothing to ask.
+   */
+  turnSpend(): TurnSpend | undefined {
+    return this.#spent
+  }
+
   async usage(): Promise<Usage> {
     const answer = await this.#contextUsage()
     const cost = this.#config.usageCost ? this.#lastCostUsd : undefined
@@ -405,6 +433,12 @@ export class ClaudeSession {
     if (record.type === 'result') {
       const cost = (record as { total_cost_usd?: unknown }).total_cost_usd
       if (typeof cost === 'number') this.#lastCostUsd = cost
+      // The boundary is where a turn's spend becomes knowable: the counters are
+      // cumulative over the query, so the turn's own is the difference from the
+      // previous boundary (subagents and sidechains included — §6.2).
+      const measured = spendFrom(record, this.#reported)
+      this.#reported = measured.totals
+      this.#spent = measured.spend
     }
 
     const turnId = this.#inflight[0]

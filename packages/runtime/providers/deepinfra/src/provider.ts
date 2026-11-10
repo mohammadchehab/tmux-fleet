@@ -48,6 +48,7 @@ import type {
   SessionHandle,
   SessionSpec,
   Turn,
+  TurnSpend,
   Usage,
 } from '@fleet/runtime-provider-sdk'
 
@@ -273,6 +274,20 @@ export class DeepInfraProvider implements Provider {
 
   async usage(handle: SessionHandle): Promise<Usage> {
     return this.#inner.usage(handle)
+  }
+
+  /**
+   * The turn's tokens, from the inner adapter — the counts are real on this
+   * endpoint. The **cost is not**: `usageCost` is false here because the SDK
+   * prices these models at Anthropic's rates, and a number that looks like money
+   * but is not comparable between endpoints is worse than none (§4). So a cost
+   * is dropped rather than passed through, exactly as `usage()` drops it.
+   */
+  turnSpend(handle: SessionHandle): TurnSpend | undefined {
+    const spend = this.#inner.turnSpend(handle)
+    if (spend === undefined || this.capabilities.usageCost) return spend
+    const { costUsd: _unpriced, ...tokens } = spend
+    return tokens
   }
 
   /**

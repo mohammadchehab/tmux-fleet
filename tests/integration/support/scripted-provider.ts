@@ -38,6 +38,7 @@ import type {
   ApprovalDecision,
   Provider,
   SessionHandle,
+  TurnSpend,
 } from '../../../packages/runtime/providers/sdk/src/index.ts'
 
 /** A stream a test pushes into, so the supervisor never waits on a real process. */
@@ -128,6 +129,11 @@ export interface ScriptedOptions {
    */
   readonly contextLimit?: (model: string) => number | undefined
   /**
+   * What `turnSpend()` reports for the last turn (§6.2): a fixed spend by
+   * default, or `false` for a provider that counts no tokens at all.
+   */
+  readonly turnSpend?: TurnSpend | false
+  /**
    * Where a peer's state file goes, by peer id. The purge asks for one and then
    * reads the file at this path, so the scripted peer writes there when asked —
    * which is exactly what a real peer's Write tool does.
@@ -208,6 +214,9 @@ export const createScriptedProvider = (options: ScriptedOptions = {}): ScriptedP
         open.set(session.handle.sessionId, { turnId, at })
         return
       }
+      // A peer that takes a turn without looking at anything is not what these
+      // tests are about, and §6.2's tool counters need a call to count.
+      session.feed.push({ type: 'tool.use', turnId, tool: 'Grep', summary: 'TODO' })
       session.feed.push({ type: 'turn.ended', turnId, at: new Date().toISOString(), reason: 'completed' })
     })
     return turnId
@@ -284,6 +293,19 @@ export const createScriptedProvider = (options: ScriptedOptions = {}): ScriptedP
     // that a composed session is one the Stop hook would accept (§6.2, §8).
     contextLimit(model: string): number | undefined {
       return options.contextLimit?.(model) ?? usage(0).contextLimit
+    },
+
+    /**
+     * What the turn that just ended spent (§6.2). Present by default with a
+     * fixed, non-zero spend, so a recorded `turn.usage_recorded` can be told
+     * apart from a row of zeroes; `turnSpend: false` is a provider that counts
+     * no tokens and therefore records nothing. No cost by default, because this
+     * provider declares `usageCost: false` — a fixture that claims both would be
+     * testing a state the contract calls impossible.
+     */
+    turnSpend(): TurnSpend | undefined {
+      if (options.turnSpend === false) return undefined
+      return options.turnSpend ?? { inputTokens: 1_200, outputTokens: 300, cachedTokens: 4_000 }
     },
 
     async model(handle: SessionHandle) {
