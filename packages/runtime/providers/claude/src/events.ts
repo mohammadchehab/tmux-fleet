@@ -67,6 +67,13 @@ export type AdapterEvent =
       /** Short and already-redacted; never the full tool input (§4). */
       readonly summary?: string
     }
+  /** The session's own tool policy refused this call; no person was asked (§4). */
+  | {
+      readonly type: 'tool.denied'
+      readonly turnId: TurnId
+      readonly tool: string
+      readonly summary?: string
+    }
   | {
       readonly type: 'question.asked'
       readonly turnId: TurnId
@@ -99,8 +106,8 @@ export type AdapterEvent =
 
 /**
  * The contract's view of an adapter event. `undefined` means the current union
- * cannot say it at all — today that is `session.ended`, the two approval
- * events, `question.abandoned` and the reason on `turn.ended`.
+ * cannot say it at all — today that is `session.ended`, `tool.denied`, the two
+ * approval events, `question.abandoned` and the reason on `turn.ended`.
  *
  * A blocked approval becomes a `question.asked` because at the current contract
  * the one thing a supervisor must not miss is that the peer is waiting on a
@@ -144,6 +151,7 @@ export const toContract = (event: AdapterEvent): ProviderEvent | undefined => {
     case 'session.ended':
     case 'question.abandoned':
     case 'approval.resolved':
+    case 'tool.denied':
       return undefined
   }
 }

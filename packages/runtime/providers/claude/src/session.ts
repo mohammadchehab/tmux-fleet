@@ -56,6 +56,7 @@ import { buildChildEnv, recordedEndpoint } from './env.ts'
 import { toContract, type AdapterEvent } from './events.ts'
 import { mapMessage, questionAnswers, readQuestions, type TurnState } from './messages.ts'
 import { PendingRequests } from './pending.ts'
+import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy, type ToolPolicy } from './policy.ts'
 import { fallbackTokensFrom, usageFrom, type ContextLimits } from './usage.ts'
 
 /** Everything about *how* a Claude session runs that is not part of a `SessionSpec`. */
@@ -95,6 +96,8 @@ export class ClaudeSession {
   readonly #input: InputQueue
   readonly #events = new EventQueue()
   readonly #pending: PendingRequests
+  /** Compiled at construction: an invalid pattern is a start failure, not a mid-turn one (§4). */
+  readonly #policy: CompiledToolPolicy
   readonly #openingTurn: TurnId
   readonly #started = deferred<{ model: string; permissionMode: string }>()
   readonly #query: Query
@@ -123,6 +126,10 @@ export class ClaudeSession {
     this.peerId = spec.peerId
     this.providerId = config.providerId
     this.#requestedModel = spec.model
+    // `SessionSpec.toolPolicy` is held locally until the contracts PR adds it
+    // (`policy.ts`); absent means ask-about-everything, which is what §4 did
+    // before the field existed.
+    this.#policy = compilePolicy((spec as SessionSpec & { readonly toolPolicy?: ToolPolicy }).toolPolicy)
     this.#pending = new PendingRequests(() => config.clock.now())
     this.#input = new InputQueue()
 
@@ -419,7 +426,7 @@ export class ClaudeSession {
       else options.signal.addEventListener('abort', () => resolve('aborted'), { once: true })
     })
 
-    if (toolName === 'AskUserQuestion') {
+    if (toolName === QUESTION_TOOL) {
       const questions = readQuestions(input) ?? [{ question: 'The peer asked a question it did not spell out.' }]
       const { open, wait } = this.#pending.ask(turnId, questions)
       this.#state = 'waiting_input'
@@ -434,6 +441,28 @@ export class ClaudeSession {
         if (answer === 'aborted') return { behavior: 'deny', message: 'the turn was interrupted' } as PermissionResult
         this.#state = 'working'
         return { behavior: 'allow', updatedInput: { ...input, ...answersFor(questions, answer) } }
+      })
+    }
+
+    // The session's own policy decides first; `ask` is the path every call took
+    // before policies existed, so the default changes nothing (§4).
+    const action = evaluatePolicy(this.#policy, toolName, input)
+    if (action === 'allow') {
+      return Promise.resolve({ behavior: 'allow', updatedInput: input })
+    }
+    if (action === 'deny') {
+      const summary = summarise(input)
+      this.#emit({
+        type: 'tool.denied',
+        turnId,
+        tool: toolName,
+        ...(summary === undefined ? {} : { summary }),
+      })
+      // The message reaches the model, so it can change course instead of
+      // retrying into the same wall.
+      return Promise.resolve({
+        behavior: 'deny',
+        message: `the session's tool policy denies ${toolName}; choose another approach or ask the supervisor`,
       })
     }
 
