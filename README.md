@@ -33,6 +33,14 @@ task lint             # shellcheck + skill frontmatter for v1
 is where the §1.1 rules live — and a package's own unit tests sit beside it as `test/*.test.ts`, run in the same sweep,
 so a new package needs no task of its own.
 
+## Tool policy
+
+A session's `toolPolicy` is a guard rail, not a sandbox; no-production is enforced by environment. An `allow` rule
+covers one whole command and never one carrying `;`, `&`, `|`, a backtick, `$(`, `<`, `>` or a newline — those go to a
+person, as does any subject over 64 KB. Nothing is truncated: `deny` and `ask` rules are searches over the whole
+input, so a command hidden in a chain is still caught. File paths are resolved against the session's cwd before a rule
+sees them.
+
 ## Layout (§1.1)
 
 ```
