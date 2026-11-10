@@ -49,6 +49,9 @@ importers:
       '@fleet/integrations-trackers-backlog':
         specifier: workspace:*
         version: link:../../packages/integrations/trackers/backlog
+      '@fleet/integrations-trackers-jira':
+        specifier: workspace:*
+        version: link:../../packages/integrations/trackers/jira
       '@fleet/notify-core':
         specifier: workspace:*
         version: link:../../packages/notify/core
@@ -171,6 +174,15 @@ importers:
         version: link:../../foundation/core
 
   packages/integrations/trackers/backlog:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../../foundation/core
+
+  packages/integrations/trackers/jira:
     dependencies:
       '@fleet/foundation-contracts':
         specifier: workspace:*

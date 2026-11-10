@@ -17,6 +17,7 @@
     "@fleet/integrations-github": "workspace:*",
     "@fleet/integrations-gitlab": "workspace:*",
     "@fleet/integrations-trackers-backlog": "workspace:*",
+    "@fleet/integrations-trackers-jira": "workspace:*",
     "@fleet/notify-core": "workspace:*",
     "@fleet/notify-macos": "workspace:*",
     "@fleet/orchestration-gate": "workspace:*",

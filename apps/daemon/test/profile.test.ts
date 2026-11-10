@@ -109,9 +109,59 @@ describe('decoding a profile', () => {
   })
 
   it('refuses a tracker it cannot build, and a block with no query', () => {
-    assert.throws(() => decodeProfile(minimal({ trackers: { system: 'jira', query: 'open', path: '.' } })), /jira/)
+    assert.throws(() => decodeProfile(minimal({ trackers: { system: 'trello', query: 'open', path: '.' } })), /system/)
     assert.throws(() => decodeProfile(minimal({ trackers: { system: 'backlog', path: '.' } })), /query/)
     assert.throws(() => decodeProfile(minimal({ trackers: { system: 'backlog', query: 'open' } })), /path/)
+  })
+
+  it('reads a Jira block in either of the two credential shapes', () => {
+    const cloud = decodeProfile(
+      minimal({
+        trackers: {
+          system: 'jira',
+          query: 'project = FLEET AND status != Done',
+          baseUrl: 'https://acme.atlassian.net',
+          auth: { kind: 'cloud', email: 'fleet@acme.test', token: 's3cr3t' },
+          statuses: { in_progress: 'In Progress' },
+          role: 'engineer',
+        },
+      }),
+    )
+    assert.deepEqual(cloud.trackers, {
+      system: 'jira',
+      query: 'project = FLEET AND status != Done',
+      baseUrl: 'https://acme.atlassian.net',
+      auth: { kind: 'cloud', email: 'fleet@acme.test', token: 's3cr3t' },
+      statuses: { in_progress: 'In Progress' },
+      role: 'engineer',
+    })
+
+    // A Server / Data Center install: a PAT is already an identity, so no email half.
+    const pat = decodeProfile(
+      minimal({
+        trackers: {
+          system: 'jira',
+          query: 'project = FLEET',
+          baseUrl: 'https://jira.acme.test',
+          auth: { kind: 'pat', token: 'p4t' },
+        },
+      }),
+    )
+    assert.deepEqual(pat.trackers, {
+      system: 'jira',
+      query: 'project = FLEET',
+      baseUrl: 'https://jira.acme.test',
+      auth: { kind: 'pat', token: 'p4t' },
+    })
+  })
+
+  it('refuses a Jira block with no credential, and one carrying a Backlog key', () => {
+    const noCredential = { system: 'jira', query: 'open', baseUrl: 'https://acme.test' }
+    assert.throws(() => decodeProfile(minimal({ trackers: noCredential })), /auth/)
+
+    // `system` decides which keys are read: a Jira site has no directory to run in.
+    const withPath = { ...noCredential, path: '.', auth: { kind: 'pat', token: 'p4t' } }
+    assert.throws(() => decodeProfile(minimal({ trackers: withPath })), /path/)
   })
 
   it('refuses a misspelt state in the status map, which would be a transition nobody sees', () => {

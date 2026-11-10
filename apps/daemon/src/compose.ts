@@ -50,6 +50,7 @@ import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foun
 import { createGitHubPullRequests } from '@fleet/integrations-github'
 import { createGitLabPullRequests } from '@fleet/integrations-gitlab'
 import { createBacklogTracker } from '@fleet/integrations-trackers-backlog'
+import { createJiraTracker } from '@fleet/integrations-trackers-jira'
 import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
 import type { JudgeService } from '@fleet/orchestration-judge'
@@ -68,7 +69,7 @@ import { createDaemonExecutors } from './executors.ts'
 import { createDaemonJudge } from './judge.ts'
 import { createNotifyFactory, notifierFor } from './notify.ts'
 import { createPrBabysitFactory } from './pr-babysit.ts'
-import { loadProfile, type Profile } from './profile.ts'
+import { loadProfile, type Profile, type TrackerProfile } from './profile.ts'
 import { createSecurityScanFactory } from './security.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
 import { createSupervisor, type Supervisor } from './sessions.ts'
@@ -219,6 +220,28 @@ export const buildProviders = (profile: Profile): ReadonlyMap<string, Provider> 
   return providers
 }
 
+/**
+ * §3: the adapter the profile's `trackers.system` names. `deps.tracker` still
+ * wins over both — a caller with its own board, or a test, supplies one and
+ * nothing here is constructed. Building either adapter is offline: Backlog.md
+ * runs only when it is polled, and Jira's client resolves no URL until a call.
+ */
+const trackerFor = (profile: TrackerProfile): Tracker => {
+  if (profile.system === 'backlog') {
+    return createBacklogTracker({
+      path: profile.path,
+      ...(profile.statuses === undefined ? {} : { statuses: profile.statuses }),
+      ...(profile.urlBase === undefined ? {} : { urlBase: profile.urlBase }),
+    })
+  }
+  return createJiraTracker({
+    baseUrl: profile.baseUrl,
+    auth: profile.auth,
+    ...(profile.statuses === undefined ? {} : { statuses: profile.statuses }),
+    ...(profile.search === undefined ? {} : { search: profile.search }),
+  })
+}
+
 export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   const clock = deps.clock ?? systemClock
   const paths = profilePaths(deps.profileName, deps.roots)
@@ -365,11 +388,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
       ? {}
       : {
           'tracker-sync': createTrackerSyncFactory({
-            tracker: deps.tracker ?? createBacklogTracker({
-              path: trackers.path,
-              ...(trackers.statuses === undefined ? {} : { statuses: trackers.statuses }),
-              ...(trackers.urlBase === undefined ? {} : { urlBase: trackers.urlBase }),
-            }),
+            tracker: deps.tracker ?? trackerFor(trackers),
             store: { append: wake.append },
             system: trackers.system,
             query: trackers.query,
