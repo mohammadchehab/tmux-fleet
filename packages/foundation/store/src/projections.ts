@@ -500,6 +500,7 @@ interface MessageRow {
   readonly state: string
   readonly sent_at: string
   readonly delivered_at: string | null
+  readonly delivered_session_id: string | null
   readonly acked_at: string | null
   readonly current_brief_version: number | null
   readonly body: string
@@ -516,6 +517,7 @@ export const messageFromRow = (row: MessageRow): Message =>
     state: row.state,
     sentAt: row.sent_at,
     deliveredAt: row.delivered_at ?? undefined,
+    deliveredSessionId: row.delivered_session_id ?? undefined,
     ackedAt: row.acked_at ?? undefined,
     currentBriefVersion: row.current_brief_version ?? undefined,
   })
@@ -544,6 +546,7 @@ const updateMessage = (db: Sqlite, msgId: string, patch: Partial<Message>, event
       'state',
       'sent_at',
       'delivered_at',
+      'delivered_session_id',
       'acked_at',
       'current_brief_version',
       'body',
@@ -557,6 +560,7 @@ const updateMessage = (db: Sqlite, msgId: string, patch: Partial<Message>, event
       next.state,
       next.sentAt,
       next.deliveredAt ?? null,
+      next.deliveredSessionId ?? null,
       next.ackedAt ?? null,
       next.currentBriefVersion ?? null,
       next.body,
@@ -1314,6 +1318,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
           'state',
           'sent_at',
           'delivered_at',
+          'delivered_session_id',
           'acked_at',
           'current_brief_version',
           'body',
@@ -1329,6 +1334,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
           null,
           null,
           null,
+          null,
           message.body,
         ],
         ['msg_id'],
@@ -1336,7 +1342,12 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
     case 'message.delivered':
-      updateMessage(db, event.data.msgId, { state: 'delivered', deliveredAt: ts }, event)
+      updateMessage(
+        db,
+        event.data.msgId,
+        { state: 'delivered', deliveredAt: ts, deliveredSessionId: event.data.sessionId },
+        event,
+      )
       return
     case 'message.acked':
       updateMessage(db, event.data.msgId, { state: 'acked', ackedAt: ts }, event)

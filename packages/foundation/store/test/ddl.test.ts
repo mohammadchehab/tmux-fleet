@@ -24,11 +24,27 @@ const tableNames = (db: DatabaseSync): string[] =>
       .all() as { name: string }[]
   ).map((row) => row.name)
 
-test('the schema applies to a fresh database, and applying it again changes nothing', () => {
+test('the schema applies to a fresh database, and applying the create statements again changes nothing', () => {
   const db = fresh()
   const before = tableNames(db)
-  db.exec(SCHEMA_VERSION_1_SQL)
-  assert.deepEqual(tableNames(db), before, 'every statement is IF NOT EXISTS, so a re-apply is idempotent')
+  // Every `CREATE` is `IF NOT EXISTS`, so re-running them is a no-op. The
+  // additive `ALTER TABLE ... ADD COLUMN` is deliberately not in this check:
+  // SQLite has no `IF NOT EXISTS` for a column, and what makes it safe is the
+  // version ledger — `store_meta` records it applied, so `migrate()` never
+  // replays it (see `sqlite-store.ts`).
+  db.exec(SCHEMA_VERSION_1_SQL.replace(/^ALTER TABLE .*$/gm, ''))
+  assert.deepEqual(tableNames(db), before, 'every create is IF NOT EXISTS, so a re-apply is idempotent')
+  db.close()
+})
+
+test('a fresh schema has the additive columns the migrations add on top of version 1', () => {
+  const db = fresh()
+  const columns = (db.prepare("SELECT name FROM pragma_table_info('messages')").all() as { name: string }[]).map(
+    (row) => row.name,
+  )
+  // `SCHEMA_VERSION_1_SQL` is every migration's statements in order, so a fresh
+  // database gets the table from version 1 and the column from version 5.
+  assert.ok(columns.includes('delivered_session_id'), `messages has delivered_session_id; it has ${columns.join(', ')}`)
   db.close()
 })
 

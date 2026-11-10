@@ -384,6 +384,16 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'peer_compactions',
     statements: [COMPACTIONS],
   },
+  {
+    // additive: which session a delivery went to. `message.delivered` has always
+    // carried it; the projection did not keep it, so the Mailbox held it in
+    // memory and a fleetd restart lost it (§7). A row delivered before this
+    // column existed reads `NULL`, which the Mailbox treats as "no session
+    // recorded" and re-sends once — the at-least-once it already promised.
+    version: 5,
+    name: 'delivered_session_id',
+    statements: ['ALTER TABLE messages ADD COLUMN delivered_session_id TEXT;'],
+  },
 ]
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

@@ -66,7 +66,14 @@ export const fakeStore = (): FakeStore => {
       }
       case 'message.delivered': {
         const row = rows.get(event.data.msgId)
-        if (row) rows.set(row.msgId, { ...row, state: 'delivered', deliveredAt: event.ts })
+        if (row) {
+          rows.set(row.msgId, {
+            ...row,
+            state: 'delivered',
+            deliveredAt: event.ts,
+            deliveredSessionId: event.data.sessionId,
+          })
+        }
         return
       }
       case 'message.acked': {

@@ -17,10 +17,12 @@
  *   are appended *after* the provider accepted the turn, never before.
  *
  * The state is the store's: every move is one of the four `message.*` events,
- * and reads go through the `message` projection. The only thing kept in memory
- * is which session a message was handed to, so a repeated `deliver` inside one
- * live session does not re-send what the peer is already looking at — a hint,
- * not the truth, so a restart safely degrades to a duplicate rather than a loss.
+ * and reads go through the `message` projection. That includes which session a
+ * message was last handed to — `message.delivered` carries it, the projection
+ * keeps it, so "the peer is already looking at this" is a fact a restarted
+ * fleetd still knows. The only thing kept in memory is the per-peer delivery
+ * queue that stops two overlapping `deliver` calls from both seeing the same
+ * message as pending.
  *
  * One daemon drives the Mailbox; it is not a multi-process lock.
  */
@@ -41,7 +43,6 @@ import {
   type PeerId,
   type Result,
   type Seq,
-  type SessionId,
 } from '@fleet/foundation-core'
 import type {
   AppendEvent,
@@ -106,9 +107,6 @@ const monotonic = (clock: Clock): Clock => {
 
 export const createMailbox = (deps: MailboxDeps): Mailbox => {
   const clock = monotonic(deps.clock ?? systemClock)
-
-  /** Which session each message was handed to, so a re-delivery in that session is skipped. */
-  const handedTo = new Map<MessageId, SessionId>()
 
   /**
    * One delivery at a time per peer. The supervisor ticks on a timer and a slow
@@ -226,9 +224,13 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
     const delivered: MessageId[] = []
     for (const message of live) {
       // Already in front of this peer, in this session, unacked: re-sending it
-      // would duplicate the turn. A *different* session means the peer lost its
-      // context, and at-least-once says send it again.
-      if (handedTo.get(message.msgId) === lease.sessionId) continue
+      // would duplicate the turn. `deliveredSessionId` comes from the log, so
+      // this holds across a fleetd restart; the memory map that used to hold it
+      // did not, and a restart re-sent every unacked message to the session that
+      // already had it. A message delivered before the column existed reads as
+      // no session, and is re-sent once. A *different* session means the peer
+      // lost its context, and at-least-once says send it again.
+      if (message.state === 'delivered' && message.deliveredSessionId === lease.sessionId) continue
 
       try {
         await lease.send({ text: message.body, kind: message.kind, briefVersion: message.briefVersion })
@@ -249,7 +251,6 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
       ])
       if (!written.ok) return written
 
-      handedTo.set(message.msgId, lease.sessionId)
       delivered.push(message.msgId)
     }
 
@@ -330,7 +331,6 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
         { type: 'message.acked', ts: clock.now(), subject: to, actor: peerActor(to), data: { msgId, to } },
       ])
       if (!written.ok) return written
-      handedTo.delete(msgId)
       return ok(undefined)
     },
 
@@ -358,7 +358,6 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
         rejected(to, message.msgId, message.briefVersion, currentBriefVersion, message.from, clock.now()),
       ])
       if (!written.ok) return written
-      handedTo.delete(msgId)
       return ok(undefined)
     },
 

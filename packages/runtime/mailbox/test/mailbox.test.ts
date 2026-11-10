@@ -212,6 +212,21 @@ describe('at-least-once delivery with ack', () => {
     assert.equal(afterRestart.delivered.length, 1)
   })
 
+  it('does not re-send into the same session after the daemon restarted', async () => {
+    const { store, sessions, versions, mailbox } = setup()
+    unwrap(await send(mailbox, engineer))
+    unwrap(await mailbox.deliver(engineer))
+
+    // The fleetd that delivered is gone: a new Mailbox over the same store has no
+    // memory of what the old one handed over. The log does — `message.delivered`
+    // names the session — so the peer is not handed the same turn a second time.
+    const restarted = createMailbox({ store, sessions, briefs: versions, clock: at })
+    const again = unwrap(await restarted.deliver(engineer))
+
+    assert.equal(sessions.sent.length, 1, 'one delivery, however many daemons saw it through')
+    assert.deepEqual(again.delivered, [])
+  })
+
   it('stops delivering once the peer acks, and a repeated ack is a no-op', async () => {
     const { sessions, mailbox } = setup()
     const msgId = unwrap(await send(mailbox, engineer))
