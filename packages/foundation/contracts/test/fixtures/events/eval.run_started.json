@@ -1,0 +1,15 @@
+{
+  "seq": 57,
+  "ts": "2026-11-10T09:58:10.000Z",
+  "type": "eval.run_started",
+  "subject": "evr_4c1d9a7b2e5f6038",
+  "actor": "user",
+  "data": {
+    "runId": "evr_4c1d9a7b2e5f6038",
+    "suite": "judge",
+    "sha": "ffcd0091a2b3c4d5",
+    "provider": "deepinfra",
+    "model": "deepseek-ai/DeepSeek-V3.2",
+    "cases": 10
+  }
+}

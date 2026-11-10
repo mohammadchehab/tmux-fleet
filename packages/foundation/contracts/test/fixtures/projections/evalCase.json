@@ -1,0 +1,10 @@
+{
+  "runId": "evr_4c1d9a7b2e5f6038",
+  "caseId": "stacked-merge-branch-loss",
+  "attempts": 3,
+  "passes": 2,
+  "pass": false,
+  "score": 0,
+  "detail": "attempt 3: escalate where the case expected same_feature — the two branches were read as one",
+  "updatedAt": "2026-11-10T10:02:58.000Z"
+}

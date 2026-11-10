@@ -1,0 +1,18 @@
+{
+  "seq": 58,
+  "ts": "2026-11-10T10:01:44.000Z",
+  "type": "eval.case_scored",
+  "subject": "evr_4c1d9a7b2e5f6038",
+  "actor": "user",
+  "causedBy": [
+    57
+  ],
+  "data": {
+    "runId": "evr_4c1d9a7b2e5f6038",
+    "caseId": "stacked-merge-branch-loss",
+    "attempt": 1,
+    "pass": true,
+    "score": 1,
+    "detail": "same_feature: exact match on kind and route target"
+  }
+}

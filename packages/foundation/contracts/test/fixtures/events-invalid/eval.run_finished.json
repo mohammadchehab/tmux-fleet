@@ -1,0 +1,26 @@
+{
+  "input": {
+    "seq": 59,
+    "ts": "2026-11-10T10:03:12.000Z",
+    "type": "eval.run_finished",
+    "subject": "evr_4c1d9a7b2e5f6038",
+    "actor": "user",
+    "causedBy": [
+      57
+    ],
+    "data": {
+      "runId": "evr_4c1d9a7b2e5f6038",
+      "suite": "judge",
+      "sha": "ffcd0091a2b3c4d5",
+      "provider": "deepinfra",
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "cases": 10,
+      "passed": 8,
+      "tokensIn": 48210,
+      "tokensOut": 3904,
+      "costUsd": 0.0412,
+      "latencyMs": "not-a-number"
+    }
+  },
+  "path": "data.latencyMs"
+}

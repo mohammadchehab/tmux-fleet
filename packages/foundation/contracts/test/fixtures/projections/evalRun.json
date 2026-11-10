@@ -1,0 +1,16 @@
+{
+  "runId": "evr_4c1d9a7b2e5f6038",
+  "suite": "judge",
+  "sha": "ffcd0091a2b3c4d5",
+  "provider": "deepinfra",
+  "model": "deepseek-ai/DeepSeek-V3.2",
+  "cases": 10,
+  "state": "finished",
+  "passed": 8,
+  "tokensIn": 48210,
+  "tokensOut": 3904,
+  "costUsd": 0.0412,
+  "latencyMs": 184320,
+  "startedAt": "2026-11-10T09:58:10.000Z",
+  "finishedAt": "2026-11-10T10:03:12.000Z"
+}

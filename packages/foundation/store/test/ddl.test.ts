@@ -39,6 +39,8 @@ test('every table the design names exists', () => {
     'builds',
     'contracts',
     'decisions',
+    'eval_cases',
+    'eval_runs',
     'events',
     'findings',
     'messages',
