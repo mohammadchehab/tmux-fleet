@@ -43,3 +43,6 @@ export * from './projections/ops.ts'
 // the Mailbox API (§7) and the cross-group ports (§1.1)
 export * from './mailbox.ts'
 export * from './ports.ts'
+
+// the daemon's local API, the port between `fleetd` and every client (§2)
+export * from './daemon-rpc.ts'
