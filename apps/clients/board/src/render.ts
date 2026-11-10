@@ -15,14 +15,48 @@
  */
 
 import { isWorkTerminal, workStates } from '@fleet/foundation-contracts'
-import type { DaemonStatus, Work, WorkState } from '@fleet/foundation-contracts'
+import type { DaemonStatus, TokenReport, Work, WorkState } from '@fleet/foundation-contracts'
 
 export interface BoardPage {
   readonly status: DaemonStatus
   readonly work: readonly Work[]
+  /**
+   * §6.2's cost report, as `ls` answered it: a peer's rollup row has no
+   * `workId`, and a row that has one is what that Work has cost on that peer.
+   * The board folds the per-Work rows together, because a Work with two peers
+   * has two of them and the line is about the Work.
+   */
+  readonly usage: readonly TokenReport[]
   /** Rendered into the footer so a test can assert freshness without a clock. */
   readonly renderedAt: string
 }
+
+/** What one Work has spent: every peer's turns for it, added up. */
+interface Spend {
+  readonly turns: number
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly costUsd: number
+}
+
+const spendByWork = (usage: readonly TokenReport[]): ReadonlyMap<string, Spend> => {
+  const totals = new Map<string, Spend>()
+  for (const report of usage) {
+    if (report.workId === undefined) continue
+    const current = totals.get(report.workId) ?? { turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 }
+    totals.set(report.workId, {
+      turns: current.turns + report.turns,
+      inputTokens: current.inputTokens + report.inputTokens,
+      outputTokens: current.outputTokens + report.outputTokens,
+      costUsd: current.costUsd + report.costUsd,
+    })
+  }
+  return totals
+}
+
+/** The fleet's bill, from the rollup rows only: the per-Work rows are their breakdown. */
+const fleetSpend = (usage: readonly TokenReport[]): number =>
+  usage.filter((report) => report.workId === undefined).reduce((sum, report) => sum + report.costUsd, 0)
 
 /** Every string below is a value the store held, so every one of them is escaped. */
 const escape = (value: string): string =>
@@ -43,7 +77,7 @@ const link = (href: string, text: string): string =>
 
 const prLabel = (pr: Work['prs'][number]): string => `${pr.repo}#${String(pr.number)}`
 
-const row = (item: Work): string => {
+const row = (item: Work, spend: Spend | undefined): string => {
   const facts: string[] = []
   if (item.assignee !== undefined) facts.push(`<span class="who">${escape(item.assignee)}</span>`)
   if (item.role !== undefined) facts.push(`<span class="role">${escape(item.role)}</span>`)
@@ -56,18 +90,28 @@ const row = (item: Work): string => {
     facts.push(item.external.url === undefined ? `<span>${escape(label)}</span>` : link(item.external.url, label))
   }
   const blocked = item.blockedReason === undefined ? '' : `<p class="why">${escape(item.blockedReason)}</p>`
+  // What this Work has cost so far, as the report measured it. A Work with no
+  // turn gets no line: `$0.00` would claim a Work that was free rather than one
+  // nothing has been recorded against (§6.2).
+  const cost =
+    spend === undefined
+      ? ''
+      : `<p class="cost">${escape(
+          `${String(spend.turns)} turns · in ${String(spend.inputTokens)} out ${String(spend.outputTokens)} · $${spend.costUsd.toFixed(2)}`,
+        )}</p>`
   return [
     '<li class="work">',
     `<span class="id">${escape(item.workId)}</span>`,
     `<span class="title">${escape(item.title)}</span>`,
     facts.length === 0 ? '' : `<span class="facts">${facts.join(' ')}</span>`,
     blocked,
+    cost,
     '</li>',
   ].join('')
 }
 
-const column = (state: WorkState, items: readonly Work[]): string => {
-  const rows = items.map(row).join('\n')
+const column = (state: WorkState, items: readonly Work[], spend: ReadonlyMap<string, Spend>): string => {
+  const rows = items.map((item) => row(item, spend.get(item.workId))).join('\n')
   return [
     `<section class="state ${isWorkTerminal(state) ? 'done' : 'open'}">`,
     `<h2>${escape(state)}<span class="count">${String(items.length)}</span></h2>`,
@@ -82,10 +126,11 @@ const column = (state: WorkState, items: readonly Work[]): string => {
  * columns would make `blocked` — the one worth noticing — easy to miss.
  */
 export const renderBoard = (page: BoardPage): string => {
+  const spend = spendByWork(page.usage)
   const columns = workStates
     .map((state) => ({ state, items: page.work.filter((item) => item.state === state) }))
     .filter((group) => group.items.length > 0)
-    .map((group) => column(group.state, group.items))
+    .map((group) => column(group.state, group.items, spend))
     .join('\n')
 
   const body =
@@ -118,6 +163,7 @@ ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
 .facts { display: flex; flex-wrap: wrap; gap: 0.5rem; color: var(--muted); font-size: 0.85rem; }
 .facts a { color: inherit; }
 .why { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.85rem; font-style: italic; }
+.cost { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 .empty { padding: 2rem 0; color: var(--muted); }
 footer { margin-top: 1.5rem; padding-top: 0.75rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.8rem; }
 </style>
@@ -126,6 +172,7 @@ footer { margin-top: 1.5rem; padding-top: 0.75rem; border-top: 1px solid var(--l
 <header>
 <h1>fleet ${escape(page.status.profile)}</h1>
 <span class="meta">${String(page.work.length)} work item${page.work.length === 1 ? '' : 's'}</span>
+<span class="meta">$${fleetSpend(page.usage).toFixed(2)} spent</span>
 <span class="meta">fleetd ${escape(String(page.status.pid))}</span>
 </header>
 ${body}

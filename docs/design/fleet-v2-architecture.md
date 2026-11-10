@@ -558,6 +558,10 @@ projection holds `open | confirmed | dismissed | fixed` with the decision that m
    from the provider's `usage()`. The `token-report` projection gives, per peer and role, tokens per Work item, the
    share of exploration done through codegraph, and redirect counts. Baseline: run a fixed set of tasks with the guard
    `off` then `enforce`; the stated target is a measured drop in tokens per completed Work item, reported, not assumed.
+   The report is read back where a person already looks: `fleet ls` prints a `tokens` section — one row per peer
+   rollup and one per Work, with the fleet total in the heading — and the board prints a Work's turns, tokens and
+   cost on its row and the fleet total in the header. `costUsd` is the sum of the turns the provider priced: a turn
+   that reported no price adds nothing, so a peer whose model prices nothing reads as unmeasured, never as free.
    Under fleetd the **supervisor** is the measurer: it already consumes the session's event stream, so it records the
    row at the turn boundary from the provider's `turnSpend()` (the boundary message's cumulative counters, so subagents
    and sidechains are billed) and `usage()`, counting `toolCalls` off the stream's own `tool.use` events. Nothing is

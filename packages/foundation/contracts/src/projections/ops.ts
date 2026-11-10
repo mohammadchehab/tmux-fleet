@@ -4,7 +4,7 @@
  * user-facing clients read: the decision inbox, the board and the report.
  */
 
-import { array, boolean, count, object, objectAs, oneOf, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
+import { array, boolean, count, number, object, objectAs, oneOf, optional, positiveInt, string, text, timestamp, type Schema } from '@fleet/foundation-core'
 import { decisionId, findingId, notificationKey, peerId, workId } from '@fleet/foundation-core'
 import { severity } from '../shapes.ts'
 import { routineKinds, routineTriggers } from '../events/ops.ts'
@@ -192,6 +192,13 @@ export interface TokenReport {
   readonly inputTokens: number
   readonly outputTokens: number
   readonly cachedTokens: number
+  /**
+   * What those turns cost, in USD, summed from the turns that reported a price
+   * (`turn.usage_recorded.costUsd`). A provider that does not price its turns
+   * leaves this at 0 — an unknown cost is not a free one, and §6.2's report says
+   * which it is by the provider, not by this number alone.
+   */
+  readonly costUsd: number
   readonly toolCalls: {
     readonly grep: number
     readonly glob: number
@@ -211,6 +218,7 @@ export const tokenReport = (): Schema<TokenReport> =>
     inputTokens: count(),
     outputTokens: count(),
     cachedTokens: count(),
+    costUsd: number({ min: 0 }),
     toolCalls: object({ grep: count(), glob: count(), read: count(), codegraph: count() }),
     redirects: count(),
     updatedAt: timestamp(),

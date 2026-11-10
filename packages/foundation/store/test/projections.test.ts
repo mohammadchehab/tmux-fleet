@@ -670,3 +670,55 @@ test('a compaction says whether the configured limit was the reason, which is th
 
   await store.close()
 })
+
+test('a turn adds its price to the Work and to the peer rollup, and an unpriced turn adds nothing', async () => {
+  const store = await open()
+  await store.append([
+    event('peer.registered', 'engineer-1', {
+      peerId: 'engineer-1',
+      role: 'engineer',
+      providerId: 'claude-code',
+      model: 'claude-sonnet-5-5',
+      permissionMode: 'acceptEdits',
+      worktreeId: 'wtr_5e6f708192a3b4c5',
+    }),
+  ])
+
+  const turn = (workId: string | undefined, costUsd: number | undefined, ts: string): AppendEvent[] => [
+    event(
+      'turn.usage_recorded',
+      'engineer-1',
+      {
+        peerId: 'engineer-1',
+        sessionId: 'ses_1a2b3c4d5e6f7081',
+        ...(workId === undefined ? {} : { workId }),
+        contextTokens: 172_400,
+        contextLimit: 200_000,
+        inputTokens: 61_200,
+        outputTokens: 4_180,
+        cachedTokens: 148_000,
+        toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+        ...(costUsd === undefined ? {} : { costUsd }),
+      },
+      ts,
+    ),
+  ]
+
+  await store.append(turn('wrk_7f3a91c2d84b0e56', 0.42, '2026-11-10T10:00:00.000Z'))
+  // A provider that prices nothing: the turn still counts, the spend does not move.
+  await store.append(turn('wrk_7f3a91c2d84b0e56', undefined, '2026-11-10T10:01:00.000Z'))
+
+  const rows = await store.reader().tokens.all()
+  const work = rows.find((row) => row.workId === 'wrk_7f3a91c2d84b0e56')
+  const rollup = rows.find((row) => row.workId === undefined)
+
+  assert.equal(work?.role, 'engineer', 'the role comes from the peer row, not the event')
+  assert.equal(work?.turns, 2)
+  assert.equal(work?.costUsd, 0.42, 'an unknown cost is not a free one, and not a new price either')
+
+  assert.equal(rollup?.turns, 2, 'the rollup counts every turn the peer ran')
+  assert.equal(rollup?.inputTokens, 122_400)
+  assert.equal(rollup?.costUsd, 0.42, 'the rollup sums what was actually priced')
+
+  await store.close()
+})

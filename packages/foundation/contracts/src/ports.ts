@@ -26,7 +26,7 @@ import type { Message } from './projections/mailbox.ts'
 import type { MessageAckState } from './events/messages.ts'
 import type { ProviderHandle, Turn } from './provider.ts'
 import type { Build, PullRequest, Worktree } from './projections/delivery.ts'
-import type { Decision, Finding, Notification, Routine } from './projections/ops.ts'
+import type { Decision, Finding, Notification, Routine, TokenReport } from './projections/ops.ts'
 import type { Peer, PeerCompactions, Session } from './projections/peers.ts'
 import type { Work } from './projections/work.ts'
 import type { ExternalItem } from './shapes.ts'
@@ -319,6 +319,15 @@ export interface ReadModel {
    */
   readonly compactions: {
     all(): Promise<readonly PeerCompactions[]>
+  }
+  /**
+   * §6.2's cost report: a row per peer *and* Work, plus a rollup row per peer
+   * with no `workId`. Asking for both in one read is what lets `fleet ls` print
+   * a peer's bill and the board price each Work without two queries that could
+   * disagree about a turn appended between them.
+   */
+  readonly tokens: {
+    all(): Promise<readonly TokenReport[]>
   }
 }
 

@@ -41,6 +41,7 @@ export const lsFixture = (peers: readonly Peer[]): LsResult => ({
   routines: [],
   decisions: [],
   compactions: [],
+  tokens: [],
 })
 
 /** An opaque id is `<prefix>_<16 lowercase hex>`, which is what `sessionId()` checks. */
