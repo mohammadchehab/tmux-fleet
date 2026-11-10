@@ -1,0 +1,22 @@
+{
+  // The typecheck gate (`task typecheck`). Node runs the sources directly, so
+  // `tsc` checks and never emits; `erasableSyntaxOnly` keeps the sources valid
+  // JavaScript (no enum, namespace or parameter properties), and
+  // `allowImportingTsExtensions` is what lets a relative import name the real
+  // file, as Node requires.
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["packages/**/src/**/*.ts", "packages/**/test/**/*.ts"]
+}

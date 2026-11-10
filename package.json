@@ -1,0 +1,19 @@
+{
+  "name": "tmux-fleet",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The fleet's TypeScript packages (architecture §1.1, §15). The shell half of the repo has no node dependencies.",
+  "packageManager": "pnpm@10.18.3",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test 'packages/**/test/**/*.test.ts'",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

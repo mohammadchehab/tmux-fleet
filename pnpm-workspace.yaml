@@ -1,0 +1,7 @@
+# The workspace is only what lives under packages/ (§1.1): foundation/* and
+# runtime/providers/*. `@fleet/*` imports resolve to the sibling package's
+# `src/index.ts`, so `pnpm install` is all a clean checkout needs before
+# `task test`.
+packages:
+  - 'packages/foundation/*'
+  - 'packages/runtime/providers/*'
