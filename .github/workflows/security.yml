@@ -62,7 +62,10 @@ jobs:
           # pipx, not pip: the runner's python is externally managed (PEP 668) and pip install refuses there.
           pipx install "semgrep==${SEMGREP_VERSION}"
           gitleaks version
-          osv-scanner --version | head -1
+          # No `| head -1`: `head` closes the pipe before osv-scanner finishes writing its
+          # second line (osv-scalibr's version), the scanner takes SIGPIPE, and `pipefail`
+          # turns that into exit 141 — a job that fails because a check ran fine.
+          osv-scanner --version
           semgrep --version
 
       # On a PR the diff is what is being reviewed: base..head, so a finding is attributed to the change introducing it.
