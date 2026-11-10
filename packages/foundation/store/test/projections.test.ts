@@ -121,6 +121,9 @@ test('the message projection is the ack state machine §7 reads', async () => {
   assert.equal(acked[0]?.state, 'acked')
   assert.equal(acked[0]?.deliveredAt, '2026-11-10T09:30:00.000Z')
   assert.equal(acked[0]?.ackedAt, '2026-11-10T09:31:00.000Z')
+  // Which session it went to is kept, not just that it went: it is how a
+  // restarted fleetd knows a peer is already looking at this message (§7).
+  assert.equal(acked[0]?.deliveredSessionId, 'ses_1a2b3c4d5e6f7081')
 
   // A reply that cited an older brief is rejected, and the version to re-send
   // against is kept so the Mailbox can re-attach it (§7).
