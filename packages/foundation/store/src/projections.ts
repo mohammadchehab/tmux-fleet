@@ -1504,6 +1504,8 @@ export const readers = (db: Sqlite): ReadModel => {
       get: async (id) => peerById(db, id),
     },
     sessions: {
+      all: async () =>
+        rows(PROJECTION_SCHEMAS.session, 'SELECT data FROM sessions ORDER BY started_at, session_id'),
       forPeer: async (id) =>
         rows(PROJECTION_SCHEMAS.session, 'SELECT data FROM sessions WHERE peer_id = ? ORDER BY started_at', id),
     },

@@ -46,7 +46,7 @@ export const readAll = async (store: EventStore): Promise<Readonly<Record<string
   const reader = store.reader()
   return {
     peers: await reader.peers.all(),
-    sessions: await reader.sessions.forPeer('engineer-1' as PeerId),
+    sessions: await reader.sessions.all(),
     work: await reader.work.all(),
     decisions: await reader.decisions.all(),
     openDecisions: await reader.decisions.open(),

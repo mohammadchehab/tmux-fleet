@@ -110,8 +110,9 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
       get: async (id) => current.peers.find((peer) => peer.peerId === id),
     },
     sessions: {
-      // No sessions are seeded: a routine's snapshot only asks for them per peer,
-      // and the scheduler's tests do not read them.
+      // No sessions are seeded: the scheduler's tests do not read them, and the
+      // snapshot's single `all()` is what a routine asks for.
+      all: async () => [],
       forPeer: async () => [],
     },
     work: { all: async () => [], get: async () => undefined },

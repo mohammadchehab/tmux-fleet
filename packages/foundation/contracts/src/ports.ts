@@ -94,6 +94,12 @@ export interface ReadModel {
     get(id: PeerId): Promise<Peer | undefined>
   }
   readonly sessions: {
+    /**
+     * Every session the fleet has, oldest first. A session belongs to a peer,
+     * but a `FleetState` needs all of them (§5.2), and asking per peer made the
+     * snapshot's cost a function of the fleet's size rather than one read.
+     */
+    all(): Promise<readonly Session[]>
     forPeer(id: PeerId): Promise<readonly Session[]>
   }
   readonly work: {

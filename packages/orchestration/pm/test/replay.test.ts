@@ -137,11 +137,9 @@ const storeWith = async (log: readonly AppendEvent[]): Promise<EventStore> => {
 /** The `FleetState` as the PM is handed it: every projection, read as a value (§5.2). */
 const snapshotOf = async (store: EventStore) => {
   const reader = store.reader()
-  const peers = await reader.peers.all()
   return {
-    peers,
-    // `ReadModel.sessions` has no `all()`: it is per-peer by design, so the snapshot gathers it per peer
-    sessions: (await Promise.all(peers.map((peer) => reader.sessions.forPeer(peer.peerId)))).flat(),
+    peers: await reader.peers.all(),
+    sessions: await reader.sessions.all(),
     work: await reader.work.all(),
     decisions: await reader.decisions.all(),
     messages: await reader.messages.all(),
