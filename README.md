@@ -33,6 +33,19 @@ tests live in `tests/` — that
 is where the §1.1 rules live — and a package's own unit tests sit beside it as `test/*.test.ts`, run in the same sweep,
 so a new package needs no task of its own.
 
+## First run
+
+From the root of this checkout — no `pnpm link`, no PATH to set up, the root `fleet` script runs the CLI in place:
+
+```sh
+pnpm fleet init me     # writes ~/.config/fleet/profiles/me.yaml once; it never overwrites one
+pnpm fleet up me       # starts fleetd and registers the profile's peers
+```
+
+`fleet init` writes a comment-rich starter: every routine kind, every model id this repo knows, and a profile that
+`fleet up` accepts as written. Edit the one thing it cannot know — `repos` — then `fleet up me`. Everything after that
+is a client of the daemon it started: `pnpm fleet ls`, `pnpm fleet send pm info "..."`, `pnpm fleet down`.
+
 ## Tool policy
 
 A session's `toolPolicy` is a guard rail, not a sandbox; no-production is enforced by environment. An `allow` rule

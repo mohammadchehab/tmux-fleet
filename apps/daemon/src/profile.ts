@@ -30,7 +30,13 @@ import {
   type Schema,
 } from '@fleet/foundation-core'
 import type { PeerId } from '@fleet/foundation-core'
-import { routineKinds, workStates, type WorkState } from '@fleet/foundation-contracts'
+import {
+  profileProviders,
+  routineKinds,
+  workStates,
+  type ProfileProvider,
+  type WorkState,
+} from '@fleet/foundation-contracts'
 import {
   jiraSearchFlavors,
   type JiraSearchFlavor,
@@ -38,9 +44,7 @@ import {
 import { parse as parseYaml } from 'yaml'
 import type { RoutineSettings, RoutinesConfig } from '@fleet/orchestration-routines'
 
-/** The providers this daemon can wire up today. A profile names one per peer. */
-export const profileProviders = ['claude', 'deepinfra'] as const
-export type ProfileProvider = (typeof profileProviders)[number]
+export { profileProviders, type ProfileProvider }
 
 /** §13's four modes, as the provider interface reports them (§4). */
 export const permissionModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const
@@ -505,11 +509,12 @@ export const loadProfile = async (file: string, expectedName: string): Promise<P
   try {
     source = await readFile(file, 'utf8')
   } catch (cause) {
-    // Not "run fleet init": there is no such command. The file is the whole
-    // remedy, so the sentence names it and what it has to say.
+    // The remedy is one command, and naming it is the difference between a
+    // person writing YAML from memory and one starting from the starter that
+    // already has every field's spelling right.
     throw fleetError(
       'not_found',
-      `no profile at ${file}: write it (it names the fleet's repos and its peers) and run fleet up ${expectedName} again`,
+      `no profile at ${file}: run fleet init ${expectedName} to write a starter (it names the fleet's repos and its peers), then edit it and run fleet up ${expectedName} again`,
       { cause },
     )
   }

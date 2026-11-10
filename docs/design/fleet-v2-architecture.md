@@ -202,7 +202,9 @@ The security routine can start earlier than phase 2 on the interim fleet; phase 
   (Unix socket, JSON). The CLI, the board, the tmux view and any web UI are clients of that API and hold no state.
   It is started by `fleet up`; `fleet up` after a reboot resumes from the store (§8). It holds a pid lock on its
   store, so a second fleetd on the same store is refused rather than started beside a live one; `fleet down` ends
-  the process, and a lock whose pid is dead is taken over by the next `up`.
+  the process, and a lock whose pid is dead is taken over by the next `up`. The profile it reads is a file a person
+  writes — `fleet init <profile>` writes a commented starter, once, and never over an existing one, so the first
+  run starts from every valid spelling instead of from memory.
 - **Event store**: append-only SQLite (WAL). Everything that happens is an event; every table the code reads is a
   projection rebuilt from events. Replay of a window of events reproduces every PM decision (§5.4).
 - **Registry**: peers, roles, sessions, current brief version, capacity. Projection.

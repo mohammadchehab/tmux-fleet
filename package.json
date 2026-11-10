@@ -9,6 +9,7 @@
     "node": ">=22.18"
   },
   "scripts": {
+    "fleet": "node apps/clients/cli/src/main.ts",
     "test": "node --test 'packages/**/test/**/*.test.ts' 'apps/**/test/**/*.test.ts' 'tests/**/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

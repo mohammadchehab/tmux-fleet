@@ -10,6 +10,7 @@
 
 export * from './client.ts'
 export * from './daemon.ts'
+export * from './init.ts'
 export * from './render.ts'
 export * from './run.ts'
 export * from './socket.ts'

@@ -8,6 +8,8 @@
  */
 
 import assert from 'node:assert/strict'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import { parseProfileName, persistentDirs, profilePaths } from '../src/index.ts'
 
@@ -48,6 +50,20 @@ describe('the path layout', () => {
       assert.equal(profilePaths('engineer', { home: '/home/u' }).profileFile, '/home/u/.config/fleet/profiles/engineer.yaml')
       // …and no roots at all is still the environment's to say.
       assert.equal(profilePaths('engineer').profileFile, '/elsewhere/fleet/profiles/engineer.yaml')
+    } finally {
+      if (before === undefined) delete process.env['XDG_CONFIG_HOME']
+      else process.env['XDG_CONFIG_HOME'] = before
+    }
+  })
+
+  it('reads an empty `$XDG_CONFIG_HOME` as unset, not as the current directory', () => {
+    // `XDG_CONFIG_HOME= something` puts an empty string in the environment, and
+    // the spec says that is unset. Joining onto it wrote a profile to a relative
+    // `fleet/profiles/` wherever the command happened to run.
+    const before = process.env['XDG_CONFIG_HOME']
+    process.env['XDG_CONFIG_HOME'] = ''
+    try {
+      assert.equal(profilePaths('engineer').profileFile, join(homedir(), '.config', 'fleet', 'profiles', 'engineer.yaml'))
     } finally {
       if (before === undefined) delete process.env['XDG_CONFIG_HOME']
       else process.env['XDG_CONFIG_HOME'] = before

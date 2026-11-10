@@ -95,9 +95,15 @@ export const parseProfileName = (name: string): ProfileName => {
 export const profilePaths = (profile: ProfileName, roots: PathRoots = {}): ProfilePaths => {
   const name = parseProfileName(profile)
   const home = roots.home ?? homedir()
+  // An *empty* `XDG_CONFIG_HOME` is unset, per the XDG spec, and a shell that
+  // exports it empty is common (`XDG_CONFIG_HOME= something`). Reading it as a
+  // root made `configHome` the empty string, and every path below joined onto
+  // it — a profile written to `fleet/profiles/name.yaml` under the *current*
+  // directory, which is never where the daemon looks.
+  const fromEnv = process.env.XDG_CONFIG_HOME
   const configHome =
     roots.configHome ??
-    (roots.home === undefined ? (process.env.XDG_CONFIG_HOME ?? join(home, '.config')) : join(home, '.config'))
+    (roots.home === undefined && fromEnv !== undefined && fromEnv !== '' ? fromEnv : join(home, '.config'))
   const stateDir = join(home, '.fleet', name)
   const daemonDir = join(stateDir, 'daemon')
   return {
