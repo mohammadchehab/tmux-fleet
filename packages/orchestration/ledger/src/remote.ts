@@ -31,7 +31,7 @@
  */
 
 import type { BuildRunner } from './runner.ts'
-import { spawnToLog, statusOf } from './runner.ts'
+import { DEFAULT_BUILD_TIMEOUT_MS, spawnToLog, statusOf } from './runner.ts'
 
 export interface RemoteRunnerOptions {
   /** The `ssh` target: a host, or a `~/.ssh/config` alias such as `hetzner`. */
@@ -41,6 +41,11 @@ export interface RemoteRunnerOptions {
   /** The repo's remote, as `git` sees it. Defaults to `origin`. */
   readonly remote?: string
   readonly process?: typeof spawnToLog
+  /**
+   * Kill the `ssh` of a build that runs longer than this. Its hang-up reaches the remote
+   * script, whose trap removes the build's tree. Defaults to `DEFAULT_BUILD_TIMEOUT_MS`.
+   */
+  readonly timeoutMs?: number
 }
 
 /** A single argument as a POSIX shell sees it: quoted, so nothing in it is syntax. */
@@ -124,6 +129,7 @@ export const createRemoteRunner = (options: RemoteRunnerOptions): BuildRunner =>
         // stdout and its stderr the command's stderr — so the answer file is
         // filled in on this side, by the same rule a local build follows.
         stdoutPath: build.stdoutPath,
+        timeoutMs: options.timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS,
       })
       return { status: statusOf(outcome.code), durationMs: outcome.durationMs, exitCode: outcome.code }
     },

@@ -80,6 +80,15 @@ export interface ProcessOutcome {
 /** Runs one program with argv, no shell. Only a spawn failure rejects; a non-zero exit resolves. */
 export type RunProcess = (invocation: ProcessInvocation) => Promise<ProcessOutcome>
 
+/**
+ * How long a build may run before the runner kills it. A build that hangs holds its
+ * key in the ledger's `inFlight` map, and every request for that `(repo, sha, task)`
+ * waits on it, so "no limit" is not neutral: it is a build that blocks the next
+ * caller for ever. An hour is above any build the fleet runs today; a profile's
+ * `builds.timeoutMinutes` moves it.
+ */
+export const DEFAULT_BUILD_TIMEOUT_MS = 60 * 60_000
+
 /** A path segment a log filename may carry: no `:` (a task's separator), no `/`. */
 const slug = (value: string): string => value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'x'
 
@@ -125,12 +134,12 @@ export const spawnToLog: RunProcess = (invocation) => {
 
         // Handle stream errors: EACCES, ENOSPC, etc.
         log.once('error', (error) => {
-          child.kill('SIGKILL')
+          killTree()
           answer?.destroy()
           fail(error)
         })
         answer?.once('error', (error) => {
-          child.kill('SIGKILL')
+          killTree()
           log.destroy()
           fail(error)
         })
@@ -144,13 +153,28 @@ export const spawnToLog: RunProcess = (invocation) => {
           cwd: invocation.cwd,
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
+          // Its own process group, so a timeout can end what the build started and not
+          // only the shell it started it through: a grandchild that holds the pipes open
+          // would keep the build "running" after its leader was gone.
+          detached: true,
         })
+        const killTree = () => {
+          try {
+            if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL')
+            else child.kill('SIGKILL')
+          } catch {
+            child.kill('SIGKILL')
+          }
+        }
 
         // Set up timeout if requested
         let timeoutHandle: NodeJS.Timeout | undefined
         if (invocation.timeoutMs !== undefined) {
           timeoutHandle = setTimeout(() => {
-            child.kill('SIGKILL')
+            // The log is what a person reads to learn why a build ended; a kill with
+            // no line in it looks like a build that simply stopped.
+            log.write(`\nfleet: build timed out after ${invocation.timeoutMs}ms and was killed\n`)
+            killTree()
             fail(new Error(`timeout: process exceeded ${invocation.timeoutMs}ms`))
           }, invocation.timeoutMs)
         }

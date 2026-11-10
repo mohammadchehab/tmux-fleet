@@ -359,6 +359,8 @@ export interface ProfileBuilds {
   readonly host?: ProfileBuildHost
   /** Task classes that go to the remote host. Empty (or absent) means "nothing is heavy". */
   readonly heavy?: readonly string[]
+  /** Kill a build that runs longer than this many minutes. Absent takes the ledger's default (an hour). */
+  readonly timeoutMinutes?: number
   /** The remote host. Required for a `heavy` class to mean anything: the daemon refuses the combination. */
   readonly remote?: {
     /** The `ssh` target: a host, or a `~/.ssh/config` alias such as `hetzner`. */
@@ -745,6 +747,7 @@ const buildsBlock = (): Schema<ProfileBuilds> =>
   objectAs<ProfileBuilds>()({
     host: optional(oneOf(profileBuildHosts)),
     heavy: optional(array(buildClass(), { maxItems: 20 })),
+    timeoutMinutes: optional(positiveInt()),
     remote: optional(remoteBuildBlock()),
   })
 
