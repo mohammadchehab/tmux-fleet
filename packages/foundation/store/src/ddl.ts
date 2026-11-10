@@ -275,6 +275,40 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS messages_pending ON messages (to_peer, state);
 `
 
+const EVALS = `
+CREATE TABLE IF NOT EXISTS eval_runs (
+  run_id      TEXT PRIMARY KEY,
+  suite       TEXT NOT NULL,
+  sha         TEXT NOT NULL,
+  provider    TEXT NOT NULL,
+  model       TEXT NOT NULL,
+  state       TEXT NOT NULL,
+  cases       INTEGER NOT NULL,
+  passed      INTEGER,
+  tokens_in   INTEGER,
+  tokens_out  INTEGER,
+  cost_usd    REAL,
+  latency_ms  INTEGER,
+  started_at  TEXT NOT NULL,
+  finished_at TEXT,
+  data        TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS eval_runs_suite ON eval_runs (suite, started_at);
+
+CREATE TABLE IF NOT EXISTS eval_cases (
+  run_id     TEXT NOT NULL,
+  case_id    TEXT NOT NULL,
+  attempts   INTEGER NOT NULL,
+  passes     INTEGER NOT NULL,
+  pass       INTEGER NOT NULL,
+  score      REAL NOT NULL,
+  detail     TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  data       TEXT NOT NULL,
+  PRIMARY KEY (run_id, case_id)
+) STRICT;
+`
+
 const META = `
 CREATE TABLE IF NOT EXISTS store_meta (
   key   TEXT PRIMARY KEY,
@@ -317,6 +351,12 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 2,
     name: 'projection_anomalies',
     statements: [ANOMALIES],
+  },
+  {
+    // additive: eval results are new event types, so an existing log has nothing to backfill into them
+    version: 3,
+    name: 'evals',
+    statements: [EVALS],
   },
 ]
 

@@ -15,6 +15,7 @@ import { peer, session } from './peers.ts'
 import { build, holder, pullRequest, worktree } from './delivery.ts'
 import { message } from './mailbox.ts'
 import { decision, finding, notification, routine, tokenReport } from './ops.ts'
+import { evalCase, evalRun } from './evals.ts'
 
 export const PROJECTION_SCHEMAS = {
   peer: peer(),
@@ -33,6 +34,8 @@ export const PROJECTION_SCHEMAS = {
   notification: notification(),
   finding: finding(),
   tokenReport: tokenReport(),
+  evalRun: evalRun(),
+  evalCase: evalCase(),
 } as const
 
 export type ProjectionName = keyof typeof PROJECTION_SCHEMAS

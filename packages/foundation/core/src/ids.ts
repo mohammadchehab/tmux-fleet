@@ -53,6 +53,8 @@ export type FindingId = Brand<string, 'FindingId'>
 export type NotificationKey = Brand<string, 'NotificationKey'>
 /** A build ledger entry, unique on `(repo, sha, task)` (§11). */
 export type BuildId = Brand<string, 'BuildId'>
+/** One eval run: a suite at one revision on one model (§17). */
+export type EvalRunId = Brand<string, 'EvalRunId'>
 
 const PEER_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
@@ -90,6 +92,7 @@ export const routineId = (): Schema<RoutineId> => opaque('RoutineId', 'rtn')
 export const turnId = (): Schema<TurnId> => opaque('TurnId', 'trn')
 export const findingId = (): Schema<FindingId> => opaque('FindingId', 'fnd')
 export const buildId = (): Schema<BuildId> => opaque('BuildId', 'bld')
+export const evalRunId = (): Schema<EvalRunId> => opaque('EvalRunId', 'evr')
 
 const mint = (prefix: string): string => `${prefix}_${randomUUID().replaceAll('-', '').slice(0, 16)}`
 
@@ -105,6 +108,7 @@ export const newRoutineId = (): RoutineId => mint('rtn') as RoutineId
 export const newTurnId = (): TurnId => mint('trn') as TurnId
 export const newFindingId = (): FindingId => mint('fnd') as FindingId
 export const newBuildId = (): BuildId => mint('bld') as BuildId
+export const newEvalRunId = (): EvalRunId => mint('evr') as EvalRunId
 
 /** A notification key, built the one way the notification projection builds it (§6.1). */
 export const decisionNotificationKey = (id: DecisionId): NotificationKey => `decision:${id}` as NotificationKey

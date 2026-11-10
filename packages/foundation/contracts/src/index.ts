@@ -31,6 +31,7 @@ export * from './events/ops.ts'
 export * from './events/decisions.ts'
 export * from './events/judge.ts'
 export * from './events/signals.ts'
+export * from './events/evals.ts'
 
 // projections (§3)
 export * from './projections/registry.ts'
@@ -39,6 +40,7 @@ export * from './projections/work.ts'
 export * from './projections/delivery.ts'
 export * from './projections/mailbox.ts'
 export * from './projections/ops.ts'
+export * from './projections/evals.ts'
 
 // the Mailbox API (§7) and the cross-group ports (§1.1)
 export * from './mailbox.ts'

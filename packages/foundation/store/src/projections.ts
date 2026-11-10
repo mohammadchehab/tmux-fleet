@@ -22,6 +22,8 @@ import {
   type Build,
   type Contract,
   type Decision,
+  type EvalCase,
+  type EvalRun,
   type Finding,
   type FleetEvent,
   type Holder,
@@ -62,6 +64,8 @@ export const PROJECTION_TABLES = [
   'findings',
   'token_report',
   'messages',
+  'eval_runs',
+  'eval_cases',
   'projection_anomalies',
 ] as const
 
@@ -1575,6 +1579,80 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
 
+    // ------------------------------------------------------------------ evals
+    case 'eval.run_started': {
+      const { runId, suite, sha, provider, model, cases } = event.data
+      writeEvalRun(
+        db,
+        parse(PROJECTION_SCHEMAS.evalRun, {
+          runId,
+          suite,
+          sha,
+          provider,
+          model,
+          cases,
+          state: 'running',
+          startedAt: ts,
+        }),
+      )
+      return
+    }
+    case 'eval.case_scored': {
+      const { runId, caseId, attempt, pass, score, detail } = event.data
+      // A case belongs to a run, and only the two run events carry the run's identity, so a
+      // `case_scored` for a run the log never opened cannot be projected (§3).
+      if (evalRunById(db, runId) === undefined) {
+        missing(db, event, 'evalRun', runId)
+        return
+      }
+      const current = evalCaseFor(db, runId, caseId)
+      writeEvalCase(
+        db,
+        parse(PROJECTION_SCHEMAS.evalCase, {
+          runId,
+          caseId,
+          // The adapter's own attempt number, so an out-of-order arrival cannot lower the tally.
+          attempts: Math.max(current?.attempts ?? 0, attempt),
+          passes: (current?.passes ?? 0) + (pass ? 1 : 0),
+          pass,
+          score,
+          detail,
+          updatedAt: ts,
+        }),
+      )
+      return
+    }
+    case 'eval.run_finished': {
+      const { runId, suite, sha, provider, model, cases, passed, tokensIn, tokensOut, costUsd, latencyMs } = event.data
+      const current = evalRunById(db, runId)
+      writeEvalRun(
+        db,
+        parse(PROJECTION_SCHEMAS.evalRun, {
+          // §17's first slice records a finished run without a start, and this event carries the
+          // whole identity, so it opens the row when there is none to close.
+          ...current,
+          runId,
+          suite,
+          sha,
+          provider,
+          model,
+          cases,
+          state: 'finished',
+          passed,
+          tokensIn,
+          tokensOut,
+          costUsd,
+          latencyMs,
+          startedAt: current?.startedAt ?? ts,
+          finishedAt: ts,
+        }),
+      )
+      // A finished run whose pass count fell under the committed baseline is what the standup
+      // shows next to `<passed>/<cases>`; turning that into a notification is the routine's
+      // rule (§6.1, §17), not the store's.
+      return
+    }
+
     // ---------------------------------------------- recorded, not projected yet
     // `judge.requested`/`judge.answered` are the typed question log (§5.3);
     // `purge.*`, `index.*` and `scan.skipped` describe a process, not a row the
@@ -1600,6 +1678,87 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
   // rather than silently projecting nothing.
   const unprojected: never = event
   return unprojected
+}
+
+// ------------------------------------------------------------------------ evals
+
+const EVAL_RUN_COLUMNS = [
+  'run_id',
+  'suite',
+  'sha',
+  'provider',
+  'model',
+  'state',
+  'cases',
+  'passed',
+  'tokens_in',
+  'tokens_out',
+  'cost_usd',
+  'latency_ms',
+  'started_at',
+  'finished_at',
+  'data',
+] as const
+
+const EVAL_CASE_COLUMNS = ['run_id', 'case_id', 'attempts', 'passes', 'pass', 'score', 'detail', 'updated_at', 'data'] as const
+
+/** A null column means the field is absent: `costUsd` is "not reported", never `0` (§17). */
+const orNull = (value: number | undefined): number | null => value ?? null
+
+const writeEvalRun = (db: Sqlite, run: EvalRun): void => {
+  writeRow(
+    db,
+    'eval_runs',
+    EVAL_RUN_COLUMNS,
+    [
+      run.runId,
+      run.suite,
+      run.sha,
+      run.provider,
+      run.model,
+      run.state,
+      run.cases,
+      orNull(run.passed),
+      orNull(run.tokensIn),
+      orNull(run.tokensOut),
+      orNull(run.costUsd),
+      orNull(run.latencyMs),
+      run.startedAt,
+      run.finishedAt ?? null,
+      JSON.stringify(run),
+    ],
+    ['run_id'],
+  )
+}
+
+const writeEvalCase = (db: Sqlite, row: EvalCase): void => {
+  writeRow(
+    db,
+    'eval_cases',
+    EVAL_CASE_COLUMNS,
+    [
+      row.runId,
+      row.caseId,
+      row.attempts,
+      row.passes,
+      row.pass ? 1 : 0,
+      row.score,
+      row.detail,
+      row.updatedAt,
+      JSON.stringify(row),
+    ],
+    ['run_id', 'case_id'],
+  )
+}
+
+const evalRunById = (db: Sqlite, runId: string): EvalRun | undefined => {
+  const row = db.get<{ data: string }>('SELECT data FROM eval_runs WHERE run_id = ?', runId)
+  return row === undefined ? undefined : json(PROJECTION_SCHEMAS.evalRun, row.data)
+}
+
+const evalCaseFor = (db: Sqlite, runId: string, caseId: string): EvalCase | undefined => {
+  const row = db.get<{ data: string }>('SELECT data FROM eval_cases WHERE run_id = ? AND case_id = ?', runId, caseId)
+  return row === undefined ? undefined : json(PROJECTION_SCHEMAS.evalCase, row.data)
 }
 
 // ------------------------------------------------------------------- the reader

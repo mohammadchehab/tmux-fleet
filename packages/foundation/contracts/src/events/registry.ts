@@ -49,6 +49,7 @@ import {
   worktreeRemoved,
 } from './ops.ts'
 import { decisionAnswered, decisionRequested } from './decisions.ts'
+import { evalCaseScored, evalRunFinished, evalRunStarted } from './evals.ts'
 import { judgeAnswered, judgeRequested } from './judge.ts'
 import {
   findingRaised,
@@ -135,6 +136,11 @@ export const EVENT_SCHEMAS = {
   'finding.verdict_given': findingVerdicted,
   'finding.routed': findingRouted,
   'turn.usage_recorded': turnUsage,
+
+  // evals (§17): written by the adapter in `packages/evals`, never by the runtime
+  'eval.run_started': evalRunStarted,
+  'eval.run_finished': evalRunFinished,
+  'eval.case_scored': evalCaseScored,
 } as const
 
 export type FleetEventType = keyof typeof EVENT_SCHEMAS
