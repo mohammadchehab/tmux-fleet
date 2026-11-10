@@ -52,6 +52,8 @@ export interface ProfilePaths {
   readonly daemonDir: string
   readonly socketPath: string
   readonly pidPath: string
+  /** `daemon/fleetd.lock` — the pid lock one live fleetd holds on the store. */
+  readonly lockPath: string
   readonly logPath: string
   /** `peers/<peerId>/state.md` (§8). */
   readonly peersDir: string
@@ -94,6 +96,7 @@ export const profilePaths = (profile: ProfileName, roots: PathRoots = {}): Profi
     daemonDir,
     socketPath: join(daemonDir, 'fleetd.sock'),
     pidPath: join(daemonDir, 'fleetd.pid'),
+    lockPath: join(daemonDir, 'fleetd.lock'),
     logPath: join(daemonDir, 'fleetd.log'),
     peersDir: join(stateDir, 'peers'),
     transcriptsDir: join(stateDir, 'transcripts'),

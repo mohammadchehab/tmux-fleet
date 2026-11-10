@@ -148,12 +148,12 @@ Nothing the fleet writes at runtime lives in the repo or in a worktree.
 ```
 ~/.config/fleet/profiles/<profile>.yaml       # the user's profile: target repos, policy overrides, notify, limits (was ~/.config/fleet/profiles/*.env)
 ~/.fleet/<profile>/
-   store/      store.sqlite, store.sqlite-wal, backup/        # the event store and its nightly copy (§3)
-   daemon/     fleetd.sock, fleetd.pid, fleetd.log             # API socket, pid, log (§2)
-   peers/      <peerId>/state.md                               # human copy of each peer's latest typed state file (§8)
-   transcripts/ <peerId>/<sessionId>.jsonl                     # provider event streams, source for the optional view
-   artifacts/  findings/, builds/<sha>-<task>.log              # scanner raw output, build logs (§6.2, §11)
-   notify/     <key>.json                                      # delivered-notification receipts (§6.1)
+   store/        store.sqlite, store.sqlite-wal, backup/           # the event store and its nightly copy (§3)
+   daemon/       fleetd.sock, fleetd.pid, fleetd.lock, fleetd.log  # API socket, pid, store lock, log (§2)
+   peers/        <peerId>/state.md                                 # human copy of each peer's latest typed state file (§8)
+   transcripts/  <peerId>/<sessionId>.jsonl                        # provider event streams, source for the optional view
+   artifacts/    findings/, builds/<sha>-<task>.log                # scanner raw output, build logs (§6.2, §11)
+   notify/       <key>.json                                        # delivered-notification receipts (§6.1)
 ```
 
 Git worktrees are not here: they live under each repo's own `.claude/worktrees/<topic>`, and their state is events in
@@ -200,7 +200,9 @@ The security routine can start earlier than phase 2 on the interim fleet; phase 
 
 - **fleetd**: a long-lived local daemon, one per fleet profile. Owns the store, runs every loop, exposes a local API
   (Unix socket, JSON). The CLI, the board, the tmux view and any web UI are clients of that API and hold no state.
-  It is started by `fleet up`; `fleet up` after a reboot resumes from the store (§8).
+  It is started by `fleet up`; `fleet up` after a reboot resumes from the store (§8). It holds a pid lock on its
+  store, so a second fleetd on the same store is refused rather than started beside a live one; `fleet down` ends
+  the process, and a lock whose pid is dead is taken over by the next `up`.
 - **Event store**: append-only SQLite (WAL). Everything that happens is an event; every table the code reads is a
   projection rebuilt from events. Replay of a window of events reproduces every PM decision (§5.4).
 - **Registry**: peers, roles, sessions, current brief version, capacity. Projection.

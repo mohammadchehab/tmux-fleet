@@ -19,6 +19,7 @@ describe('the path layout', () => {
     assert.equal(paths.storePath, '/home/u/.fleet/engineer/store/store.sqlite')
     assert.equal(paths.socketPath, '/home/u/.fleet/engineer/daemon/fleetd.sock')
     assert.equal(paths.pidPath, '/home/u/.fleet/engineer/daemon/fleetd.pid')
+    assert.equal(paths.lockPath, '/home/u/.fleet/engineer/daemon/fleetd.lock')
     assert.equal(paths.logPath, '/home/u/.fleet/engineer/daemon/fleetd.log')
   })
 

@@ -185,6 +185,9 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
     ...(options.securityIo === undefined ? {} : { securityIo: options.securityIo }),
     ...(options.branchHead === undefined ? {} : { branchHead: options.branchHead }),
     ...(options.pullRequests === undefined ? {} : { pullRequests: options.pullRequests }),
+    // A real fleetd ends itself when it answers `down`; here `down` is a test's
+    // own step and the process is the test runner's, so it stays.
+    exit: () => {},
   })
 
   const raw = (method: DaemonMethod, params?: unknown): Promise<DaemonResponse> =>
@@ -220,7 +223,12 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
       stopped = true
       // A test may already have called `down`, which closes the socket and the
       // store on its own tick; stopping twice is not an error worth failing on.
-      for (const close of [() => composed.daemon.down(), () => composed.server.close(), () => composed.store.close()]) {
+      for (const close of [
+        () => composed.daemon.down(),
+        () => composed.server.close(),
+        () => composed.store.close(),
+        () => composed.lock.release(),
+      ]) {
         try {
           await close()
         } catch {
