@@ -85,6 +85,19 @@ describe('decoding a profile', () => {
     assert.throws(() => decodeProfile(minimal({ delelteMergedBranches: true })), /unknown field/)
   })
 
+  it('reads §6.2’s scanner set, and installs nothing when there is no block', () => {
+    const profile = decodeProfile(minimal({ security: { scanners: ['semgrep', 'gitleaks'] } }))
+    assert.deepEqual(profile.security?.scanners, ['semgrep', 'gitleaks'])
+    assert.equal(decodeProfile(minimal()).security, undefined)
+  })
+
+  it('refuses a scanner it cannot build, and an empty set that would scan nothing', () => {
+    assert.throws(() => decodeProfile(minimal({ security: { scanners: ['snyk'] } })), /snyk/)
+    // An empty list would install the routine and then scan nothing, which reads
+    // as coverage the fleet does not have.
+    assert.throws(() => decodeProfile(minimal({ security: { scanners: [] } })), /at least one scanner/)
+  })
+
   it('refuses a peer with no model: `peer.registered` carries one, so a default would be an invented policy', () => {
     assert.throws(
       () => decodeProfile(minimal({ peers: [{ id: 'engineer-1', role: 'engineer', provider: 'claude' }] })),

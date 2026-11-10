@@ -32,11 +32,12 @@ import type { Notifier } from '@fleet/notify-core'
 import { createGate } from '@fleet/orchestration-gate'
 import type { JudgeService } from '@fleet/orchestration-judge'
 import { createProjectManager } from '@fleet/orchestration-pm'
-import { createScheduler, installedFactories, type Scheduler } from '@fleet/orchestration-routines'
+import { createScheduler, installedFactories, type RoutineFactory, type Scheduler } from '@fleet/orchestration-routines'
 import { createMailbox } from '@fleet/runtime-mailbox'
 import { ClaudeProvider, createStructuredCompletion } from '@fleet/runtime-provider-claude'
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
+import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createExecutorRouter, type KindExecutor } from './executor.ts'
 import { createDaemonExecutors } from './executors.ts'
@@ -44,6 +45,7 @@ import { createDaemonJudge } from './judge.ts'
 import { createNotifyFactory, notifierFor } from './notify.ts'
 import { persistentDirs, profilePaths, type PathRoots } from './paths.ts'
 import { loadProfile, type Profile } from './profile.ts'
+import { createSecurityScanFactory } from './security.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
 import { createSupervisor, type Supervisor } from './sessions.ts'
 import { createWakingSink } from './wake.ts'
@@ -98,6 +100,12 @@ export interface ComposeDeps {
    * so a run cannot put a banner on someone's screen.
    */
   readonly notifier?: Notifier
+  /**
+   * How the §6.2 scanners reach their tools. Defaults to running the real
+   * binaries; a test passes a fake, so a suite never needs semgrep installed and
+   * a scan never shells out from a test run.
+   */
+  readonly securityIo?: ToolIo
 }
 
 export interface Composed {
@@ -233,19 +241,36 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
 
   const executor = createExecutorRouter({ executors })
 
-  // §6.1: the profile names the channel, and a profile that names none gets no
-  // `notify` routine rather than a silent one — the ledger still records every
-  // notification, so turning banners on later re-plays them. Built in its own
-  // const (and merged into the installed set) because `notify` is the one body
-  // that is not a PM tick: the daemon registers it and nothing else knows it.
+  // §6.1 and §6.2 are the two bodies the daemon registers itself: neither is a PM
+  // tick, and neither may grow `RoutineBodyDeps` (§6) — each is a factory closing
+  // over the ports only this file may name.
+  //
+  // Both are opt-in, and their absence is silent by design. A profile with no
+  // `notify` block gets no `notify` routine rather than a quiet one — the ledger
+  // still records every notification, so turning banners on later re-plays them.
+  // A profile with no `security` block gets no `security-scan` routine at all:
+  // scanning is three subprocesses per PR, and a fleet that did not ask for it
+  // must not look like it is doing it.
   const notifier = deps.notifier ?? notifierFor(profile)
-  const factories =
-    notifier === undefined
-      ? undefined
+  const scanners = profile.security?.scanners
+  const overrides: Record<string, RoutineFactory> = {
+    ...(notifier === undefined
+      ? {}
+      : { notify: createNotifyFactory({ store: { append: (batch) => store.append(batch) }, notifier }) }),
+    ...(scanners === undefined
+      ? {}
       : {
-          ...installedFactories,
-          notify: createNotifyFactory({ store: { append: (batch) => store.append(batch) }, notifier }),
-        }
+          'security-scan': createSecurityScanFactory({
+            // The raw store, like `notify`: a `finding.raised` wakes nothing, and
+            // routing it through the sink would invite a routine run per finding.
+            store: { append: (batch) => store.append(batch) },
+            io: deps.securityIo ?? { exec: execFileExec, has: whichProbe(execFileExec), readFile: readFileNode },
+            scanners,
+            reportPath: tempPathNode,
+          }),
+        }),
+  }
+  const factories = Object.keys(overrides).length === 0 ? undefined : { ...installedFactories, ...overrides }
 
   // The scheduler appends through the *raw* store on purpose: its own routine
   // events (`routine.started`, `routine.finished`) are the outcome of a wake, and
