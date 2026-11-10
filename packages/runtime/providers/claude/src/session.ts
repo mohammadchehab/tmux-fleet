@@ -86,7 +86,17 @@ export interface ClaudeSessionConfig {
   /** How long `start()` waits for `init` before calling the session failed. */
   readonly initTimeoutMs: number
   readonly clock: Clock
+  /**
+   * The SDK entry point, `query` itself unless a test sets another. A session
+   * that dies before `init` — an expired OAuth token is the one that cost an
+   * hour — is only observable by driving the stream, and no CLI is needed to
+   * say what this adapter does with one.
+   */
+  readonly query?: QueryFactory
 }
+
+/** What a session starts: the SDK's `query`, with the one parameter the adapter passes. */
+export type QueryFactory = (params: Parameters<typeof query>[0]) => Query
 
 export const defaultSessionConfig: ClaudeSessionConfig = {
   providerId: 'claude',
@@ -142,7 +152,20 @@ export class ClaudeSession {
   readonly #policy: CompiledToolPolicy
   readonly #openingTurn: TurnId
   readonly #started = deferred<{ model: string; permissionMode: string }>()
+  /**
+   * Resolved when the stream ends, whichever way it did. `start()` races it
+   * against `init`: a session that dies first has already said why, and waiting
+   * out `initTimeoutMs` reported a timeout for a cause the provider had named.
+   */
+  readonly #ended = deferred<void>()
   readonly #query: Query
+
+  /**
+   * The last thing the provider said went wrong, in its own words (`§4`'s
+   * `error` event or a failed turn's `error`). Carried into a start failure so
+   * `peer.failed` reads "OAuth token has expired" and not "did not initialise".
+   */
+  #lastError: string | undefined
 
   #sessionRef: ProviderSessionRef | undefined
   /** The latest `init`'s model; the process's model right now, not the one requested. */
@@ -185,7 +208,8 @@ export class ClaudeSession {
     this.#input = new InputQueue()
 
     const { env } = buildChildEnv(spec)
-    this.#query = query({
+    const start = config.query ?? query
+    this.#query = start({
       prompt: this.#input,
       options: this.#options(spec, env, resumeRef),
     })
@@ -470,10 +494,12 @@ export class ClaudeSession {
         continue
       }
       if (event.type === 'turn.ended') {
+        if (event.reason === 'failed' && event.error !== undefined) this.#lastError = event.error
         this.#inflight = this.#inflight.filter((id) => id !== event.turnId)
         this.#turnState = { interrupted: false }
         this.#state = this.#inflight.length > 0 ? 'working' : 'idle'
       }
+      if (event.type === 'error') this.#lastError = event.message
       this.#emit(event)
     }
   }
@@ -547,12 +573,32 @@ export class ClaudeSession {
   }
 
   async #whenStarted(): Promise<{ model: string; permissionMode: string }> {
-    const timeout = new Promise<'timeout'>((resolve) =>
-      setTimeout(() => resolve('timeout'), this.#config.initTimeoutMs).unref(),
-    )
-    const first = await Promise.race([this.#started.promise, timeout])
+    let timer: NodeJS.Timeout | undefined
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), this.#config.initTimeoutMs)
+      timer.unref()
+    })
+    // The stream ending before `init` is the provider saying no: an expired
+    // OAuth token ends the query rather than answering, and the cause is in its
+    // last error. Racing the timeout meant `peer.failed` carried the 60 s we
+    // waited and not the sentence a person needed.
+    const ended = this.#ended.promise.then((): 'ended' => 'ended')
+    const first = await Promise.race([this.#started.promise, timeout, ended]).finally(() => clearTimeout(timer))
     if (first === 'timeout') {
       throw fleetError('timeout', `session ${this.sessionId} did not initialise in ${this.#config.initTimeoutMs}ms`)
+    }
+    if (first === 'ended') {
+      throw fleetError(
+        'provider_failed',
+        `session ${this.sessionId} ended before it initialised${this.#lastError === undefined ? '' : `: ${this.#lastError}`}`,
+        {
+          details: {
+            sessionId: this.sessionId,
+            peerId: this.peerId,
+            ...(this.#lastError === undefined ? {} : { providerError: this.#lastError }),
+          },
+        },
+      )
     }
     return first
   }
@@ -622,6 +668,10 @@ export class ClaudeSession {
   #finish(reason: 'exit' | 'crash', error: string | undefined): void {
     if (this.#state === 'ended') return
     this.#state = reason === 'crash' ? 'failed' : 'ended'
+    if (error !== undefined) this.#lastError = error
+    // Before the events close: `start()` may be waiting on this to read the
+    // provider's own words for why the session never came up.
+    this.#ended.resolve()
     const { questions, approvals } = this.#pending.abandon('ended')
     for (const abandoned of questions) {
       this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId })
