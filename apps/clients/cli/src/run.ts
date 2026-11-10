@@ -30,7 +30,7 @@ import { asArgument, isUnreachable, type DaemonCaller } from './client.ts'
 import { formatEvalCompare } from './evals-compare.ts'
 import { formatEvalRun } from './evals-report.ts'
 import { readEvalsOutput, type EvalsEvents, type EvalsProcessResult, type EvalsRunOptions } from './evals.ts'
-import { formatDecision, formatDown, formatLs, formatPeek, formatSend, formatUp } from './render.ts'
+import { formatDecision, formatDown, formatLs, formatPeek, formatReplay, formatSend, formatUp } from './render.ts'
 import { socketPathOf } from './socket.ts'
 
 /** Both eval verbs, so a wrong one names every one that exists. */
@@ -47,6 +47,7 @@ const usage = (): string =>
     '  fleet send <peer> <kind> <body>     message a peer',
     '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first (--limit keeps the newest N)',
     '  fleet decide <id> [answer]          show an open decision, or answer it',
+    '  fleet replay [--from N [--to N]]    rebuild the projections, or read a window of the log',
     '  fleet evals run <suite>             run an eval suite against its baseline',
     '  fleet evals compare <runA> <runB>   two eval runs side by side (a run id is printed by `evals run`)',
     '  fleet --help                        this',
@@ -60,6 +61,10 @@ const usage = (): string =>
     '  --provider <name>  who answers: claude or deepinfra',
     '  --model <id>       the model under test; the run measures this one',
     '  --save-baseline    write this run as the baseline instead of comparing',
+    '',
+    'options, on `replay`:',
+    '  --from <seq>       read the log from this seq instead of rebuilding the projections',
+    '  --to <seq>         with --from, the last seq to read; absent means to the head',
     '',
     `kinds: ${turnKinds.join(' | ')}   (info is what a person usually sends)`,
     `suites: ${evalSuites.join(' | ')}   (judge is the one that runs)`,
@@ -81,6 +86,7 @@ export type Command =
   | { readonly kind: 'send'; readonly to: string; readonly turn: TurnKind; readonly body: string }
   | { readonly kind: 'peek'; readonly peer: string; readonly limit?: number }
   | { readonly kind: 'decide'; readonly id: string; readonly decision?: string; readonly note?: string }
+  | { readonly kind: 'replay'; readonly from?: number; readonly to?: number }
   | {
       readonly kind: 'evals-run'
       readonly suite: string
@@ -129,6 +135,8 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
   let note: string | undefined
   let provider: string | undefined
   let model: string | undefined
+  let from: string | undefined
+  let to: string | undefined
   let saveBaseline = false
   let json = false
 
@@ -176,6 +184,18 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
     if (arg === '--model' || arg.startsWith('--model=')) {
       const read = optionValue(argv, index, '--model')
       model = read.value
+      index = read.next
+      continue
+    }
+    if (arg === '--from' || arg.startsWith('--from=')) {
+      const read = optionValue(argv, index, '--from')
+      from = read.value
+      index = read.next
+      continue
+    }
+    if (arg === '--to' || arg.startsWith('--to=')) {
+      const read = optionValue(argv, index, '--to')
+      to = read.value
       index = read.next
       continue
     }
@@ -247,6 +267,23 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
           ...(decision === '' ? {} : { decision }),
           ...(note === undefined ? {} : { note }),
         },
+        how: how(),
+      }
+    }
+    case 'replay': {
+      arity('replay', rest, '[--from N [--to N]]', (count) => count === 0)
+      // A seq is a position in one log, so the first is 1 and there is no
+      // upper bound to check here — the daemon knows how long the log is.
+      const start = from === undefined ? undefined : positiveCount('--from', from)
+      const end = to === undefined ? undefined : positiveCount('--to', to)
+      // Refused here, before a socket, because it is the command line being
+      // wrong: without `--from` the daemon would read `--to` as "rebuild".
+      if (end !== undefined && start === undefined) throw usageError('--to needs a --from; both name the window to read')
+      if (start !== undefined && end !== undefined && end < start) {
+        throw usageError(`--to ${String(end)} is before --from ${String(start)}; that window is empty`)
+      }
+      return {
+        command: { kind: 'replay', ...(start === undefined ? {} : { from: start }), ...(end === undefined ? {} : { to: end }) },
         how: how(),
       }
     }
@@ -465,6 +502,15 @@ const execute = async (
         })
       }
       return { text: formatDecision(found), value: found }
+    }
+    case 'replay': {
+      // One method, two questions; the daemon decides which one it is being
+      // asked and the CLI only lays out the answer.
+      const result = await call('replay', {
+        ...(command.from === undefined ? {} : { from: command.from }),
+        ...(command.to === undefined ? {} : { to: command.to }),
+      })
+      return { text: formatReplay(result), value: result }
     }
     case 'evals-run': {
       if (deps.runEvals === undefined) {

@@ -558,3 +558,72 @@ describe('run: up', () => {
     assert.match(err[0] ?? '', /the store will not open/)
   })
 })
+
+describe('run: replay', () => {
+  const event = (seq: number, type: string) => ({
+    seq,
+    ts: now,
+    type,
+    subject: 'engineer-1',
+    actor: 'pm',
+    causedBy: [],
+    data: {},
+  })
+
+  it('rebuilds the projections when asked for no window, and prints what it replayed', async () => {
+    const { deps, out, calls } = harness({ replay: () => ({ mode: 'rebuild', events: 12, latestSeq: 12 }) })
+    assert.equal(await run(argv('replay'), deps), 0)
+    assert.deepEqual(calls, [{ method: 'replay', params: {} }])
+    assert.match(out[0] ?? '', /rebuilt every projection from 12 event\(s\); the log is at seq 12/)
+  })
+
+  it('reads a window when given --from and --to, and prints the events oldest first', async () => {
+    const { deps, out, calls } = harness({
+      replay: () => ({ mode: 'window', events: [event(3, 'peer.registered'), event(4, 'message.sent')] }),
+    })
+    assert.equal(await run(argv('replay', '--from', '3', '--to', '4'), deps), 0)
+    assert.deepEqual(calls, [{ method: 'replay', params: { from: 3, to: 4 } }])
+    const lines = (out[0] ?? '').split('\n')
+    assert.equal(lines[0], '2 event(s)')
+    assert.match(lines[1] ?? '', /^  3 {2}.*peer\.registered/)
+    assert.match(lines[2] ?? '', /^  4 {2}.*message\.sent/)
+  })
+
+  it('sends only --from when no --to was given, so the daemon reads to the head', async () => {
+    const { deps, calls } = harness({ replay: () => ({ mode: 'window', events: [] }) })
+    assert.equal(await run(argv('replay', '--from', '7'), deps), 0)
+    assert.deepEqual(calls, [{ method: 'replay', params: { from: 7 } }])
+  })
+
+  it('says so when the window holds nothing', async () => {
+    const { deps, out } = harness({ replay: () => ({ mode: 'window', events: [] }) })
+    assert.equal(await run(argv('replay', '--from', '99', '--to', '120'), deps), 0)
+    assert.equal(out[0], 'no events in that window')
+  })
+
+  it('refuses --to without --from before reaching the daemon', async () => {
+    const { deps, err, calls } = harness({})
+    assert.equal(await run(argv('replay', '--to', '9'), deps), 2)
+    assert.match(err[0] ?? '', /--to needs a --from/)
+    assert.deepEqual(calls, [])
+  })
+
+  it('refuses a window that runs backwards', async () => {
+    const { deps, err, calls } = harness({})
+    assert.equal(await run(argv('replay', '--from', '9', '--to', '3'), deps), 2)
+    assert.match(err[0] ?? '', /is before --from 9/)
+    assert.deepEqual(calls, [])
+  })
+
+  it('refuses a seq that is not a whole number', async () => {
+    const { deps, err } = harness({})
+    assert.equal(await run(argv('replay', '--from', '0'), deps), 2)
+    assert.match(err[0] ?? '', /--from takes a positive whole number/)
+  })
+
+  it('prints the daemon answer untouched under --json', async () => {
+    const { deps, out } = harness({ replay: () => ({ mode: 'rebuild', events: 2, latestSeq: 2 }) })
+    assert.equal(await run(argv('replay', '--json'), deps), 0)
+    assert.deepEqual(JSON.parse(out[0] ?? ''), { mode: 'rebuild', events: 2, latestSeq: 2 })
+  })
+})

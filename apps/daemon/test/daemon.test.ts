@@ -355,3 +355,51 @@ test('decide refuses an answer the decision does not offer', async () => {
   await assert.rejects(() => daemon.decide({ id: decisionId, decision: 'maybe' }), /is not one of them/)
   await daemon.down()
 })
+
+/**
+ * §5.4. A rebuild is judged by what survives it: the projections are dropped
+ * and derived again from the log, so the rows before and after must be the
+ * same rows, and the answer must be the log's own numbers rather than a count
+ * the daemon kept.
+ */
+test('replay rebuilds every projection from the log and answers with what it replayed', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+  const before = await store.reader().peers.all()
+
+  const rebuilt = await daemon.replay({})
+  assert.equal(rebuilt.mode, 'rebuild')
+  if (rebuilt.mode !== 'rebuild') return
+
+  const health = await store.health()
+  assert.equal(rebuilt.events, health.events)
+  assert.equal(rebuilt.latestSeq, health.latestSeq)
+  // The peers came back from the events, not from a table that was left in place.
+  assert.deepEqual(await store.reader().peers.all(), before)
+  await daemon.down()
+})
+
+test('replay with a `from` reads that window of the log and writes nothing', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+  const latest = await store.latestSeq()
+
+  const window = await daemon.replay({ from: 1, to: latest })
+  assert.equal(window.mode, 'window')
+  if (window.mode !== 'window') return
+  // Every event in [1, latest], oldest first, and exactly the rows the log holds.
+  assert.deepEqual(window.events.map((event) => event.seq), Array.from({ length: latest }, (_, index) => index + 1))
+  assert.deepEqual(window.events, await store.read(1))
+  assert.equal(await store.latestSeq(), latest, 'a read does not move the log')
+  await daemon.down()
+})
+
+test('replay refuses a `to` with no `from` rather than reading it as a rebuild', async () => {
+  const { daemon } = await harness()
+  // The dangerous reading: `--to` alone would match "no from" and rebuild the
+  // whole store, which is a much bigger thing than the window someone meant.
+  await assert.rejects(
+    () => daemon.replay({ to: 5 }),
+    (thrown: unknown) => thrown instanceof FleetError && thrown.code === 'invalid_input',
+  )
+})

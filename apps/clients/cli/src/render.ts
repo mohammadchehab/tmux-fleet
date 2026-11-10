@@ -11,7 +11,7 @@
  * prose: two vocabularies for one field is how a client drifts from the store.
  */
 
-import type { Decision, Message, Peer, PeerCompactions, Routine } from '@fleet/foundation-contracts'
+import type { Decision, FleetEvent, Message, Peer, PeerCompactions, ReplayResult, Routine } from '@fleet/foundation-contracts'
 import type { DownResult, LsResult, PeekResult, SendResult, UpResult } from '@fleet/foundation-contracts'
 
 const indent = (lines: readonly string[], by: number): readonly string[] =>
@@ -146,3 +146,20 @@ export const formatPeek = (result: PeekResult, peer: string): string => {
 }
 
 export const formatDecision = (row: Decision): string => decisionLines(row).join('\n')
+
+/** One log line, in the envelope's own order: where, when, what, about whom. */
+const eventRow = (event: FleetEvent): readonly string[] => [String(event.seq), event.ts, event.type, event.subject]
+
+/**
+ * A rebuild is one sentence, because there is one thing to say: the log is
+ * where it was and every projection was derived from it again. A window is the
+ * events, one per line, oldest first — the reader asked for the log and the log
+ * is what they get, not a summary of it.
+ */
+export const formatReplay = (result: ReplayResult): string => {
+  if (result.mode === 'rebuild') {
+    return `rebuilt every projection from ${String(result.events)} event(s); the log is at seq ${String(result.latestSeq)}`
+  }
+  if (result.events.length === 0) return 'no events in that window'
+  return [`${String(result.events.length)} event(s)`, ...indent(columns(result.events.map(eventRow)), 2)].join('\n')
+}

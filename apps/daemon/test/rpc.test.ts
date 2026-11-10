@@ -61,6 +61,12 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
       calls.push(`events.append:${String(input.events.length)}`)
       return { seqs: input.events.map((_, index) => (index + 1) as Seq) }
     },
+    async replay(input) {
+      calls.push(input.from === undefined ? 'replay:rebuild' : `replay:${String(input.from)}:${String(input.to ?? 'head')}`)
+      return input.from === undefined
+        ? { mode: 'rebuild' as const, events: 0, latestSeq: 1 as Seq }
+        : { mode: 'window' as const, events: [] }
+    },
     async evals(input) {
       calls.push(`evals:${String(input.runId)}`)
       return {

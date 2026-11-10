@@ -40,7 +40,10 @@ import type {
   EvalsParams,
   EvalsResult,
   EventSink,
+  FleetEvent,
   Mailbox,
+  ReplayParams,
+  ReplayResult,
 } from '@fleet/foundation-contracts'
 import type { EventStore } from '@fleet/foundation-store'
 import type { Profile, PeerProfile } from './profile.ts'
@@ -279,6 +282,28 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
         },
       ])
       return { recorded: true } as const
+    },
+
+    async replay(input): Promise<ReplayResult> {
+      // §5.4. A `to` with no `from` is a typo with a big blast radius — the
+      // reading below would rebuild every projection — so it is refused rather
+      // than read as "rebuild".
+      if (input.to !== undefined && input.from === undefined) {
+        throw fleetError('invalid_input', '`to` names the end of a window; give a `from` seq as well, or neither to rebuild')
+      }
+      if (input.from === undefined) {
+        // One transaction inside the store, so no reader sees a half-built read
+        // model; `health` is the log's own count, not a claim about the rows.
+        await store.rebuild()
+        const health = await store.health()
+        return { mode: 'rebuild', events: health.events, latestSeq: health.latestSeq }
+      }
+      // The window is a read, so it works while the daemon is running: this is
+      // the debugging half, and a person reading a tick should not have to stop
+      // the fleet to see it.
+      const events: FleetEvent[] = []
+      for await (const event of store.iterate(input.from, input.to)) events.push(event)
+      return { mode: 'window', events }
     },
 
     async eventsAppend(input) {

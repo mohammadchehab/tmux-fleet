@@ -62,10 +62,22 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
   decide: [{ id: 'dec_0123456789abcdef', decision: 'yes' }, { id: 'dec_0123456789abcdef', decision: 'no', note: 'later' }],
   'events.append': [{ events: [evalCaseScoredEvent] }],
   evals: [{ runId: 'evr_4c1d9a7b2e5f6038' }],
+  replay: [{}, { from: 3 }, { from: 3, to: 9 }, { from: 1, to: 1 }],
 }
 
 test('the method set is the one a client builds against, and the usage report a hook sends', () => {
-  assert.deepEqual([...daemonMethods], ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage', 'events.append', 'evals'])
+  assert.deepEqual([...daemonMethods], [
+    'up',
+    'down',
+    'ls',
+    'send',
+    'peek',
+    'decide',
+    'usage',
+    'events.append',
+    'evals',
+    'replay',
+  ])
 })
 
 for (const method of daemonMethods) {
