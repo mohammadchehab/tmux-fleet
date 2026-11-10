@@ -78,6 +78,7 @@ import { createSecurityScanFactory } from './security.ts'
 import { createDaemonServer, type DaemonServer } from './server.ts'
 import { createSupervisor, type Supervisor } from './sessions.ts'
 import { createTrackerSyncFactory } from './tracker-sync.ts'
+import { createWorktreeGcFactory } from './worktree-gc.ts'
 import { createWakingSink, deliverOnSessionStart } from './wake.ts'
 import { syncWork } from './work-sync.ts'
 
@@ -412,6 +413,18 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
       store: { append: (batch) => store.append(batch) },
       mailbox,
       repos: profile.repos.map((name) => parse(repo(), name)),
+    }),
+    // §9's `worktree-gc` is always on too: `branch-cleanup` removes the checkout
+    // that goes *with* a branch it deleted, and nothing else ever took a checkout
+    // back — a PR closed rather than merged, or a merge that landed while the
+    // daemon was down, leaves one on disk for good. It needs the forge (only the
+    // forge can say a PR closed), a sink, the Mailbox and §9's manager, so it is
+    // registered here like the two above.
+    'worktree-gc': createWorktreeGcFactory({
+      pullRequests,
+      store: { append: (batch) => store.append(batch) },
+      mailbox,
+      worktrees: deps.worktrees ?? createWorktrees(),
     }),
     // §10's `branch-cleanup` is always on, like `pr-babysit`: without it nothing
     // ever deletes a branch (§10's `--delete-branch` was taken off the merge in
