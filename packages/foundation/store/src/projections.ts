@@ -631,6 +631,7 @@ const writeNotification = (db: Sqlite, notification: Notification): void =>
       notification.sentAt ?? null,
       notification.remindedAt ?? null,
       notification.resolvedAt ?? null,
+      // `withdrawnAt` rides in `data` only: nothing queries it, and the columns are for what a query needs.
       JSON.stringify(notification),
     ],
     ['key'],
@@ -1353,8 +1354,11 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
           occurrences: current?.occurrences ?? 1,
           createdAt: current?.createdAt ?? ts,
           sentAt: ts,
-          remindedAt: current?.remindedAt,
+          // A second `notify.sent` for a key that was already sent is §6.1's quiet reminder, so this is where
+          // `remindedAt` comes from: nothing else records that one was spent, and the rule allows only one.
+          remindedAt: current?.state === 'sent' ? ts : current?.remindedAt,
           resolvedAt: current?.resolvedAt,
+          withdrawnAt: current?.withdrawnAt,
         }),
       )
       return
@@ -1378,12 +1382,23 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
           sentAt: current?.sentAt,
           remindedAt: current?.remindedAt,
           resolvedAt: current?.resolvedAt,
+          withdrawnAt: current?.withdrawnAt,
         }),
       )
       return
     }
     case 'notify.withdrawn': {
-      resolveNotification(db, event.data.key, ts)
+      const current = notificationByKey(db, event.data.key)
+      // The one field that makes the withdraw idempotent: a key already withdrawn — or never delivered, so with no
+      // banner to clear — is left alone, and the planner can ask "was this closed *and* cleared?" from the row (§6.1).
+      if (current === undefined || current.withdrawnAt !== undefined) {
+        resolveNotification(db, event.data.key, ts)
+        return
+      }
+      writeNotification(
+        db,
+        parse(PROJECTION_SCHEMAS.notification, { ...current, state: 'resolved', resolvedAt: current.resolvedAt ?? ts, withdrawnAt: ts }),
+      )
       return
     }
     case 'standup.rendered': {

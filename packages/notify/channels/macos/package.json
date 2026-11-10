@@ -1,0 +1,18 @@
+{
+  "name": "@fleet/notify-macos",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The macOS notification channel (architecture §6.1): terminal-notifier when present, else osascript display notification; the click runs `fleet decide <id>`.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*",
+    "@fleet/notify-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

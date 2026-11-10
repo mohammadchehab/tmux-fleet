@@ -107,6 +107,8 @@ export interface Notification {
   /** When the one quiet reminder went out; at most one per open decision (§6.1). */
   readonly remindedAt?: string
   readonly resolvedAt?: string
+  /** When `Notifier.withdraw` cleared the banner. Set once, so a replay does not withdraw twice (§6.1). */
+  readonly withdrawnAt?: string
 }
 
 export const notification = (): Schema<Notification> =>
@@ -123,6 +125,7 @@ export const notification = (): Schema<Notification> =>
     sentAt: optional(timestamp()),
     remindedAt: optional(timestamp()),
     resolvedAt: optional(timestamp()),
+    withdrawnAt: optional(timestamp()),
   })
 
 // -------------------------------------------------------------------- findings
