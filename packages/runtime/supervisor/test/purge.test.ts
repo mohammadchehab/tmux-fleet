@@ -8,9 +8,10 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { fixedClock, type PeerId } from '@fleet/foundation-core'
+import { appendIssues } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
 
-import { selfPurge, type PurgeEvent, type PurgePorts } from '../src/index.ts'
+import { PurgeRestartFailed, restartStateFileOf, selfPurge, type PurgeEvent, type PurgePorts } from '../src/index.ts'
 
 const peerId = 'engineer-1' as PeerId
 const handle: SessionHandle = {
@@ -117,21 +118,28 @@ test('a valid state file is saved, written for humans, and the session restarts'
   )
   assert.deepEqual(h.stopped, [handle.sessionId])
   assert.equal(h.asks.length, 1)
+  // The purge events are the registry's own: the store's append boundary, which
+  // decodes strictly, has nothing to object to.
+  assert.deepEqual(h.events.flatMap((event) => appendIssues(event)), [])
   assert.equal(h.files.length, 1)
   assert.equal(h.files[0]?.path, `/state/peers/${peerId}/state.md`)
   assert.match(h.files[0]?.text ?? '', /## Next\n\n- tests/)
 
   const completed = h.events[2]
   assert.ok(completed?.type === 'purge.completed')
-  assert.equal(completed.fromSessionId, handle.sessionId)
-  assert.equal(completed.toSessionId, fresh.sessionId)
-  assert.equal(completed.replayedMessages, 2)
+  assert.equal(completed.data.fromSessionId, handle.sessionId)
+  assert.equal(completed.data.toSessionId, fresh.sessionId)
+  assert.equal(completed.data.replayedMessages, 2)
+  // The subject is the peer; the sessions it names are in the data (§3).
+  assert.equal(completed.subject, peerId)
+  assert.equal(completed.actor, `peer:${peerId}`)
 
   // The trigger numbers are the provider's, recorded as they were (§8).
   const started = h.events[0]
   assert.ok(started?.type === 'purge.started')
-  assert.equal(started.contextTokens, 900)
-  assert.equal(started.contextLimit, 1_000)
+  assert.equal(started.data.contextTokens, 900)
+  assert.equal(started.data.contextLimit, 1_000)
+  assert.equal(started.data.sessionId, handle.sessionId)
 })
 
 test('the second ask carries why the first reply was refused', async () => {
@@ -159,7 +167,7 @@ test('after two refusals the handoff degrades to facts, and still restarts', asy
   )
   const degraded = h.events[1]
   assert.ok(degraded?.type === 'purge.degraded')
-  assert.match(degraded.reason, /not valid JSON/)
+  assert.match(degraded.data.reason, /not valid JSON/)
   // The human copy exists even when the peer wrote nothing usable.
   assert.equal(h.files.length, 1)
 })
@@ -180,13 +188,23 @@ test('a state file naming another peer is refused and asked again', async () => 
   assert.match(h.asks[1] ?? '', /engineer-2, not engineer-1/)
 })
 
-test('a failed restart is not swallowed: a peer with no session must be visible', async () => {
+test('a failed restart is not swallowed, and carries the state file it already handed off', async () => {
   const h = harness([JSON.stringify(stateFile())], { restartFails: Object.assign(new Error('no cwd'), { code: 'invalid_input' }) })
   // The purge reports it; the session wrapper is what recovers a session from it.
-  await assert.rejects(selfPurge(h.ports), /no cwd/)
+  const failure = await selfPurge(h.ports).then(
+    () => assert.fail('a purge that could not start a session must not resolve'),
+    (thrown: unknown) => thrown,
+  )
   // It stopped the old session, so a silent failure would leave the peer dead.
   assert.deepEqual(h.stopped, [handle.sessionId])
   assert.equal(h.events.at(-1)?.type, 'purge.saved')
+
+  // The handoff is already recorded, so it must survive the failure: this is
+  // the file the recovered session is started from, not role and brief alone.
+  assert.ok(failure instanceof PurgeRestartFailed)
+  assert.equal(failure.cause instanceof Error ? failure.cause.message : '', 'no cwd')
+  assert.equal(failure.degraded, false)
+  assert.equal(restartStateFileOf(failure)?.goal, 'ship the supervisor')
 })
 
 test('a record that fails is not raced past: the purge stops where the append did', async () => {

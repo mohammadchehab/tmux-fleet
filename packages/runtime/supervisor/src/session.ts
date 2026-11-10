@@ -24,26 +24,23 @@
  * and only a recovery that fails too rejects.
  */
 
-import { fleetError, type Clock, type PeerId, type PeerState, type TurnId } from '@fleet/foundation-core'
-import type { ProviderEvent } from '@fleet/foundation-contracts'
+import {
+  fleetError,
+  peerActor,
+  type Clock,
+  type PeerId,
+  type PeerState,
+  type TurnId,
+} from '@fleet/foundation-core'
+import type { ProviderEvent, SessionEndReason, StateFile } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle, Turn } from '@fleet/runtime-provider-sdk'
 
 import { peerStateOf } from './peer-state.ts'
 import { purgeTrigger, type PurgeLimits } from './policy.ts'
-import type { PurgeEvent, PurgeOutcome } from './purge.ts'
+import { restartStateFileOf, type PurgeOutcome } from './purge.ts'
+import { sessionIdOf, type SessionRecord } from './records.ts'
 
-/** What the supervisor records about a session; the store assigns `seq` and `ts` (§3). */
-export type SessionRecord =
-  | { readonly type: 'peer.state'; readonly peerId: PeerId; readonly sessionId: string; readonly state: PeerState }
-  | {
-      readonly type: 'session.ended'
-      readonly peerId: PeerId
-      readonly sessionId: string
-      /** `purged` is the self-purge restart (§8), not a failure. */
-      readonly reason: 'exit' | 'crash' | 'stopped' | 'purged'
-      readonly code?: number
-    }
-  | PurgeEvent
+export type { SessionRecord } from './records.ts'
 
 /** What a purge needs from the live session: its handle, its brief, and a way to ask. */
 export interface PurgeInput {
@@ -75,13 +72,19 @@ export interface PeerSessionPorts {
    */
   readonly purge: (input: PurgeInput) => Promise<PurgeOutcome>
   /**
-   * Last resort when the pump failed and the purge could not restart: start a
-   * session from role + the current brief, with no state file and no replay.
-   * It receives the failure so the caller can record why. A recovery that
-   * fails too propagates — a peer with no session must be visible, not
-   * silently idle.
+   * Last resort when the pump failed: start a session from role + the current
+   * brief. `stateFile` is the handoff a purge had already written and recorded
+   * when its restart failed, and the recovered session must be started from it
+   * with newer mail replayed (§8); it is `undefined` when there was no purge to
+   * hand off, so the session starts from role and brief alone. It receives the
+   * failure so the caller can record why. A recovery that fails too propagates
+   * — a peer with no session must be visible, not silently idle.
    */
-  readonly recover: (from: SessionHandle, failure: unknown) => Promise<SessionHandle>
+  readonly recover: (
+    from: SessionHandle,
+    failure: unknown,
+    stateFile: StateFile | undefined,
+  ) => Promise<SessionHandle>
 }
 
 interface Deferred<T> {
@@ -114,13 +117,20 @@ export class PeerSession {
   /** Turns started and not yet ended: a purge boundary is not one while work is open. */
   #openTurns = 0
   /**
-   * A question or approval is waiting for a person. The answer never appears on
-   * the event stream — the fleet delivers it through `answer()`/`respond()` — so
-   * it clears when the next turn starts, not when it is answered: a purge put
-   * off by one turn costs nothing, and purging a peer that is waiting on a human
-   * interrupts the one thing it cannot re-do.
+   * The questions and approvals waiting for a person, each with the turn that
+   * raised it. The answer never appears on the event stream — the fleet
+   * delivers it through `answer()`/`respond()` — so the only proof that one was
+   * answered is its turn ending: a turn cannot end while its own question is
+   * still open, so `turn.ended` clears that turn's entries before the boundary
+   * is judged.
+   *
+   * Two things do not clear it. A `turn.started` is not an answer (the answer
+   * unblocks the *same* turn, and an idle peer over its limit would then never
+   * be purged again), and neither is a new stream (a question asked on a
+   * session that then died is still a person being waited on). Only an end of
+   * its turn, or `question.abandoned` — the question died with its session.
    */
-  #pendingInput = false
+  readonly #pending = new Map<string, TurnId>()
 
   constructor(ports: PeerSessionPorts) {
     this.#ports = ports
@@ -174,7 +184,7 @@ export class PeerSession {
         // A deliberate stop is not a failure to recover from.
         if (this.#stopped || recovered) throw failure
         recovered = true
-        handle = await this.#ports.recover(handle, failure)
+        handle = await this.#ports.recover(handle, failure, restartStateFileOf(failure))
         this.#handle = handle
         this.#purging = false
         continue
@@ -196,11 +206,11 @@ export class PeerSession {
   async #pump(handle: SessionHandle): Promise<PurgeOutcome | undefined> {
     const { clock, limits, provider } = this.#ports
     const startedAt = clock.millis()
-    // A new stream starts with nothing open: turns and questions belong to the
-    // session that raised them, and a dead session's open turn must not block
-    // every later purge boundary on its replacement.
+    // A new stream starts with no turn open: turns belong to the session that
+    // raised them, and a dead session's open turn must not block every later
+    // purge boundary on its replacement. A pending question is *not* reset with
+    // them — the person it is waiting on has not been answered by a restart.
     this.#openTurns = 0
-    this.#pendingInput = false
     let turns = 0
     let askWaiter: Deferred<void> | undefined
     let purge: Promise<PurgeOutcome> | undefined
@@ -236,7 +246,7 @@ export class PeerSession {
       // nothing is owed to a person. A question still open, or a turn that
       // started before this one ended, is not one: the purge would interrupt
       // the peer and then read the ask's own end as the peer's answer.
-      if (this.#state !== 'idle' || this.#pendingInput || this.#openTurns > 0) continue
+      if (this.#state !== 'idle' || this.#pending.size > 0 || this.#openTurns > 0) continue
 
       turns += 1
       const usage = await provider.usage(handle)
@@ -272,23 +282,30 @@ export class PeerSession {
   }
 
   async #apply(handle: SessionHandle, event: ProviderEvent, purging: boolean): Promise<void> {
-    const { peerId, record } = this.#ports
+    const { clock, peerId, record } = this.#ports
+    const sessionId = sessionIdOf(handle)
 
     switch (event.type) {
       case 'turn.started':
         this.#openTurns += 1
-        // A turn that starts after a question means the question was answered.
-        this.#pendingInput = false
         break
       case 'turn.ended':
         this.#openTurns = Math.max(0, this.#openTurns - 1)
+        // This turn cannot end while a question it asked is still open, so its
+        // ending is the proof that each of them was answered. Cleared here,
+        // before the caller judges the boundary, so the purge can fire at it.
+        for (const [id, turnId] of this.#pending) {
+          if (turnId === event.turnId) this.#pending.delete(id)
+        }
         break
       case 'question.asked':
+        this.#pending.set(event.questionId, event.turnId)
+        break
       case 'approval.requested':
-        this.#pendingInput = true
+        this.#pending.set(event.requestId, event.turnId)
         break
       case 'question.abandoned':
-        this.#pendingInput = false
+        this.#pending.delete(event.questionId)
         break
       default:
         break
@@ -297,16 +314,42 @@ export class PeerSession {
     const next = peerStateOf(event)
     if (next !== undefined && next !== this.#state) {
       this.#state = next
-      await record({ type: 'peer.state', peerId, sessionId: handle.sessionId, state: next })
+      await record({
+        type: 'peer.state_changed',
+        ts: clock.now(),
+        subject: peerId,
+        actor: peerActor(peerId),
+        data: { peerId, state: next, sessionId },
+      })
     }
     if (event.type === 'session.ended') {
       await record({
         type: 'session.ended',
-        peerId,
-        sessionId: handle.sessionId,
-        reason: purging && event.reason === 'stopped' ? 'purged' : event.reason,
-        ...(event.code === undefined ? {} : { code: event.code }),
+        ts: clock.now(),
+        subject: sessionId,
+        actor: peerActor(peerId),
+        data: {
+          peerId,
+          sessionId,
+          endReason: endReasonOf(event, purging),
+          ...(event.code === undefined ? {} : { code: event.code }),
+        },
       })
     }
   }
+}
+
+/**
+ * The provider reports only how its stream stopped — `exit`, `crash`, or the
+ * `stopped` we asked for — while the store keeps the fleet's six reasons. A
+ * clean exit is `completed` and a non-zero one is `failed`; a stop we asked for
+ * during a purge is the purge's own restart (§8), not a session that ended.
+ */
+const endReasonOf = (
+  event: Extract<ProviderEvent, { type: 'session.ended' }>,
+  purging: boolean,
+): SessionEndReason => {
+  if (event.reason === 'crash') return 'crashed'
+  if (event.reason === 'stopped') return purging ? 'purged' : 'stopped'
+  return event.code === undefined || event.code === 0 ? 'completed' : 'failed'
 }

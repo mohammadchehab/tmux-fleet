@@ -8,10 +8,10 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { fixedClock, type PeerId, type QuestionId, type TurnId } from '@fleet/foundation-core'
-import type { ProviderEvent } from '@fleet/foundation-contracts'
+import { appendIssues, type ProviderEvent } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
 
-import { PeerSession, type PurgeOutcome, type SessionRecord } from '../src/index.ts'
+import { PeerSession, PurgeRestartFailed, type PurgeOutcome, type SessionRecord } from '../src/index.ts'
 
 const peerId = 'engineer-1' as PeerId
 const turnId = 'trn_0123456789abcdef' as TurnId
@@ -80,9 +80,13 @@ interface Rig {
   readonly sent: readonly string[]
   readonly records: SessionRecord[]
   readonly provider: Provider
-  /** Every recovery the wrapper asked for, with the failure it was told about. */
-  readonly recovered: { from: string; failure: unknown }[]
-  readonly recover: (from: SessionHandle, failure: unknown) => Promise<SessionHandle>
+  /** Every recovery the wrapper asked for, with the failure and handoff it was told about. */
+  readonly recovered: { from: string; failure: unknown; stateFile: unknown }[]
+  readonly recover: (
+    from: SessionHandle,
+    failure: unknown,
+    stateFile: unknown,
+  ) => Promise<SessionHandle>
 }
 
 const rig = (usage: (h: SessionHandle) => { contextTokens: number; contextLimit: number } = () => ({
@@ -92,10 +96,14 @@ const rig = (usage: (h: SessionHandle) => { contextTokens: number; contextLimit:
   const feeds = new Map<string, Feed>()
   const sent: string[] = []
   const records: SessionRecord[] = []
-  const recovered: { from: string; failure: unknown }[] = []
+  const recovered: { from: string; failure: unknown; stateFile: unknown }[] = []
 
-  const recover = async (from: SessionHandle, failure: unknown): Promise<SessionHandle> => {
-    recovered.push({ from: from.sessionId, failure })
+  const recover = async (
+    from: SessionHandle,
+    failure: unknown,
+    stateFile: unknown,
+  ): Promise<SessionHandle> => {
+    recovered.push({ from: from.sessionId, failure, stateFile })
     return handle('ses_cccccccccccccccc')
   }
 
@@ -134,6 +142,16 @@ const rig = (usage: (h: SessionHandle) => { contextTokens: number; contextLimit:
 /** A purge stub that does what the real one does to the stream: ask, then stop. */
 const stubPurge = (provider: Provider, options: { readonly fail?: Error } = {}) => {
   const calls: { sessionId: string; asked: readonly string[] }[] = []
+  const stateFile = {
+    peerId,
+    goal: 'g',
+    done: [],
+    inFlight: [],
+    next: [],
+    decisions: [],
+    openQuestions: [],
+    briefVersion: 1,
+  }
   const purge = async (input: { handle: SessionHandle; ask: (text: string) => Promise<void> }): Promise<PurgeOutcome> => {
     const asked: string[] = []
     calls.push({ sessionId: input.handle.sessionId, asked })
@@ -141,21 +159,10 @@ const stubPurge = (provider: Provider, options: { readonly fail?: Error } = {}) 
     asked.push('write your state file')
     // Stop ends the old stream, which is what lets the loop collect this purge.
     await provider.stop(input.handle)
-    if (options.fail !== undefined) throw options.fail
-    return {
-      handle: handle('ses_bbbbbbbbbbbbbbbb'),
-      stateFile: {
-        peerId,
-        goal: 'g',
-        done: [],
-        inFlight: [],
-        next: [],
-        decisions: [],
-        openQuestions: [],
-        briefVersion: 1,
-      },
-      degraded: false,
-    }
+    // A restart that fails after the handoff, as `selfPurge` reports it: the
+    // state file is already recorded, so the failure carries it out.
+    if (options.fail !== undefined) throw new PurgeRestartFailed(stateFile, false, options.fail)
+    return { handle: handle('ses_bbbbbbbbbbbbbbbb'), stateFile, degraded: false }
   }
   return { calls, purge }
 }
@@ -199,10 +206,13 @@ test('events become peer states, and a completed turn that is under the limit ke
   await run
 
   assert.deepEqual(
-    r.records.map((record) => (record.type === 'peer.state' ? record.state : record.type)),
+    r.records.map((record) => (record.type === 'peer.state_changed' ? record.data.state : record.type)),
     ['working', 'idle', 'ended', 'session.ended'],
   )
   assert.deepEqual(session.state, 'ended')
+  // What the wrapper wrote is what the store accepts: the records are the
+  // registry's own events, so the append boundary has nothing to object to.
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
 })
 
 test('at the limit the session purges, comes back on the new handle, and keeps running', async () => {
@@ -247,8 +257,10 @@ test('at the limit the session purges, comes back on the new handle, and keeps r
   // did exactly what §8 asked. The fresh one then ends on its own.
   const ends = r.records.filter((record) => record.type === 'session.ended')
   assert.deepEqual(
-    ends.map((record) => (record.type === 'session.ended' ? record.reason : undefined)),
-    ['purged', 'exit'],
+    ends.map((record) => (record.type === 'session.ended' ? record.data.endReason : undefined)),
+    // The purge's own stop is the restart, not an end; the fresh session's
+    // clean exit is `completed`, which is the contract's word for it (§3, §4).
+    ['purged', 'completed'],
   )
 })
 
@@ -327,7 +339,11 @@ test('a purge whose restart fails recovers the peer, rather than leaving it with
   // loop carries on reading the recovered session's stream.
   await until(() => r.recovered.length === 1, 'the recovery to be asked for')
   assert.equal(r.recovered[0]?.from, 'ses_aaaaaaaaaaaaaaaa')
-  assert.equal(r.recovered[0]?.failure, failure)
+  // The handoff the purge already wrote and recorded outlives the failed
+  // restart: the recovered session is started from it, not from role + brief.
+  assert.ok(r.recovered[0]?.failure instanceof PurgeRestartFailed)
+  assert.equal(r.recovered[0]?.failure.cause, failure)
+  assert.equal((r.recovered[0]?.stateFile as { goal?: string }).goal, 'g')
   assert.equal(session.handle.sessionId, 'ses_cccccccccccccccc')
 
   await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
@@ -364,7 +380,7 @@ test('a peer that fails again after a recovery is reported, not restarted foreve
   await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
   r.feeds.get('ses_cccccccccccccccc')?.push(started(), ended())
 
-  await assert.rejects(run, /restart failed/)
+  await assert.rejects(run, /could not be started/)
   assert.equal(r.recovered.length, 1, 'one recovery, then the failure is reported')
 })
 
@@ -463,8 +479,11 @@ test('no mail is delivered into a session while it is being purged', async () =>
   await run
 })
 
-test('a question still open at a turn boundary does not trigger a purge', async () => {
-  // Over the limit from the first turn: any real boundary would purge.
+test('a question answered inside its turn does not hold the purge off: the turn ending is the proof', async () => {
+  // The answer never appears on the stream, so the turn's own end is the only
+  // evidence it was answered — a turn cannot end while its question is open.
+  // Waiting for the *next* turn would leave an idle peer over its limit
+  // unpurged for as long as nobody sends it anything.
   const r = rig(() => ({ contextTokens: 900, contextLimit: 1_000 }))
   const stub = stubPurge(r.provider)
   const session = new PeerSession({
@@ -484,8 +503,6 @@ test('a question still open at a turn boundary does not trigger a purge', async 
   const run = session.run()
   r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
     started(),
-    // The peer is waiting on a person, not on itself: purging now would
-    // interrupt the one thing a fresh session cannot re-create.
     {
       type: 'question.asked',
       turnId,
@@ -494,10 +511,64 @@ test('a question still open at a turn boundary does not trigger a purge', async 
     },
     ended(),
   )
-  await wait(50)
-  assert.deepEqual(stub.calls, [], 'no purge while a question is pending')
 
-  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({ type: 'session.ended', reason: 'exit' })
+  await until(() => stub.calls.length === 1, 'the purge to fire at the boundary that answered the question')
+  await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  await run
+})
+
+test('a question left pending by a stream that died still holds the purge off on its replacement', async () => {
+  // Two streams, one pending question: the person is still being waited on, and
+  // a restart does not answer them. The question is asked on the first stream;
+  // recording the waiting state fails, which is what ends that stream and puts
+  // the peer on a second one.
+  const r = rig(() => ({ contextTokens: 900, contextLimit: 1_000 }))
+  const stub = stubPurge(r.provider)
+  const questionId = 'qst_0123456789abcdef' as QuestionId
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.5, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      if (record.type === 'peer.state_changed' && record.data.state === 'waiting_input') {
+        throw new Error('store is down')
+      }
+      r.records.push(record)
+    },
+    purge: stub.purge,
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
+    started(),
+    {
+      type: 'question.asked',
+      turnId,
+      questionId,
+      questions: [{ question: 'ship it?', options: [{ label: 'yes' }, { label: 'no' }] }],
+    },
+  )
+
+  await until(() => r.recovered.length === 1, 'the recovery to be asked for')
+  // The replacement is idle at its first turn boundary, over its limit, and
+  // still does not purge: the question outlived the session that asked it.
+  // A turn of its own: ids are minted per turn, so the replacement's turn
+  // ending is not evidence about the question the other session asked.
+  const ownTurn = 'trn_fedcba9876543210' as TurnId
+  await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
+  r.feeds.get('ses_cccccccccccccccc')?.push(
+    { type: 'turn.started', turnId: ownTurn, at: '2026-11-10T09:00:02.000Z' },
+    { type: 'turn.ended', turnId: ownTurn, at: '2026-11-10T09:00:03.000Z', reason: 'completed' },
+  )
+  await wait(50)
+  assert.deepEqual(stub.calls, [], 'no purge while a question asked elsewhere is still open')
+
+  r.feeds.get('ses_cccccccccccccccc')?.push({ type: 'session.ended', reason: 'exit' })
   await run
 })
 
@@ -549,7 +620,7 @@ test('records are appended in order and awaited before the next event is read', 
       inFlight += 1
       if (inFlight > 1) overlapped = true
       await new Promise((resolve) => setTimeout(resolve, 5))
-      appended.push(record.type === 'peer.state' ? record.state : record.type)
+      appended.push(record.type === 'peer.state_changed' ? record.data.state : record.type)
       inFlight -= 1
     },
     purge: async () => {

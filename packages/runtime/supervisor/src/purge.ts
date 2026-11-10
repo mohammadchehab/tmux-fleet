@@ -20,10 +20,11 @@
  * typed, and honest about the one direction the fleet reads from a peer.
  */
 
-import type { Clock, PeerId } from '@fleet/foundation-core'
+import { peerActor, type Clock, type PeerId } from '@fleet/foundation-core'
 import type { StateFile } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
 
+import { sessionIdOf, type PurgeRecord } from './records.ts'
 import {
   STATE_FILE_ASKS,
   mechanicalStateFile,
@@ -33,27 +34,8 @@ import {
   type MechanicalFacts,
 } from './state.ts'
 
-/**
- * The four §8 events, as the supervisor writes them. The store assigns `seq`
- * and `ts` on append; nothing here does (§3).
- */
-export type PurgeEvent =
-  | {
-      readonly type: 'purge.started'
-      readonly peerId: PeerId
-      readonly sessionId: string
-      readonly contextTokens: number
-      readonly contextLimit: number
-    }
-  | { readonly type: 'purge.saved'; readonly peerId: PeerId; readonly sessionId: string; readonly stateFile: StateFile }
-  | { readonly type: 'purge.degraded'; readonly peerId: PeerId; readonly sessionId: string; readonly reason: string }
-  | {
-      readonly type: 'purge.completed'
-      readonly peerId: PeerId
-      readonly fromSessionId: string
-      readonly toSessionId: string
-      readonly replayedMessages: number
-    }
+/** The four §8 events, as the contract registers them: `subject` is the peer, `data` the registry's. */
+export type PurgeEvent = PurgeRecord
 
 /** A fresh session, and how much newer mail was replayed into it (§7, §8). */
 export interface RestartResult {
@@ -90,12 +72,36 @@ export interface PurgePorts {
   /** What the store already knows, for the degraded handoff. */
   readonly facts: () => MechanicalFacts | Promise<MechanicalFacts>
   /** Awaited at every call: the store's `append` is what makes a purge visible. */
-  readonly record: (event: PurgeEvent) => void | Promise<void>
+  readonly record: (event: PurgeRecord) => void | Promise<void>
   readonly writeFile: (path: string, text: string) => Promise<void>
   /** `~/.fleet/<profile>/peers/<peerId>/state.md` (§1.1). */
   readonly stateFilePath: (peerId: PeerId) => string
   readonly clock: Clock
 }
+
+/**
+ * A purge that reached a saved or degraded handoff and then could not start the
+ * fresh session.
+ *
+ * It carries the state file because that file is the one thing the peer must
+ * not lose: whoever recovers the peer starts the new session *from* it, with
+ * the newer mail replayed, instead of from role and brief alone (§8).
+ */
+export class PurgeRestartFailed extends Error {
+  readonly stateFile: StateFile
+  readonly degraded: boolean
+
+  constructor(stateFile: StateFile, degraded: boolean, cause: unknown) {
+    super('the session after a purge could not be started', { cause })
+    this.name = 'PurgeRestartFailed'
+    this.stateFile = stateFile
+    this.degraded = degraded
+  }
+}
+
+/** The state file a failed purge already handed off, or `undefined` if none was reached. */
+export const restartStateFileOf = (failure: unknown): StateFile | undefined =>
+  failure instanceof PurgeRestartFailed ? failure.stateFile : undefined
 
 /** What the caller gets back: the running session, and how honestly it got there. */
 export interface PurgeOutcome {
@@ -112,26 +118,47 @@ export interface PurgeOutcome {
  * with facts, stop, restart, and record each step.
  *
  * A failure in `restart` propagates — a purge that could not produce a session
- * must be visible, not silently reported as a peer that is merely idle.
+ * must be visible, not silently reported as a peer that is merely idle — but
+ * as a `PurgeRestartFailed`, so the recovery that follows can start the fresh
+ * session from the handoff this purge already recorded (§8).
  */
 export const selfPurge = async (ports: PurgePorts): Promise<PurgeOutcome> => {
   const { handle, peerId, record } = ports
+  const sessionId = sessionIdOf(handle)
+  const actor = peerActor(peerId)
   const usage = await ports.provider.usage(handle)
 
   await record({
     type: 'purge.started',
-    peerId,
-    sessionId: handle.sessionId,
-    contextTokens: usage.contextTokens,
-    contextLimit: usage.contextLimit,
+    ts: ports.clock.now(),
+    subject: peerId,
+    actor,
+    data: {
+      peerId,
+      sessionId,
+      contextTokens: usage.contextTokens,
+      contextLimit: usage.contextLimit,
+    },
   })
 
   const collected = await collectStateFile(ports)
 
   await record(
     collected.degraded
-      ? { type: 'purge.degraded', peerId, sessionId: handle.sessionId, reason: collected.reason ?? 'no valid state file' }
-      : { type: 'purge.saved', peerId, sessionId: handle.sessionId, stateFile: collected.stateFile },
+      ? {
+          type: 'purge.degraded',
+          ts: ports.clock.now(),
+          subject: peerId,
+          actor,
+          data: { peerId, sessionId, reason: collected.reason ?? 'no valid state file' },
+        }
+      : {
+          type: 'purge.saved',
+          ts: ports.clock.now(),
+          subject: peerId,
+          actor,
+          data: { peerId, sessionId, stateFile: collected.stateFile },
+        },
   )
 
   // The human copy is derived from what was validated, never from the raw file
@@ -142,14 +169,26 @@ export const selfPurge = async (ports: PurgePorts): Promise<PurgeOutcome> => {
   )
 
   await ports.provider.stop(handle)
-  const restarted = await ports.restart(collected.stateFile, handle)
+  let restarted: RestartResult
+  try {
+    restarted = await ports.restart(collected.stateFile, handle)
+  } catch (failure) {
+    // The handoff was already written and recorded: the state file is the one
+    // thing the peer must not lose, so the failure carries it out.
+    throw new PurgeRestartFailed(collected.stateFile, collected.degraded, failure)
+  }
 
   await record({
     type: 'purge.completed',
-    peerId,
-    fromSessionId: handle.sessionId,
-    toSessionId: restarted.handle.sessionId,
-    replayedMessages: restarted.replayedMessages,
+    ts: ports.clock.now(),
+    subject: peerId,
+    actor,
+    data: {
+      peerId,
+      fromSessionId: sessionId,
+      toSessionId: sessionIdOf(restarted.handle),
+      replayedMessages: restarted.replayedMessages,
+    },
   })
 
   return {
