@@ -224,6 +224,152 @@ describe('every run is an event', () => {
   })
 })
 
+describe('a failing routine backs off, and says so once it is broken', () => {
+  /** Every routine but `dispatch` off, so a run in this block is the one the test is about. */
+  const dispatchOnly = {
+    'keep-busy': { enabled: false },
+    'pr-babysit': { enabled: false },
+    standup: { enabled: false },
+    'worktree-gc': { enabled: false },
+    'branch-cleanup': { enabled: false },
+    reconcile: { enabled: false },
+    'security-scan': { enabled: false },
+    notify: { enabled: false },
+    'tracker-sync': { enabled: false },
+  }
+
+  /** A body that fails with a settable error until it is told to succeed, and counts its runs. */
+  const flaky = () => {
+    const state = { failing: true, error: 'remote said 500', runs: 0 }
+    const factory: RoutineFactory = (): RoutineBody => ({
+      kind: 'dispatch',
+      run: async () => {
+        state.runs += 1
+        if (state.failing) throw new Error(state.error)
+        return outcome(1)
+      },
+    })
+    return { state, factory }
+  }
+
+  const failingHarness = (overrides: Partial<SchedulerDeps> = {}) => {
+    const { state, factory } = flaky()
+    const built = harness({ config: dispatchOnly, factories: { dispatch: factory }, ...overrides })
+    return { state, ...built }
+  }
+
+  /** Tick a second at a time until the routine runs again, and answer how long it waited. */
+  const waitForNextRun = async (
+    state: { runs: number },
+    tick: () => Promise<unknown>,
+    clock: { advance: (ms: number) => void },
+  ): Promise<number> => {
+    const before = state.runs
+    let waited = 0
+    while (state.runs === before) {
+      clock.advance(1_000)
+      waited += 1_000
+      await tick()
+    }
+    return waited
+  }
+
+  it('does not re-run a failed routine on the next tick', async () => {
+    const { deps, state, clock } = failingHarness({ tickIntervalMs: 5_000 })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    assert.equal(state.runs, 1)
+    // The old behaviour: `lastRun` never moved, so the very next tick was due
+    // again and a broken routine hit its remote every 5 s forever (@132).
+    clock.advance(5_000)
+    await scheduler.tick()
+    assert.equal(state.runs, 1, 'a failed routine must not be due on the next tick')
+    clock.advance(5_000)
+    await scheduler.tick()
+    assert.equal(state.runs, 2, 'twice the tick interval is the first retry')
+  })
+
+  it('doubles the backoff from the tick interval and caps it at the routine period', async () => {
+    const { deps, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    const waits: number[] = []
+    for (let failure = 0; failure < 14; failure += 1) {
+      waits.push(await waitForNextRun(state, () => scheduler.tick(), clock))
+    }
+    // 2 s, 4, 8, … and never longer than the hour a heartbeat routine is given:
+    // waiting past its own period would be a routine that never ran again.
+    const expected = waits.map((_, index) => Math.min(1_000 * 2 ** (index + 1), 60 * 60 * 1_000))
+    assert.deepEqual(waits, expected)
+  })
+
+  it('escalates at the third failure, naming the error and the next retry', async () => {
+    const { deps, store, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    assert.equal(store.ofType('routine.failing').length, 0, 'one failure is not a broken routine')
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    assert.equal(store.ofType('routine.failing').length, 0, 'nor two')
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+
+    const escalation = headOf(store.ofType('routine.failing'), 'routine.failing')
+    assert.equal(escalation.data.routineId, 'dispatch')
+    assert.equal(escalation.data.failures, 3)
+    assert.match(escalation.data.error, /remote said 500/)
+    // The same backoff the tick will judge the retry against: 1 s doubled three times.
+    assert.equal(escalation.data.retryAt, new Date(Date.parse(escalation.ts) + 8_000).toISOString())
+  })
+
+  it('does not ring again while the error is the same', async () => {
+    const { deps, store, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await waitForNextRun(state, () => scheduler.tick(), clock)
+    }
+    assert.equal(state.runs, 6)
+    assert.equal(store.ofType('routine.failing').length, 1, 'five failures, one banner')
+  })
+
+  it('rings again when the error changes, because the failure is a different one', async () => {
+    const { deps, store, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await waitForNextRun(state, () => scheduler.tick(), clock)
+    }
+    state.error = 'now the token is expired'
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+
+    const escalations = store.ofType('routine.failing')
+    assert.equal(escalations.length, 2)
+    assert.match(headOf(escalations.slice(1), 'second routine.failing').data.error, /token is expired/)
+  })
+
+  it('re-arms after a recovery, so a second run of failures rings again', async () => {
+    const { deps, store, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await waitForNextRun(state, () => scheduler.tick(), clock)
+    }
+    assert.equal(store.ofType('routine.failing').length, 1)
+
+    // It recovers: one healthy run, which is also what closes the banner.
+    state.failing = false
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    assert.equal(store.ofType('routine.finished').length, 1)
+
+    // And breaks again — a first failure again, so the third one is news.
+    state.failing = true
+    state.error = 'the remote is gone'
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await waitForNextRun(state, () => scheduler.tick(), clock)
+    }
+    assert.equal(store.ofType('routine.failing').length, 2)
+  })
+})
+
 describe('a miss is caught up on restart', () => {
   it('runs a heartbeat whose window closed while the daemon was down', async () => {
     const { deps, read, pm } = harness()

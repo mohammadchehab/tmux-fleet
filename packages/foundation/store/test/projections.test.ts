@@ -257,6 +257,56 @@ test('a routine counts its runs and its failures', async () => {
   await store.close()
 })
 
+test('a routine that keeps failing raises one failure notification, and its recovery resolves it', async () => {
+  const store = await open()
+  const failing = (ts: string, error: string): AppendEvent =>
+    event(
+      'routine.failing',
+      'dispatch',
+      { routineId: 'dispatch', kind: 'dispatch', error, failures: 3, retryAt: '2026-11-10T10:00:40.000Z' },
+      ts,
+    )
+
+  await store.append([
+    event(
+      'routine.started',
+      'dispatch',
+      { routineId: 'dispatch', kind: 'dispatch', trigger: 'heartbeat' },
+      '2026-11-10T10:00:00.000Z',
+    ),
+  ])
+  await store.append([failing('2026-11-10T10:00:10.000Z', 'remote said 500')])
+
+  const raised = await store.reader().notifications.all()
+  assert.equal(raised.length, 1)
+  assert.equal(raised[0]?.key, 'failure:dispatch:dispatch')
+  assert.equal(raised[0]?.class, 'failure', 'a broken routine is §6.1 failure class, the loud one')
+  assert.equal(raised[0]?.state, 'pending')
+  assert.match(raised[0]?.title ?? '', /dispatch keeps failing/)
+  // The key can only name the routine; what broke and when it is tried again are
+  // the two things a person needs, so the row carries them (§6.1).
+  assert.match(raised[0]?.body ?? '', /remote said 500/)
+  assert.match(raised[0]?.body ?? '', /next retry is 2026-11-10T10:00:40.000Z/)
+
+  await store.append([failing('2026-11-10T10:05:00.000Z', 'the token is expired')])
+  const repeated = await store.reader().notifications.all()
+  assert.equal(repeated.length, 1, 'one row per routine, however often it recurs (§6.1)')
+  assert.equal(repeated[0]?.occurrences, 2)
+
+  await store.append([
+    event(
+      'routine.finished',
+      'dispatch',
+      { routineId: 'dispatch', kind: 'dispatch', durationMs: 12, actions: 0, actionsFailed: 0 },
+      '2026-11-10T10:10:00.000Z',
+    ),
+  ])
+  const recovered = await store.reader().notifications.all()
+  assert.equal(recovered[0]?.state, 'resolved', 'a routine that finished has recovered')
+  assert.equal(recovered[0]?.resolvedAt, '2026-11-10T10:10:00.000Z')
+  await store.close()
+})
+
 test('a worktree is created, classified, and gone once it is removed', async () => {
   const store = await open()
   const worktreeId = 'wtr_5e6f708192a3b4c5'

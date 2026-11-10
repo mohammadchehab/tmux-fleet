@@ -17,7 +17,7 @@ import {
   string,
   text,
 } from '@fleet/foundation-core'
-import { peerId, sessionId, worktreeId } from '@fleet/foundation-core'
+import { peerId, sessionId, timestamp, worktreeId } from '@fleet/foundation-core'
 import { repo, sha } from '@fleet/foundation-core'
 import { branchName } from '../shapes.ts'
 import { stateFile } from '../provider.ts'
@@ -77,6 +77,33 @@ export const routineFailed = event(
     routineId: string({ minLength: 1, maxLength: 80 }),
     kind: oneOf(routineKinds),
     error: text(2000),
+  }),
+)
+
+/**
+ * A routine that keeps failing, escalated so the user hears about it (§6, §6.1).
+ *
+ * `routine.failed` says one attempt failed, and is appended whether or not
+ * anyone will act on it. This one is the scheduler's deliberate decision that a
+ * routine is broken rather than unlucky: it has failed three times running, and
+ * the retries are being spaced out instead of hammered on every tick. The store
+ * projects it into §6.1's `failure` notification — the loudest class there is —
+ * so a broken routine reaches a person rather than a log nobody reads.
+ *
+ * `retryAt` is the fact a banner needs to be useful: "it failed" without "and
+ * it will try again at 14:32" is a shrug. `failures` is what makes it
+ * comparable to the last one.
+ */
+export const routineFailing = event(
+  'routine.failing',
+  object({
+    routineId: string({ minLength: 1, maxLength: 80 }),
+    kind: oneOf(routineKinds),
+    error: text(2000),
+    /** Attempts in a row that have failed, this one included. Three is when this event is written. */
+    failures: count(),
+    /** When the scheduler will try this routine again. */
+    retryAt: timestamp(),
   }),
 )
 
