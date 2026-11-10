@@ -1,0 +1,588 @@
+/**
+ * One Claude session: the `query()` call, the input stream, the event pump, and
+ * the two maps that decide what the session is doing right now.
+ *
+ * The shape is forced by the SDK, and the spike measured every part of it
+ * (`docs/design/spikes/agent-sdk.md`):
+ *
+ * - **streaming input** (`prompt: AsyncIterable<SDKUserMessage>`) is not
+ *   optional. A string prompt is one turn and closes; multi-turn `send()`,
+ *   `interrupt()`, `setPermissionMode()` and `getContextUsage()` all need the
+ *   open stream.
+ * - the CLI emits nothing until the first user message arrives — not even
+ *   `init` — so `start()` delivers the brief as the opening turn (§7) and waits
+ *   for the `init` that follows it.
+ * - `init` is **re-emitted at the start of every turn**, so the latest one is
+ *   the truth about the running process. The launch check uses the first, which
+ *   is the only one that describes how the session came up.
+ * - `interrupt()` does not throw anything through the iterator: the aborted turn
+ *   ends as a `result` with `is_error: true` and `terminal_reason:
+ *   'aborted_tools'`, and the session stays usable. So an interrupt is recorded
+ *   *before* it happens and read back when the `result` arrives.
+ * - `canUseTool` is the one control channel for both an `AskUserQuestion` and a
+ *   permission prompt, and the turn blocks on its promise with no deadline:
+ *   leaving it unsettled parks the session forever (§4's `waiting_input`).
+ * - **`canUseTool` is only consulted in modes that ask.** Under
+ *   `bypassPermissions` the SDK shadows it entirely (it warns
+ *   `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` on construction), so a peer in that mode
+ *   can never report `waiting_input` — its questions are auto-approved with no
+ *   answer. A session that must be able to ask its supervisor runs in
+ *   `default`, `acceptEdits` or `plan`.
+ */
+
+import { query, type Options, type PermissionResult, type Query } from '@anthropic-ai/claude-agent-sdk'
+import {
+  fleetError,
+  isLive,
+  newSessionId,
+  newTurnId,
+  systemClock,
+  type Clock,
+  type PeerState,
+  type SessionId,
+  type Timestamp,
+  type TurnId,
+} from '@fleet/foundation-core'
+import type {
+  ProviderEvent,
+  ProviderSessionRef,
+  SessionSpec,
+  Turn,
+  Usage,
+} from '@fleet/runtime-provider-sdk'
+
+import { buildChildEnv, recordedEndpoint } from './env.ts'
+import { toContract, type AdapterEvent } from './events.ts'
+import { mapMessage, questionAnswers, readQuestions, type TurnState } from './messages.ts'
+import { PendingRequests } from './pending.ts'
+import { fallbackTokensFrom, usageFrom, type ContextLimits } from './usage.ts'
+
+/** Everything about *how* a Claude session runs that is not part of a `SessionSpec`. */
+export interface ClaudeSessionConfig {
+  readonly providerId: string
+  /** Configured context windows; `usage()` never invents a limit (§8). */
+  readonly limits: ContextLimits
+  /** `full` counts every category through the token API; `summary` is cheap and unreliable on some endpoints. */
+  readonly contextDetail: 'full' | 'summary'
+  /** Report `costUsd` when the endpoint's numbers are comparable between sessions. */
+  readonly usageCost: boolean
+  /** SDK setting sources. `[]` is SDK isolation: no user, project or local settings (§5 of the spike). */
+  readonly settingSources: readonly ('user' | 'project' | 'local')[]
+  /** How long `start()` waits for `init` before calling the session failed. */
+  readonly initTimeoutMs: number
+  readonly clock: Clock
+}
+
+export const defaultSessionConfig: ClaudeSessionConfig = {
+  providerId: 'claude',
+  limits: { byModel: {}, fallback: 200_000 },
+  contextDetail: 'full',
+  usageCost: true,
+  settingSources: [],
+  initTimeoutMs: 60_000,
+  clock: systemClock,
+}
+
+/** A session as its provider sees it: identity is a snapshot, state is live. */
+export class ClaudeSession {
+  readonly sessionId: SessionId
+  readonly peerId: string
+  readonly providerId: string
+
+  readonly #spec: SessionSpec
+  readonly #config: ClaudeSessionConfig
+  readonly #input: InputQueue
+  readonly #events = new EventQueue()
+  readonly #pending: PendingRequests
+  readonly #openingTurn: TurnId
+  readonly #started = deferred<{ model: string; permissionMode: string }>()
+  readonly #query: Query
+
+  #sessionRef: ProviderSessionRef | undefined
+  /** The latest `init`'s model; the process's model right now, not the one requested. */
+  #observedModel: string | undefined
+  #observedMode: string | undefined
+  #state: PeerState = 'starting'
+  #inflight: TurnId[] = []
+  #turnState: TurnState = { interrupted: false }
+  #lastContextTokens: number | undefined
+  #lastCostUsd: number | undefined
+  #pump: Promise<void> | undefined
+
+  constructor(spec: SessionSpec, config: ClaudeSessionConfig, resumeRef: ProviderSessionRef | undefined) {
+    this.#spec = spec
+    this.#config = config
+    this.sessionId = newSessionId()
+    this.peerId = spec.peerId
+    this.providerId = config.providerId
+    this.#pending = new PendingRequests(() => config.clock.now())
+    this.#input = new InputQueue()
+
+    const { env } = buildChildEnv(spec)
+    this.#query = query({
+      prompt: this.#input,
+      options: this.#options(spec, env, resumeRef),
+    })
+
+    this.#openingTurn = newTurnId()
+    this.#inflight.push(this.#openingTurn)
+    this.#pump = this.#run()
+  }
+
+  // ------------------------------------------------------------- lifecycle
+
+  /** Wait for `init`, check the session came up as asked, and hand back the handle. */
+  async start(turn: Turn): Promise<ClaudeSession> {
+    this.#emit({ type: 'turn.started', turnId: this.#openingTurn, at: this.#now() })
+    // The CLI says nothing until the first user message, so the brief goes now.
+    this.#input.push(turn.text)
+
+    const init = await this.#whenStarted()
+    this.#state = 'idle'
+
+    if (init.model !== this.#spec.model) {
+      this.#configMismatch('model', this.#spec.model, init.model)
+    }
+    if (init.permissionMode !== this.#spec.permissionMode) {
+      this.#emit({
+        type: 'error',
+        message: `permission_mode_mismatch: asked for ${this.#spec.permissionMode}, the session came up in ${init.permissionMode}`,
+        retryable: false,
+      })
+    }
+    return this
+  }
+
+  async send(turn: Turn): Promise<TurnId> {
+    this.#assertLive()
+    const turnId = newTurnId()
+    this.#inflight.push(turnId)
+    this.#turnState = { ...this.#turnState, interrupted: false }
+    this.#state = 'working'
+    this.#emit({ type: 'turn.started', turnId, at: this.#now() })
+    this.#input.push(turn.text)
+    return turnId
+  }
+
+  async interrupt(turn?: TurnId): Promise<void> {
+    this.#assertLive()
+    // Recorded before the call: the abort arrives as an ordinary `result`, and the
+    // only thing that distinguishes it from a failure is that we knew it was coming.
+    this.#turnState = { ...this.#turnState, interrupted: true }
+    for (const abandoned of this.#pending.abandon('interrupted', turn).questions) {
+      this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId, reason: 'interrupted' })
+    }
+    try {
+      await this.#query.interrupt()
+    } catch (thrown) {
+      this.#turnState = { ...this.#turnState, interrupted: false }
+      throw fleetError('provider_failed', `interrupt failed: ${describe(thrown)}`, { cause: thrown })
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.#state === 'ended') return
+    this.#state = 'ended'
+    const { questions } = this.#pending.abandon('ended')
+    for (const abandoned of questions) {
+      this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId, reason: 'ended' })
+    }
+    this.#emit({ type: 'session.ended', at: this.#now(), reason: 'stopped' })
+    this.#input.end()
+    try {
+      this.#query.close()
+    } finally {
+      this.#events.close()
+    }
+  }
+
+  // ------------------------------------------------------------ read-only
+
+  get sessionRef(): ProviderSessionRef {
+    if (this.#sessionRef === undefined) {
+      throw fleetError('provider_failed', `session ${this.sessionId} has no ref: it never reached init`)
+    }
+    return this.#sessionRef
+  }
+
+  get model(): string {
+    return this.#observedModel ?? this.#spec.model
+  }
+
+  get permissionMode(): string {
+    return this.#observedMode ?? this.#spec.permissionMode
+  }
+
+  /** The endpoint the spec recorded, when it recorded one (§4, §13). Never inferred. */
+  get endpoint(): string | undefined {
+    return recordedEndpoint(this.#spec.env)
+  }
+
+  /** The turn the brief was delivered as. Not on `SessionHandle` yet; see the PR's contract delta. */
+  get briefTurn(): TurnId {
+    return this.#openingTurn
+  }
+
+  status(): PeerState {
+    if (this.#pending.blocked && isLive(this.#state)) return 'waiting_input'
+    return this.#state
+  }
+
+  async usage(): Promise<Usage> {
+    const answer = await this.#contextUsage()
+    const cost = this.#config.usageCost ? this.#lastCostUsd : undefined
+    return usageFrom({
+      answer,
+      ...(this.#lastContextTokens === undefined ? {} : { fallbackTokens: this.#lastContextTokens }),
+      model: this.model,
+      limits: this.#config.limits,
+      ...(cost === undefined ? {} : { costUsd: cost }),
+    })
+  }
+
+  /** The ids `answer()` and `respond()` accept; empty unless the peer is blocked. */
+  pending(): ReturnType<PendingRequests['snapshot']> {
+    return this.#pending.snapshot()
+  }
+
+  /** Answering unblocks the turn that asked; it does not start a new one. */
+  answer(text: string, questionId?: string): void {
+    this.#pending.answer(text, questionId)
+  }
+
+  respond(decision: 'allow' | 'deny', requestId?: string): void {
+    const resolved = this.#pending.respond(decision, requestId)
+    this.#emit({ type: 'approval.resolved', requestId: resolved.requestId, decision })
+  }
+
+  /** Change the model on a live session — the SDK supports it; the `Provider` interface has no method for it yet. */
+  async setModel(model: string): Promise<void> {
+    this.#assertLive()
+    try {
+      await this.#query.setModel(model)
+    } catch (thrown) {
+      throw fleetError('provider_failed', `setModel(${model}) failed: ${describe(thrown)}`, { cause: thrown })
+    }
+  }
+
+  async setPermissionMode(mode: SessionSpec['permissionMode']): Promise<void> {
+    this.#assertLive()
+    try {
+      await this.#query.setPermissionMode(mode)
+    } catch (thrown) {
+      throw fleetError('provider_failed', `setPermissionMode(${mode}) failed: ${describe(thrown)}`, { cause: thrown })
+    }
+  }
+
+  /** The contract's event stream: the adapter's events, projected (§4). */
+  events(): AsyncIterable<ProviderEvent> {
+    return this.#events.project(toContract)
+  }
+
+  /** The richer stream the contract cannot carry yet. One consumer, like `events()`. */
+  detailEvents(): AsyncIterable<AdapterEvent> {
+    return this.#events
+  }
+
+  // ---------------------------------------------------------------- internals
+
+  #options(spec: SessionSpec, env: Readonly<Record<string, string>>, resumeRef: ProviderSessionRef | undefined): Options {
+    const options: Options = {
+      cwd: spec.cwd,
+      env: { ...env },
+      model: spec.model,
+      permissionMode: spec.permissionMode,
+      settingSources: [...this.#config.settingSources],
+      systemPrompt: {
+        type: 'preset',
+        preset: 'claude_code',
+        ...(spec.systemPromptAppend === undefined ? {} : { append: spec.systemPromptAppend }),
+      },
+      canUseTool: (toolName, input, canUseOptions) =>
+        this.#canUseTool(toolName, input, canUseOptions as CanUseOptions),
+      // Without this the SDK refuses a spec that asks for bypassPermissions.
+      ...(spec.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
+      ...(spec.effort === undefined ? {} : { effort: spec.effort }),
+      ...(spec.mcp === undefined ? {} : { mcpServers: mcpServersOf(spec) }),
+      // `resume` is the vendor's session id; the SDK loads that history and
+      // hands out the same id again, which is what makes `resume()` idempotent (§7).
+      ...(resumeRef === undefined ? {} : { resume: resumeRef }),
+    }
+    return options
+  }
+
+  async #run(): Promise<void> {
+    try {
+      for await (const message of this.#query) this.#onMessage(message)
+      this.#finish('exited', undefined)
+    } catch (thrown) {
+      const message = describe(thrown)
+      this.#emit({ type: 'error', message, retryable: true })
+      this.#finish('failed', message)
+    }
+  }
+
+  #onMessage(message: unknown): void {
+    const record = message as { type?: unknown; subtype?: unknown; session_id?: unknown }
+    this.#lastContextTokens = fallbackTokensFrom((record as { usage?: unknown }).usage) ?? this.#lastContextTokens
+    if (record.type === 'result') {
+      const cost = (record as { total_cost_usd?: unknown }).total_cost_usd
+      if (typeof cost === 'number') this.#lastCostUsd = cost
+    }
+
+    const turnId = this.#inflight[0]
+    for (const event of mapMessage(message, turnId, this.#turnState, this.#now())) {
+      if (event.type === 'session.started') {
+        this.#sessionRef ??= event.sessionRef
+        this.#observedModel = event.model
+        this.#observedMode = event.permissionMode
+        this.#started.resolve({ model: event.model, permissionMode: event.permissionMode })
+        // The launch `init` describes how the session came up; later ones are
+        // just this turn's echo and must not re-trigger the launch check.
+        continue
+      }
+      if (event.type === 'turn.ended') {
+        this.#inflight = this.#inflight.filter((id) => id !== event.turnId)
+        this.#turnState = { interrupted: false }
+        this.#state = this.#inflight.length > 0 ? 'working' : 'idle'
+      }
+      this.#emit(event)
+    }
+  }
+
+  #canUseTool(toolName: string, input: Record<string, unknown>, options: CanUseOptions): Promise<PermissionResult> {
+    const turnId = this.#inflight[0]
+    if (turnId === undefined) {
+      return Promise.resolve({ behavior: 'deny', message: 'no turn is open for this tool call' })
+    }
+
+    const aborted = new Promise<'aborted'>((resolve) => {
+      if (options.signal.aborted) resolve('aborted')
+      else options.signal.addEventListener('abort', () => resolve('aborted'), { once: true })
+    })
+
+    if (toolName === 'AskUserQuestion') {
+      const questions = readQuestions(input) ?? [{ question: 'The peer asked a question it did not spell out.' }]
+      const { open, wait } = this.#pending.ask(turnId, questions)
+      this.#state = 'waiting_input'
+      this.#emit({
+        type: 'question.asked',
+        turnId,
+        questionId: open.questionId,
+        at: open.askedAt,
+        questions: open.questions,
+      })
+      return Promise.race([wait, aborted]).then((answer) => {
+        if (answer === 'aborted') return { behavior: 'deny', message: 'the turn was interrupted' } as PermissionResult
+        this.#state = 'working'
+        return { behavior: 'allow', updatedInput: { ...input, ...answersFor(questions, answer) } }
+      })
+    }
+
+    const summary = summarise(input)
+    const { open, wait } = this.#pending.askApproval(turnId, toolName, summary)
+    this.#state = 'waiting_input'
+    this.#emit({
+      type: 'approval.requested',
+      turnId,
+      requestId: open.requestId,
+      at: open.askedAt,
+      tool: toolName,
+      ...(summary === undefined ? {} : { summary }),
+    })
+    return Promise.race([wait, aborted]).then((decision) => {
+      if (decision === 'aborted') return { behavior: 'deny', message: 'the turn was interrupted' } as PermissionResult
+      this.#state = 'working'
+      this.#emit({ type: 'approval.resolved', requestId: open.requestId, decision })
+      return decision === 'allow'
+        ? ({ behavior: 'allow', updatedInput: input } as PermissionResult)
+        : ({ behavior: 'deny', message: 'the supervisor denied this tool call' } as PermissionResult)
+    })
+  }
+
+  async #whenStarted(): Promise<{ model: string; permissionMode: string }> {
+    const timeout = new Promise<'timeout'>((resolve) =>
+      setTimeout(() => resolve('timeout'), this.#config.initTimeoutMs).unref(),
+    )
+    const first = await Promise.race([this.#started.promise, timeout])
+    if (first === 'timeout') {
+      throw fleetError('timeout', `session ${this.sessionId} did not initialise in ${this.#config.initTimeoutMs}ms`)
+    }
+    return first
+  }
+
+  async #contextUsage(): Promise<{ totalTokens?: number } | undefined> {
+    if (!isLive(this.#state)) return undefined
+    try {
+      const answer = await this.#query.getContextUsage({ detail: this.#config.contextDetail })
+      const total = (answer as { totalTokens?: unknown }).totalTokens
+      return typeof total === 'number' ? { totalTokens: total } : undefined
+    } catch {
+      // The control call needs a live CLI; a session that just exited has no
+      // measurement, and the caller's fallback is the last one we saw.
+      return undefined
+    }
+  }
+
+  #configMismatch(what: 'model' | 'endpoint', expected: string, observed: string): void {
+    this.#emit({
+      type: 'error',
+      message: `config_mismatch: asked for ${what} ${expected}, the session is running ${observed}`,
+      retryable: false,
+    })
+  }
+
+  #finish(reason: 'exited' | 'failed', error: string | undefined): void {
+    if (this.#state === 'ended') return
+    this.#state = 'failed'
+    const { questions } = this.#pending.abandon('ended')
+    for (const abandoned of questions) {
+      this.#emit({ type: 'question.abandoned', questionId: abandoned.questionId, reason: 'ended' })
+    }
+    this.#emit({ type: 'session.ended', at: this.#now(), reason, ...(error === undefined ? {} : { error }) })
+    this.#events.close()
+  }
+
+  #assertLive(): void {
+    if (!isLive(this.#state)) {
+      throw fleetError('provider_failed', `session ${this.sessionId} is ${this.#state}`)
+    }
+  }
+
+  #emit(event: AdapterEvent): void {
+    this.#events.push(event)
+  }
+
+  #now(): Timestamp {
+    return this.#config.clock.now()
+  }
+}
+
+interface CanUseOptions {
+  readonly signal: AbortSignal
+  readonly suggestions?: unknown
+  readonly toolUseID?: string
+  readonly title?: string
+  readonly displayName?: string
+}
+
+const mcpServersOf = (spec: SessionSpec): NonNullable<Options['mcpServers']> => {
+  const servers: NonNullable<Options['mcpServers']> = {}
+  for (const server of spec.mcp ?? []) {
+    servers[server.id] = {
+      type: 'stdio',
+      command: server.command,
+      ...(server.args === undefined ? {} : { args: [...server.args] }),
+      ...(server.env === undefined ? {} : { env: { ...server.env } }),
+    }
+  }
+  return servers
+}
+
+/** A short, already-redacted description of a blocked tool call (§4). */
+const summarise = (input: Record<string, unknown>): string | undefined => {
+  const value = input.command ?? input.file_path ?? input.url ?? input.query
+  return typeof value === 'string' && value.length > 0 ? (value.length > 200 ? `${value.slice(0, 199)}…` : value) : undefined
+}
+
+const answersFor = (
+  questions: readonly { readonly question: string }[],
+  answer: string,
+): { answers: Record<string, string> } => ({ answers: questionAnswers(questions, answer) })
+
+const describe = (thrown: unknown): string => (thrown instanceof Error ? thrown.message : String(thrown))
+
+const deferred = <T>(): { promise: Promise<T>; resolve: (value: T) => void } => {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((r) => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
+
+/** The streaming-input queue: `send()` pushes, `stop()` ends, the CLI pulls. */
+type UserMessage = { type: 'user'; message: { role: 'user'; content: string }; parent_tool_use_id: null }
+
+class InputQueue implements AsyncIterable<UserMessage> {
+  readonly #pending: UserMessage[] = []
+  #wake: ((result: IteratorResult<UserMessage>) => void) | undefined
+  #ended = false
+
+  push(text: string): void {
+    const message: UserMessage = { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null }
+    const wake = this.#wake
+    if (wake !== undefined) {
+      this.#wake = undefined
+      wake({ value: message, done: false })
+    } else {
+      this.#pending.push(message)
+    }
+  }
+
+  end(): void {
+    this.#ended = true
+    const wake = this.#wake
+    this.#wake = undefined
+    wake?.({ value: undefined, done: true })
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<UserMessage> {
+    return {
+      next: (): Promise<IteratorResult<UserMessage>> => {
+        const queued = this.#pending.shift()
+        if (queued !== undefined) return Promise.resolve({ value: queued, done: false })
+        if (this.#ended) return Promise.resolve({ value: undefined, done: true })
+        return new Promise((resolve) => {
+          this.#wake = resolve
+        })
+      },
+      return: (): Promise<IteratorResult<UserMessage>> => {
+        this.#ended = true
+        return Promise.resolve({ value: undefined, done: true })
+      },
+    }
+  }
+}
+
+/** An unbounded queue of events with one consumer; closed when the session ends. */
+class EventQueue implements AsyncIterable<AdapterEvent> {
+  readonly #queued: AdapterEvent[] = []
+  #wake: (() => void) | undefined
+  #closed = false
+
+  push(event: AdapterEvent): void {
+    this.#queued.push(event)
+    const wake = this.#wake
+    this.#wake = undefined
+    wake?.()
+  }
+
+  close(): void {
+    this.#closed = true
+    const wake = this.#wake
+    this.#wake = undefined
+    wake?.()
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<AdapterEvent> {
+    for (;;) {
+      const next = this.#queued.shift()
+      if (next !== undefined) {
+        yield next
+        continue
+      }
+      if (this.#closed) return
+      await new Promise<void>((resolve) => {
+        this.#wake = resolve
+      })
+    }
+  }
+
+  /** The same queue, mapped and filtered — the contract's view (§4). */
+  async *project<T>(map: (event: AdapterEvent) => T | undefined): AsyncGenerator<T> {
+    for await (const event of this) {
+      const mapped = map(event)
+      if (mapped !== undefined) yield mapped
+    }
+  }
+}
