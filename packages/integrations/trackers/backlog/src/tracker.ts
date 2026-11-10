@@ -25,6 +25,7 @@ import {
   BACKLOG_SYSTEM,
   isMissing,
   itemFromRow,
+  hasNote,
   linkNote,
   notesFrom,
   rowsFromList,
@@ -162,7 +163,7 @@ export const createBacklogTracker = (options: BacklogTrackerOptions): Tracker =>
         throw fleetError('external_failed', `cannot link ${prUrl}: ${BACKLOG_SYSTEM} has no card ${key}`, { details: { key } })
       }
       const note = linkNote(prUrl)
-      if (notesFrom(task).includes(note)) return
+      if (hasNote(notesFrom(task), note)) return
       // Appended, never set: the notes are the humans' too (§3 keeps the board a peer, not a mirror).
       await edit(['task', 'edit', key, '--append-notes', note, '--plain'], `task edit ${key} --append-notes`)
     },
@@ -174,7 +175,7 @@ export const createBacklogTracker = (options: BacklogTrackerOptions): Tracker =>
       if (task === undefined) {
         throw fleetError('external_failed', `cannot comment on ${key}: ${BACKLOG_SYSTEM} has no card ${key}`, { details: { key } })
       }
-      if (notesFrom(task).includes(body)) return
+      if (hasNote(notesFrom(task), body)) return
       await edit(['task', 'edit', key, '--append-notes', body, '--plain'], `task edit ${key} --append-notes`)
     },
   }
