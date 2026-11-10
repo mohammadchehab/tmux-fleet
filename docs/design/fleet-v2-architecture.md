@@ -616,6 +616,10 @@ saved   ── provider.stop; provider.start(fresh session, brief vN + StateFile
 The Worktree manager is the only thing that creates or deletes worktrees; peers ask the API (`worktree.create`).
 
 - **Create**: under the repo's own `.claude/worktrees/<topic>`, owner recorded at creation (event, not an owner file).
+  Today the supervisor is the creator for a peer: at every session start a peer that can write and owns no active
+  worktree is given `<checkout>/.claude/worktrees/peer-<id>` on branch `peer/<id>` (from the remote's default branch),
+  recorded as `worktree.created` with the peer as owner, and a read-only peer works in the profile's checkout. The
+  per-Work-topic `worktree.create` API a peer calls itself is not built yet.
 - **Track**: class is computed from git/gh facts on events, not scanned on demand.
 - **Holders**: processes whose cwd is inside it (lsof) are recorded; `gc` reports them and never kills them, and
   raises a user-visible item after N days (the stray Electron dev process case).
