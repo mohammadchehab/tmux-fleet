@@ -176,7 +176,7 @@ const mainLoopTotals = (value: unknown): SpendTotals | undefined => {
  * One turn's spend, as the difference between this boundary message and the one
  * before it.
  *
- * Five things this deliberately does:
+ * Four things this deliberately does:
  *
  * - **Reads `modelUsage` first**, so a turn that fanned out to subagents is
  *   billed for them.
@@ -186,30 +186,14 @@ const mainLoopTotals = (value: unknown): SpendTotals | undefined => {
  *   it spent is unknowable across the reset) and the baseline rebases here.
  * - **Reports the cost delta**, not the cumulative `total_cost_usd`, because
  *   `turn.usage_recorded` is one turn's row.
- * - **Treats `result.usage` as a turn, not a total**: a boundary with no
- *   `modelUsage` reports those counters as they are and leaves the baseline alone.
  * - **Reports nothing when the message measured nothing** (a startup error
  *   carries zeroed usage), because a zeroed row reads as a turn that was free.
  */
 export const spendFrom = (record: unknown, seen: SpendTotals): { totals: SpendTotals; spend?: TurnSpend } => {
   if (typeof record !== 'object' || record === null) return { totals: seen }
   const message = record as Record<string, unknown>
-  const cumulative = modelUsageTotals(message['modelUsage'])
-  if (cumulative === undefined) {
-    // `result.usage` is this turn's own counters, not a running total, and it
-    // carries no cost. Differencing it against the cumulative baseline clamps to
-    // zero, and keeping it as the baseline would make the next `modelUsage`
-    // boundary report the whole session's cost as one turn. So it is the turn's
-    // spend as it stands, and the baseline stays where the last `modelUsage`
-    // left it (TASK-3).
-    const turn = mainLoopTotals(message['usage'])
-    if (turn === undefined) return { totals: seen }
-    return {
-      totals: seen,
-      spend: { inputTokens: turn.inputTokens, outputTokens: turn.outputTokens, cachedTokens: turn.cachedTokens },
-    }
-  }
-  const totals = cumulative
+  const totals = modelUsageTotals(message['modelUsage']) ?? mainLoopTotals(message['usage'])
+  if (totals === undefined) return { totals: seen }
 
   const delta = (now: number, before: number): number => Math.max(0, Math.round(now - before))
   const costUsd = totals.costUsd >= seen.costUsd ? totals.costUsd - seen.costUsd : undefined

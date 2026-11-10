@@ -27,6 +27,8 @@ export interface TrackerSyncWiring {
   readonly query: string
   /** The role a proposed Work asks for, when the profile names one (§5.2). */
   readonly role?: string
+  /** The profile's `comments`: absent is off — a note is not mirrored unless the profile says so. */
+  readonly comments?: boolean
 }
 
 /** The `tracker-sync` entry of the scheduler's factory map. */

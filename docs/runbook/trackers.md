@@ -24,6 +24,7 @@ trackers:
   path: ./board                         # the Backlog.md project directory; the CLI is per-directory
   urlBase: https://github.com/acme/widgets/blob/main   # optional: a card's path becomes a URL under it
   role: engineer                        # optional: the role a proposed Work asks for
+  comments: true                        # optional, default OFF: mirror `fleet note` to the card (below)
   statuses:                             # WorkState → the board's own column
     in_progress: In Progress
     in_review: In Review
@@ -62,14 +63,33 @@ Ticket: backlog TASK-12 — https://github.com/acme/widgets/blob/main/backlog/ta
 | `work.started` | moved to `in_progress`'s status |
 | `work.review_requested` | moved to `in_review`'s status, and the PR url appended to the notes as `PR: <url>` |
 | `work.merged` | moved to `merged`'s status |
+| `work.noted` | **only with `comments: true`**: the note appended as a comment, phase in the words |
 
 The note is appended, never set, and only when the card does not already name that URL — a re-run must not gather one
 `PR:` line per wake. Notes a human wrote are left where they are.
 
+## `comments`: mirroring a peer's note, and why it is off
+
+A `work.noted` reaching a board is a comment, not a column: a note is progress a peer reported, and no board status
+means "the peer said something". Because that text is the peer's — and because the board a profile maps is not
+necessarily the fleet's own — the mirroring is **opt-in**:
+
+```yaml
+trackers:
+  comments: true        # absent means no
+```
+
+With the setting absent, `tracker-sync` appends nothing for a note and records `commented: 0`; the run still happens,
+it just mirrors nothing. With it on, the body passes through `redactSecrets` before it leaves the machine, so a token
+a peer pasted into a note does not end up on a customer's ticket. Either way the `blocked` phase raises its `Decision`
+in the fleet's own inbox — that path never leaves the machine, so it needs no setting.
+
+Turn it on for a board the fleet owns. Leave it off for a board a customer reads.
+
 ## Reading the record
 
-Each run appends one `tracker.synced`: `{system, query, pulled, proposed, transitioned, linked, failed, error?}`. A run
-that found nothing still says so.
+Each run appends one `tracker.synced`: `{system, query, pulled, proposed, transitioned, linked, commented, failed,
+error?}`. A run that found nothing still says so.
 
 - **A pull that failed throws** and the scheduler records `routine.failed`. A board that was not read must not read as
   a board with nothing on it.

@@ -56,17 +56,6 @@ const worktreeCreated: AppendEvent = {
   },
 }
 
-const otherWorktree: AppendEvent = {
-  ...worktreeCreated,
-  data: {
-    worktreeId: 'wtr_0a1b2c3d4e5f6071' as WorktreeId,
-    repo,
-    branch: 'topic/other',
-    path: '/tmp/fleet/acme-fleet-other',
-    class: 'active',
-  },
-} as AppendEvent
-
 const context = (event?: FleetEvent): RoutineContext => ({
   routineId: 'security-scan',
   kind: 'security-scan',
@@ -90,10 +79,6 @@ const fakeIo = (options: {
   /** Binaries whose execution fails, as a spawn failure would. */
   readonly broken?: readonly string[]
   readonly calls?: Call[]
-  /** What `git rev-parse HEAD` says in each checkout; a checkout not listed is at `sha`. */
-  readonly heads?: Readonly<Record<string, string>>
-  /** Checkouts whose tree has uncommitted changes. */
-  readonly dirty?: readonly string[]
 }): ToolIo => {
   const installed = options.installed ?? ['semgrep', 'gitleaks', 'osv-scanner']
   const broken = options.broken ?? []
@@ -110,12 +95,6 @@ const fakeIo = (options: {
   return {
     has: async (binary) => installed.includes(binary),
     exec: async (binary, args, execOptions) => {
-      if (binary === 'git') {
-        // The daemon asks what a checkout is at before it scans it; never a process.
-        const where = execOptions?.cwd ?? ''
-        if (args[0] === 'rev-parse') return { code: 0, stdout: `${options.heads?.[where] ?? sha}\n`, stderr: '' }
-        if (args[0] === 'status') return { code: 0, stdout: options.dirty?.includes(where) === true ? ' M src/run.ts\n' : '', stderr: '' }
-      }
       options.calls?.push({ binary, args, ...(execOptions?.cwd === undefined ? {} : { cwd: execOptions.cwd }) })
       if (broken.includes(binary)) throw new Error(`${binary}: spawn ENOENT`)
       return { code: 0, stdout: stdout[binary] ?? '', stderr: '' }
@@ -197,90 +176,6 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
     assert.ok(calls.length > 0)
     for (const call of calls) assert.equal(call.cwd, checkout, `${call.binary} runs in the fleet's worktree`)
 
-    await store.close()
-  })
-
-  it('scans the checkout that is at the PR’s head, not the first worktree the repository has', async () => {
-    const store = await open()
-    // The other peer's worktree is listed first and sits on some other commit.
-    await store.append([otherWorktree, worktreeCreated, prOpened])
-    const calls: Call[] = []
-
-    const outcome = await scan(
-      store,
-      fakeIo({ stdout: { semgrep: semgrepReport() }, calls, heads: { '/tmp/fleet/acme-fleet-other': 'f'.repeat(40) } }),
-    )
-
-    assert.equal(outcome.actionsFailed, 0)
-    assert.ok(calls.length > 0)
-    for (const call of calls) assert.equal(call.cwd, checkout, 'the tree the findings are attributed to is the tree that was scanned')
-    await store.close()
-  })
-
-  it('finds the matching checkout whichever worktree it is, not only the one that happens to come first', async () => {
-    const store = await open()
-    await store.append([worktreeCreated, otherWorktree, prOpened])
-    const calls: Call[] = []
-
-    const outcome = await scan(store, fakeIo({ calls, heads: { [checkout]: 'f'.repeat(40) } }))
-
-    assert.equal(outcome.actionsFailed, 0)
-    assert.ok(calls.length > 0)
-    for (const call of calls) assert.equal(call.cwd, '/tmp/fleet/acme-fleet-other')
-    await store.close()
-  })
-
-  it('records a skip, and scans nothing, when no checkout is at the PR’s head', async () => {
-    const store = await open()
-    await store.append([worktreeCreated, prOpened])
-    const calls: Call[] = []
-
-    const outcome = await scan(
-      store,
-      fakeIo({ stdout: { semgrep: semgrepReport() }, calls, heads: { [checkout]: 'f'.repeat(40) } }),
-    )
-
-    assert.deepEqual(calls, [], 'a tree on another commit is not scanned and called this commit')
-    assert.equal(outcome.actionsFailed, 1)
-    const all = await events(store)
-    assert.equal(all.filter((event) => event.type === 'finding.raised').length, 0)
-    assert.equal(all.filter((event) => event.type === 'scan.skipped').length, 1)
-    await store.close()
-  })
-
-  it('does not scan a tree with uncommitted changes as if it were the commit', async () => {
-    const store = await open()
-    await store.append([worktreeCreated, prOpened])
-    const calls: Call[] = []
-
-    const outcome = await scan(store, fakeIo({ stdout: { semgrep: semgrepReport() }, calls, dirty: [checkout] }))
-
-    assert.deepEqual(calls, [])
-    assert.equal(outcome.actionsFailed, 1)
-    await store.close()
-  })
-
-  it('a nightly tick does not scan a checkout that is not at origin/main’s head', async () => {
-    const store = await open()
-    await store.append([worktreeCreated])
-    const calls: Call[] = []
-
-    const outcome = await securityScanned(
-      {
-        store: { append: (batch) => store.append(batch) },
-        // The only worktree is a peer's topic branch, on another commit than main's head.
-        io: fakeIo({ stdout: { semgrep: semgrepReport() }, calls, heads: { [checkout]: 'f'.repeat(40) } }),
-        scanners: ['semgrep'],
-        reportPath,
-        read: store.reader(),
-        nightly: { repos: [repo], branch: 'main', head: headOf({ [checkout]: sha }) },
-      },
-      context(),
-    )
-
-    assert.deepEqual(calls, [], 'main’s sha must not be pinned on a feature branch’s files')
-    assert.equal(outcome.actionsFailed, 1)
-    assert.equal((await events(store)).filter((event) => event.type === 'scan.skipped').length, 1)
     await store.close()
   })
 

@@ -261,6 +261,17 @@ interface TrackerProfileBase {
   readonly statuses?: Partial<Record<WorkState, string>>
   /** The role a Work proposed from a card asks for (§5.2's `assign`). */
   readonly role?: string
+  /**
+   * Whether a peer's note may be mirrored to this board as a comment: `true`
+   * turns `work.noted` into `Tracker.comment`, and **absent means no**.
+   *
+   * Off by default because a board is not necessarily ours. A `blocked` note
+   * still raises its Decision either way — that path is internal — but a note is
+   * peer-written prose, and posting it automatically into a customer's Jira is a
+   * disclosure the fleet does not get to make on the user's behalf. A profile
+   * that wants the mirroring says so, per board.
+   */
+  readonly comments?: boolean
 }
 
 /** A Backlog.md board: markdown files in a directory, read and written by its CLI. */
@@ -722,6 +733,9 @@ const trackerBase = {
   query: text(500),
   statuses: optional(statusesBlock()),
   role: optional(text(60)),
+  // Absent is off. See `TrackerProfileBase.comments`: the fleet does not post a
+  // peer's prose to a board, least of all a customer's, unless told to.
+  comments: optional(boolean()),
 } as const
 
 const backlogTrackerBlock = (): Schema<BacklogTrackerProfile> =>

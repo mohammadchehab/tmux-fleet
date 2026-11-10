@@ -215,6 +215,33 @@ describe('decoding a profile', () => {
     assert.deepEqual(decodeProfile(minimal({ trackers: partial })).trackers?.statuses, { in_progress: 'Doing' })
   })
 
+  it('reads `comments` as off unless the profile says otherwise, on either board', () => {
+    // A note is peer-written prose, and the board a profile maps is not
+    // necessarily the fleet's own. Naming no `comments` must therefore decode to
+    // *nothing*, not to `false` — the routine treats absence as the closed gate,
+    // and a spelled-out `false` would be a second way to say the same thing.
+    const jira = decodeProfile(
+      minimal({
+        trackers: {
+          system: 'jira',
+          query: 'project = FLEET',
+          baseUrl: 'https://jira.acme.test',
+          auth: { kind: 'pat' },
+        },
+      }),
+    )
+    assert.equal(jira.trackers?.comments, undefined)
+
+    const backlog = decodeProfile(
+      minimal({ trackers: { system: 'backlog', query: 'To Do', path: '.', comments: true } }),
+    )
+    assert.equal(backlog.trackers?.comments, true)
+
+    // Strict decode, so the setting cannot arrive misspelt and be silently off.
+    const misspelt = { system: 'backlog', query: 'To Do', path: '.', comment: true }
+    assert.throws(() => decodeProfile(minimal({ trackers: misspelt })), /comment/)
+  })
+
   it('reads the DeepInfra block: the ids this fleet may run, and the endpoint it runs them on', () => {    const profile = decodeProfile(
       minimal({
         providers: {

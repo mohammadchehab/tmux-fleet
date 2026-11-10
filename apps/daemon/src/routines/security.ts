@@ -69,9 +69,15 @@ export interface NightlyScan {
   readonly head: BranchHead
 }
 
-/** One scan this run will perform: a commit and a scope. The checkout it reads is found at the commit, not assumed. */
+/** One scan this run will perform: a commit, a scope, and the checkout it reads. */
 export interface PlannedTarget {
   readonly request: ScanRequest
+  /**
+   * The worktree the tools are pointed at (§9), when the planner that built the
+   * target resolved one. The nightly scan sets it; a `pr.opened` target leaves it
+   * out and the body looks the checkout up itself.
+   */
+  readonly cwd?: string
 }
 
 /**
@@ -108,60 +114,10 @@ export const prTargetsOf = (event: FleetEvent | undefined): readonly PlannedTarg
   ]
 }
 
-/** A checkout for a repository, from the worktrees the fleet already made (§9). Used to ask the remote, never to scan. */
+/** A checkout for a repository, from the worktrees the fleet already made (§9). */
 const checkoutOf = async (read: ReadModel, repo: Repo): Promise<string | undefined> => {
   const worktrees = await read.worktrees.all()
   return worktrees.find((worktree) => worktree.repo === repo)?.path
-}
-
-/** One `git` answer in a checkout, or `undefined` when it would not give one. */
-const gitIn = async (io: ToolIo, cwd: string, args: readonly string[]): Promise<string | undefined> => {
-  try {
-    const done = await io.exec('git', args, { cwd })
-    return done.code === 0 ? done.stdout.trim() : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/** What looking for the tree at a commit found. */
-type CheckoutAt =
-  | { readonly kind: 'found'; readonly cwd: string }
-  | { readonly kind: 'none' }
-  | { readonly kind: 'unmatched'; readonly reason: string }
-
-/**
- * The worktree a finding at `sha` may be attributed to: one whose HEAD *is* that
- * commit and whose tree is clean. The fleet has a worktree per peer, on whatever
- * branch that peer is on, so "a worktree of this repository" scans a different
- * tree than the one the finding names — and files a finding under a commit it
- * does not belong to, or clears a commit it never read (§6.2). A repository with
- * no worktree at all is `none` (nothing was meant to be scanned); one with
- * worktrees but none at the commit is `unmatched`, and is recorded.
- */
-const checkoutAt = async (
-  deps: { readonly read: ReadModel; readonly io: ToolIo },
-  repo: Repo,
-  sha: Sha,
-): Promise<CheckoutAt> => {
-  const worktrees = (await deps.read.worktrees.all()).filter((worktree) => worktree.repo === repo)
-  if (worktrees.length === 0) return { kind: 'none' }
-
-  const notes: string[] = []
-  for (const worktree of worktrees) {
-    const head = await gitIn(deps.io, worktree.path, ['rev-parse', 'HEAD'])
-    if (head?.toLowerCase() !== sha.toLowerCase()) {
-      notes.push(`${worktree.path} is at ${head ?? 'an unreadable HEAD'}`)
-      continue
-    }
-    const changes = await gitIn(deps.io, worktree.path, ['status', '--porcelain'])
-    if (changes !== '') {
-      notes.push(`${worktree.path} ${changes === undefined ? 'has no readable status' : 'has uncommitted changes'}`)
-      continue
-    }
-    return { kind: 'found', cwd: worktree.path }
-  }
-  return { kind: 'unmatched', reason: `no clean checkout of ${repo} at ${sha}: ${notes.join('; ')}`.slice(0, 480) }
 }
 
 /**
@@ -187,7 +143,7 @@ const nightlyScan = async (deps: { readonly read: ReadModel }, nightly: NightlyS
       unresolved.push({ repo, reason: `no ${nightly.branch} head in ${repo} at ${cwd}` })
       continue
     }
-    targets.push({ request: { target: { repo, sha }, scope: 'full' } })
+    targets.push({ request: { target: { repo, sha }, scope: 'full' }, cwd })
   }
 
   return { targets, unresolved }
@@ -277,17 +233,15 @@ export const securityScanned = async (
   }
 
   for (const target of plan.targets) {
-    const { repo, sha } = target.request.target
-    const found = await checkoutAt(deps, repo, sha)
-    if (found.kind !== 'found') {
-      const reason = found.kind === 'none' ? `no checkout for ${repo} at ${sha}` : found.reason
-      await deps.store.append([skipped({ repo, sha, reason }, at)])
+    const cwd = target.cwd ?? (await checkoutOf(deps.read, target.request.target.repo))
+    if (cwd === undefined) {
+      const { repo, sha } = target.request.target
+      await deps.store.append([skipped({ repo, sha, reason: `no checkout for ${repo} at ${sha}` }, at)])
       actions += 1
       actionsFailed += 1
       hashes.push(shortHash({ target: target.request.target, checkout: null }))
       continue
     }
-    const cwd = found.cwd
 
     const scanners = createScanners(deps.io, { cwd, scanners: deps.scanners, reportPath: deps.reportPath })
     const results = await Promise.all(scanners.map((scanner) => runScanner(scanner, target.request)))

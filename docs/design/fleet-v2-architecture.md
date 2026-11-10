@@ -389,9 +389,16 @@ causes them.
 
 A peer reports progress with `fleet note <phase> <text>`, which appends `work.noted` — the four phases are a closed
 list, `plan | implement | mr | blocked`, and the Work is resolved from the peer's `assignee` rather than named by it
-(a peer does not choose what it works on). A note is recorded-only: it is mirrored to the board as a comment by
-`tracker-sync`, and it moves no state, because a peer that could append `work.blocked` would be walking the machine
-above. `blocked` is the one phase with a consequence — it raises the same `Decision` `unblock` would, one per Work.
+(a peer does not choose what it works on). A note is recorded-only: it moves no state, because a peer that could
+append `work.blocked` would be walking the machine above. `blocked` is the one phase with a consequence — it raises the
+same `Decision` `unblock` would, one per Work.
+
+Mirroring a note to the board as a comment is **opt-in per tracker**: `trackers.comments: true`, and absent means no.
+A board a profile maps is not necessarily the fleet's own, and a note is peer-written prose, so posting it
+automatically into a customer's Jira would be a disclosure the fleet has no mandate to make. With the gate shut
+`tracker-sync` appends nothing for the note and records `commented: 0`; with it open the body is passed through
+`redactSecrets` (`@fleet/foundation-core`) before it leaves the machine. The `blocked` Decision is unaffected either
+way — that path never leaves the machine.
 
 ### 5.2 The loop
 

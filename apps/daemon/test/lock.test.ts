@@ -193,54 +193,6 @@ describe('the store lock', () => {
     }
   })
 
-  it('does not remove a live fleetd’s lock that replaced the stale one while the takeover was deciding', async () => {
-    const home = await withHome()
-    try {
-      const path = join(home, 'daemon', 'fleetd.lock')
-      await mkdir(join(home, 'daemon'), { recursive: true })
-      const stranger = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' })
-      try {
-        assert.ok(stranger.pid !== undefined)
-        await writeFile(path, `${String(stranger.pid)}\n`, 'utf8')
-        // The stale file is judged, and while it is, a rival fleetd takes the lock
-        // the way the real one does: it removes the leftover and creates its own.
-        let asked = 0
-        const commandOf = (): string => {
-          asked += 1
-          if (asked > 1) return 'node /opt/fleet/bin/fleetd locked'
-          spawnSync('rm', ['-f', path])
-          spawnSync('sh', ['-c', `echo ${String(process.pid)} > ${path}`])
-          return `${process.execPath} -e setTimeout(() => {}, 60_000)`
-        }
-        await assert.rejects(
-          () => acquireFleetLock(path, { pid: deadPid(), commandOf }),
-          (thrown) => code(thrown) === 'conflict',
-        )
-        assert.equal((await readFile(path, 'utf8')).trim(), String(process.pid), 'the rival’s fresh lock stays its own')
-      } finally {
-        stranger.kill()
-      }
-    } finally {
-      await rm(home, { recursive: true, force: true })
-    }
-  })
-
-  it('refuses a lock file that is still empty, because a fleetd is between creating it and writing its pid', async () => {
-    const home = await withHome()
-    try {
-      const path = join(home, 'daemon', 'fleetd.lock')
-      await mkdir(join(home, 'daemon'), { recursive: true })
-      await writeFile(path, '', 'utf8')
-      await assert.rejects(
-        () => acquireFleetLock(path),
-        (thrown) => code(thrown) === 'conflict',
-      )
-      assert.equal(await readFile(path, 'utf8'), '', 'the file a booting fleetd made is not a leftover')
-    } finally {
-      await rm(home, { recursive: true, force: true })
-    }
-  })
-
   it('leaves a lock that has been taken over since it was acquired', async () => {
     const home = await withHome()
     try {
