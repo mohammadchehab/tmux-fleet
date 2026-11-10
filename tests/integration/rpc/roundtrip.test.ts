@@ -202,8 +202,19 @@ test('every method of the port round-trips: the CLI decodes what the daemon answ
   const rebuilt = await call('replay', {})
   assert.equal(rebuilt.mode, 'rebuild')
   if (rebuilt.mode === 'rebuild' && window.mode === 'window') {
-    assert.equal(rebuilt.events, window.events.length, 'the rebuild replayed the whole log')
-    assert.equal(rebuilt.latestSeq, window.events.at(-1)?.seq, 'and the log did not move')
+    // The fleet is live while this test reads it: a wake that was already in
+    // flight when the window was read (a `session.started` delivering pending
+    // mail, a caught-up routine finishing) appends between the two calls, and
+    // this assertion failed on CI for exactly that — `22 !== 21`, green locally.
+    // So the rebuild may have seen *more* than the window did, never less: what
+    // the test has to prove is that it replayed the log rather than a window of
+    // it, and that is a lower bound.
+    assert.ok(rebuilt.events >= window.events.length, 'the rebuild replayed the whole log')
+    assert.ok(rebuilt.latestSeq >= (window.events.at(-1)?.seq ?? 0), 'and everything the window showed')
+    // The seqs are contiguous from 1 (asserted above), so the count is the last
+    // seq: a rebuild that reported one without the other would have read a
+    // different log than it walked.
+    assert.equal(rebuilt.events, rebuilt.latestSeq, 'the count is the log it walked')
   }
   // The projections were dropped and derived again: the run above still reads.
   assert.equal((await call('evals', { runId })).run.passed, 1)
