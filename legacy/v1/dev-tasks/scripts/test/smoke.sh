@@ -3,12 +3,16 @@
 # fleet-up rejects a bad FLEET_CLI, every squad names only peers that have a roles/<role>.md and a models row,
 # and the dev-tasks install/uninstall/clean scripts behave in a throwaway HOME.
 # Touches only a temp directory (removed on exit).
-# Usage: smoke.sh
+# FLEET_SMOKE_SKIP_RESUME=1 skips resume.sh, which is quarantined as flaky (issue #28); CI sets it, a dev machine does not.
+# Usage: [FLEET_SMOKE_SKIP_RESUME=1] smoke.sh
 set -euo pipefail
 source "$(dirname "$0")/../lib/env.sh"
 cd "$ROOT"
 fail=0; pass=0
 check() { if "$@" >/dev/null 2>&1; then pass=$((pass+1)); else echo "FAIL: $*"; fail=$((fail+1)); fi; }
+# ino_of: the inode number of a path, on BSD (macOS) and GNU (Linux) both. `stat -f %i` alone is wrong on Linux, where
+# -f means "the filesystem" and %i its type, so the check below would compare two filesystem types and pass.
+ino_of() { stat -c %i "$1" 2>/dev/null || stat -f %i "$1"; }
 # every tmux call in this test goes to a private socket (and the fake tmux below), never the live server
 export FLEET_TMUX="smoke-$$"; unset TMUX TMUX_PANE
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
@@ -72,7 +76,14 @@ check bash -c '! env PATH="$1/bin:$PATH" dev-tasks/scripts/clean/clean.sh --sess
 check env PATH="$t/bin:$PATH" FLEET_TMUX=smoke FLEET_STATE="$t/state" dev-tasks/scripts/clean/clean.sh --force --sessions
 check grep -q -- '-L smoke kill-session -t =fleet-x' "$t/tmux.log"
 check dev-tasks/scripts/test/tmux-isolation.sh
-check dev-tasks/scripts/test/resume.sh
+# resume.sh is quarantined: known-flaky (issue #28, a timing race in fleet-scale add). CI skips it, a dev machine still
+# runs it. Do not put it back on a green run — a pass after a retry is luck, not a fix. It comes back when #28's race
+# is fixed or the test waits on a real readiness signal.
+if [ "${FLEET_SMOKE_SKIP_RESUME:-0}" = 1 ]; then
+  echo "smoke: resume.sh skipped — quarantined as flaky (issue #28: https://github.com/mohammadchehab/tmux-fleet/issues/28)"
+else
+  check dev-tasks/scripts/test/resume.sh
+fi
 check dev-tasks/scripts/test/cmd.sh
 check dev-tasks/scripts/test/pane.sh
 check dev-tasks/scripts/test/wt.sh
@@ -113,10 +124,10 @@ if [ "$(backlog --version 2>/dev/null)" = "$PIN" ]; then
   check bash -c 'FLEET_REPO="$1" skills/fleet-board/scripts/board-docs | grep -q "board-docs: 1 files"' _ "$R"
   check bash -c 'BACKLOG_CWD=$FLEET_STATE backlog doc list --plain | grep -q "doc-repo-docs-architecture-overview"'
   # a second run updates docs/repo in place (same folder, so the running page's watcher keeps seeing it) and drops a gone file
-  ino=$(stat -f %i "$FLEET_STATE/backlog/docs/repo"); git -C "$R" rm -qf docs/architecture/overview.md
+  ino=$(ino_of "$FLEET_STATE/backlog/docs/repo"); git -C "$R" rm -qf docs/architecture/overview.md
   mkdir -p "$R/docs/specs"; echo '# Journey' > "$R/docs/specs/journey.md"; git -C "$R" add -A
   check bash -c 'FLEET_REPO="$1" skills/fleet-board/scripts/board-docs | grep -q "board-docs: 1 files"' _ "$R"
-  check test "$(stat -f %i "$FLEET_STATE/backlog/docs/repo")" = "$ino"
+  check test "$(ino_of "$FLEET_STATE/backlog/docs/repo")" = "$ino"
   check test -f "$FLEET_STATE/backlog/docs/repo/docs/specs/journey.md"
   check test ! -e "$FLEET_STATE/backlog/docs/repo/docs/architecture"
   check bash -c 'id=$(skills/fleet-board/scripts/board-decision ask "Q?" "A or B; recommend A") && skills/fleet-board/scripts/board-decision answer "$id" "A (user)" && skills/fleet-board/scripts/board-decision list accepted | grep -q "Q?"'

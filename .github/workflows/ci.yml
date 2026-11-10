@@ -1,0 +1,114 @@
+# The merge gate (docs/runbook/ci.md). Two jobs:
+#
+#   checks     every PR and every push to main: typecheck and test the TypeScript workspace, including
+#              tests/architecture, from a clean checkout. This is the required status check on main.
+#   legacy-v1  v1's own lint and smoke suite. legacy/v1/ is the fleet that is installed and running until phase 3
+#              (§1.1), so a change there is proved by its own suite, not ours.
+#
+# Security scanning is its own workflow (security.yml) because it also runs nightly on main.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to a PR cancels the run it supersedes — the queue stays one deep per PR. main is never cancelled: each
+# commit there is a merge that was already green, and its run is the record that CI kept it that way.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # The pnpm version comes from package.json's packageManager field — one pin, not two.
+      - uses: pnpm/action-setup@v6
+
+      # Node comes from .node-version: the floor package.json's engines promises (>=22.18), so CI tests what a fresh
+      # machine gets, not the version on the machine of whoever wrote the change. Cache the pnpm store, keyed on the
+      # lockfile.
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # --frozen-lockfile: a dependency added without its lockfile change fails here, not on someone's laptop.
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      # The compiler is the lint (AGENTS.md): tsc --noEmit --strict over packages/, apps/ and tests/.
+      - name: typecheck
+        run: pnpm typecheck
+
+      # node --test over every package's test/ and tests/ (the §1.1 dependency rules and the provider conformance suite).
+      - name: test
+        run: pnpm test
+
+      # The gate runs on a clean checkout, so it must leave one behind: a test that writes into the tree would pass
+      # here and fail the next person whose checkout is dirty. Ignored paths (node_modules/, *.tsbuildinfo) do not count.
+      - name: the suite leaves the checkout clean
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "::error::a test wrote into the checkout; the tree must be clean after pnpm test"
+            exit 1
+          fi
+
+  legacy-v1:
+    name: legacy-v1
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: arduino/setup-task@v3
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pinned to the version a dev machine runs: shellcheck's rule set moves between releases, and a lint that is
+      # green locally and red here (or the reverse) teaches people to ignore it.
+      - name: shellcheck 0.11.0
+        run: |
+          curl -sSLo "$RUNNER_TEMP/shellcheck.tar.xz" \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          sudo install "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      # The board smoke test opens a private tmux server (-L fleet-smoke-board); the image ships tmux, this is a guard.
+      - name: tmux
+        run: command -v tmux || sudo apt-get install -y tmux
+
+      # shellcheck every script, skill frontmatter (name == folder), profiles repeat no AGENTS.md fact.
+      - name: lint
+        run: task lint
+
+      # FLEET_SMOKE_SKIP_RESUME: resume.sh is quarantined as known-flaky (issue #28, a timing race in fleet-scale add).
+      # The skip is printed in the log so it can never be mistaken for a pass. Do not remove this until #28 is fixed —
+      # a green run after a retry is not a fix.
+      - name: v1 smoke suite
+        run: FLEET_SMOKE_SKIP_RESUME=1 task -t legacy/v1/Taskfile.yaml test
+
+  # Evals (§17) are phase 2 and are not wired. When they land they belong here, as a third job gated on paths, so the
+  # cost only falls on PRs that can move an eval:
+  #
+  #   evals:
+  #     if: >
+  #       github.event_name == 'pull_request' && (
+  #         contains(github.event.pull_request.changed_files, …)   # roles, Judge prompts and question schemas,
+  #       )                                                        # model and limits config, the StateFile schema
+  #     runs-on: ubuntu-latest
+  #     steps: …  fleet evals run <suite>, compare against tests/evals/baselines/<suite>.json …
+  #
+  # GitHub gives no path glob in `if:`, so the gate is a tiny step that filters `git diff --name-only` over the base.
