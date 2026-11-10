@@ -228,7 +228,7 @@ const nudge = async (
 const nudgeBody = (pr: PullRequest): string => {
   const what = pr.failingChecks.length === 0 ? 'CI is red' : `CI is red (${pr.failingChecks.join(', ')})`
   const head = String(pr.headSha).slice(0, 10)
-  return `${what} on ${at(refOf(pr))} at ${head}. Push a fix, and it has to go green on the new head: the gate merges the sha it saw pass (§10).`
+  return `${what} on ${at(refOf(pr))} at ${head}. Push a fix, and it has to go green on the new head: the gate merges the sha it saw pass.`
 }
 
 /**

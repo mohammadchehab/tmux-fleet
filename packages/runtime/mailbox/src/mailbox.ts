@@ -294,7 +294,7 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
         return err(
           fleetError(
             'conflict',
-            `${String(message.to)} is on brief v${String(current.value)}; this message cites v${String(message.briefVersion)} and was rejected (§7)`,
+            `${String(message.to)} is on brief v${String(current.value)}; this message cites v${String(message.briefVersion)} and was rejected`,
             { details: { msgId, briefVersion: message.briefVersion, currentBriefVersion: current.value } },
           ),
         )
@@ -323,7 +323,7 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
       // At-least-once means acks arrive twice; the second one is a no-op, not an error.
       if (message.state === 'acked') return ok(undefined)
       if (message.state === 'rejected') {
-        return err(fleetError('conflict', `${String(msgId)} was rejected for citing an old brief; nothing was delivered to ack (§7)`))
+        return err(fleetError('conflict', `${String(msgId)} was rejected for citing an old brief; nothing was delivered to ack`))
       }
 
       const written = await write([
@@ -341,13 +341,13 @@ export const createMailbox = (deps: MailboxDeps): Mailbox => {
       if (message === undefined || message.to !== to) return err(notFound(msgId, to))
 
       if (message.state === 'acked') {
-        return err(fleetError('conflict', `${String(msgId)} was already acked; an acked message is not rejected (§7)`))
+        return err(fleetError('conflict', `${String(msgId)} was already acked; an acked message is not rejected`))
       }
       if (currentBriefVersion <= message.briefVersion) {
         return err(
           fleetError(
             'invalid_input',
-            `v${String(currentBriefVersion)} is not newer than the v${String(message.briefVersion)} the message cites; there is nothing stale to reject (§7)`,
+            `v${String(currentBriefVersion)} is not newer than the v${String(message.briefVersion)} the message cites; there is nothing stale to reject`,
             { details: { msgId, briefVersion: message.briefVersion, currentBriefVersion } },
           ),
         )

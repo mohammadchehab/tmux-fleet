@@ -69,15 +69,15 @@ export const describeMergeRefusal = (refusal: MergeRefusal, action: MergeAction,
     case 'already_merged':
       return `${where} is already merged`
     case 'head_moved':
-      return `${where} is at ${short(facts.pr?.headSha ?? '')}, not the ${short(String(action.headSha))} the checks were green on (§10)`
+      return `${where} is at ${short(facts.pr?.headSha ?? '')}, not the ${short(String(action.headSha))} the checks were green on`
     case 'checks_not_green':
-      return `${where} has ${String(facts.pr?.checks ?? 'unknown')} checks, not passing (§10)${failingLine(facts.pr)}`
+      return `${where} has ${String(facts.pr?.checks ?? 'unknown')} checks, not passing${failingLine(facts.pr)}`
     case 'review_not_clean':
-      return `${where} is '${String(facts.pr?.review ?? 'unknown')}', not approved (§10)`
+      return `${where} is '${String(facts.pr?.review ?? 'unknown')}', not approved`
     case 'stack_parent_unmerged': {
       const parent = facts.pr?.stackParent
       const name = parent === undefined ? 'its stack parent' : `${String(parent.repo)}#${String(parent.number)}`
-      return `${where} still sits on ${name}; merge the parent and retarget the dependent first (§10)`
+      return `${where} still sits on ${name}; merge the parent and retarget the dependent first`
     }
   }
 }

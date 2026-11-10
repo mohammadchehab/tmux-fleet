@@ -22,14 +22,14 @@ import { socketPathOf } from './socket.ts'
 
 const usage = (): string =>
   [
-    'fleet - talk to a running fleetd (§2). The CLI holds no state; everything it shows comes from the daemon.',
+    'fleet - talk to a running fleetd. The CLI holds no state; everything it shows comes from the daemon.',
     '',
     '  fleet up [profile]                  start the fleet, or reattach to the one already running',
     '  fleet down                          stop it',
     '  fleet ls                            peers, routines and the decisions waiting on you',
-    '  fleet send <peer> <kind> <body>     message a peer (§7)',
+    '  fleet send <peer> <kind> <body>     message a peer',
     '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first',
-    '  fleet decide <id> [answer]          show an open decision, or answer it (§6.1)',
+    '  fleet decide <id> [answer]          show an open decision, or answer it',
     '  fleet --help                        this',
     '',
     'options, on any command:',

@@ -70,7 +70,7 @@ export const briefText = ({ work, peer, version, contractVersions, reason }: Bri
 
   lines.push(
     '',
-    `Deliver a PR against main. Report status against brief version ${version}: a reply that cites an older one is rejected (§7).`,
+    `Deliver a PR against main. Report status against brief version ${version}: a reply that cites an older one is rejected.`,
   )
   return lines.join('\n')
 }

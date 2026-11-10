@@ -35,7 +35,7 @@ export interface ConformanceCheck {
 export const capabilityChecks = (): readonly ConformanceCheck[] => [
   {
     name: 'declares a stable id',
-    because: 'a provider is looked up by id in ProviderRegistry (§1.1, §4)',
+    because: 'a provider is looked up by id in ProviderRegistry',
     run: async (provider) =>
       /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(provider.id) && provider.id.length <= 40
         ? null
@@ -43,7 +43,7 @@ export const capabilityChecks = (): readonly ConformanceCheck[] => [
   },
   {
     name: 'declares every capability explicitly',
-    because: 'a provider that cannot do something says so; the supervisor adapts, it does not guess (§4)',
+    because: 'a provider that cannot do something says so; the supervisor adapts, it does not guess',
     run: async (provider) => {
       const flags: readonly (keyof ProviderCapabilities)[] = [
         'resume',
@@ -58,7 +58,7 @@ export const capabilityChecks = (): readonly ConformanceCheck[] => [
   },
   {
     name: 'declares a non-empty, duplicate-free set of permission modes',
-    because: 'SessionSpec.permissionMode must be one the provider honours (§4)',
+    because: 'SessionSpec.permissionMode must be one the provider honours',
     run: async (provider) => {
       const modes = provider.capabilities.permissionModes
       if (modes.length === 0) return 'capabilities.permissionModes is empty'
@@ -95,7 +95,7 @@ export const resumeChecks = (): readonly SessionCheck[] => [
   {
     name: 'the handle names the turn the session was started with',
     because:
-      'a provider that emits nothing until something is pushed at it has a turn running before any observer attaches; briefTurnId is how the supervisor accounts for it, so it must be a real TurnId the first turn.started can refer to (§4)',
+      'a provider that emits nothing until something is pushed at it has a turn running before any observer attaches; briefTurnId is how the supervisor accounts for it, so it must be a real TurnId the first turn.started can refer to',
     run: async ({ handle }) => {
       const id = handle.briefTurnId
       if (typeof id !== 'string' || !/^trn_[0-9a-f]{16}$/.test(id)) {
@@ -107,7 +107,7 @@ export const resumeChecks = (): readonly SessionCheck[] => [
   {
     name: 'usage() reports cost only when capabilities.usageCost says so',
     because:
-      'a vendor priced at another vendor’s rates produces a number that looks real; the spend ledger records null instead (§4, §11)',
+      'a vendor priced at another vendor’s rates produces a number that looks real; the spend ledger records null instead',
     run: async ({ provider, handle }) => {
       let usage
       try {
@@ -124,7 +124,7 @@ export const resumeChecks = (): readonly SessionCheck[] => [
   {
     name: 'resume() does what capabilities.resume says',
     because:
-      'the interface is uniform — resume() is always callable — so the capability must not lie: false rejects unsupported, true returns a usable session (§4, §13, §16)',
+      'the interface is uniform — resume() is always callable — so the capability must not lie: false rejects unsupported, true returns a usable session',
     run: async ({ provider, handle, spec }) => {
       const resumeSpec: SessionSpec = { ...spec, resumeRef: handle.sessionRef }
       let resumed: SessionHandle
@@ -163,7 +163,7 @@ export const resumeChecks = (): readonly SessionCheck[] => [
   {
     name: 'setModel() does what capabilities.modelSwitch says',
     because:
-      'the interface is uniform — setModel() is always callable — so the capability must not lie: false rejects unsupported, true accepts the switch and model() then reports the requested model (§4)',
+      'the interface is uniform — setModel() is always callable — so the capability must not lie: false rejects unsupported, true accepts the switch and model() then reports the requested model',
     run: async ({ provider, handle }) => {
       const requested = `${handle.model}-switched`
       try {

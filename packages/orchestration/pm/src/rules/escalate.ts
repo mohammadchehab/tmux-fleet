@@ -78,7 +78,7 @@ const approvalGaps = (ctx: RuleContext): readonly Draft[] => {
 
 const approvalQuestion = (pr: PullRequest, ctx: RuleContext): string =>
   `${prKey(refOf(pr))} is green on ${pr.headSha.slice(0, 7)} and review is still pending. ` +
-  `No peer is running the "${ctx.options.reviewerRole}" role, so §10's gate needs your call: merge it, or hold it.`
+  `No peer is running the "${ctx.options.reviewerRole}" role, so the gate needs your call: merge it, or hold it.`
 
 /** §5.2 `assign`: a ready Work for a role no live peer holds cannot be assigned by any rule, so it is asked about. */
 const unheldRoles = (ctx: RuleContext): readonly Draft[] => {

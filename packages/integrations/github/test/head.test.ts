@@ -33,7 +33,7 @@ describe('headMismatch', () => {
     const why = headMismatch(at('abc1234'), { ...at('0123456789'), repo: 'o/r', number: 7 })
     assert.match(why ?? '', /graded at abc1234/)
     assert.match(why ?? '', /o\/r#7 is at 0123456789/)
-    assert.match(why ?? '', /§10/)
+    assert.match(why ?? '', /the observation does not describe it/)
   })
 
   it('falls back to a name for the PR when the caller did not say which one', () => {

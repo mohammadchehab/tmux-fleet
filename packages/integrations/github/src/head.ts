@@ -40,5 +40,5 @@ export const headMismatch = (
 ): string | undefined => {
   if (matchHeadSha(observed, recorded)) return undefined
   const where = recorded.repo === undefined ? 'the pull request' : `${recorded.repo}#${String(recorded.number ?? '?')}`
-  return `checks were graded at ${short(observed.headSha)} but ${where} is at ${short(recorded.headSha)}; the observation does not describe it (§10)`
+  return `checks were graded at ${short(observed.headSha)} but ${where} is at ${short(recorded.headSha)}; the observation does not describe it`
 }
