@@ -25,10 +25,19 @@ export type PurgeRecord = Extract<
   { type: 'purge.started' | 'purge.saved' | 'purge.degraded' | 'purge.completed' }
 >
 
-/** Everything one session's stream produces: its states, its compactions, its end, and its purges. */
+/**
+ * Everything one session's stream produces: its states, its compactions, its
+ * end, its purges, and the one fault this loop refuses to route around (§8).
+ *
+ * `provider.errored` is here for the last of those: the supervisor's own
+ * invariant violation has no event of its own, and inventing one would ripple
+ * through every projection and replay fixture for a record a reader already
+ * knows how to read — `code: 'invariant'` is what makes it distinguishable, and
+ * the store's failure notification is what makes somebody see it.
+ */
 export type SessionRecord =
   | PurgeRecord
-  | Extract<AppendEvent, { type: 'peer.state_changed' | 'peer.compacted' | 'session.ended' }>
+  | Extract<AppendEvent, { type: 'peer.state_changed' | 'peer.compacted' | 'session.ended' | 'provider.errored' }>
 
 /**
  * The provider hands back a bare `string`; the store's events carry a

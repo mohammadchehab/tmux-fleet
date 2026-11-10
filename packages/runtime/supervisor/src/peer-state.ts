@@ -26,7 +26,8 @@ export const peerStateOf = (event: ProviderEvent): PeerState | undefined => {
     case 'approval.requested':
       return 'waiting_input'
     case 'question.abandoned':
-      // The question died with its session; the peer is no longer waiting on it.
+    case 'approval.abandoned':
+      // The pending item died with its session; the peer is no longer waiting on it.
       return 'working'
     case 'turn.ended':
       // Only a failed turn is a failure; an interrupt is a decision, not a fault (§4).

@@ -108,10 +108,19 @@ interface Rig {
   ) => Promise<SessionHandle>
 }
 
-const rig = (usage: (h: SessionHandle) => Usage = () => ({
-  contextTokens: 100,
-  contextLimit: 1_000,
-})): Rig => {
+const rig = (
+  usage: (h: SessionHandle) => Usage = () => ({
+    contextTokens: 100,
+    contextLimit: 1_000,
+  }),
+  /**
+   * A provider that stops a session without synthesising `session.ended` — the
+   * one shape the loop cannot learn a session ended from, and so the only way a
+   * replacement can inherit work. Every real adapter emits it (§4); the fault
+   * test below is the one that asks what happens when one does not.
+   */
+  options: { readonly silentStop?: boolean } = {},
+): Rig => {
   const feeds = new Map<string, Feed>()
   const sent: string[] = []
   const records: SessionRecord[] = []
@@ -150,7 +159,7 @@ const rig = (usage: (h: SessionHandle) => Usage = () => ({
     stop: async (h: SessionHandle) => {
       // The adapter synthesises `session.ended` when we stop it (§4); the rig does the same.
       const feed = feeds.get(h.sessionId)
-      feed?.push({ type: 'session.ended', reason: 'stopped' })
+      if (options.silentStop !== true) feed?.push({ type: 'session.ended', reason: 'stopped' })
       feed?.close()
     },
   } as unknown as Provider
@@ -159,7 +168,14 @@ const rig = (usage: (h: SessionHandle) => Usage = () => ({
 }
 
 /** A purge stub that does what the real one does to the stream: ask, then stop. */
-const stubPurge = (provider: Provider, options: { readonly fail?: Error } = {}) => {
+const stubPurge = (
+  provider: Provider,
+  options: {
+    readonly fail?: Error
+    /** Run against the old stream just before the purge stops it: how a test plants work the stop will strand. */
+    readonly beforeStop?: () => void
+  } = {},
+) => {
   const calls: { sessionId: string; asked: readonly string[] }[] = []
   const stateFile = {
     peerId,
@@ -176,6 +192,7 @@ const stubPurge = (provider: Provider, options: { readonly fail?: Error } = {}) 
     calls.push({ sessionId: input.handle.sessionId, asked })
     await input.ask('write your state file')
     asked.push('write your state file')
+    options.beforeStop?.()
     // Stop ends the old stream, which is what lets the loop collect this purge.
     await provider.stop(input.handle)
     // A restart that fails after the handoff, as `selfPurge` reports it: the
@@ -576,11 +593,13 @@ test('a stream that throws ends the session in the store before the peer is reco
   await run
 })
 
-test('a question left pending by a stream that died still holds the purge off on its replacement', async () => {
-  // Two streams, one pending question: the person is still being waited on, and
-  // a restart does not answer them. The question is asked on the first stream;
-  // recording the waiting state fails, which is what ends that stream and puts
-  // the peer on a second one.
+test('a session that dies with work open leaves none of it to its replacement', async () => {
+  // A pending question that outlives its session must not happen. Nobody can
+  // answer the question or the approval: the stream that asked them is gone, so
+  // the person it named is gone too. The replacement starts owing nothing and
+  // reaches a purge boundary like any other idle peer — where the old rule
+  // counted the dead session's entries as a person still being waited on and
+  // left the peer un-purgeable for the rest of its life, silently.
   const r = rig(() => ({ contextTokens: 900, contextLimit: 1_000 }))
   const stub = stubPurge(r.provider)
   const questionId = 'qst_0123456789abcdef' as QuestionId
@@ -592,9 +611,6 @@ test('a question left pending by a stream that died still holds the purge off on
     limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
     clock: fixedClock('2026-11-10T09:00:00.000Z'),
     record: (record) => {
-      if (record.type === 'peer.state_changed' && record.data.state === 'waiting_input') {
-        throw new Error('store is down')
-      }
       r.records.push(record)
     },
     purge: stub.purge,
@@ -602,6 +618,7 @@ test('a question left pending by a stream that died still holds the purge off on
   })
 
   const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
   r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
     started(),
     {
@@ -610,24 +627,167 @@ test('a question left pending by a stream that died still holds the purge off on
       questionId,
       questions: [{ question: 'ship it?', options: [{ label: 'yes' }, { label: 'no' }] }],
     },
+    { type: 'approval.requested', turnId, requestId: 'apr_0123456789abcdef', tool: 'Bash', summary: 'git push' },
   )
+  await wait()
+  assert.equal(session.state, 'waiting_input')
 
+  // The adapter dies mid-read, so nothing abandons either of them on the stream:
+  // the session's own end is the only thing that can, and it has to reach both.
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.fail(new Error('the adapter blew up'))
   await until(() => r.recovered.length === 1, 'the recovery to be asked for')
-  // The replacement is idle at its first turn boundary, over its limit, and
-  // still does not purge: the question outlived the session that asked it.
-  // A turn of its own: ids are minted per turn, so the replacement's turn
-  // ending is not evidence about the question the other session asked.
-  const ownTurn = 'trn_fedcba9876543210' as TurnId
   await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
+
+  // The replacement's own turn, over the limit: it purges. A foreign turn id on
+  // purpose — ids are minted per turn, so the replacement's ending says nothing
+  // about the turn the question was asked on.
+  const ownTurn = 'trn_fedcba9876543210' as TurnId
   r.feeds.get('ses_cccccccccccccccc')?.push(
     { type: 'turn.started', turnId: ownTurn, at: '2026-11-10T09:00:02.000Z' },
     { type: 'turn.ended', turnId: ownTurn, at: '2026-11-10T09:00:03.000Z', reason: 'completed' },
   )
-  await wait(50)
-  assert.deepEqual(stub.calls, [], 'no purge while a question asked elsewhere is still open')
+  await until(() => stub.calls.length === 1, 'the replacement to purge')
 
-  r.feeds.get('ses_cccccccccccccccc')?.push({ type: 'session.ended', reason: 'exit' })
+  await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
   await run
+
+  // Nothing was recorded as a fault: inheriting is the bug, and this session
+  // left nothing behind to inherit.
+  assert.deepEqual(
+    r.records.filter((record) => record.type === 'provider.errored'),
+    [],
+  )
+})
+
+test('a question still open on this session holds the purge off until its turn ends', async () => {
+  // The other half of the rule: work that belongs to *this* session is a person
+  // still being waited on, and the purge waits for them. Nothing about the fix
+  // above makes a live question cheaper to abandon.
+  const r = rig(() => ({ contextTokens: 900, contextLimit: 1_000 }))
+  const stub = stubPurge(r.provider)
+  const questionId = 'qst_0123456789abcdef' as QuestionId
+  const askedTurn = 'trn_0123456789abcdef' as TurnId
+  const ownTurn = 'trn_fedcba9876543210' as TurnId
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: stub.purge,
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
+    { type: 'turn.started', turnId: askedTurn, at: '2026-11-10T09:00:00.000Z' },
+    { type: 'question.asked', turnId: askedTurn, questionId, questions: [{ question: 'ship it?' }] },
+    // A later turn ends while the question is still open on the earlier one.
+    { type: 'turn.started', turnId: ownTurn, at: '2026-11-10T09:00:02.000Z' },
+    { type: 'turn.ended', turnId: ownTurn, at: '2026-11-10T09:00:03.000Z', reason: 'completed' },
+  )
+  await wait(50)
+  assert.deepEqual(stub.calls, [], 'the peer is still waiting on a person')
+
+  // Answered inside its turn: the ending is the proof, and the purge fires.
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({
+    type: 'turn.ended',
+    turnId: askedTurn,
+    at: '2026-11-10T09:00:04.000Z',
+    reason: 'completed',
+  })
+  await until(() => stub.calls.length === 1, 'the purge to fire once the question is answered')
+  await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  await run
+})
+
+test('a boundary that finds work another session raised is recorded, and stops the peer', async () => {
+  // The one hole left: a provider that stops a session without synthesising
+  // `session.ended`, while the session it stopped was holding something. The
+  // loop cannot see the end, so the work survives into the replacement, which
+  // then reaches a turn boundary holding a question its session never asked.
+  //
+  // That is the state the design calls impossible, and it used to be answered
+  // with `continue` — no purge, no record, no trace, for the rest of the peer's
+  // life. Now it is recorded as `provider.errored` with `code: 'invariant'`
+  // (which the store turns into a failure notification), and `run()` rejects
+  // without recovering, because a fresh session is exactly what hides it.
+  const r = rig(
+    (h) =>
+      h.sessionId === 'ses_aaaaaaaaaaaaaaaa'
+        ? { contextTokens: 900, contextLimit: 1_000 }
+        : { contextTokens: 100, contextLimit: 1_000 },
+    { silentStop: true },
+  )
+  const orphanedTurn = 'trn_fedcba9876543210' as TurnId
+  const orphanedId = 'qst_0123456789abcdef' as QuestionId
+  const stub = stubPurge(r.provider, {
+    // Asked on a turn of its own just before the stop, so the ask's own ending
+    // is no evidence about it — exactly a provider that asks outside its turn.
+    beforeStop: () => {
+      r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({
+        type: 'question.asked',
+        turnId: orphanedTurn,
+        questionId: orphanedId,
+        questions: [{ question: 'ship it?' }],
+      })
+    },
+  })
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.5, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: stub.purge,
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended())
+  await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the replacement to subscribe')
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push(started(), ended())
+
+  await assert.rejects(run, (error: unknown) => {
+    assert.equal((error as { code?: string }).code, 'invariant')
+    return true
+  })
+
+  const faults = r.records.filter((record) => record.type === 'provider.errored')
+  assert.equal(faults.length, 1, 'the fault is recorded exactly once')
+  const fault = faults[0]
+  assert.equal(fault?.type === 'provider.errored' ? fault.data.code : undefined, 'invariant')
+  assert.equal(fault?.type === 'provider.errored' ? fault.data.sessionId : undefined, 'ses_bbbbbbbbbbbbbbbb')
+  assert.equal(fault?.type === 'provider.errored' ? fault.data.peerId : undefined, peerId)
+  assert.equal(fault?.type === 'provider.errored' ? fault.data.providerId : undefined, 'claude')
+  assert.equal(fault?.type === 'provider.errored' ? fault.data.retryable : undefined, false)
+  assert.match(
+    fault?.type === 'provider.errored' ? fault.data.message : '',
+    new RegExp(orphanedId),
+    'the record names the work that was inherited',
+  )
+  // What the wrapper wrote is still what the store accepts — including the fault,
+  // which the store's `provider.errored` projection raises a failure for.
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
+  // And no recovery: restarting is how the violation would disappear.
+  assert.deepEqual(r.recovered, [])
+  // The fault is not a dead session, so it is not recorded as one.
+  assert.deepEqual(
+    r.records.filter((record) => record.type === 'session.ended' && record.subject === 'ses_bbbbbbbbbbbbbbbb'),
+    [],
+  )
 })
 
 test('a turn still in flight at a turn boundary does not trigger a purge', async () => {
@@ -649,11 +809,21 @@ test('a turn still in flight at a turn boundary does not trigger a purge', async
 
   const run = session.run()
   await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
-  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), started(), ended())
+  // Two turns open at once, each with its own id: a turn id is minted per turn
+  // (§4), so the open set is keyed by it and must not collapse them into one.
+  const secondTurn = 'trn_fedcba9876543210' as TurnId
+  r.feeds
+    .get('ses_aaaaaaaaaaaaaaaa')
+    ?.push(started(), { type: 'turn.started', turnId: secondTurn, at: '2026-11-10T09:00:00.500Z' }, ended())
   await wait(50)
   assert.deepEqual(stub.calls, [], 'the first end is not a boundary while a turn is open')
 
-  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(ended())
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({
+    type: 'turn.ended',
+    turnId: secondTurn,
+    at: '2026-11-10T09:00:01.500Z',
+    reason: 'completed',
+  })
   await until(() => stub.calls.length === 1, 'the last open turn to end, which is a boundary')
 
   // The purge stops the old session and the wrapper moves to the fresh one.

@@ -290,7 +290,7 @@ interface Provider {
   status(h: SessionHandle): Promise<PeerState>           // last known, derived locally; "starting"|"working"|"waiting_input"|"idle"|"ended"|"failed"
   usage(h: SessionHandle): Promise<{ contextTokens: number; contextLimit: number; costUsd?: number }>
   model(h: SessionHandle): Promise<{ id: string; endpoint?: string }>   // the LATEST init's model, never a UI string
-  events(h: SessionHandle): AsyncIterable<ProviderEvent> // plain data only: turn.started/ended{reason}, tool.use, question.asked, approval.requested, session.ended, error, compaction
+  events(h: SessionHandle): AsyncIterable<ProviderEvent> // plain data only: turn.started/ended{reason}, tool.use, question.asked, approval.requested, question.abandoned, approval.abandoned, session.ended, error, compaction
   setModel(h: SessionHandle, model: string): Promise<void>   // always present; rejects FleetError("unsupported") when capabilities.modelSwitch is false; confirmed one turn late (next init)
   resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle>   // always present; rejects FleetError("unsupported") when capabilities.resume is false (untested: both live providers report true)
 }
@@ -306,6 +306,13 @@ The shared types (`SessionSpec`, `Turn`, `ProviderEvent`, `PermissionMode`, `Pro
   promise keyed by an id it mints; `status()` is `waiting_input` while any is pending. A dead session leaves the
   promise unresolved with no SDK event, so the adapter emits `question.abandoned` and the supervisor re-delivers the
   stored answer on resume as a `nudge` turn (the promise is not durable).
+  **A pending item belongs to the session that raised it, and a session that ends closes everything it owns**, with
+  an explicit `question.abandoned` or `approval.abandoned` per item. A replacement re-asks from its state file; it
+  never inherits. A pending question outliving its session is therefore a state the supervisor does not model: at
+  each turn boundary every open turn and pending item must belong to the session the boundary is on, and a foreign
+  one is recorded as `provider.errored {code: "invariant"}` — which the store raises a failure notification for — and
+  stops that peer's pump rather than skipping the boundary. It used to skip it, which left the peer un-purgeable for
+  the rest of its life with nothing written down.
 - **`session.ended` is synthesised by the adapter**, not read from a stream frame: the Claude SDK never emits it. The
   adapter derives it from the event iterator finishing or throwing, or from the process exiting. The iterator does
   **not** finish on interrupt, only when the input stream closes or the process ends (spike §5), so an interrupt

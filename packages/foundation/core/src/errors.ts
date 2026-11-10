@@ -30,6 +30,13 @@ export const fleetErrorCodes = [
    * have since moved — so it is not something a blind retry should paper over.
    */
   'head_moved',
+  /**
+   * The fleet's own bookkeeping was violated — a state it models as impossible
+   * and cannot recover from, as opposed to the `internal` "a bug, somewhere".
+   * Distinct because it must be reported and left stopped, never retried:
+   * restarting the thing that broke the invariant hides it behind a fresh state.
+   */
+  'invariant',
   /** The operation did not finish in time. */
   'timeout',
   /** A bug: the code reached a state it does not model. */

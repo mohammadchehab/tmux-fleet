@@ -396,6 +396,8 @@ export type ProviderEvent =
       /** A short, already-redacted summary of what the tool would do. */
       readonly summary?: string
     }
+  /** The pending approval died with its session and will never be answered (§4). */
+  | { readonly type: 'approval.abandoned'; readonly requestId: string }
   /** The session's tool policy denied a call; nothing was run and nobody was asked (§4). */
   | {
       readonly type: 'tool.denied'
@@ -469,6 +471,7 @@ export const providerEvent = (): Schema<ProviderEvent> =>
       tool: string({ minLength: 1 }),
       summary: optional(string({ maxLength: 500 })),
     }),
+    object({ type: literal('approval.abandoned'), requestId: string({ minLength: 1, maxLength: 80 }) }),
     object({
       type: literal('tool.denied'),
       turnId: turnId(),

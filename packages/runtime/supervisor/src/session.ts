@@ -30,6 +30,7 @@ import {
   type Clock,
   type PeerId,
   type PeerState,
+  type SessionId,
   type TurnId,
 } from '@fleet/foundation-core'
 import type { ProviderEvent, SessionEndReason, StateFile } from '@fleet/foundation-contracts'
@@ -100,6 +101,12 @@ interface Deferred<T> {
   readonly resolve: (value: T) => void
 }
 
+/** One question or approval waiting for a person, and whose it is (§8). */
+interface PendingOwner {
+  readonly turnId: TurnId
+  readonly sessionId: SessionId
+}
+
 const deferred = <T>(): Deferred<T> => {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((done) => {
@@ -122,23 +129,32 @@ export class PeerSession {
   #stopped = false
   /** True from the moment a purge is triggered until a session is running again. */
   #purging = false
-  /** Turns started and not yet ended: a purge boundary is not one while work is open. */
-  #openTurns = 0
   /**
-   * The questions and approvals waiting for a person, each with the turn that
-   * raised it. The answer never appears on the event stream — the fleet
-   * delivers it through `answer()`/`respond()` — so the only proof that one was
-   * answered is its turn ending: a turn cannot end while its own question is
-   * still open, so `turn.ended` clears that turn's entries before the boundary
-   * is judged.
-   *
-   * Two things do not clear it. A `turn.started` is not an answer (the answer
-   * unblocks the *same* turn, and an idle peer over its limit would then never
-   * be purged again), and neither is a new stream (a question asked on a
-   * session that then died is still a person being waited on). Only an end of
-   * its turn, or `question.abandoned` — the question died with its session.
+   * Turns started and not yet ended, each with the session that raised it: a
+   * purge boundary is not one while work is open, and the work only counts
+   * against the session it belongs to (§8).
    */
-  readonly #pending = new Map<string, TurnId>()
+  readonly #openTurns = new Map<TurnId, SessionId>()
+  /**
+   * The questions and approvals waiting for a person, each with the turn and
+   * the session that raised it. The answer never appears on the event stream —
+   * the fleet delivers it through `answer()`/`respond()` — so the only proof
+   * that one was answered is its turn ending: a turn cannot end while its own
+   * question is still open, so `turn.ended` clears that turn's entries before
+   * the boundary is judged.
+   *
+   * A `turn.started` is not an answer (the answer unblocks the *same* turn, and
+   * an idle peer over its limit would then never be purged again) and neither
+   * is a new stream: a question outliving its session is nobody's to answer, so
+   * it is abandoned at the session's end rather than inherited by its
+   * replacement.
+   */
+  readonly #pending = new Map<string, PendingOwner>()
+  /**
+   * Set once the bookkeeping invariant has been recorded, so `run()` reports it
+   * instead of recovering into a fresh session that hides it (§8).
+   */
+  #faulted = false
 
   constructor(ports: PeerSessionPorts) {
     this.#ports = ports
@@ -189,8 +205,11 @@ export class PeerSession {
       try {
         purged = await this.#pump(handle)
       } catch (failure) {
-        // A deliberate stop is not a failure to recover from.
-        if (this.#stopped || recovered) throw failure
+        // A deliberate stop is not a failure to recover from. Nor is a broken
+        // invariant: a recovery would start a clean session over the top of it
+        // and the violation would be gone from everything a person can read
+        // (§8). It was recorded before it was thrown, so stopping is visible.
+        if (this.#stopped || recovered || this.#faulted) throw failure
         recovered = true
         handle = await this.#ports.recover(handle, failure, restartStateFileOf(failure))
         this.#handle = handle
@@ -213,12 +232,14 @@ export class PeerSession {
    */
   async #pump(handle: SessionHandle): Promise<PurgeOutcome | undefined> {
     const { clock, limits, provider } = this.#ports
+    const sessionId = sessionIdOf(handle)
     const startedAt = clock.millis()
-    // A new stream starts with no turn open: turns belong to the session that
-    // raised them, and a dead session's open turn must not block every later
-    // purge boundary on its replacement. A pending question is *not* reset with
-    // them — the person it is waiting on has not been answered by a restart.
-    this.#openTurns = 0
+    // Nothing is reset here. A new stream starts owning nothing because the
+    // session it replaces abandoned what it owned when it ended, and a leftover
+    // is caught at the next boundary rather than quietly cleared: wiping the
+    // count was how a dead session's open turn silently stopped its
+    // replacement ever being purged, and how a dead session's question kept a
+    // live peer waiting on a person who had already been replaced.
     let turns = 0
     let askWaiter: Deferred<void> | undefined
     let purge: Promise<PurgeOutcome> | undefined
@@ -252,11 +273,18 @@ export class PeerSession {
         }
         if (event.reason !== 'completed' || purge !== undefined) continue
 
+        // Everything still open at this boundary must be this session's, and a
+        // boundary with somebody else's is a fault, not a `continue`. It used
+        // to be skipped in silence, which left the peer permanently
+        // un-purgeable — and left a person waiting on a question whose session
+        // had already died (§8, §13). Checked before the boundary is judged.
+        await this.#assertOnlyOwnedBy(sessionId)
+
         // A turn boundary is a purge boundary only while the peer is idle and
         // nothing is owed to a person. A question still open, or a turn that
         // started before this one ended, is not one: the purge would interrupt
         // the peer and then read the ask's own end as the peer's answer.
-        if (this.#state !== 'idle' || this.#pending.size > 0 || this.#openTurns > 0) continue
+        if (this.#state !== 'idle' || this.#pending.size > 0 || this.#openTurns.size > 0) continue
 
         turns += 1
         const usage = await provider.usage(handle)
@@ -296,6 +324,15 @@ export class PeerSession {
     }
 
     if (failed !== undefined) {
+      // A broken invariant is not a dead session: the stream may be perfectly
+      // healthy and the fleet's bookkeeping is not. Recorded as a fault by
+      // `#assertOnlyOwnedBy`, so it leaves here as what it is — a lie in the
+      // store, `crashed`, would be worse than no record at all.
+      if (this.#faulted) throw failed
+      // A stream that threw never got to synthesise its own `session.ended`, so
+      // this session ends here: whatever it still owned is abandoned with it,
+      // exactly as a `session.ended` would have done (§8).
+      this.#abandonAllOwnedBy(sessionId)
       // A store that cannot take this record must not swallow the failure that
       // caused it: the caller still has to recover, or report, the dead session.
       await this.#recordEnd(handle, 'crashed').catch(() => {})
@@ -311,25 +348,35 @@ export class PeerSession {
 
     switch (event.type) {
       case 'turn.started':
-        this.#openTurns += 1
+        this.#openTurns.set(event.turnId, sessionId)
         break
       case 'turn.ended':
-        this.#openTurns = Math.max(0, this.#openTurns - 1)
+        this.#openTurns.delete(event.turnId)
         // This turn cannot end while a question it asked is still open, so its
         // ending is the proof that each of them was answered. Cleared here,
         // before the caller judges the boundary, so the purge can fire at it.
-        for (const [id, turnId] of this.#pending) {
-          if (turnId === event.turnId) this.#pending.delete(id)
+        for (const [id, owner] of this.#pending) {
+          if (owner.turnId === event.turnId) this.#pending.delete(id)
         }
         break
       case 'question.asked':
-        this.#pending.set(event.questionId, event.turnId)
+        this.#pending.set(event.questionId, { turnId: event.turnId, sessionId })
         break
       case 'approval.requested':
-        this.#pending.set(event.requestId, event.turnId)
+        this.#pending.set(event.requestId, { turnId: event.turnId, sessionId })
         break
       case 'question.abandoned':
         this.#pending.delete(event.questionId)
+        break
+      case 'approval.abandoned':
+        this.#pending.delete(event.requestId)
+        break
+      case 'session.ended':
+        // The session is over and everything it owned dies with it: an open
+        // turn it will never end, and a question or approval no one can answer
+        // any more because the session that asked is gone. A replacement
+        // re-asks from its state file; it never inherits (§8).
+        this.#abandonAllOwnedBy(sessionId)
         break
       case 'compaction':
         // Recorded whether or not a turn is open. An auto-compaction can land
@@ -356,6 +403,77 @@ export class PeerSession {
     if (event.type === 'session.ended') {
       await this.#recordEnd(handle, endReasonOf(event, purging), event.code)
     }
+  }
+
+  /** Drop everything one session owned, because that session is over (§8). */
+  #abandonAllOwnedBy(sessionId: SessionId): void {
+    for (const [turnId, owner] of this.#openTurns) {
+      if (owner === sessionId) this.#openTurns.delete(turnId)
+    }
+    for (const [id, owner] of this.#pending) {
+      if (owner.sessionId === sessionId) this.#pending.delete(id)
+    }
+  }
+
+  /**
+   * The rule the whole class rests on: a turn, a question and an approval
+   * belong to the session that raised them, so at a boundary every open one
+   * belongs to the session the boundary is on.
+   *
+   * A foreign entry means a session ended without this loop learning of it —
+   * and the boundary used to read that as "still busy" and skip the purge, for
+   * every boundary after it, in silence. So it is neither recoverable nor
+   * ignorable: the fault goes to the store first (a `provider.errored`, which
+   * the store turns into a failure notification and the `notify` routine rings
+   * on), and then out of `run()`, which stops this peer's pump because
+   * `#faulted` keeps the recovery from papering over it (§8, §13).
+   */
+  async #assertOnlyOwnedBy(sessionId: SessionId): Promise<void> {
+    const orphanedTurns = [...this.#openTurns]
+      .filter(([, owner]) => owner !== sessionId)
+      .map(([turnId]) => String(turnId))
+    const orphanedPending = [...this.#pending]
+      .filter(([, owner]) => owner.sessionId !== sessionId)
+      .map(([id]) => id)
+    if (orphanedTurns.length + orphanedPending.length === 0) return
+
+    const { clock, peerId, record, provider } = this.#ports
+    // Recorded before the throw, and a store that refuses the record must not
+    // replace the invariant with its own failure: the throw is the signal.
+    try {
+      await record({
+        type: 'provider.errored',
+        ts: clock.now(),
+        subject: peerId,
+        actor: peerActor(peerId),
+        data: {
+          peerId,
+          sessionId,
+          providerId: provider.id,
+          code: 'invariant',
+          message: `peer ${String(peerId)}: session ${String(sessionId)} is holding work another session raised (${[...orphanedTurns, ...orphanedPending].join(', ')})`,
+          retryable: false,
+        },
+      })
+    } catch {
+      // Nothing to do with a store that would not take it: the throw below is
+      // the signal, and swallowing this keeps the store's failure from being
+      // mistaken for the invariant violation.
+    }
+
+    this.#faulted = true
+    throw fleetError(
+      'invariant',
+      `peer ${String(peerId)}: session ${String(sessionId)} is holding work another session raised — the pump is stopped`,
+      {
+        details: {
+          peerId: String(peerId),
+          sessionId: String(sessionId),
+          orphanedTurns,
+          orphanedPending,
+        },
+      },
+    )
   }
 
   /**

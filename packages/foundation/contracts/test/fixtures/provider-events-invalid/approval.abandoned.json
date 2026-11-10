@@ -1,0 +1,7 @@
+{
+  "input": {
+    "type": "approval.abandoned",
+    "requestId": 42
+  },
+  "path": "requestId"
+}
