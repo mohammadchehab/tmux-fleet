@@ -66,6 +66,20 @@ and its sha in a single request) followed by a fetch of only the refs that moved
 deterministic code — no model call, no tokens against anyone's cap. A task takes hours; learning of a claim up to a
 minute late costs nothing. Live chat between peers is the one thing this does not do well, and it is not a goal.
 
+### 2.3 A machine goes offline
+
+- **Its own work continues.** A fleet's store is local; its peers keep working on what they hold. Pushes queue and go
+  out on reconnect. It claims nothing new while offline, because a claim is a push.
+- **Its claims are not stranded.** A claim is held while its owner's heartbeat is fresh. Once the heartbeat is older
+  than the release window (default 8 h, a profile setting), another fleet may release it by deleting the claim ref and
+  re-claiming; the release is a commit on the releasing fleet's branch, so it is attributable. Staleness is judged from
+  the push time GitHub records for the owner's branch (the repository activity API), never from a commit's own
+  timestamp, which the owner's laptop sets.
+- **On reconnect** a fleet fetches before it pushes. A task whose claim it lost is abandoned; its peer is told through
+  its Mailbox, and the worktree is kept, never deleted, so nothing local is lost.
+- **Decisions wait for their human.** A decision addressed to an offline person stays in the repo, encrypted, and is
+  in their inbox (§6.1) on the next `fleet up`. Nobody else answers it unless the trust table names them.
+
 ## 3. Allocation by budget pace
 
 Each fleet already measures its spend per turn, per peer and per Work (`TokenReport`, `spendFrom` — §6.2 of the
