@@ -182,6 +182,10 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
         '-R',
         String(repo),
         flag,
+        // §10's pin, enforced by GitHub rather than by us: if the head moved between the gate's read and this call,
+        // `gh` refuses the merge instead of merging a commit nobody checked.
+        '--match-head-commit',
+        String(mergeOptions.headSha),
         ...(mergeOptions.deleteBranch ? ['--delete-branch'] : []),
       ])
       if (result.code !== 0) {

@@ -23,6 +23,8 @@ export type GateCall =
       readonly number: number
       readonly method: 'merge' | 'squash' | 'rebase'
       readonly deleteBranch: boolean
+      /** The sha the merge was pinned to. §10's rule reaches the forge as a flag, so the fake sees it. */
+      readonly headSha: Sha
     }
 
 export interface FakeGithub extends PullRequests {
@@ -115,9 +117,15 @@ export const fakeGithub = (initial: readonly PullRequest[] = []): FakeGithub => 
     async merge(
       _repo: Repo,
       number: number,
-      options: { readonly method: 'merge' | 'squash' | 'rebase'; readonly deleteBranch: boolean },
+      options: { readonly method: 'merge' | 'squash' | 'rebase'; readonly deleteBranch: boolean; readonly headSha: Sha },
     ): Promise<{ readonly mergeSha?: Sha }> {
-      calls.push({ kind: 'merge', number, method: options.method, deleteBranch: options.deleteBranch })
+      calls.push({
+        kind: 'merge',
+        number,
+        method: options.method,
+        deleteBranch: options.deleteBranch,
+        headSha: options.headSha,
+      })
       take('merge')
       const pr = prs.get(number)
       if (pr === undefined) throw new Error(`no PR ${String(number)}`)

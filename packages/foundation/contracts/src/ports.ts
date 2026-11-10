@@ -60,10 +60,17 @@ export interface PullRequests {
   /** PRs whose `stackParent` is this one; a dependent forbids `--delete-branch` (§10). */
   dependents(repo: Repo, number: number): Promise<readonly { readonly repo: Repo; readonly number: number }[]>
 
+  /**
+   * Merge, pinned to the sha the caller decided on. `headSha` is not advice: an
+   * implementation passes it to the forge as the head the merge must find
+   * (`gh pr merge --match-head-commit`), so a push between the gate's own read
+   * and the merge fails the merge instead of landing a commit nobody checked
+   * (§10). There is no unpinned merge in this port on purpose.
+   */
   merge(
     repo: Repo,
     number: number,
-    options: { readonly method: 'merge' | 'squash' | 'rebase'; readonly deleteBranch: boolean },
+    options: { readonly method: 'merge' | 'squash' | 'rebase'; readonly deleteBranch: boolean; readonly headSha: Sha },
   ): Promise<{ readonly mergeSha?: Sha }>
 }
 

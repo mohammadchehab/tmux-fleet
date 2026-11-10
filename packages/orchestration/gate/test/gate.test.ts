@@ -76,6 +76,16 @@ describe('a merge the gate allows', () => {
     assert.equal(outcome.seqs.length, 1)
   })
 
+  it('hands the pin to the forge as well, so a head that moves mid-merge is refused there too (§10)', async () => {
+    const pinned = sha('b2c3d4e5f60718293a4b5c6d7e8f9012345678ab')
+    const { github, gate } = setup([pullRequest({ headSha: pinned })])
+
+    await gate.executeMerge(merge({ headSha: pinned }))
+
+    const call = github.calls.find((entry) => entry.kind === 'merge')
+    assert.equal(call?.kind === 'merge' && call.headSha, pinned)
+  })
+
   it('asks for no branch delete: the action cannot ask for one, and nothing should invent it (§5.4, #102)', async () => {
     const { github, gate } = setup()
 
