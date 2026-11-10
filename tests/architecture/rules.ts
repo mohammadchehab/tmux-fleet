@@ -57,7 +57,9 @@ export const PACKAGE_ORDER: Readonly<Record<string, readonly string[]>> = {
     'supervisor',
     'mailbox',
   ],
-  orchestration: ['pm', 'routines', 'briefs', 'gate', 'ledger', 'judge'],
+  // shared-fleet.md §3: the pool's pace is an input the PM may read, so `coordination` comes before it and imports none of
+  // its siblings.
+  orchestration: ['coordination', 'pm', 'routines', 'briefs', 'gate', 'ledger', 'judge'],
   workspace: ['worktree', 'codegraph'],
   security: ['findings', 'scanners'],
   notify: ['core', 'channels/macos'],
