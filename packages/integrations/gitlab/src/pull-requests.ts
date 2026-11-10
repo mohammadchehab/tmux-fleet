@@ -1,0 +1,279 @@
+/**
+ * The `PullRequests` port over `glab` (§10). Every read is one `glab api` call
+ * against the REST endpoint that returns the JSON we need, and the mapping lives
+ * in `observe.ts`, so this file is only the sequence: which endpoint, in which
+ * order, and what a non-zero exit means.
+ *
+ * **Why `glab api` for reads and `glab mr` for writes.** `glab mr list` prints a
+ * view-shaped JSON whose fields are the CLI's business and have changed between
+ * releases; `/projects/:id/merge_requests` is GitLab's own documented response
+ * and a merge request's pipelines and approvals only exist as endpoints. So reads
+ * name the resource they want, and the three actions (create, update, merge) use
+ * the subcommands, because that is where `--sha`, `--auto-merge` and the
+ * confirmation prompt live.
+ *
+ * Two behaviours the gate depends on and would be wrong without:
+ *
+ * - **`get` distinguishes "no such merge request" from "the call failed".** A
+ *   missing one is `undefined`, which the gate reports as `missing`; a `glab`
+ *   that fails for any other reason throws, so a network blip never reads as "the
+ *   merge request was closed".
+ * - **A refused merge is re-read, not guessed.** With `--sha`, GitLab refuses to
+ *   merge a head that moved, but the CLI's wording for that refusal is not a
+ *   contract. So on a non-zero exit this file reads the merge request's current
+ *   sha and compares it to the one the caller pinned: a different sha *is* a
+ *   moved head (`head_moved`), whatever `glab` printed; the message is only a
+ *   fallback for the case where the re-read itself fails.
+ *
+ * Nothing here deletes a branch on its own: `merge` removes the source branch only
+ * when the caller asked, and §10's gate is the caller that decides (§10, the
+ * `#102` loss).
+ */
+
+import { fleetError, type Repo, type Sha } from '@fleet/foundation-core'
+import type { PullRequest, PullRequests, ReviewState } from '@fleet/foundation-contracts'
+import { createGlab, type Glab, type GlabResult } from './glab.ts'
+import {
+  createdFrom,
+  gradedChecksFrom,
+  headShaFrom,
+  mergeShaFrom,
+  pullRequestFrom,
+  reviewFrom,
+  type GradedChecks,
+  type ReviewObservation,
+} from './observe.ts'
+
+/**
+ * How many rows a list may return. GitLab caps `per_page` at 100 and does not
+ * say so, so this is also the clamp: asking for more would silently return a
+ * page and look like "there are no more merge requests".
+ */
+const DEFAULT_LIMIT = 100
+const MAX_PER_PAGE = 100
+
+/** The port's own merge options, so a widening that adds `auto` cannot drift from the contract. */
+type PortMergeOptions = Parameters<PullRequests['merge']>[2]
+
+/** §10's pin plus the one flag GitLab offers beyond it: merge when the pipeline succeeds. */
+export interface GitLabMergeOptions extends PortMergeOptions {
+  /** `--auto-merge`: GitLab merges the moment the pipeline succeeds, instead of refusing now. */
+  readonly auto?: boolean
+}
+
+/**
+ * The port, plus the two things §10 needs that the port's signature cannot say:
+ * `checks` returns the sha it graded, and `merge` can ask GitLab to wait for the
+ * pipeline instead of merging now. Both are widenings, not a second contract — a
+ * `GitLabPullRequests` is a `PullRequests`, so `apps/daemon` passes it to the
+ * gate unchanged.
+ */
+export interface GitLabPullRequests extends PullRequests {
+  checks(repo: Repo, number: number): Promise<GradedChecks>
+  merge(repo: Repo, number: number, options: GitLabMergeOptions): Promise<{ readonly mergeSha?: Sha }>
+}
+
+export interface GitLabOptions {
+  /** Defaults to `glab` on `PATH` through `execFile`. A test supplies a fake and reads the argv. */
+  readonly glab?: Glab
+  /**
+   * The profile's `forge.host`. Only used to build the default runner's
+   * environment; an injected `glab` has already made that choice.
+   */
+  readonly host?: string
+  /** Rows per list. Defaults to 100, which is GitLab's own ceiling. */
+  readonly limit?: number
+}
+
+/** GitLab's REST path for a repo. `owner/name` is one path segment, so the slash is encoded. */
+const projectPath = (repo: Repo): string => `projects/${encodeURIComponent(String(repo))}`
+
+/** `open` is GitLab's `opened`; the other two are spelled the same on both forges. */
+const stateName = (state: 'open' | 'closed' | 'all'): string => (state === 'open' ? 'opened' : state)
+
+/** A `glab api` that answers 404 is the merge request (or project) not being there — an answer, not a failure. */
+const isMissing = (result: GlabResult): boolean => /\b404\b|not found/i.test(result.stderr)
+
+/**
+ * The CLI's wording when it refuses a merge because the head moved. Kept as a
+ * fallback only: the authoritative test is the re-read below, because this
+ * sentence is `glab`'s prose and not an interface.
+ */
+const looksLikeHeadMoved = (result: GlabResult): boolean => /sha|head (?:of the )?source branch|modified|updated/i.test(result.stderr)
+
+export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPullRequests => {
+  const glab = options.glab ?? createGlab(options.host === undefined ? {} : { host: options.host })
+  const limit = Math.min(options.limit ?? DEFAULT_LIMIT, MAX_PER_PAGE)
+
+  const api = (path: string): Promise<unknown> => glab.json(['api', path])
+
+  const listPath = (repo: Repo, state: 'open' | 'closed' | 'all', extra: readonly string[] = []): string =>
+    [`${projectPath(repo)}/merge_requests?state=${stateName(state)}&per_page=${String(limit)}`, ...extra].join('&')
+
+  const readAll = async (path: string, repo: Repo): Promise<readonly PullRequest[]> => {
+    const raw = await api(path)
+    if (!Array.isArray(raw)) throw fleetError('external_failed', 'glab api printed something that is not a list')
+    return raw.map((row) => pullRequestFrom(row, repo))
+  }
+
+  /** The raw merge request, or `undefined` when GitLab says it is not there. */
+  const readRaw = async (repo: Repo, number: number): Promise<unknown | undefined> => {
+    const result = await glab.run(['api', `${projectPath(repo)}/merge_requests/${String(number)}`])
+    if (result.code !== 0) {
+      // A missing merge request is an answer the gate reports as `missing`; anything else is a failed read and throws.
+      if (isMissing(result)) return undefined
+      throw fleetError(
+        'external_failed',
+        `glab api merge_requests/${String(number)} exited ${String(result.code)}: ${result.stderr.trim() || 'no output'}`,
+        { details: { repo: String(repo), number, exitCode: result.code } },
+      )
+    }
+    try {
+      return JSON.parse(result.stdout) as unknown
+    } catch (thrown) {
+      throw fleetError('external_failed', `glab api merge_requests/${String(number)} printed no JSON`, { cause: thrown })
+    }
+  }
+
+  /** The pipelines GitLab ran for this merge request — the evidence §10 grades. */
+  const pipelinesOf = (repo: Repo, number: number): Promise<unknown> =>
+    api(`${projectPath(repo)}/merge_requests/${String(number)}/pipelines`)
+
+  const get = async (repo: Repo, number: number): Promise<PullRequest | undefined> => {
+    const raw = await readRaw(repo, number)
+    if (raw === undefined) return undefined
+    // `get` is the read the gate decides on, so it pays for the real pipeline list rather than trusting a summary.
+    const pipelines = await pipelinesOf(repo, number).catch(() => undefined)
+    return pullRequestFrom(raw, repo, pipelines)
+  }
+
+  /** `merge`'s post-refusal question: what sha is the merge request at now? */
+  const currentHead = async (repo: Repo, number: number): Promise<Sha | undefined> => {
+    const raw = await readRaw(repo, number)
+    return raw === undefined ? undefined : headShaFrom(raw)
+  }
+
+  return {
+    list: async (repo, listOptions) => readAll(listPath(repo, listOptions?.state ?? 'open'), repo),
+
+    get,
+
+    /** `dedupe` (§5.2): GitLab's own `search`, which reads titles and descriptions. */
+    async searchIntent(repo, searchText) {
+      const trimmed = searchText.trim().replace(/\s+/g, ' ')
+      if (trimmed === '') return []
+      return readAll(listPath(repo, 'open', [`search=${encodeURIComponent(trimmed)}`]), repo)
+    },
+
+    async create(input) {
+      const result = await glab.run([
+        'mr',
+        'create',
+        '-R',
+        String(input.repo),
+        '--source-branch',
+        input.head,
+        '--target-branch',
+        input.base,
+        '--title',
+        input.title,
+        // Always passed: without it `glab` would prompt for a description, and there is no TTY here to prompt on.
+        '--description',
+        input.body ?? '',
+        // The confirmation prompt has no TTY either.
+        '--yes',
+      ])
+      if (result.code !== 0) {
+        throw fleetError('external_failed', `glab mr create exited ${result.code}: ${result.stderr.trim() || 'no output'}`, {
+          details: { repo: String(input.repo), head: input.head },
+        })
+      }
+      return createdFrom(result.stdout, input.repo)
+    },
+
+    async checks(repo, number) {
+      const raw = await readRaw(repo, number)
+      if (raw === undefined) {
+        throw fleetError('not_found', `${String(repo)}!${String(number)} is not a merge request glab can read`, {
+          details: { repo: String(repo), number },
+        })
+      }
+      return gradedChecksFrom(raw, await pipelinesOf(repo, number))
+    },
+
+    async review(repo, number): Promise<ReviewObservation> {
+      const approvals = await api(`${projectPath(repo)}/merge_requests/${String(number)}/approvals`)
+      return reviewFrom(approvals)
+    },
+
+    async retarget(repo, number, base) {
+      const result = await glab.run(['mr', 'update', String(number), '-R', String(repo), '--target-branch', base, '--yes'])
+      if (result.code !== 0) {
+        throw fleetError('external_failed', `glab mr update ${String(number)} exited ${result.code}: ${result.stderr.trim() || 'no output'}`, {
+          details: { repo: String(repo), number, base },
+        })
+      }
+    },
+
+    /** Every open merge request targeting this one's source branch — the stack that sits on top of it (§10). */
+    async dependents(repo, number) {
+      const parent = await get(repo, number)
+      if (parent === undefined) return []
+      const open = await readAll(
+        `${projectPath(repo)}/merge_requests?state=opened&per_page=${String(limit)}&target_branch=${encodeURIComponent(parent.head)}`,
+        repo,
+      )
+      return open
+        .filter((pr) => pr.number !== number && pr.base === parent.head && !pr.merged)
+        .map((pr) => ({ repo: pr.repo, number: pr.number }))
+    },
+
+    async merge(repo, number, mergeOptions) {
+      // GitLab's default action is a merge commit; `--squash` and `--rebase` are the opt-ins.
+      const flag = mergeOptions.method === 'squash' ? '--squash' : mergeOptions.method === 'rebase' ? '--rebase' : undefined
+      const result = await glab.run([
+        'mr',
+        'merge',
+        String(number),
+        '-R',
+        String(repo),
+        // §10's pin, enforced by GitLab rather than by us: a head that moved between the caller's read and this call
+        // makes the merge fail instead of landing a commit nobody checked.
+        '--sha',
+        String(mergeOptions.headSha),
+        ...(flag === undefined ? [] : [flag]),
+        ...(mergeOptions.deleteBranch ? ['--remove-source-branch'] : []),
+        // "Merge when the pipeline succeeds", for a caller that asked to wait rather than to merge now.
+        ...(mergeOptions.auto === true ? ['--auto-merge'] : []),
+        // The merge confirmation, which has no TTY on this side.
+        '--yes',
+      ])
+
+      if (result.code !== 0) {
+        const details = { repo: String(repo), number, method: mergeOptions.method }
+        // The head moving is an answer, not a transport failure. Re-read first: the current sha is a fact, `glab`'s
+        // message is prose. A read that fails falls back to the message, so a refusal is never mistaken for a blip.
+        const moved = await currentHead(repo, number)
+          .then((sha) => sha !== undefined && sha !== mergeOptions.headSha)
+          .catch(() => looksLikeHeadMoved(result))
+        if (moved) {
+          throw fleetError(
+            'head_moved',
+            `${String(repo)}!${String(number)} moved off ${String(mergeOptions.headSha)} before the merge; nothing was merged (§10)`,
+            { details: { ...details, headSha: mergeOptions.headSha } },
+          )
+        }
+        throw fleetError('external_failed', `glab mr merge ${String(number)} exited ${result.code}: ${result.stderr.trim() || 'no output'}`, {
+          details,
+        })
+      }
+
+      // The merge commit is a nicety, not the merge: a second call that fails leaves `mergeSha` absent, and the
+      // `pr.merged` event records the head sha it merged either way (§3).
+      const sha = await readRaw(repo, number)
+        .then(mergeShaFrom)
+        .catch(() => undefined)
+      return sha === undefined ? {} : { mergeSha: sha }
+    },
+  }
+}

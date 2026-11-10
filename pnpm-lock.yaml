@@ -38,6 +38,9 @@ importers:
       '@fleet/integrations-github':
         specifier: workspace:*
         version: link:../../packages/integrations/github
+      '@fleet/integrations-gitlab':
+        specifier: workspace:*
+        version: link:../../packages/integrations/gitlab
       '@fleet/notify-core':
         specifier: workspace:*
         version: link:../../packages/notify/core
@@ -111,6 +114,15 @@ importers:
         version: link:../core
 
   packages/integrations/github:
+    dependencies:
+      '@fleet/foundation-contracts':
+        specifier: workspace:*
+        version: link:../../foundation/contracts
+      '@fleet/foundation-core':
+        specifier: workspace:*
+        version: link:../../foundation/core
+
+  packages/integrations/gitlab:
     dependencies:
       '@fleet/foundation-contracts':
         specifier: workspace:*

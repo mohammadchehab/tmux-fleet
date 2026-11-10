@@ -107,6 +107,25 @@ export interface ProvidersProfile {
   readonly deepinfra?: DeepInfraProfile
 }
 
+/** §10: the forges this build has a `PullRequests` adapter for. */
+export const profileForges = ['github', 'gitlab'] as const
+export type ProfileForge = (typeof profileForges)[number]
+
+/**
+ * §10: which forge a fleet's repos live on. GitHub is the default when the block
+ * is absent, because it is what every fleet before this one was.
+ *
+ * `host` is the forge's own hostname and only GitLab reads it: `glab` resolves a
+ * host from the current directory's git remote or from its own config, and the
+ * daemon writes worktrees in places neither describes, so a self-hosted forge has
+ * to be named here. Absent means the forge's public host (`github.com`,
+ * `gitlab.com`).
+ */
+export interface ForgeProfile {
+  readonly kind: ProfileForge
+  readonly host?: string
+}
+
 /** §6.2's tools, as a profile may name them: the four adapters this daemon ships. */
 export const profileScanners = ['semgrep', 'gitleaks', 'osv-scanner', 'trivy'] as const
 export type ProfileScanner = (typeof profileScanners)[number]
@@ -125,6 +144,8 @@ export interface Profile {
    * to decide what to construct.
    */
   readonly providers?: ProvidersProfile
+  /** §10: which forge the fleet's repos live on, and its host. Absent means `github.com`. */
+  readonly forge?: ForgeProfile
   /** §6.1: where a notification goes. `none` keeps the ledger and sends nothing. */
   readonly notify?: { readonly channel: 'macos' | 'none' }
   /**
@@ -198,6 +219,20 @@ const deepInfraBlock = (): Schema<DeepInfraProfile> =>
 const providersBlock = (): Schema<ProvidersProfile> =>
   objectAs<ProvidersProfile>()({ deepinfra: optional(deepInfraBlock()) })
 
+const forgeBlock = (): Schema<ForgeProfile> =>
+  objectAs<ForgeProfile>()({
+    kind: oneOf(profileForges),
+    // A hostname, not a URL: `GITLAB_HOST` takes `gitlab.example`, and a pasted
+    // `https://…` would be a host no `glab` subcommand recognises.
+    host: optional(
+      refine(
+        text(200),
+        (host) => !host.includes('/') && !host.includes('://'),
+        'a bare hostname, without a scheme or a path',
+      ),
+    ),
+  })
+
 const limitsBlock = (): Schema<{ readonly maxSessions?: number }> =>
   objectAs<{ readonly maxSessions?: number }>()({ maxSessions: optional(positiveInt()) })
 
@@ -218,6 +253,7 @@ export const profileSchema = (): Schema<Profile> =>
     peers: array(peerProfile(), { maxItems: 50 }),
     routines: optional(routinesBlock()),
     providers: optional(providersBlock()),
+    forge: optional(forgeBlock()),
     notify: optional(notifyBlock()),
     security: optional(securityBlock()),
     limits: optional(limitsBlock()),

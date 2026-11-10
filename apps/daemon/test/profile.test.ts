@@ -53,6 +53,23 @@ describe('decoding a profile', () => {
     assert.throws(() => decodeProfile(minimal({ delelteMergedBranches: true })), /unknown field/)
   })
 
+  it('reads §10’s forge: no block is github.com, and a GitLab profile names its own host', () => {
+    assert.equal(decodeProfile(minimal()).forge, undefined)
+    const gitlab = decodeProfile(minimal({ forge: { kind: 'gitlab', host: 'rhl11374ap.ncbnpr.local' } }))
+    assert.deepEqual(gitlab.forge, { kind: 'gitlab', host: 'rhl11374ap.ncbnpr.local' })
+    // A public GitLab is the same profile with no host: `glab` then uses its own default.
+    assert.deepEqual(decodeProfile(minimal({ forge: { kind: 'gitlab' } })).forge, { kind: 'gitlab' })
+  })
+
+  it('refuses a forge it cannot reach, and a host that is a URL instead of a hostname', () => {
+    assert.throws(() => decodeProfile(minimal({ forge: { kind: 'bitbucket' } })), /bitbucket/)
+    // `GITLAB_HOST` takes a bare host; a pasted URL is a host no `glab` subcommand recognises.
+    assert.throws(
+      () => decodeProfile(minimal({ forge: { kind: 'gitlab', host: 'https://gitlab.example' } })),
+      /bare hostname/,
+    )
+  })
+
   it('reads §6.2’s scanner set, and installs nothing when there is no block', () => {
     const profile = decodeProfile(minimal({ security: { scanners: ['semgrep', 'gitleaks'] } }))
     assert.deepEqual(profile.security?.scanners, ['semgrep', 'gitleaks'])
