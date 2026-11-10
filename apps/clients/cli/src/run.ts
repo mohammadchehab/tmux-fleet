@@ -1,0 +1,347 @@
+/**
+ * `fleet`'s argument grammar and its commands (§2).
+ *
+ * Two halves, kept apart on purpose: `parseArgv` turns words into one of a
+ * closed set of commands and throws `invalid_input` for anything else, and
+ * `execute` turns a command into daemon calls. Neither touches `process`,
+ * which is why every branch below is a test with a fake caller and no socket —
+ * `main.ts` is the only file that knows there is a terminal.
+ *
+ * The CLI is a client, so it decides nothing about the fleet: it validates
+ * what it can locally (`kind` is one of the four §7 kinds, `--limit` is a
+ * positive integer) and hands everything else to the daemon, which validates
+ * again against the same contract.
+ */
+
+import { decisionId, fleetError, peerId, toFleetError } from '@fleet/foundation-core'
+import { turnKinds, type Decision, type LsResult, type TurnKind, type UpResult } from '@fleet/foundation-contracts'
+
+import { asArgument, isUnreachable, type DaemonCaller } from './client.ts'
+import { formatDecision, formatDown, formatLs, formatPeek, formatSend, formatUp } from './render.ts'
+import { socketPathOf } from './socket.ts'
+
+const usage = (): string =>
+  [
+    'fleet - talk to a running fleetd (§2). The CLI holds no state; everything it shows comes from the daemon.',
+    '',
+    '  fleet up [profile]                  start the fleet, or reattach to the one already running',
+    '  fleet down                          stop it',
+    '  fleet ls                            peers, routines and the decisions waiting on you',
+    '  fleet send <peer> <kind> <body>     message a peer (§7)',
+    '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first',
+    '  fleet decide <id> [answer]          show an open decision, or answer it (§6.1)',
+    '  fleet --help                        this',
+    '',
+    'options, on any command:',
+    '  --socket <path>    talk to this socket instead of the profile\'s',
+    '  --profile <name>   the profile, instead of $FLEET_PROFILE',
+    '  --json             print the daemon\'s answer as JSON, for another client',
+    '',
+    `kinds: ${turnKinds.join(' | ')}   (info is what a person usually sends)`,
+  ].join('\n')
+
+/** Which daemon, and how to print what it says. */
+export interface HowToTalk {
+  readonly socket?: string
+  readonly profile?: string
+  readonly json: boolean
+}
+
+export type Command =
+  | { readonly kind: 'help' }
+  | { readonly kind: 'up' }
+  | { readonly kind: 'down' }
+  | { readonly kind: 'ls' }
+  | { readonly kind: 'send'; readonly to: string; readonly turn: TurnKind; readonly body: string }
+  | { readonly kind: 'peek'; readonly peer: string; readonly limit?: number }
+  | { readonly kind: 'decide'; readonly id: string; readonly decision?: string; readonly note?: string }
+
+export interface Parsed {
+  readonly command: Command
+  readonly how: HowToTalk
+}
+
+const usageError = (message: string): Error => fleetError('invalid_input', message)
+
+/** `--name value` and `--name=value` both, because a shell does one and a script often the other. */
+const optionValue = (argv: readonly string[], index: number, name: string): { readonly value: string; readonly next: number } => {
+  const arg = argv[index] ?? ''
+  const equals = arg.indexOf('=')
+  if (equals >= 0) {
+    const value = arg.slice(equals + 1)
+    if (value === '') throw usageError(`${name} needs a value`)
+    return { value, next: index }
+  }
+  const value = argv[index + 1]
+  if (value === undefined || value === '') throw usageError(`${name} needs a value`)
+  return { value, next: index + 1 }
+}
+
+const positiveCount = (name: string, raw: string): number => {
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 1) throw usageError(`${name} takes a positive whole number, not "${raw}"`)
+  return value
+}
+
+const arity = (command: string, rest: readonly string[], shape: string, accept: (count: number) => boolean): void => {
+  if (!accept(rest.length)) throw usageError(`usage: fleet ${command} ${shape}`)
+}
+
+export const parseArgv = (argv: readonly string[]): Parsed => {
+  const positional: string[] = []
+  let socket: string | undefined
+  let profile: string | undefined
+  let limit: string | undefined
+  let note: string | undefined
+  let json = false
+
+  for (let index = 2; index < argv.length; index += 1) {
+    const arg = argv[index] ?? ''
+    if (arg === '--help' || arg === '-h') return { command: { kind: 'help' }, how: { json } }
+    if (arg === '--json') {
+      json = true
+      continue
+    }
+    if (arg === '--socket' || arg.startsWith('--socket=')) {
+      const read = optionValue(argv, index, '--socket')
+      socket = read.value
+      index = read.next
+      continue
+    }
+    if (arg === '--profile' || arg.startsWith('--profile=')) {
+      const read = optionValue(argv, index, '--profile')
+      profile = read.value
+      index = read.next
+      continue
+    }
+    if (arg === '--limit' || arg.startsWith('--limit=')) {
+      const read = optionValue(argv, index, '--limit')
+      limit = read.value
+      index = read.next
+      continue
+    }
+    if (arg === '--note' || arg.startsWith('--note=')) {
+      const read = optionValue(argv, index, '--note')
+      note = read.value
+      index = read.next
+      continue
+    }
+    if (arg.startsWith('-')) throw usageError(`unknown option ${arg}`)
+    positional.push(arg)
+  }
+
+  const [name, ...rest] = positional
+  // `up <profile>` names the profile positionally, which is how `fleet up` is
+  // written in the docs; `--profile` still works and wins over nothing, since
+  // the two are the same slot.
+  const how = (positionalProfile?: string): HowToTalk => {
+    const named = positionalProfile ?? profile
+    return {
+      json,
+      ...(socket === undefined ? {} : { socket }),
+      ...(named === undefined ? {} : { profile: named }),
+    }
+  }
+
+  if (name === undefined) return { command: { kind: 'help' }, how: how() }
+  switch (name) {
+    case 'help':
+      return { command: { kind: 'help' }, how: how() }
+    case 'up': {
+      arity('up', rest, '[profile]', (count) => count <= 1)
+      return { command: { kind: 'up' }, how: how(rest[0]) }
+    }
+    case 'down':
+      arity('down', rest, '', (count) => count === 0)
+      return { command: { kind: 'down' }, how: how() }
+    case 'ls':
+      arity('ls', rest, '', (count) => count === 0)
+      return { command: { kind: 'ls' }, how: how() }
+    case 'send': {
+      arity('send', rest, '<peer> <kind> <body>', (count) => count >= 3)
+      const [to, kind, ...words] = rest
+      const body = words.join(' ')
+      if (to === undefined || kind === undefined || body === '') throw usageError('usage: fleet send <peer> <kind> <body>')
+      if (!(turnKinds as readonly string[]).includes(kind)) {
+        throw usageError(`kind "${kind}" is not one of ${turnKinds.join(', ')}`)
+      }
+      return { command: { kind: 'send', to, turn: kind as TurnKind, body }, how: how() }
+    }
+    case 'peek': {
+      arity('peek', rest, '<peer> [--limit N]', (count) => count === 1)
+      const peer = rest[0]
+      if (peer === undefined) throw usageError('usage: fleet peek <peer> [--limit N]')
+      return {
+        command: { kind: 'peek', peer, ...(limit === undefined ? {} : { limit: positiveCount('--limit', limit) }) },
+        how: how(),
+      }
+    }
+    case 'decide': {
+      arity('decide', rest, '<id> [answer]', (count) => count >= 1)
+      const [id, ...words] = rest
+      const decision = words.join(' ')
+      if (id === undefined) throw usageError('usage: fleet decide <id> [answer]')
+      return {
+        command: {
+          kind: 'decide',
+          id,
+          ...(decision === '' ? {} : { decision }),
+          ...(note === undefined ? {} : { note }),
+        },
+        how: how(),
+      }
+    }
+    default:
+      throw usageError(`unknown command ${name}`)
+  }
+}
+
+export interface RunDeps {
+  /** Bind the caller to a socket; `callerFor` from `client.ts` is the real one. */
+  readonly call: (socketPath: string) => DaemonCaller
+  /** `fleet up` on a fleet that is not running. Absent means `up` reports the dead socket instead. */
+  readonly startFleetd?: (profile: string) => Promise<void>
+  readonly out?: (text: string) => void
+  readonly err?: (text: string) => void
+  readonly env?: Readonly<Record<string, string | undefined>>
+  readonly home?: string
+  readonly sleep?: (ms: number) => Promise<void>
+  /** How long `up` waits for a daemon it just started. */
+  readonly upTimeoutMs?: number
+  readonly upIntervalMs?: number
+}
+
+interface Answer {
+  readonly text: string
+  /** What `--json` prints: the daemon's answer, untouched. */
+  readonly value: unknown
+}
+
+const waitForUp = async (
+  call: DaemonCaller,
+  options: { readonly timeoutMs: number; readonly intervalMs: number; readonly sleep: (ms: number) => Promise<void> },
+): Promise<UpResult> => {
+  const deadline = Date.now() + options.timeoutMs
+  for (;;) {
+    try {
+      return await call('up', {})
+    } catch (thrown) {
+      // A daemon that is up and refusing is not a daemon that is starting.
+      if (!isUnreachable(thrown)) throw thrown
+      if (Date.now() >= deadline) {
+        throw fleetError(
+          'timeout',
+          `fleetd did not come up within ${String(options.timeoutMs)} ms; see ~/.fleet/<profile>/daemon/fleetd.log`,
+          { cause: thrown },
+        )
+      }
+      await options.sleep(options.intervalMs)
+    }
+  }
+}
+
+const execute = async (
+  command: Command,
+  call: DaemonCaller,
+  deps: RunDeps,
+  profile: string | undefined,
+): Promise<Answer> => {
+  switch (command.kind) {
+    case 'up': {
+      try {
+        const result = await call('up', {})
+        return { text: formatUp(result), value: result }
+      } catch (thrown) {
+        if (!isUnreachable(thrown)) throw thrown
+        if (profile === undefined || deps.startFleetd === undefined) {
+          throw fleetError('external_failed', `${toFleetError(thrown).message}; name a profile (fleet up <profile>) and the CLI will start one`, {
+            cause: thrown,
+          })
+        }
+        await deps.startFleetd(profile)
+        const result = await waitForUp(call, {
+          timeoutMs: deps.upTimeoutMs ?? 10_000,
+          intervalMs: deps.upIntervalMs ?? 50,
+          sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+        })
+        return { text: formatUp(result), value: result }
+      }
+    }
+    case 'down': {
+      const result = await call('down', {})
+      return { text: formatDown(result), value: result }
+    }
+    case 'ls': {
+      const result = await call('ls', {})
+      return { text: formatLs(result), value: result }
+    }
+    case 'send': {
+      const to = asArgument(peerId(), command.to, 'peer')
+      const result = await call('send', { to, kind: command.turn, body: command.body })
+      return { text: formatSend(result, command.to), value: result }
+    }
+    case 'peek': {
+      const peer = asArgument(peerId(), command.peer, 'peer')
+      const result = await call('peek', { peer, ...(command.limit === undefined ? {} : { limit: command.limit }) })
+      return { text: formatPeek(result, command.peer), value: result }
+    }
+    case 'decide': {
+      const id = asArgument(decisionId(), command.id, 'decision id')
+      if (command.decision !== undefined) {
+        const result = await call('decide', {
+          id,
+          decision: command.decision,
+          ...(command.note === undefined ? {} : { note: command.note }),
+        })
+        return { text: formatDecision(result), value: result }
+      }
+      // `fleet decide <id>` with no answer is a question about the inbox, so it
+      // reads the inbox: the decision is in `ls` (§6.1), and a seventh method
+      // that repeated it would be one more thing to keep in step.
+      const listing: LsResult = await call('ls', {})
+      const found: Decision | undefined = listing.decisions.find((row) => row.decisionId === command.id)
+      if (found === undefined) {
+        throw fleetError('not_found', `no decision ${command.id}; 'fleet ls' lists the open ones`, {
+          details: { decisionId: command.id },
+        })
+      }
+      return { text: formatDecision(found), value: found }
+    }
+    case 'help':
+      return { text: usage(), value: {} }
+  }
+}
+
+/**
+ * One command, one exit code: `0` done, `2` the command line was wrong, `1`
+ * the fleet said no. The split matters because a script can retry `1` and
+ * cannot fix `2`.
+ */
+export const run = async (argv: readonly string[], deps: RunDeps): Promise<number> => {
+  const out = deps.out ?? ((text: string) => void process.stdout.write(`${text}\n`))
+  const err = deps.err ?? ((text: string) => void process.stderr.write(`${text}\n`))
+
+  try {
+    const parsed = parseArgv(argv)
+    if (parsed.command.kind === 'help') {
+      out(usage())
+      return 0
+    }
+    const choice = socketPathOf({
+      ...(parsed.how.socket === undefined ? {} : { socket: parsed.how.socket }),
+      ...(parsed.how.profile === undefined ? {} : { profile: parsed.how.profile }),
+      env: deps.env ?? process.env,
+      ...(deps.home === undefined ? {} : { home: deps.home }),
+    })
+    const answer = await execute(parsed.command, deps.call(choice.socketPath), deps, choice.profile)
+    out(parsed.how.json ? JSON.stringify(answer.value, null, 2) : answer.text)
+    return 0
+  } catch (thrown) {
+    const error = toFleetError(thrown, 'internal')
+    err(`fleet: ${error.message}`)
+    if (error.code === 'invalid_input') err("fleet: run 'fleet --help' for the commands")
+    return error.code === 'invalid_input' ? 2 : 1
+  }
+}
+
+export { usage }

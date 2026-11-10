@@ -1,0 +1,20 @@
+{
+  "name": "@fleet/app-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "`fleet`: the thin client of fleetd's local API (architecture §2). Holds no state, imports no app.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "fleet": "./src/main.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
