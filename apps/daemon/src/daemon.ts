@@ -257,6 +257,16 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       ])
       return { recorded: true } as const
     },
+
+    async eventsAppend(input) {
+      // §17: the eval runner is dev tooling and may not import this app, and the
+      // store has one writer, so a run hands its events over the socket instead
+      // of opening the db a second time. The contract has already refused
+      // anything that is not `eval.*`; what is left is the store's own
+      // validation, which is the real gate — an event that does not fit its
+      // schema fails here, before it can reach a projection.
+      return { seqs: await append(input.events) }
+    },
   }
 }
 

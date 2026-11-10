@@ -201,7 +201,7 @@ export class JudgeProvider {
   }
 
   id(): string {
-    return `fleet-judge:${this.#target.provider}:${this.#target.model}`
+    return providerIdFor(this.#target)
   }
 
   async callApi(_prompt: string, context: CallApiContext): Promise<CallApiResponse> {
@@ -228,8 +228,15 @@ export class JudgeProvider {
   }
 }
 
-/** The provider a `file://` shim exports, built from the environment promptfoo was started with. */
-export const providerFromEnv = (environ: Readonly<Record<string, string | undefined>>): JudgeProvider => {
+/** The id promptfoo's report carries, and the one the adapter decodes back into a provider and a model. */
+export const providerIdFor = (target: JudgeTarget): string => `fleet-judge:${target.provider}:${target.model}`
+
+/**
+ * The target the environment names. Read in one place so the promptfoo provider and the CLI runner cannot disagree
+ * about which variable is which: `FLEET_EVAL_PROVIDER` (`claude` | `deepinfra`), `FLEET_EVAL_MODEL`, the DeepInfra key,
+ * and `FLEET_EVAL_CWD` for the directory the one-shot process runs in.
+ */
+export const targetFromEnv = (environ: Readonly<Record<string, string | undefined>>): JudgeTarget => {
   const provider = (environ['FLEET_EVAL_PROVIDER'] ?? 'claude') as EvalProvider
   if (!EVAL_PROVIDERS.includes(provider)) {
     throw fleetError('config_mismatch', `FLEET_EVAL_PROVIDER is ${provider}; it is one of ${EVAL_PROVIDERS.join(', ')}`, {
@@ -251,5 +258,9 @@ export const providerFromEnv = (environ: Readonly<Record<string, string | undefi
   }
   const refused = refuseTarget(target)
   if (refused !== undefined) throw refused
-  return new JudgeProvider(target)
+  return target
 }
+
+/** The provider a `file://` shim exports, built from the environment promptfoo was started with. */
+export const providerFromEnv = (environ: Readonly<Record<string, string | undefined>>): JudgeProvider =>
+  new JudgeProvider(targetFromEnv(environ))

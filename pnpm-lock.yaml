@@ -118,6 +118,9 @@ importers:
 
   packages/evals/suites/judge:
     dependencies:
+      '@fleet/evals-adapter':
+        specifier: workspace:*
+        version: link:../../adapter
       '@fleet/foundation-contracts':
         specifier: workspace:*
         version: link:../../../foundation/contracts

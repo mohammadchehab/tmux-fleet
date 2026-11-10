@@ -40,11 +40,14 @@ import {
   optional,
   peerId,
   positiveInt,
+  refine,
   sessionId,
+  unknownRecord,
   workId,
   string,
   text,
   unionAs,
+  type Seq,
   type SessionId,
   type WorkId,
   type DecisionId,
@@ -52,6 +55,8 @@ import {
   type PeerId,
   type Schema,
 } from '@fleet/foundation-core'
+import { appendIssues } from './events/registry.ts'
+import type { AppendEvent } from './events/registry.ts'
 import { decision, routine } from './projections/ops.ts'
 import type { Decision, Routine } from './projections/ops.ts'
 import { message } from './projections/mailbox.ts'
@@ -70,7 +75,7 @@ import type { TurnKind } from './provider.ts'
  * without a case in `daemonParamsFor` does not compile, and without a case in
  * the daemon's dispatcher does not compile there either.
  */
-export const daemonMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage'] as const
+export const daemonMethods = ['up', 'down', 'ls', 'send', 'peek', 'decide', 'usage', 'events.append'] as const
 export type DaemonMethod = (typeof daemonMethods)[number]
 
 /**
@@ -255,6 +260,39 @@ export const usageParams = (): Schema<UsageParams> =>
 /** The methods that take no arguments; `{}` and an absent `params` are the same request. */
 export type NoParams = Readonly<Record<string, never>>
 
+/**
+ * `events.append`: the one write a client may do to the log, and it exists for
+ * exactly one producer (§17).
+ *
+ * An eval run is dev tooling and may not import the daemon, while the store is
+ * written by the daemon alone (`sql.ts`: one file, written by the daemon, read
+ * by the CLI). The runner therefore hands its events over the socket instead of
+ * opening the database a second time, which is what this method is.
+ *
+ * The restriction is the point: a general append would make every client a
+ * second writer and retire the single-writer rule by accident. `eval.*` is the
+ * whole of it — those are the events §17 says the adapter produces and nothing
+ * in the runtime emits — and each one is checked against its own schema in
+ * `appendIssues`, so the daemon never stores a shape the log's readers cannot
+ * decode.
+ */
+export interface EventsAppendParams {
+  readonly events: readonly AppendEvent[]
+}
+
+/** `eval.*` and nothing else: the prefix is the suite's, not the caller's, to claim. */
+const isEvalAppendEvent = (event: AppendEvent): boolean =>
+  typeof event.type === 'string' && event.type.startsWith('eval.') && appendIssues(event).length === 0
+
+export const eventsAppendParams = (): Schema<EventsAppendParams> =>
+  objectAs<EventsAppendParams>()({
+    events: refine(
+      array(unknownRecord()) as unknown as Schema<readonly AppendEvent[]>,
+      (events) => events.length > 0 && events.every(isEvalAppendEvent),
+      'events.append appends eval.* events only, at least one, each valid against its own contract schema',
+    ),
+  })
+
 /** Method → its params. The single place the two closed sets are tied together. */
 export interface DaemonParams {
   readonly up: NoParams
@@ -264,6 +302,7 @@ export interface DaemonParams {
   readonly peek: PeekParams
   readonly decide: DecideParams
   readonly usage: UsageParams
+  readonly 'events.append': EventsAppendParams
 }
 
 export type DaemonParamsOf<M extends DaemonMethod> = DaemonParams[M]
@@ -279,6 +318,7 @@ const paramsSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonParamsOf
   peek: peekParams,
   decide: decideParams,
   usage: usageParams,
+  'events.append': eventsAppendParams,
 }
 
 /** The schema for one method's params; what both the daemon and the CLI validate against. */
@@ -341,6 +381,20 @@ export interface UsageResult {
 
 export const usageResult = (): Schema<UsageResult> => objectAs<UsageResult>()({ recorded: literal(true) })
 
+/**
+ * `events.append` answers with the seqs it wrote, in order: the store assigns
+ * them (§3), so they are the only honest proof the batch landed. A caller that
+ * cites a seq (an `eval.case_scored` caused by its `eval.run_started`) needs
+ * the first one, which is why they come back positionally rather than as a
+ * count.
+ */
+export interface EventsAppendResult {
+  readonly seqs: readonly Seq[]
+}
+
+export const eventsAppendResult = (): Schema<EventsAppendResult> =>
+  objectAs<EventsAppendResult>()({ seqs: array(number({ int: true, min: 1 })) as unknown as Schema<readonly Seq[]> })
+
 // ------------------------------------------------------------ results table
 
 /**
@@ -358,6 +412,7 @@ export interface DaemonResults {
   readonly peek: PeekResult
   readonly decide: DecisionRow
   readonly usage: UsageResult
+  readonly 'events.append': EventsAppendResult
 }
 
 export type DaemonResultOf<M extends DaemonMethod> = DaemonResults[M]
@@ -370,6 +425,7 @@ const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[
   peek: peekResult,
   decide: decision,
   usage: usageResult,
+  'events.append': eventsAppendResult,
 }
 
 /** The schema for one method's result. The exhaustive key type is what makes a new method a compile error. */
@@ -397,4 +453,10 @@ export interface DaemonApi {
   decide(params: DecideParams): Promise<DecisionRow>
   /** Record one turn's usage as `turn.usage_recorded`; what the `token-report` projection reads (§6.2). */
   usage(params: UsageParams): Promise<UsageResult>
+  /**
+   * Append `eval.*` events, and only those (§17). The single write a client has:
+   * an eval runner is dev tooling that may not import the daemon, and the store
+   * has one writer, so the runner hands its events over the socket.
+   */
+  eventsAppend(params: EventsAppendParams): Promise<EventsAppendResult>
 }

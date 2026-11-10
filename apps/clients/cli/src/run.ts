@@ -14,9 +14,19 @@
  */
 
 import { decisionId, fleetError, peerId, toFleetError } from '@fleet/foundation-core'
-import { turnKinds, type Decision, type LsResult, type TurnKind, type UpResult } from '@fleet/foundation-contracts'
+import {
+  evalSuites,
+  turnKinds,
+  type AppendEvent,
+  type Decision,
+  type LsResult,
+  type TurnKind,
+  type UpResult,
+} from '@fleet/foundation-contracts'
 
 import { asArgument, isUnreachable, type DaemonCaller } from './client.ts'
+import { formatEvalRun } from './evals-report.ts'
+import { readEvalsOutput, type EvalsEvents, type EvalsProcessResult, type EvalsRunOptions } from './evals.ts'
 import { formatDecision, formatDown, formatLs, formatPeek, formatSend, formatUp } from './render.ts'
 import { socketPathOf } from './socket.ts'
 
@@ -30,6 +40,7 @@ const usage = (): string =>
     '  fleet send <peer> <kind> <body>     message a peer',
     '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first',
     '  fleet decide <id> [answer]          show an open decision, or answer it',
+    '  fleet evals run <suite>             run an eval suite against its baseline',
     '  fleet --help                        this',
     '',
     'options, on any command:',
@@ -37,7 +48,13 @@ const usage = (): string =>
     '  --profile <name>   the profile, instead of $FLEET_PROFILE',
     '  --json             print the daemon\'s answer as JSON, for another client',
     '',
+    'options, on `evals run`:',
+    '  --provider <name>  who answers: claude or deepinfra',
+    '  --model <id>       the model under test; the run measures this one',
+    '  --save-baseline    write this run as the baseline instead of comparing',
+    '',
     `kinds: ${turnKinds.join(' | ')}   (info is what a person usually sends)`,
+    `suites: ${evalSuites.join(' | ')}   (judge is the one that runs)`,
   ].join('\n')
 
 /** Which daemon, and how to print what it says. */
@@ -55,6 +72,13 @@ export type Command =
   | { readonly kind: 'send'; readonly to: string; readonly turn: TurnKind; readonly body: string }
   | { readonly kind: 'peek'; readonly peer: string; readonly limit?: number }
   | { readonly kind: 'decide'; readonly id: string; readonly decision?: string; readonly note?: string }
+  | {
+      readonly kind: 'evals-run'
+      readonly suite: string
+      readonly provider?: string
+      readonly model?: string
+      readonly saveBaseline: boolean
+    }
 
 export interface Parsed {
   readonly command: Command
@@ -93,6 +117,9 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
   let profile: string | undefined
   let limit: string | undefined
   let note: string | undefined
+  let provider: string | undefined
+  let model: string | undefined
+  let saveBaseline = false
   let json = false
 
   for (let index = 2; index < argv.length; index += 1) {
@@ -100,6 +127,10 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
     if (arg === '--help' || arg === '-h') return { command: { kind: 'help' }, how: { json } }
     if (arg === '--json') {
       json = true
+      continue
+    }
+    if (arg === '--save-baseline') {
+      saveBaseline = true
       continue
     }
     if (arg === '--socket' || arg.startsWith('--socket=')) {
@@ -123,6 +154,18 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
     if (arg === '--note' || arg.startsWith('--note=')) {
       const read = optionValue(argv, index, '--note')
       note = read.value
+      index = read.next
+      continue
+    }
+    if (arg === '--provider' || arg.startsWith('--provider=')) {
+      const read = optionValue(argv, index, '--provider')
+      provider = read.value
+      index = read.next
+      continue
+    }
+    if (arg === '--model' || arg.startsWith('--model=')) {
+      const read = optionValue(argv, index, '--model')
+      model = read.value
       index = read.next
       continue
     }
@@ -191,16 +234,42 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
         how: how(),
       }
     }
+    case 'evals': {
+      const [sub, suite, ...extra] = rest
+      if (sub !== 'run') throw usageError('usage: fleet evals run <suite>')
+      if (suite === undefined || extra.length > 0) throw usageError('usage: fleet evals run <suite>')
+      if (!(evalSuites as readonly string[]).includes(suite)) {
+        throw usageError(`suite "${suite}" is not one of ${evalSuites.join(', ')}`)
+      }
+      // Only the judge suite has a runner. Saying so here rather than spawning a
+      // binary that would refuse is the difference between a typo and an unfinished
+      // suite, and the four names above stay listed because they are the plan.
+      if (suite !== 'judge') throw usageError(`the ${suite} suite has no runner yet; judge is the one that runs`)
+      return {
+        command: {
+          kind: 'evals-run',
+          suite,
+          saveBaseline,
+          ...(provider === undefined ? {} : { provider }),
+          ...(model === undefined ? {} : { model }),
+        },
+        how: how(),
+      }
+    }
     default:
       throw usageError(`unknown command ${name}`)
   }
 }
-
 export interface RunDeps {
   /** Bind the caller to a socket; `callerFor` from `client.ts` is the real one. */
   readonly call: (socketPath: string) => DaemonCaller
   /** `fleet up` on a fleet that is not running. Absent means `up` reports the dead socket instead. */
   readonly startFleetd?: (profile: string) => Promise<void>
+  /**
+   * `fleet evals run`: the suite as a process. Absent means this build cannot run
+   * one, and the command says so instead of pretending the suite is missing.
+   */
+  readonly runEvals?: (options: EvalsRunOptions) => Promise<EvalsProcessResult>
   readonly out?: (text: string) => void
   readonly err?: (text: string) => void
   readonly env?: Readonly<Record<string, string | undefined>>
@@ -215,6 +284,11 @@ interface Answer {
   readonly text: string
   /** What `--json` prints: the daemon's answer, untouched. */
   readonly value: unknown
+  /**
+   * The command's own exit code, for the one command whose answer *is* a code: an
+   * eval run that fell below its baseline is a `1` the caller scripted for.
+   */
+  readonly exitCode?: number
 }
 
 const waitForUp = async (
@@ -240,11 +314,32 @@ const waitForUp = async (
   }
 }
 
+/**
+ * Hand the run's `eval.*` rows to the daemon, in the two batches the store's
+ * citation rule asks for: `eval.run_started` on its own, then every scored attempt
+ * and the finish, each citing the start's seq so a reader can join a run.
+ *
+ * The runner cannot do this itself — it is a second process and the store has one
+ * writer — and `fleetd` validates every row against the event's own contract
+ * schema, so this is the only place a row can enter the ledger from dev tooling.
+ */
+const appendEvalEvents = async (call: DaemonCaller, events: EvalsEvents): Promise<void> => {
+  const started = await call('events.append', { events: [events.started] })
+  const startedSeq = started.seqs[0]
+  if (startedSeq === undefined) {
+    throw fleetError('internal', 'the daemon appended eval.run_started and returned no seq to cite')
+  }
+  const cited = (event: AppendEvent): AppendEvent => ({ ...event, causedBy: [startedSeq] }) as AppendEvent
+  await call('events.append', { events: [...events.scored.map(cited), cited(events.finished)] })
+}
+
 const execute = async (
   command: Command,
   call: DaemonCaller,
   deps: RunDeps,
   profile: string | undefined,
+  /** Where a command's own narration goes: the same writer the caller's errors use. */
+  say: (text: string) => void,
 ): Promise<Answer> => {
   switch (command.kind) {
     case 'up': {
@@ -307,6 +402,44 @@ const execute = async (
       }
       return { text: formatDecision(found), value: found }
     }
+    case 'evals-run': {
+      if (deps.runEvals === undefined) {
+        throw fleetError('external_failed', 'this build of the CLI cannot run an eval suite; install the fleet checkout')
+      }
+      const ran = await deps.runEvals({
+        suite: command.suite,
+        saveBaseline: command.saveBaseline,
+        ...(command.provider === undefined ? {} : { provider: command.provider }),
+        ...(command.model === undefined ? {} : { model: command.model }),
+        ...(deps.env === undefined ? {} : { env: deps.env }),
+      })
+      // The run's own narration is a person's, not a parser's: forwarded as it came,
+      // because "baseline written" and "this case fell" are lines the suite wrote.
+      if (ran.stderr !== '') say(ran.stderr.replace(/\n$/, ''))
+      const answer = readEvalsOutput(ran.stdout)
+      // A ledger that would not take the rows is a fleet problem, not a verdict on
+      // the model: the run has already happened and cost what it cost, so the rows
+      // are reported as lost and the answer still prints with the suite's own code.
+      try {
+        await appendEvalEvents(call, answer.events)
+      } catch (thrown) {
+        say(`fleet: the run's eval events did not reach the ledger: ${toFleetError(thrown).message}`)
+      }
+      const lines = [formatEvalRun(answer.report)]
+      if (answer.gate.kind === 'no-baseline') lines.push('  no baseline yet; run with --save-baseline')
+      if (answer.gate.kind === 'saved') lines.push(`  baseline written to ${answer.baselinePath ?? 'the baseline file'}`)
+      if (answer.gate.kind === 'regressed') {
+        lines.push('  below the baseline:')
+        for (const regression of answer.gate.regressions) {
+          lines.push(
+            `    ${regression.caseId}: ${String(regression.passes)}/${String(regression.attempts)} attempts, baseline ${String(regression.baselinePasses)}/${String(regression.baselineAttempts)}`,
+          )
+        }
+      }
+      // The suite's code, not the CLI's: `1` is a verdict about the model and `2` a
+      // mistake in the setup, and a caller that scripted this reads the difference.
+      return { text: lines.join('\n'), value: answer, exitCode: ran.exitCode }
+    }
     case 'help':
       return { text: usage(), value: {} }
   }
@@ -333,9 +466,9 @@ export const run = async (argv: readonly string[], deps: RunDeps): Promise<numbe
       env: deps.env ?? process.env,
       ...(deps.home === undefined ? {} : { home: deps.home }),
     })
-    const answer = await execute(parsed.command, deps.call(choice.socketPath), deps, choice.profile)
+    const answer = await execute(parsed.command, deps.call(choice.socketPath), deps, choice.profile, err)
     out(parsed.how.json ? JSON.stringify(answer.value, null, 2) : answer.text)
-    return 0
+    return answer.exitCode ?? 0
   } catch (thrown) {
     const error = toFleetError(thrown, 'internal')
     err(`fleet: ${error.message}`)
