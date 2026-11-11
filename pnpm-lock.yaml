@@ -57,8 +57,6 @@ importers:
         specifier: ^0.25.10
         version: 0.25.12
 
-  apps/clients/editor/dist: {}
-
   apps/daemon:
     dependencies:
       '@fleet/foundation-contracts':

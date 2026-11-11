@@ -76,6 +76,8 @@ const fakeProvider = (
     rejectWhileBusy?: boolean
     /** Give the provider a `display` stream per session. */
     display?: boolean | 'throws'
+    /** An interrupt that fails, as a provider's does when it cannot stop the turn. */
+    interruptFails?: boolean
   } = {},
 ) => {
   const busy = new Set<string>()
@@ -131,6 +133,7 @@ const fakeProvider = (
     },
     interrupt: async (handle: SessionHandle) => {
       calls.push(`interrupt:${handle.sessionId}`)
+      if (options.interruptFails === true) throw new Error(`interrupt refused for ${handle.sessionId}`)
     },
     stop: async (handle: SessionHandle) => {
       calls.push(`stop:${handle.sessionId}`)
@@ -277,6 +280,22 @@ test('a hold with now interrupts the turn instead of waiting for it', async () =
   assert.ok(fake.calls.includes(`interrupt:${first.sessionId}`))
   fake.endTurn(first.sessionId, 'interrupted')
   await hold
+  await f.supervisor.stop()
+})
+
+test('a hold with now fails with the interrupt error instead of waiting for a boundary that never comes', async () => {
+  const fake = fakeProvider({ interruptFails: true })
+  const f = await fleet(fake)
+  await f.supervisor.start()
+  await settle()
+  const first = sessionOf(fake, engineer)
+  fake.startTurn(first.sessionId)
+  await settle()
+
+  await assert.rejects(f.supervisor.hold(engineer, { now: true, by: 'user' }), /interrupt refused/)
+  assert.ok(f.supervisor.running().includes(engineer), 'the turn was never stopped, so the session is still running here')
+  assert.equal((await f.store.reader().peers.get(engineer))?.state, 'working', 'the peer is still working, not held')
+  assert.ok(!fake.calls.includes(`stop:${first.sessionId}`))
   await f.supervisor.stop()
 })
 
