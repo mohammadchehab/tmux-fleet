@@ -47,6 +47,7 @@ import {
   type TurnId,
 } from '@fleet/foundation-core'
 import type {
+  DisplayLine,
   ProviderEvent,
   ProviderSessionRef,
   SessionSpec,
@@ -54,7 +55,7 @@ import type {
   TurnEndReason,
   Usage,
 } from '@fleet/runtime-provider-sdk'
-import { buildChildEnv } from '@fleet/runtime-provider-sdk'
+import { buildChildEnv, DisplayQueue, displayLineOf } from '@fleet/runtime-provider-sdk'
 
 import { openingMessage } from './brief.ts'
 import { parseLines, type CursorTurnUsage } from './stream.ts'
@@ -100,6 +101,7 @@ export class CursorSession {
   readonly #spec: SessionSpec
   readonly #config: CursorSessionConfig
   readonly #events = new EventQueue()
+  readonly #display = new DisplayQueue()
   #model: string
   #state: PeerState = 'starting'
   #live: LiveTurn | undefined
@@ -188,6 +190,7 @@ export class CursorSession {
     this.#state = 'ended'
     this.#emit({ type: 'session.ended', reason: 'stopped' })
     this.#events.close()
+    this.#display.close()
   }
 
   status(): PeerState {
@@ -227,6 +230,11 @@ export class CursorSession {
     return this.#events
   }
 
+  /** What the peer says and does, for `fleet watch` (watch-and-attach §6); thinking is not in it. */
+  display(): AsyncIterable<DisplayLine> {
+    return this.#display
+  }
+
   // ------------------------------------------------------------------ turns
 
   /** Spawn the process for one turn and start reading it. */
@@ -244,6 +252,9 @@ export class CursorSession {
       '--trust',
       '--output-format',
       'stream-json',
+      // Adds delta lines for the display feed and changes no event: the final
+      // `assistant` line and the `result` arrive as before (watch-and-attach §6).
+      '--stream-partial-output',
       ...MODE_ARGUMENTS,
       '--model',
       this.#model,
@@ -271,6 +282,7 @@ export class CursorSession {
       this.#emit({ type: 'session.ended', reason: 'crash' })
       this.#ended = true
       this.#events.close()
+      this.#display.close()
       return
     }
 
@@ -303,6 +315,7 @@ export class CursorSession {
       this.#emit({ type: 'error', message: describe(thrown), retryable: false })
       this.#emit({ type: 'session.ended', reason: 'crash' })
       this.#events.close()
+      this.#display.close()
     })
 
     live.child.on('close', (code: number | null, signal: string | null) => {
@@ -355,8 +368,11 @@ export class CursorSession {
       }
       // `init` names a display model and its own permission vocabulary, and the
       // assistant's prose has no contract event; neither decides anything here.
-      case 'init':
       case 'assistant':
+        // The display's, and only the deltas: the closing line repeats the whole text.
+        if (line.delta && line.text.length > 0) this.#display.push({ kind: 'text', text: line.text })
+        return
+      case 'init':
       case 'other':
         return
     }
@@ -380,6 +396,8 @@ export class CursorSession {
 
   #emit(event: ProviderEvent): void {
     this.#events.push(event)
+    const line = displayLineOf(event)
+    if (line !== undefined) this.#display.push(line)
   }
 }
 

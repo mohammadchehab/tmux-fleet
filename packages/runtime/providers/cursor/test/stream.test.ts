@@ -36,7 +36,14 @@ test('an assistant line joins its text parts and drops the rest', () => {
       },
     }),
   )
-  assert.deepEqual(line, { kind: 'assistant', text: 'first second' })
+  assert.deepEqual(line, { kind: 'assistant', text: 'first second', delta: false })
+})
+
+test('with --stream-partial-output a delta carries timestamp_ms and the closing line, which repeats the text, does not', () => {
+  const delta = parseLine(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'one' }] }, timestamp_ms: 1794387735800 }))
+  const closing = parseLine(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'one' }] } }))
+  assert.deepEqual(delta, { kind: 'assistant', text: 'one', delta: true })
+  assert.deepEqual(closing, { kind: 'assistant', text: 'one', delta: false })
 })
 
 test('a tool call names the tool from the key the CLI keys it by', () => {

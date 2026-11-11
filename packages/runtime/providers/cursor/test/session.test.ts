@@ -12,7 +12,7 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import type { PeerId } from '@fleet/foundation-core'
-import type { ProviderEvent, ProviderSessionRef, SessionHandle, SessionSpec, Turn } from '@fleet/runtime-provider-sdk'
+import type { DisplayLine, ProviderEvent, ProviderSessionRef, SessionHandle, SessionSpec, Turn } from '@fleet/runtime-provider-sdk'
 
 import { CursorProvider } from '../src/provider.ts'
 
@@ -106,21 +106,22 @@ test('start() creates a chat and delivers the brief as its opening turn', async 
 
   const [createChat, opening] = calls()
   assert.deepEqual(createChat, ['create-chat'], 'the chat is created before anything is spent')
-  assert.deepEqual(opening?.slice(0, 9), [
+  assert.deepEqual(opening?.slice(0, 10), [
     '-p',
     '--trust',
     '--output-format',
     'stream-json',
+    '--stream-partial-output',
     '--mode',
     'plan',
     '--model',
     MODEL,
     '--resume',
   ])
-  assert.equal(opening?.[9], handle.sessionRef, 'the turn continues the chat the handle names')
-  assert.equal(opening?.[10], '--', 'the prompt follows the end of options, so its own words are never read as flags')
-  assert.match(String(opening?.[11]), /You are the engineer peer on the peer-1 account\./)
-  assert.match(String(opening?.[11]), /You are running read-only, in plan mode/, 'the peer is told what it can do')
+  assert.equal(opening?.[10], handle.sessionRef, 'the turn continues the chat the handle names')
+  assert.equal(opening?.[11], '--', 'the prompt follows the end of options, so its own words are never read as flags')
+  assert.match(String(opening?.[12]), /You are the engineer peer on the peer-1 account\./)
+  assert.match(String(opening?.[12]), /You are running read-only, in plan mode/, 'the peer is told what it can do')
   await provider.stop(handle)
 })
 
@@ -423,4 +424,35 @@ test('a turn whose text starts with a dash is a prompt, not an option (TASK-93)'
     assert.deepEqual(calls().at(-1)?.slice(-2), ['--', text], 'after `--`, verbatim: it can no longer be a flag')
   }
   await provider.stop(handle)
+})
+
+
+test('the display takes the delta lines of a recorded stream, once; thinking is not in it, and the contract events do not move', async () => {
+  const { provider, spec } = harness()
+  const replay = fileURLToPath(new URL('./fixtures/partial-output.jsonl', import.meta.url))
+  const handle = await provider.start(spec({ env: { FAKE_CURSOR_REPLAY: replay } }))
+
+  const lines: DisplayLine[] = []
+  const reading = (async () => {
+    for await (const line of provider.display(handle)) lines.push(line)
+  })()
+  const seen = watch(provider, handle)
+  await seen.until(ended(handle.briefTurnId))
+  await provider.stop(handle)
+  await reading
+
+  const said = lines.flatMap((line) => (line.kind === 'text' ? [line.text] : [])).join('')
+  assert.equal(said, 'one\ntwo\nthree\n\nRepo root (`ls -la`):\n\n```\ntotal 16', 'the deltas, joined, are the text — the closing line that repeats it is not added')
+  assert.ok(!JSON.stringify(lines).includes('SECRET'), 'thinking never reaches the display')
+  assert.deepEqual(
+    lines.map((line) => (line.kind === 'text' ? 'text' : line.kind === 'tool' ? `tool:${line.tool}` : `turn:${line.phase}`)).filter((kind, at, all) => kind !== 'text' || all[at - 1] !== 'text'),
+    ['turn:started', 'tool:shellToolCall', 'text', 'turn:ended'],
+    'a turn line for each boundary, one tool line for the call (not its completion)',
+  )
+  // Conformance (§12): a `turn` line for every turn.started and turn.ended the contract carries.
+  const boundaries = seen.events.filter((event) => event.type === 'turn.started' || event.type === 'turn.ended').map((event) => event.type)
+  assert.deepEqual(boundaries, ['turn.started', 'turn.ended'])
+  assert.equal(lines.filter((line) => line.kind === 'turn').length, boundaries.length)
+  const ending = seen.events.find((event) => event.type === 'turn.ended')
+  assert.equal(ending?.type === 'turn.ended' && ending.reason, 'completed', 'the partial output did not change how the turn ended')
 })

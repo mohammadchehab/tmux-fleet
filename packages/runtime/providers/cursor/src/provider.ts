@@ -33,6 +33,7 @@ import { fleetError, systemClock, type Clock, type PeerState, type QuestionId, t
 import type {
   ApprovalDecision,
   AttachCommand,
+  DisplayLine,
   Provider,
   ProviderCapabilities,
   ProviderEvent,
@@ -195,6 +196,10 @@ export class CursorProvider implements Provider {
 
   events(handle: SessionHandle): AsyncIterable<ProviderEvent> {
     return this.#session(handle).events()
+  }
+
+  display(handle: SessionHandle): AsyncIterable<DisplayLine> {
+    return this.#session(handle).display()
   }
 
   /** The next turn runs on `model`; confirmation is that turn, so nothing is awaited here. */
