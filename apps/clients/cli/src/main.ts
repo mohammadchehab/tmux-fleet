@@ -8,13 +8,21 @@
  * CLI that reads `process`.
  */
 
+import { fileURLToPath } from 'node:url'
+
 import { callerFor } from './client.ts'
+import { editorCommands, nodeEditorDeps } from './editor.ts'
 import { spawnFleetd } from './daemon.ts'
 import { writeStarter } from './init.ts'
 import { run } from './run.ts'
 import { runTakeover } from './takeover.ts'
 import { runWatch } from './watch/interactive.ts'
 import { fleetError } from '@fleet/foundation-core'
+
+const editorDeps = await nodeEditorDeps({
+  // Where a checkout keeps what `pnpm --filter @fleet/app-editor package` built.
+  vsixDir: fileURLToPath(new URL('../../editor/dist', import.meta.url)),
+})
 
 process.exitCode = await run(process.argv, {
   call: (socketPath) => callerFor({ socketPath }),
@@ -27,5 +35,6 @@ process.exitCode = await run(process.argv, {
     }
     return runWatch({ socketPath, call, takeover: runTakeover, env: process.env, stdin: process.stdin, stdout: process.stdout })
   },
+  editor: editorCommands(editorDeps),
   env: process.env,
 })
