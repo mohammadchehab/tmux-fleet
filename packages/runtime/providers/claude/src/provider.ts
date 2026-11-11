@@ -32,6 +32,7 @@
 import { fleetError, toFleetError, type PeerState, type TurnId } from '@fleet/foundation-core'
 import type {
   ApprovalDecision,
+  AttachCommand,
   Provider,
   ProviderCapabilities,
   ProviderEvent,
@@ -137,6 +138,15 @@ export class ClaudeProvider implements Provider {
       this.#sessions.delete(session.sessionId)
       throw toFleetError(thrown, 'provider_failed')
     }
+  }
+
+  /**
+   * The person's side of a takeover (watch-and-attach §5): interactive `claude`
+   * on the same session id, on the peer's model. The spike showed it keeps the
+   * id on exit, and a later SDK resume sees what was typed.
+   */
+  attachCommand(ref: ProviderSessionRef, spec: SessionSpec): AttachCommand {
+    return { executable: 'claude', args: ['--resume', ref, '--model', spec.model] }
   }
 
   /** Resume from a vendor ref: `start` with the ref handed to the SDK (§7). */

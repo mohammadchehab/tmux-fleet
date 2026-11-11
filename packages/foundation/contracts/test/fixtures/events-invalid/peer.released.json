@@ -1,0 +1,16 @@
+{
+  "input": {
+    "seq": 2,
+    "ts": "2026-11-11T09:00:00.000Z",
+    "type": "peer.released",
+    "subject": "engineer-1",
+    "actor": "user",
+    "data": {
+      "peerId": "engineer-1",
+      "sessionRef": 42,
+      "resumed": false,
+      "reason": "provider_failed: the chat could not be resumed"
+    }
+  },
+  "path": "data.sessionRef"
+}

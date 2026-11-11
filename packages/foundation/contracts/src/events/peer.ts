@@ -5,6 +5,7 @@
  */
 
 import {
+  actor,
   array,
   boolean,
   count,
@@ -244,6 +245,60 @@ export const sessionStarted = event(
     permissionMode: permissionMode(),
     endpoint: optional(string({ minLength: 1, maxLength: 500 })),
     resumed: boolean(),
+  }),
+)
+
+/**
+ * A person took the peer's session over (watch-and-attach §4). fleetd stopped it
+ * at a turn boundary and will not run, deliver to, recover or assign it until
+ * `peer.released`. In the store, so a daemon that restarts does not start a
+ * fresh session over the person. `by` is who asked, as an actor.
+ */
+export const peerHeld = event(
+  'peer.held',
+  object({
+    peerId: peerId(),
+    sessionRef: providerSessionRef(),
+    by: actor(),
+  }),
+)
+
+/**
+ * fleetd has the peer back (§4). `resumed` says whether the held session was
+ * resumed; when it was not, `reason` is why the fallback fresh start was taken.
+ */
+export const peerReleased = event(
+  'peer.released',
+  object({
+    peerId: peerId(),
+    sessionRef: providerSessionRef(),
+    resumed: boolean(),
+    reason: optional(text(500)),
+  }),
+)
+
+/**
+ * A person stopped one peer (§7.2): like `peer.held`, but nobody owns the
+ * session afterwards. `sessionRef` is absent for a peer that had no session to
+ * stop, which `peer.started` then starts fresh.
+ */
+export const peerStopped = event(
+  'peer.stopped',
+  object({
+    peerId: peerId(),
+    sessionRef: optional(providerSessionRef()),
+    by: actor(),
+  }),
+)
+
+/** A stopped peer runs again (§7.2): resumed from its ref, or fresh with the reason it could not be. */
+export const peerStarted = event(
+  'peer.started',
+  object({
+    peerId: peerId(),
+    sessionRef: optional(providerSessionRef()),
+    resumed: boolean(),
+    reason: optional(text(500)),
   }),
 )
 

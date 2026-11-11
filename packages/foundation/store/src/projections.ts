@@ -1069,6 +1069,21 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       updatePeer(db, peerId, sessionId === undefined ? { state } : { state, currentSessionId: sessionId }, event)
       return
     }
+    // watch-and-attach §4, §7.2: parked and unparked. The ref a parked peer will
+    // resume from is its last session's, which the sessions projection already
+    // holds; the row only needs to say the peer is not to be run. The session it
+    // had is over, so it is no longer current.
+    case 'peer.held':
+      updatePeer(db, event.data.peerId, { state: 'held', currentSessionId: undefined }, event)
+      return
+    case 'peer.stopped':
+      updatePeer(db, event.data.peerId, { state: 'stopped', currentSessionId: undefined }, event)
+      return
+    case 'peer.released':
+    case 'peer.started':
+      // `starting` until the new session's own states arrive, the way a fresh peer reads.
+      updatePeer(db, event.data.peerId, { state: 'starting' }, event)
+      return
     case 'peer.failed': {
       const { peerId, sessionId, reason, retryable } = event.data
       db.run(

@@ -1,0 +1,12 @@
+{
+  "seq": 2,
+  "ts": "2026-11-11T09:00:00.000Z",
+  "type": "peer.stopped",
+  "subject": "engineer-1",
+  "actor": "user",
+  "data": {
+    "peerId": "engineer-1",
+    "sessionRef": "1d61f8ce-5fe5-45cf-8273-3f06cab62c86",
+    "by": "user"
+  }
+}
