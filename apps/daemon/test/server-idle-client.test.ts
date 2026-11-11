@@ -4,7 +4,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { connect } from 'node:net'
+import { connect, type Socket } from 'node:net'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -74,7 +74,7 @@ describe('server.close() with idle clients', () => {
     const pidPath = join(home, 'test.pid')
 
     let server: DaemonServer | undefined
-    let responseSocket: any
+    let responseSocket: Socket | undefined
 
     try {
       const api = {
@@ -90,20 +90,21 @@ describe('server.close() with idle clients', () => {
 
       // Send a down RPC request and immediately close the server
       const responsePromise = (async () => {
-        responseSocket = connect(socketPath)
+        const client = connect(socketPath)
+        responseSocket = client
         return new Promise<string>((resolve, reject) => {
-          responseSocket.setEncoding('utf8')
+          client.setEncoding('utf8')
           let buffer = ''
-          responseSocket.on('data', (chunk) => {
+          client.on('data', (chunk: string) => {
             buffer += chunk
             const newline = buffer.indexOf('\n')
             if (newline !== -1) {
               resolve(buffer.slice(0, newline))
-              responseSocket.destroy()
+              client.destroy()
             }
           })
-          responseSocket.on('error', reject)
-          responseSocket.write('{"id":"down-1","method":"down"}\n')
+          client.on('error', reject)
+          client.write('{"id":"down-1","method":"down"}\n')
         })
       })()
 
