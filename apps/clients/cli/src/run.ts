@@ -44,6 +44,7 @@ import {
 } from '@fleet/foundation-contracts'
 
 import { asArgument, isUnreachable, type DaemonCaller } from './client.ts'
+import type { EditorCommands } from './editor.ts'
 import { formatEvalCompare } from './evals-compare.ts'
 import { formatEvalRun } from './evals-report.ts'
 import { evalsBuildCommand, readEvalsAnswer, readEvalsOutput, type EvalsEvents, type EvalsOutput } from './evals.ts'
@@ -86,6 +87,8 @@ const usage = (): string =>
     '  fleet evals run <suite> --provider <name> --model <id> --repo <owner/name> --sha <sha>',
     '                                      run an eval suite against its baseline, as a build',
     '  fleet evals compare <runA> <runB>   two eval runs side by side (a run id is printed by `evals run`)',
+    '  fleet editor install [--vsix <path>]  put the Fleet extension into every editor host on this machine',
+    '  fleet editor uninstall              remove it from every one of them',
     '  fleet build <task> <sha> --repo <owner/name> -- <command...>',
     '                                      ask for a build; a triple that already ran is reused, not re-run',
     '  fleet --help                        this',
@@ -111,6 +114,9 @@ const usage = (): string =>
     '',
     'options, on `watch`:',
     '  --once             print the needs-you strip and the peer table once, and exit (no terminal needed)',
+    '',
+    'options, on `editor install`:',
+    '  --vsix <path>      the packaged extension to install (default: the newest build output)',
     '',
     'options, on `replay`:',
     '  --from <seq>       read the log from this seq instead of rebuilding the projections',
@@ -138,6 +144,8 @@ export type Command =
   | { readonly kind: 'peek'; readonly peer: string; readonly limit?: number }
   | { readonly kind: 'decide'; readonly id: string; readonly decision?: string; readonly note?: string }
   | { readonly kind: 'note'; readonly phase: WorkNotePhase; readonly body: string }
+  | { readonly kind: 'editor-install'; readonly vsix?: string }
+  | { readonly kind: 'editor-uninstall' }
   | { readonly kind: 'replay'; readonly from?: number; readonly to?: number }
   // watch-and-attach §4, §5, §7.2: one peer taken over, handed back, stopped or started.
   | { readonly kind: 'attach'; readonly peer: string; readonly now: boolean }
@@ -205,6 +213,7 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
   let limit: string | undefined
   let note: string | undefined
   let provider: string | undefined
+  let vsix: string | undefined
   let model: string | undefined
   let from: string | undefined
   let to: string | undefined
@@ -273,6 +282,12 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       if (arg === '--provider' || arg.startsWith('--provider=')) {
         const read = optionValue(words, index, '--provider')
         provider = read.value
+        index = read.next
+        continue
+      }
+      if (arg === '--vsix' || arg.startsWith('--vsix=')) {
+        const read = optionValue(words, index, '--vsix')
+        vsix = read.value
         index = read.next
         continue
       }
@@ -425,6 +440,21 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       }
       return { command: { kind: 'note', phase: phase as WorkNotePhase, body }, how: how() }
     }
+    case 'editor': {
+      const verb = rest[0]
+      if (verb === 'install') {
+        arity('editor install', rest, '[--vsix <path>]', (count) => count <= 1)
+        return {
+          command: { kind: 'editor-install', ...(vsix === undefined ? {} : { vsix }) },
+          how: how(),
+        }
+      }
+      if (verb === 'uninstall') {
+        arity('editor uninstall', rest, '', (count) => count === 1)
+        return { command: { kind: 'editor-uninstall' }, how: how() }
+      }
+      throw usageError(verb === undefined ? 'usage: fleet editor install | uninstall' : `"${verb}" is not an editor verb; use install or uninstall`)
+    }
     case 'replay': {
       arity('replay', rest, '[--from N [--to N]]', (count) => count === 0)
       // A seq is a position in one log, so the first is 1 and there is no
@@ -531,6 +561,12 @@ export interface RunDeps {
    * Absent means this build has no terminal to paint, and watch says so.
    */
   readonly watch?: (context: { readonly socketPath: string; readonly call: DaemonCaller }) => Promise<void>
+  /**
+   * `fleet editor install` / `uninstall`, and the check `fleet up` prints a line
+   * about (§8). Absent means this build cannot reach an editor, and the command
+   * says so rather than pretending it installed nothing anywhere.
+   */
+  readonly editor?: EditorCommands
 }
 
 interface Answer {
@@ -593,11 +629,29 @@ const appendEvalEvents = async (call: DaemonCaller, events: EvalsEvents): Promis
 }
 
 /**
+ * §8's one line: an editor or editor server on this host that does not have the
+ * extension, and the command that fixes it.
+ *
+ * It never fails an `up`: a fleet that started is a fleet that started, and the
+ * editor check is advice. So a check that throws is a check that says nothing.
+ */
+const withEditorNote = async (deps: RunDeps, text: string): Promise<string> => {
+  if (deps.editor === undefined) return text
+  try {
+    const missing = await deps.editor.missing()
+    if (missing.length === 0) return text
+    return `${text}\n\nthe Fleet extension is not installed in: ${missing.join(', ')}\ninstall it on this host with: fleet editor install`
+  } catch {
+    return text
+  }
+}
+
+/**
  * The commands that talk to a daemon. `init` is not among them: it writes the
  * file every other command needs, so `run` answers it before a socket is
  * resolved, and the type says so rather than leaving a case that never fires.
  */
-type DaemonCommand = Exclude<Command, { readonly kind: 'init' }>
+type DaemonCommand = Exclude<Command, { readonly kind: 'init' | 'editor-install' | 'editor-uninstall' }>
 
 const execute = async (
   command: DaemonCommand,
@@ -611,7 +665,7 @@ const execute = async (
     case 'up': {
       try {
         const result = await call('up', {})
-        return { text: formatUp(result), value: result }
+        return { text: await withEditorNote(deps, formatUp(result)), value: result }
       } catch (thrown) {
         if (!isUnreachable(thrown)) throw thrown
         if (profile === undefined || deps.startFleetd === undefined) {
@@ -626,7 +680,7 @@ const execute = async (
           sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
           logPath: profilePaths(profile, deps.home === undefined ? {} : { home: deps.home }).logPath,
         })
-        return { text: formatUp(result), value: result }
+        return { text: await withEditorNote(deps, formatUp(result)), value: result }
       }
     }
     case 'down': {
@@ -858,6 +912,19 @@ export const run = async (argv: readonly string[], deps: RunDeps): Promise<numbe
       }
       const written = await write(parsed.command.profile)
       out(`wrote ${written.profileFile}\nedit it, then: fleet up ${parsed.command.profile}`)
+      return 0
+    }
+    // Neither editor verb talks to a daemon: one installs a file into editors,
+    // the other removes it, and both are answered on the machine that hosts the
+    // fleet before any socket is resolved (§8).
+    if (parsed.command.kind === 'editor-install' || parsed.command.kind === 'editor-uninstall') {
+      const editor = deps.editor
+      if (editor === undefined) {
+        throw fleetError('external_failed', 'this build of the CLI cannot reach an editor; run it from a fleet checkout')
+      }
+      const text =
+        parsed.command.kind === 'editor-install' ? await editor.install(parsed.command.vsix) : await editor.uninstall()
+      out(text)
       return 0
     }
     const choice = socketPathOf({

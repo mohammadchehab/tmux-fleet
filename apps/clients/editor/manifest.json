@@ -1,0 +1,210 @@
+{
+  "name": "fleet-editor",
+  "displayName": "Fleet",
+  "description": "The fleet in the activity bar: who needs you, what each peer is doing, and a takeover in one click.",
+  "publisher": "tmux-fleet",
+  "version": "0.0.0",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "fleet",
+    "agents",
+    "peers"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./extension.cjs",
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:fleet.peers"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "The extension runs the `fleet` CLI and connects to a daemon socket, which is what workspace trust exists to gate."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fleet",
+          "title": "Fleet",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "fleet": [
+        {
+          "id": "fleet.peers",
+          "name": "Peers",
+          "contextualTitle": "Fleet"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "fleet.refresh",
+        "title": "Refresh",
+        "category": "Fleet",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fleet.start",
+        "title": "Start a fleet",
+        "category": "Fleet"
+      },
+      {
+        "command": "fleet.choose-profile",
+        "title": "Choose a profile",
+        "category": "Fleet"
+      },
+      {
+        "command": "fleet.focus",
+        "title": "Show the fleet",
+        "category": "Fleet"
+      },
+      {
+        "command": "fleet.decision.answer",
+        "title": "Answer this decision",
+        "category": "Fleet"
+      },
+      {
+        "command": "fleet.peer.actions",
+        "title": "What can this peer do?",
+        "category": "Fleet"
+      },
+      {
+        "command": "fleet.peer.takeover",
+        "title": "Take over when the turn ends",
+        "category": "Fleet"
+      },
+      {
+        "command": "fleet.peer.takeover.now",
+        "title": "Take over now",
+        "category": "Fleet"
+      },
+      {
+        "command": "fleet.peer.send",
+        "title": "Send a message",
+        "category": "Fleet"
+      },
+      {
+        "command": "fleet.peer.stop",
+        "title": "Stop",
+        "category": "Fleet"
+      },
+      {
+        "command": "fleet.peer.start",
+        "title": "Start",
+        "category": "Fleet"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "fleet.refresh",
+          "when": "view == fleet.peers",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fleet.start",
+          "when": "view == fleet.peers",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fleet.choose-profile",
+          "when": "view == fleet.peers",
+          "group": "fleet@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "fleet.peer.takeover",
+          "when": "view == fleet.peers && viewItem == peer.running",
+          "group": "fleet@1"
+        },
+        {
+          "command": "fleet.peer.takeover.now",
+          "when": "view == fleet.peers && viewItem == peer.running",
+          "group": "fleet@2"
+        },
+        {
+          "command": "fleet.peer.send",
+          "when": "view == fleet.peers && viewItem == peer.running",
+          "group": "fleet@3"
+        },
+        {
+          "command": "fleet.peer.stop",
+          "when": "view == fleet.peers && viewItem == peer.running",
+          "group": "fleet@4"
+        },
+        {
+          "command": "fleet.peer.start",
+          "when": "view == fleet.peers && viewItem == peer.stopped",
+          "group": "fleet@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "fleet.decision.answer",
+          "when": "false"
+        },
+        {
+          "command": "fleet.peer.actions",
+          "when": "false"
+        },
+        {
+          "command": "fleet.peer.takeover",
+          "when": "false"
+        },
+        {
+          "command": "fleet.peer.takeover.now",
+          "when": "false"
+        },
+        {
+          "command": "fleet.peer.send",
+          "when": "false"
+        },
+        {
+          "command": "fleet.peer.stop",
+          "when": "false"
+        },
+        {
+          "command": "fleet.peer.start",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Fleet",
+      "properties": {
+        "fleet.command": {
+          "type": "string",
+          "default": "fleet",
+          "scope": "machine",
+          "markdownDescription": "How to run the fleet CLI: `fleet` on an install, or the path to one. Machine scope, because this extension executes it — a repository's own settings may not name the program that runs on your machine."
+        },
+        "fleet.profile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "The profile this window shows. Empty means: use `FLEET_PROFILE`, then the one profile running on this machine (and ask if there are several)."
+        },
+        "fleet.socket": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "An explicit daemon socket, `~/` included. Wins over `fleet.profile` and the environment."
+        }
+      }
+    }
+  }
+}

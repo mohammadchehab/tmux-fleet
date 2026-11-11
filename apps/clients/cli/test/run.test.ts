@@ -960,3 +960,104 @@ describe('run: build', () => {
     ])
   })
 })
+
+describe('run: editor install and uninstall (§8)', () => {
+  const editorRecorder = (options: { missing?: readonly string[]; installThrows?: string } = {}) => {
+    const installed: (string | undefined)[] = []
+    const removed = { count: 0 }
+    return {
+      installed,
+      removed,
+      editor: {
+        install: async (vsix: string | undefined) => {
+          if (options.installThrows !== undefined) throw new Error(options.installThrows)
+          installed.push(vsix)
+          return 'installed in code (local)'
+        },
+        uninstall: async () => {
+          removed.count += 1
+          return 'removed from code (local)'
+        },
+        missing: async () => options.missing ?? [],
+      },
+    }
+  }
+
+  it('installs without naming a fleet, so no socket is resolved', async () => {
+    const recorder = editorRecorder()
+    const { deps, out, calls, sockets } = harness({}, { editor: recorder.editor })
+    assert.equal(await run(argv('editor', 'install', '--vsix', '/build/x.vsix'), deps), 0)
+
+    assert.deepEqual(recorder.installed, ['/build/x.vsix'])
+    assert.deepEqual(sockets, [], 'the editor verbs never connect')
+    assert.deepEqual(calls, [])
+    assert.match(out[0] ?? '', /installed in code/)
+  })
+
+  it('installs the newest build output when no --vsix is given', async () => {
+    const recorder = editorRecorder()
+    const { deps } = harness({}, { editor: recorder.editor })
+    assert.equal(await run(argv('editor', 'install'), deps), 0)
+    assert.deepEqual(recorder.installed, [undefined])
+  })
+
+  it('uninstalls from every host it finds', async () => {
+    const recorder = editorRecorder()
+    const { deps, out } = harness({}, { editor: recorder.editor })
+    assert.equal(await run(argv('editor', 'uninstall'), deps), 0)
+    assert.equal(recorder.removed.count, 1)
+    assert.match(out[0] ?? '', /removed from code/)
+  })
+
+  it('says which editor verbs exist when given another one', async () => {
+    const { deps, err } = harness({})
+    assert.equal(await run(argv('editor', 'reinstall'), deps), 2)
+    assert.match(err[0] ?? '', /use install or uninstall/)
+  })
+
+  it('says the build cannot reach an editor rather than doing nothing quietly', async () => {
+    const { deps, err } = harness({})
+    assert.equal(await run(argv('editor', 'install'), deps), 1)
+    assert.match(err[0] ?? '', /cannot reach an editor/)
+  })
+
+  it('a host that refused is a failure, and the message says which', async () => {
+    const recorder = editorRecorder({ installThrows: 'no editor was found on this machine' })
+    const { deps, err } = harness({}, { editor: recorder.editor })
+    assert.equal(await run(argv('editor', 'install', '--vsix', '/build/x.vsix'), deps), 1)
+    assert.match(err[0] ?? '', /no editor was found/)
+  })
+
+  it('up adds one line naming the hosts without the extension', async () => {
+    const recorder = editorRecorder({ missing: ['code', 'vscode-server'] })
+    const { deps, out } = harness({ up: () => status }, { editor: recorder.editor })
+    assert.equal(await run(argv('up', 'squad'), deps), 0)
+    assert.match(out[0] ?? '', /squad up, pid 4242/)
+    assert.match(out[0] ?? '', /the Fleet extension is not installed in: code, vscode-server/)
+    assert.match(out[0] ?? '', /fleet editor install/)
+  })
+
+  it('up says nothing when every editor has it', async () => {
+    const recorder = editorRecorder({ missing: [] })
+    const { deps, out } = harness({ up: () => status }, { editor: recorder.editor })
+    assert.equal(await run(argv('up', 'squad'), deps), 0)
+    assert.doesNotMatch(out[0] ?? '', /Fleet extension/)
+  })
+
+  it('a check that throws never fails an up: the fleet started', async () => {
+    const editor = editorRecorder().editor
+    const { deps, out } = harness(
+      { up: () => status },
+      {
+        editor: {
+          ...editor,
+          missing: async () => {
+            throw new Error('readdir exploded')
+          },
+        },
+      },
+    )
+    assert.equal(await run(argv('up', 'squad'), deps), 0)
+    assert.match(out[0] ?? '', /squad up, pid 4242/)
+  })
+})

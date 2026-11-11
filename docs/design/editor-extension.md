@@ -1,6 +1,6 @@
 # Editor extension: the fleet inside VS Code and Cursor
 
-**Status**: design.
+**Status**: design, spiked (§10).
 **Builds on**: [`watch-and-attach.md`](watch-and-attach.md) — `peer.watch`, hold and release, stop and start, the
 needs-you list. This document adds a client and nothing to the daemon.
 
@@ -78,7 +78,8 @@ A view container named Fleet in the activity bar, with one tree:
 - **Needs you (n)** — one item per open decision and per peer waiting for input. The count is also the container's
   badge, so it is visible with the side bar closed.
 - **Peers** — one item per peer: state icon, name, and a description of context used and what it is doing now. A peer
-  at or past the self-purge threshold gets a warning colour.
+  at or past the self-purge threshold gets a warning colour. Until the daemon reports context used (watch-and-attach §6),
+  the description shows what the peer is doing and its turn count, and the warning marks a peer that has compacted.
 
 Clicking a peer opens its output channel. Its context menu and inline buttons are the watch's actions:
 
@@ -89,9 +90,15 @@ Clicking a peer opens its output channel. Its context menu and inline buttons ar
 | stopped | Start |
 
 Clicking a decision opens a quick pick of its options; choosing one calls `decide`. Send a message opens an input box
-and sends through the Mailbox as the person.
+and sends through the Mailbox as the person, as kind `nudge`: from this window a message is always a person prodding a
+running peer.
 
 A status bar item shows `Fleet: 4 peers · 2 need you` and opens the side bar.
+
+The tree provider keeps one stable element object per row and refreshes a changed row with
+`onDidChangeTreeData.fire(element)`. The editor matches that element by identity against what `getChildren` returned,
+so a provider that hands back fresh copies on each update refreshes nothing, silently. The view model can stay
+immutable; the extension maps it onto stable elements keyed by peer id and decision id.
 
 ## 5. Live output
 
@@ -117,9 +124,20 @@ peer stays held and the tree shows it as held with Reopen and Release, as the wa
 The extension uses the rule the other clients use (`socketPathOf`): an explicit setting, then the environment, then the
 profile layout.
 
-- Setting `fleet.profile` (workspace scope) names the profile. With it unset, the extension lists the profiles that
-  have a running daemon and whose repo is the workspace folder; one match is used, several ask once and the choice is
-  saved to the workspace.
+- A socket path setting is absolute; editor settings do not expand `~`, so the extension expands a leading `~` itself
+  against the extension host's home.
+- Setting `fleet.profile` (workspace scope) names the profile. With it unset, the extension lists the profiles with a
+  running daemon; one is used, several ask once and the choice is saved to the workspace. Matching a profile to the
+  workspace's repo waits until `ls` reports the profile's repos; a client does not parse profile files.
+- Setting `fleet.command` (default `fleet`) is the CLI the extension runs in terminals, so a development checkout can
+  point it at its own entry point. It is **machine scope**, and the extension reads the user value directly, because it
+  is a program this extension executes: a workspace setting arrives with the cloned repository, and "open a folder"
+  must not become "run this program". `fleet.socket` and `fleet.profile` stay workspace-scoped — they select which
+  daemon to read, and a repository may reasonably say which fleet it belongs to.
+- A setting the layout cannot use — a `fleet.profile` of `../elsewhere`, a profile scan that cannot read the home — is
+  the fifth state, **settings problem**: the tree shows what is wrong and a Refresh button, and the poll loop keeps
+  running so fixing the setting is all it takes. Discovery is I/O on the poll path, so it is read inside the same guard
+  as the `ls`: nothing on that path may throw the loop to a stop.
 - No running fleet: the tree shows "No fleet is running for this folder" and a Start button that runs `fleet up` in an
   integrated terminal. The extension polls the socket path every few seconds until it appears; it never starts a daemon
   itself.
@@ -136,10 +154,21 @@ machine.
 - Build: the extension host needs bundled JavaScript. One bundle step produces `fleet-editor-<version>.vsix`; this is
   the first app in the repo with a build artefact, and the artefact is built in CI and attached to the release, not
   committed.
-- Install: `fleet editor install` finds `code` and `cursor` on the path and runs `--install-extension <vsix>` for each
-  one present, and says which it installed into. `fleet up` prints one line when an editor is present without the
-  extension. `fleet editor uninstall` reverses it.
-- Version: the extension reads the daemon's protocol version on connect. On a mismatch it shows "update the extension:
+- Install is per host, because the extension runs where fleetd runs. `fleet editor install` runs on the machine that
+  hosts the fleet and installs into every editor host it finds there:
+  - locally, `code` and `cursor` on the path, with `--install-extension <vsix>`;
+  - on a machine reached over Remote-SSH, the editor servers under `~/.vscode-server` and `~/.cursor-server`, through
+    each server's own CLI (`code-server` / `cursor-server --install-extension <vsix>`). A local `code --install-extension`
+    never carries a file-installed package to a remote host, so running the command on the fleet's host is the only way
+    that works.
+  The package installed is `--vsix <path>`, or by default the newest one built into `apps/clients/editor/dist`, until
+  releases carry it. Whether a host already has the extension is read from its extensions directory, not by running the
+  editor CLI, because `fleet up` asks on every start.
+  A server appears the first time an editor connects to that host, so `fleet up` prints one line when it finds an
+  editor or editor server without the extension, naming the command to run. `fleet editor uninstall` reverses it.
+- Packaging is `vsce package` on the bundled output. The manifest carries a repository field and a licence file, so
+  packaging needs no flags that skip checks.
+- Version: `DaemonStatus` gains `protocolVersion`, added with `peer.watch`, and the extension reads it on connect. On a mismatch it shows "update the extension:
   run `fleet editor install`" and does nothing else, so an old extension cannot misread a new stream.
 
 ## 9. Failure and limits
@@ -147,17 +176,28 @@ machine.
 - A stalled extension host is dropped by the daemon like any slow watch client (watch-and-attach §6); the extension
   reconnects and replays the buffer.
 - Several windows on the same repo each hold their own watch connection. That is one connection per window, which the
-  daemon's per-watch design allows.
+  daemon's per-watch design allows. Several hosts each need their own install (§8).
 - An untrusted workspace: the extension stays inactive. It runs a CLI in the workspace, which is what workspace trust
   exists to gate.
 
-## 10. To prove before building
+## 10. Proven, and still to prove
 
-- A workspace extension can reach a unix socket under the user's home in Remote-SSH and in a dev container, in both
-  VS Code and Cursor.
-- `cursor --install-extension <vsix>` installs a local package in the current Cursor build, and the extension loads.
-- The tree view stays smooth with the peer rows updating a few times a second, by refreshing single items and not the
-  whole tree.
+A spike (2026-11-11, VS Code 1.145 and Cursor 3.29, a fake daemon socket) proved:
+
+- A workspace extension reaches the fleet socket under the extension host's home, locally and over Remote-SSH, in
+  both editors.
+- `code` and `cursor --install-extension <vsix>` install a local package and it activates. Over Remote-SSH it reaches
+  the remote host only through that host's editor-server CLI (§8).
+- Eight peers updating five times a second cost about 2% of one core in the extension host with no dropped updates,
+  either way of refreshing. Single-row refresh is still the rule (§4), because it scales and it is no harder.
+
+Still to prove:
+
+- The same in a dev container.
+- `fleet editor install` finding a remote host's editor servers by itself.
+
+Tests that launch an editor do so with a throwaway `--user-data-dir` and `--extensions-dir`, off the person's screen
+where the platform allows, and never against their own editor profile.
 
 ## 11. Delivery
 
@@ -172,7 +212,9 @@ After the watch-and-attach batch, in this order:
 
 - The view model's reducer and action list are pure and tested without an editor; they are the shared proof that both
   clients show the same thing.
-- The extension is tested with the editor's extension test runner against a fake daemon socket: rows appear, a decision
-  is answered with one `decide` call, a takeover opens a terminal with the expected command line.
+- The extension's logic takes a narrow port over the editor API (tree view, quick pick, terminal, output channel) and is
+  tested with `node --test` against a fake of that port and a fake daemon socket: rows appear, one row refreshes, a
+  decision is answered with one `decide` call, a takeover opens a terminal with the expected command line. The
+  editor's own test runner is not used: on macOS it opens a real window on the person's screen.
 - One manual pass per release in VS Code and in Cursor, local and over Remote-SSH: see a peer work, answer a decision,
   take over, release.
