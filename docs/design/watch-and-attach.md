@@ -125,7 +125,13 @@ Claude SDK's streaming input needs one.
 **Routines.** Assignment and keep-busy rules key on `idle`, so a `held` peer already receives no new Work. Self-purge
 skips a held peer.
 
-**RPC.** `peer.hold { peerId, now? } -> { sessionRef, providerId, cwd, model }`, `peer.release { peerId }`. `peer.hold`
+**RPC.** `peer.hold { peerId, now? } -> { sessionRef, providerId, cwd, model, env, command }`, `peer.release { peerId }`.
+`env` is the exact map `envFor` built for the headless session, run through the provider's allowlist; `command` is the
+executable and arguments from a new optional `Provider.attachCommand(ref, spec)`, so what each CLI needs stays in its
+provider package. Only the daemon can build the env (provider endpoints and keys come from the profile through
+`compose.ts`), and a client may not import the daemon, so the daemon hands it over. When the profile sets a key, that
+key crosses the socket to the attach client. The socket is the user's own and the client runs as the same user who owns
+the key; the daemon must create the socket readable by its owner only. `peer.hold`
 on a held peer returns the same answer, so reopening a session whose terminal died is the same call.
 
 **Resume failing.** If `provider.resume` rejects on release, the supervisor falls back to a fresh start with the state
@@ -140,9 +146,8 @@ holding it.
 2. Run the provider's CLI in the foreground, in the peer's `cwd`:
    - Claude: `claude --resume <sessionRef> --model <model>`.
    - Cursor: `cursor-agent --resume <chatId> --mode plan --model <model>`.
-3. The environment is built from nothing: the same allowlist and values `envFor` gives the headless session
-   (`FLEET_PEER`, `FLEET_SOCKET`, `FLEET_ROLE`, provider credentials), plus `TERM`, `HOME`, `PATH` and locale. Nothing
-   else is inherited.
+3. The environment is built from nothing: the `env` that `peer.hold` returned, plus `TERM`, `HOME`, `PATH` and locale.
+   Nothing else is inherited. The command is the `command` it returned.
 4. When the CLI exits, for any reason, call `peer.release`.
 
 `fleet release <peer>` releases a peer whose attach client died without releasing.
@@ -299,7 +304,9 @@ running; a held peer's pane shows a banner with the count of waiting messages.
 - **Sender attribution.** `fleet send` stamps every message `from: user`. `SendParams` gains the sender, taken from
   `FLEET_PEER` when set, so mail a peer sends — headless or during a takeover — is attributed to it.
 - **Cursor trust.** The Cursor adapter never passes `--trust`, so a headless turn in an untrusted directory stops at the
-  workspace-trust prompt. The adapter passes it.
+  workspace-trust prompt. The adapter passes it. That means a repo's `.cursor` MCP servers and hooks run without the
+  prompt. This is accepted because a peer's cwd is always the profile's own checkout or a worktree fleetd made of it:
+  the person chose that repo when they wrote the profile.
 
 Both are bugs today and ship separately from this design.
 
