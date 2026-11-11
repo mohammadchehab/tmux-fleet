@@ -7,6 +7,7 @@
  * them, which is what keeps it pure and a replay identical (§5.4).
  */
 
+import { fleetError } from '@fleet/foundation-core'
 import type { MergeMethod } from '@fleet/foundation-contracts'
 
 export interface PmOptions {
@@ -52,7 +53,15 @@ export const defaultPmOptions: ResolvedPmOptions = {
 const given = <T>(value: T | undefined, fallback: T): T => (value === undefined ? fallback : value)
 
 /** Fill the defaults; an explicit `undefined` is "not set", never "set to nothing". */
-export const resolveOptions = (options: PmOptions = {}): ResolvedPmOptions => ({
+export const resolveOptions = (options: PmOptions = {}): ResolvedPmOptions => {
+  // The profile schema refuses these already; this is the one place a budget reaches the rule, so it refuses them too.
+  if (options.budgetUsd !== undefined && !(Number.isFinite(options.budgetUsd) && options.budgetUsd > 0)) {
+    throw fleetError('invalid_input', `a budget is a finite number of USD above zero, got ${String(options.budgetUsd)}`)
+  }
+  return resolveDefaults(options)
+}
+
+const resolveDefaults = (options: PmOptions): ResolvedPmOptions => ({
   prCap: given(options.prCap, defaultPmOptions.prCap),
   idleMinutes: given(options.idleMinutes, defaultPmOptions.idleMinutes),
   mergeMethod: given(options.mergeMethod, defaultPmOptions.mergeMethod),

@@ -12,7 +12,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { budgetDecisionId, decide } from '../src/index.ts'
+import { FleetError } from '@fleet/foundation-core'
+import { budgetDecisionId, decide, resolveOptions } from '../src/index.ts'
 import type { DecideRequest, PmAction, TokenReport } from '@fleet/foundation-contracts'
 import type { WorkId } from '@fleet/foundation-core'
 import { decision, kinds, peer, state, tick, tokenReport } from './support/state.ts'
@@ -49,10 +50,13 @@ test('crossing the budget asks the user, through the decision inbox', () => {
   const asked = only(decide(request([rollup(12)]), { budgetUsd: 10 }).actions)
 
   assert.equal(asked.decisionKind, 'budget')
-  assert.deepEqual(asked.options, ['continue', 'raise budget'])
+  // Only 'continue' is an answer the PM can act on: nothing in the fleet raises a cap, so offering to would be a promise
+  // that silences the cap and changes nothing (TASK-73).
+  assert.deepEqual(asked.options, ['continue'])
   assert.equal(asked.decisionId, budgetDecisionId(10))
   assert.match(asked.question, /\$12\.00/)
   assert.match(asked.question, /\$10\.00/)
+  assert.match(asked.question, /budget\.usd/, 'and it says where a higher cap is set')
 })
 
 test('the budget is crossed at the number, not after it', () => {
@@ -96,4 +100,27 @@ test('a raised budget is a different question, so it is asked again when the spe
 test('a cap raised above the spend stops the question: that is what the answer bought', () => {
   const answered = decision({ decisionId: budgetDecisionId(10), state: 'answered', kind: 'budget' })
   assert.equal(asks(request([rollup(12)], [answered]), 50), false)
+})
+
+test('answering the question silences that budget, and only that budget (TASK-73)', () => {
+  // An answer to $10 must not silence a $15 cap: raising the profile is a new question.
+  const answered = decision({ decisionId: budgetDecisionId(10), state: 'answered', kind: 'budget' })
+  assert.equal(asks(request([rollup(12)], [answered]), 10), false)
+  assert.equal(asks(request([rollup(16)], [answered]), 15), true, 'a new cap is a new question')
+})
+
+test('a fleet that is all unpriced is still billed as a floor, and asked at its turns (TASK-73)', () => {
+  // The existing floor test has a priced peer; an all-unpriced fleet has $0 and must not read as exact.
+  const rows = [rollup(0, { turns: 7 })]
+  assert.equal(asks(request(rows), 10), false, 'nothing priced, nothing crosses a dollar cap')
+})
+
+test('a budget that is not a finite number above zero is refused, not read as a cap (TASK-73)', () => {
+  // The profile schema already refuses these; resolveOptions is the one place a number reaches the rule, so it refuses
+  // them too rather than trusting a caller that did not validate.
+  for (const budgetUsd of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(() => resolveOptions({ budgetUsd }), (error: unknown) => error instanceof FleetError && error.code === 'invalid_input')
+  }
+  assert.equal(resolveOptions({ budgetUsd: 10 }).budgetUsd, 10)
+  assert.equal(resolveOptions({}).budgetUsd, undefined)
 })
