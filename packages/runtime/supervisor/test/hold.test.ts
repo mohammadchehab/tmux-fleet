@@ -119,6 +119,25 @@ test('a hold during the opening turn waits for it, though the provider already s
   await run
 })
 
+test('a question asked during the opening turn ends that turn for the boundary, its turn.ended or not (TASK-120)', async () => {
+  const r = rig()
+  const session = r.session()
+  const run = session.run()
+  r.push({ type: 'turn.started', turnId: opening, at })
+  const questionId = 'qst_0000000000000002' as QuestionId
+  r.push({ type: 'question.asked', turnId: opening, questionId, questions: [] } as unknown as ProviderEvent)
+
+  const boundary = session.untilBoundary()
+  assert.equal(await settled(boundary), false, 'the person still owes an answer, so there is no boundary yet')
+  // The person answers, and the SDK carries on without ever sending `turn.ended`
+  // for the opening turn. Waiting for one that will not come held a hold forever.
+  r.push({ type: 'question.abandoned', questionId })
+  assert.equal(await settled(boundary), true, 'the question is settled and the opening turn is over')
+
+  await session.stop()
+  await run
+})
+
 test('a hold waits for a running turn and for a question a person still owes', async () => {
   const r = rig()
   const session = r.session()
