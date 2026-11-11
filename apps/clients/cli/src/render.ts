@@ -9,6 +9,14 @@
  * Nothing here decides anything. If a row has a state, the state is printed as
  * the projection spells it (`waiting_input`, `open`), not translated into
  * prose: two vocabularies for one field is how a client drifts from the store.
+ *
+ * Every `format*` below returns its output stripped — line by line, so the
+ * newlines this layout wrote survive. This file prints no colour and no cursor
+ * movement of its own, so nothing it emits has a legitimate escape in it — which
+ * is what lets the strip be the last thing each function does instead of a
+ * judgement about which field a peer controls. A `lastTarget` is the model's own
+ * `file_path`, a message body is what a peer wrote, a decision's question is what
+ * it asked; the terminal obeys all three (TASK-100).
  */
 
 import type {
@@ -24,19 +32,37 @@ import type {
   TokenReport,
 } from '@fleet/foundation-contracts'
 import type { DownResult, LsResult, NoteResult, PeekResult, SendResult, UpResult } from '@fleet/foundation-contracts'
+import { stripControl } from '@fleet/foundation-core'
 
 const indent = (lines: readonly string[], by: number): readonly string[] =>
   lines.map((line) => `${' '.repeat(by)}${line}`)
 
-/** Rows as aligned columns; the last column is never padded, so no line ends in spaces. */
+/**
+ * A finished block: every line stripped, then joined.
+ *
+ * Not the joined text, which would be the same string with every newline turned
+ * into a space — the one control character here that is this layout's own and
+ * not a peer's.
+ */
+const block = (lines: readonly string[]): string => lines.map((line) => stripControl(line)).join('\n')
+
+/**
+ * Rows as aligned columns; the last column is never padded, so no line ends in
+ * spaces.
+ *
+ * A cell is stripped before it is measured, not after: a peer's escape is no
+ * column on the screen, and measuring it as one would pad every cell under it to
+ * a width that is not there.
+ */
 const columns = (rows: readonly (readonly string[])[]): readonly string[] => {
+  const cells = rows.map((row) => row.map((cell) => stripControl(cell)))
   const widths: number[] = []
-  for (const row of rows) {
+  for (const row of cells) {
     row.forEach((cell, index) => {
       widths[index] = Math.max(widths[index] ?? 0, cell.length)
     })
   }
-  return rows.map((row) =>
+  return cells.map((row) =>
     row
       .map((cell, index) => (index === row.length - 1 ? cell : cell.padEnd(widths[index] ?? 0)))
       .join('  ')
@@ -183,7 +209,7 @@ export const formatLs = (result: LsResult): string => {
     '',
     ...section('decisions', result.decisions.length, decisionRows, 'nothing waiting on the user'),
   ]
-  return lines.join('\n')
+  return block(lines)
 }
 
 export const formatUp = (result: UpResult): string => {
@@ -195,16 +221,16 @@ export const formatUp = (result: UpResult): string => {
   // The fleet is up; these are the things it started *despite* (TASK-12), so they
   // come after the addresses and are prefixed rather than reworded as a failure.
   for (const warning of result.warnings ?? []) lines.push(`warn    ${warning}`)
-  return lines.join('\n')
+  return block(lines)
 }
 
 export const formatDown = (_result: DownResult): string => 'fleetd stopped'
 
-export const formatSend = (result: SendResult, peer: string): string => `sent ${result.msgId} to ${peer}`
+export const formatSend = (result: SendResult, peer: string): string => stripControl(`sent ${result.msgId} to ${peer}`)
 
 /** `fleet note` echoes the Work: the peer named the phase, the daemon named the Work it landed on. */
 export const formatNote = (result: NoteResult): string =>
-  `noted ${result.phase} on ${String(result.workId)} (mirrored to the board when the profile maps one)`
+  stripControl(`noted ${result.phase} on ${String(result.workId)} (mirrored to the board when the profile maps one)`)
 
 const messageLines = (message: Message): readonly string[] => {
   const head = [
@@ -219,13 +245,13 @@ const messageLines = (message: Message): readonly string[] => {
 }
 
 export const formatPeek = (result: PeekResult, peer: string): string => {
-  if (result.messages.length === 0) return `${peer}: no messages`
-  const lines = [`${peer}: ${String(result.messages.length)} message(s)`]
+  if (result.messages.length === 0) return stripControl(`${peer}: no messages`)
+  const lines = [stripControl(`${peer}: ${String(result.messages.length)} message(s)`)]
   for (const message of result.messages) lines.push('', ...indent(messageLines(message), 2))
-  return lines.join('\n')
+  return block(lines)
 }
 
-export const formatDecision = (row: Decision): string => decisionLines(row).join('\n')
+export const formatDecision = (row: Decision): string => block(decisionLines(row))
 
 /** One log line, in the envelope's own order: where, when, what, about whom. */
 const eventRow = (event: FleetEvent): readonly string[] => [String(event.seq), event.ts, event.type, event.subject]
@@ -238,10 +264,12 @@ const eventRow = (event: FleetEvent): readonly string[] => [String(event.seq), e
  */
 export const formatReplay = (result: ReplayResult): string => {
   if (result.mode === 'rebuild') {
-    return `rebuilt every projection from ${String(result.events)} event(s); the log is at seq ${String(result.latestSeq)}`
+    return stripControl(
+      `rebuilt every projection from ${String(result.events)} event(s); the log is at seq ${String(result.latestSeq)}`,
+    )
   }
   if (result.events.length === 0) return 'no events in that window'
-  return [`${String(result.events.length)} event(s)`, ...indent(columns(result.events.map(eventRow)), 2)].join('\n')
+  return block([`${String(result.events.length)} event(s)`, ...indent(columns(result.events.map(eventRow)), 2)])
 }
 
 /**
@@ -262,5 +290,5 @@ export const formatBuild = (result: BuildsResult): string => {
   if (build.durationMs !== undefined) lines.push(`took  ${String(build.durationMs)}ms`)
   if (build.logPath !== undefined) lines.push(`log   ${build.logPath}`)
   lines.push(result.deduped ? 'reused: this triple had already run, so nothing ran again' : 'ran: no previous build of this triple')
-  return lines.join('\n')
+  return block(lines)
 }
