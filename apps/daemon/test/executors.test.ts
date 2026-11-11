@@ -522,7 +522,7 @@ const deps = () => {
 const heldWork = (state: string): Work => row<Work>({ workId: 'wrk_0123456789abcdef', title: 'a Work', state, assignee: 'engineer-1', dependsOn: [], prs: [], createdAt: '2026-11-10T09:00:00.000Z', updatedAt: '2026-11-10T09:00:00.000Z' })
 
 const blockAction = (): Extract<PmAction, { kind: 'block_work' }> =>
-  action({ kind: 'block_work', workId: 'wrk_0123456789abcdef' as never, reason: 'peer engineer-1 says: no replay', blockedOn: 'user' }) as Extract<PmAction, { kind: 'block_work' }>
+  action({ kind: 'block_work', workId: 'wrk_0123456789abcdef' as never, peerId: 'engineer-1' as never, reason: 'peer engineer-1 says: no replay', blockedOn: 'user' }) as Extract<PmAction, { kind: 'block_work' }>
 
 test('block_work writes work.blocked for a Work the peer holds, the transition the PM decided (TASK-126)', async () => {
   const read = readModel({ work: { all: async () => [], get: async () => heldWork('in_progress') } })
@@ -553,6 +553,16 @@ test('block_work on a Work that is over writes nothing: a merged or cancelled Wo
     assert.equal(outcome.ok, true, state)
     assert.deepEqual(store.appended, [], state)
   }
+})
+
+test('block_work for a Work that moved to another peer after the decision writes nothing: the holder is re-checked at write time (TASK-126)', async () => {
+  const store = sink()
+  const moved = heldWork('in_progress')
+  const read = readModel({ work: { all: async () => [], get: async () => ({ ...moved, assignee: 'architect-1' }) as Work } })
+  const outcome = await outcomeOf(createBlockWorkExecutor({ store, read, clock }), blockAction())
+
+  assert.equal(outcome.ok, true)
+  assert.deepEqual(store.appended, [], 'the block is the holder\'s to write, and this peer no longer holds the Work')
 })
 
 test('block_work for a Work the fleet does not have is a failed action, not a silent blocking of nothing (TASK-126)', async () => {

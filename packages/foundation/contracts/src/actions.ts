@@ -162,6 +162,8 @@ export interface MarkReadyAction extends PmActionBase {
 export interface BlockWorkAction extends PmActionBase {
   readonly kind: 'block_work'
   readonly workId: WorkId
+  /** The peer whose note this is: the executor blocks only while it still holds the Work (TASK-126). */
+  readonly peerId: PeerId
   readonly reason: string
   readonly blockedOn: BlockReason
 }
@@ -370,6 +372,7 @@ const blockWorkAction = (): Schema<BlockWorkAction> =>
     kind: oneOf(['block_work'] as const),
     causedBy: causedBy(),
     workId: workId(),
+    peerId: peerId(),
     reason: text(1000),
     blockedOn: blockReason(),
   })

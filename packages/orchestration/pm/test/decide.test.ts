@@ -881,14 +881,14 @@ test('a Work with no ticket says nothing about one', () => {
 // inbox row `work.blocked` would, because it is the same question about the same Work.
 
 /** An engineer working its own Work, and the note it just wrote. */
-const noted = (over: { phase?: string; body?: string; workId?: string; seq?: number } = {}) => ({
+const noted = (over: { phase?: string; body?: string; workId?: string; seq?: number; peerId?: string } = {}) => ({
   snapshot: state({
     peers: [peer({ peerId: 'engineer-1' as never, state: 'working' })],
     work: [work({ state: 'in_progress', assignee: 'engineer-1' as never })],
   }),
   note: event('work.noted', 'wrk_0000000000000001', {
     workId: over.workId ?? 'wrk_0000000000000001',
-    peerId: 'engineer-1',
+    peerId: over.peerId ?? 'engineer-1',
     phase: over.phase ?? 'blocked',
     body: over.body ?? 'the store has no way to replay a partial log',
   }, over.seq),
@@ -1004,6 +1004,15 @@ test('a blocked note asks and records the block on the Work the peer holds (TASK
   assert.match(block.reason, /engineer-1 says/)
   assert.match(block.reason, /no way to replay a partial log/)
   assert.deepEqual(block.causedBy, [note.seq])
+  assert.equal(block.peerId, 'engineer-1', 'the holder the executor re-checks at write time')
+  only(actions, 'request_decision')
+})
+
+test('a note from a peer that does not hold the Work asks, but does not block the Work (TASK-126)', () => {
+  const { snapshot, note } = noted({ peerId: 'engineer-2' })
+  const actions = decide({ state: snapshot, tick: tick(), event: note }).actions
+
+  assert.deepEqual(kinds(actions).filter((kind) => kind === 'block_work'), [], 'a peer cannot block someone else\'s Work')
   only(actions, 'request_decision')
 })
 
