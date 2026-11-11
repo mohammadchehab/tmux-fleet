@@ -16,6 +16,14 @@ export const decisionSources = ['rule', 'judge', 'user'] as const
 export type DecisionSource = (typeof decisionSources)[number]
 
 /**
+ * The kind of a decision raised for a tool call a peer is blocked on (§6.1,
+ * TASK-115). Its options are `toolApprovalOptions`, and answering it is a
+ * provider `respond()` on the peer's session, not a PM tick.
+ */
+export const toolApprovalKind = 'tool_approval'
+export const toolApprovalOptions = ['allow', 'deny'] as const
+
+/**
  * Something needs an answer. When it blocks on the user it is the decision
  * inbox and a "needs your decision" notification (§6.1); a rule that decided
  * by itself uses `decision.answered` with `source: "rule"` and no request.
@@ -34,6 +42,13 @@ export const decisionRequested = event(
     inputsHash: string({ minLength: 8, maxLength: 200 }),
     /** Who could answer it: a typed Judge, or the user. */
     routedTo: optional(string({ minLength: 1, maxLength: 80 })),
+    /**
+     * A `tool_approval`'s peer and the provider's id for the request, so the log
+     * says which call was allowed or denied. Optional: no other kind has them,
+     * and a log written before they existed replays unchanged.
+     */
+    peerId: optional(peerId()),
+    requestId: optional(string({ minLength: 1, maxLength: 200 })),
   }),
 )
 

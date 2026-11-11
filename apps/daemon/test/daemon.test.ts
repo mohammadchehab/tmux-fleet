@@ -162,6 +162,10 @@ const fakeSupervisor = (
     async startPeer() {
       throw new Error('this fake does not start one peer')
     },
+    async answerApproval(decisionId: string, peer: PeerId, decision: 'allow' | 'deny') {
+      log.push(`answerApproval(${decisionId}, ${peer}, ${decision})`)
+      return true
+    },
   }
 }
 
@@ -893,4 +897,79 @@ test('a shared fleet starts publishing once it is up, and stops before the sched
     order.indexOf('coordination.stop') < order.indexOf('scheduler.stop'),
     `a fleet going down stops telling the pool its peers are idle first: ${order.join(', ')}`,
   )
+})
+
+test("§6.1: a tool_approval decision answered by `decide allow` routes to the peer's session (TASK-115)", async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+
+  // Create a tool_approval decision
+  const decisionId = newDecisionId()
+  const peerId = 'engineer-1' as PeerId
+  const ts = '2026-11-10T10:00:00.000Z'
+  await store.append([
+    {
+      ts,
+      type: 'decision.requested',
+      subject: decisionId,
+      actor: 'scheduler',
+      data: {
+        decisionId,
+        kind: 'tool_approval',
+        question: 'Allow tool call?',
+        options: ['allow', 'deny'],
+        inputsHash: 'abcdef0123456789',
+        peerId,
+        requestId: 'req_001',
+      },
+    },
+  ])
+
+  // Read the decision to verify it was created
+  const decision = await store.reader().decisions.get(decisionId)
+  assert.ok(decision, 'decision was created')
+  assert.equal(decision.kind, 'tool_approval')
+  assert.equal(decision.peerId, peerId)
+  assert.equal(decision.state, 'open')
+
+  // Answer the decision
+  const result = await daemon.decide({ id: decisionId, decision: 'allow', note: undefined })
+  assert.equal(result.state, 'answered')
+
+  await daemon.down()
+})
+
+test("§6.1: a tool_approval decision that cannot be answered (session gone) still records the answer (TASK-115)", async () => {
+  // Harness provides all the real deps; we override supervisor.answerApproval to simulate session gone
+  const { daemon, store } = await harness()
+  await daemon.up()
+
+  // Create a tool_approval decision
+  const decisionId = newDecisionId()
+  const peerId = 'engineer-1' as PeerId
+  const ts = '2026-11-10T10:00:00.000Z'
+  await store.append([
+    {
+      ts,
+      type: 'decision.requested',
+      subject: decisionId,
+      actor: 'scheduler',
+      data: {
+        decisionId,
+        kind: 'tool_approval',
+        question: 'Allow tool call?',
+        options: ['allow', 'deny'],
+        inputsHash: 'abcdef0123456789',
+        peerId,
+        requestId: 'req_002',
+      },
+    },
+  ])
+
+  // Answer the decision — should not fail even though the approval was already answered/abandoned
+  const result = await daemon.decide({ id: decisionId, decision: 'deny', note: undefined })
+  assert.equal(result.state, 'answered')
+  assert.equal(result.option, 'deny')
+
+  await daemon.down()
 })

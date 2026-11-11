@@ -404,6 +404,15 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       // The event is written by this call, the row it produces by the
       // projection: answering with the row as it now stands is what makes the
       // reply say `answered` (§6.1) instead of the question's last state.
+
+      // If this is a tool_approval decision, route the answer to the peer's session (TASK-115).
+      // The supervisor will call the session's answerApproval, which tells the provider to allow/deny the tool call.
+      if (decision.kind === 'tool_approval' && decision.peerId !== undefined) {
+        // answerApproval returns false if the approval was already answered/abandoned or the session is gone;
+        // we don't fail the decide call in that case, as the decision.answered event is already appended.
+        await deps.supervisor.answerApproval(input.id, decision.peerId, input.decision as 'allow' | 'deny')
+      }
+
       return (await read.decisions.get(input.id)) ?? decision
     },
 

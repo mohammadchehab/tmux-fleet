@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { fixedClock, type PeerId, type QuestionId, type TurnId } from '@fleet/foundation-core'
+import { fixedClock, fleetError, type PeerId, type QuestionId, type TurnId } from '@fleet/foundation-core'
 import { appendIssues, type ProviderEvent, type Usage } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle, TurnSpend } from '@fleet/runtime-provider-sdk'
 
@@ -99,6 +99,8 @@ interface Rig {
   readonly sent: readonly string[]
   readonly records: SessionRecord[]
   readonly provider: Provider
+  /** Every approval the wrapper answered through the provider, in order. */
+  readonly responded: { sessionId: string; requestId: string; decision: string }[]
   /** Every recovery the wrapper asked for, with the failure and handoff it was told about. */
   readonly recovered: { from: string; failure: unknown; stateFile: unknown }[]
   readonly recover: (
@@ -129,12 +131,15 @@ const rig = (
      */
     readonly silentStop?: boolean
     readonly spend?: TurnSpend
+    /** `respond` rejects as the adapter does for an approval it no longer holds. */
+    readonly respondNotFound?: boolean
   } = {},
 ): Rig => {
   const feeds = new Map<string, Feed>()
   const sent: string[] = []
   const records: SessionRecord[] = []
   const recovered: { from: string; failure: unknown; stateFile: unknown }[] = []
+  const responded: { sessionId: string; requestId: string; decision: string }[] = []
 
   const recover = async (
     from: SessionHandle,
@@ -166,6 +171,10 @@ const rig = (
       return turnId
     },
     usage: async (h: SessionHandle) => usage(h),
+    respond: async (h: SessionHandle, requestId: string, decision: string) => {
+      if (options.respondNotFound === true) throw fleetError('not_found', `no pending approval ${requestId}`)
+      responded.push({ sessionId: h.sessionId, requestId, decision })
+    },
     ...(options.spend === undefined ? {} : { turnSpend: () => options.spend }),
     stop: async (h: SessionHandle) => {
       // The adapter synthesises `session.ended` when we stop it (§4); the rig does the same.
@@ -175,7 +184,7 @@ const rig = (
     },
   } as unknown as Provider
 
-  return { feeds, sent, records, provider, recovered, recover }
+  return { feeds, sent, records, provider, responded, recovered, recover }
 }
 
 /** A purge stub that does what the real one does to the stream: ask, then stop. */
@@ -1375,5 +1384,166 @@ test('the session hands off before the provider compacts, not after', async () =
   assert.deepEqual(stub.calls, [{ sessionId: 'ses_aaaaaaaaaaaaaaaa', asked: ['write your state file'] }])
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
   r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'stopped' })
+  await run
+})
+
+/** A session on the default limits, recording into the rig: the approval tests need nothing else. */
+const approvalSession = (r: Rig): PeerSession =>
+  new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+const requestedDecisions = (r: Rig) =>
+  r.records.flatMap((record) => (record.type === 'decision.requested' ? [record.data] : []))
+const answeredDecisions = (r: Rig) =>
+  r.records.flatMap((record) => (record.type === 'decision.answered' ? [record.data] : []))
+
+test('an approval a peer is blocked on becomes a decision a person can see and answer (TASK-115)', async () => {
+  // Nothing used to surface `approval.requested`: the peer sat in
+  // `waiting_input` with no decision in `fleet ls` and no way to answer short of
+  // attaching to it. The supervisor is the one reader of the stream, so it is
+  // where the approval becomes a §6.1 decision.
+  const r = rig()
+  const session = approvalSession(r)
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), {
+    type: 'approval.requested',
+    turnId,
+    requestId: 'apr_0123456789abcdef',
+    tool: 'Bash',
+    summary: 'git push --force origin main',
+  })
+  await until(() => requestedDecisions(r).length === 1, 'the decision to be requested')
+
+  const [decision] = requestedDecisions(r)
+  assert.ok(decision !== undefined)
+  assert.equal(decision.kind, 'tool_approval')
+  assert.deepEqual(decision.options, ['allow', 'deny'])
+  assert.equal(decision.routedTo, 'user')
+  assert.equal(decision.peerId, peerId)
+  assert.equal(decision.requestId, 'apr_0123456789abcdef')
+  assert.match(decision.question, /engineer-1/)
+  assert.match(decision.question, /Bash/)
+  // A command never reaches the log, here any more than in `peer.tool_used`.
+  assert.doesNotMatch(decision.question, /git push/)
+  assert.equal(session.state, 'waiting_input')
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [], 'and the store would take it')
+
+  // The answer goes to the session that asked, by the provider's own id.
+  assert.equal(await session.answerApproval(decision.decisionId, 'allow'), true)
+  assert.deepEqual(r.responded, [{ sessionId: 'ses_aaaaaaaaaaaaaaaa', requestId: 'apr_0123456789abcdef', decision: 'allow' }])
+  // Once is all an approval can be answered.
+  assert.equal(await session.answerApproval(decision.decisionId, 'deny'), false)
+  assert.equal(r.responded.length, 1)
+
+  // The session ending afterwards does not close a decision the person already answered.
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(ended(), { type: 'session.ended', reason: 'stopped' })
+  await run
+  assert.deepEqual(answeredDecisions(r), [])
+})
+
+test('the decision for an approval is named by the request, so a replay names it the same', async () => {
+  const ids: string[] = []
+  for (let i = 0; i < 2; i += 1) {
+    const r = rig()
+    const session = approvalSession(r)
+    const run = session.run()
+    await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+    r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
+      started(),
+      { type: 'approval.requested', turnId, requestId: 'apr_0123456789abcdef', tool: 'Write', summary: 'src/a.ts' },
+      { type: 'session.ended', reason: 'stopped' },
+    )
+    await run
+    const [decision] = requestedDecisions(r)
+    assert.ok(decision !== undefined)
+    // A path is the one summary the fleet keeps, so it is what the person reads.
+    assert.match(decision.question, /src\/a\.ts/)
+    ids.push(decision.decisionId)
+  }
+  assert.equal(ids[0], ids[1])
+})
+
+test('an approval that dies unanswered closes its decision, so the inbox never offers a dead one', async () => {
+  const r = rig()
+  const session = approvalSession(r)
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
+    started(),
+    { type: 'approval.requested', turnId, requestId: 'apr_0123456789abcdef', tool: 'Bash' },
+    // An interrupt, as the adapter reports one: the approval is abandoned on the stream.
+    { type: 'approval.abandoned', requestId: 'apr_0123456789abcdef' },
+  )
+  await until(() => answeredDecisions(r).length === 1, 'the decision to be closed')
+
+  const [requested] = requestedDecisions(r)
+  const [answered] = answeredDecisions(r)
+  assert.equal(answered?.decisionId, requested?.decisionId)
+  assert.equal(answered?.source, 'rule')
+  assert.equal(answered?.option, undefined, 'nobody chose allow or deny')
+  assert.match(answered?.text ?? '', /abandoned/)
+  // Nothing is left to answer.
+  assert.equal(await session.answerApproval(requested!.decisionId, 'allow'), false)
+  assert.deepEqual(r.responded, [])
+
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({ type: 'session.ended', reason: 'stopped' })
+  await run
+  assert.equal(answeredDecisions(r).length, 1, 'closed once, not again at the end')
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
+})
+
+test('a session that dies with an approval open closes its decision with it', async () => {
+  // The stream throws, so no `approval.abandoned` ever arrives: the session's
+  // own end is the only thing that can close the decision.
+  const r = rig()
+  const session = approvalSession(r)
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), {
+    type: 'approval.requested',
+    turnId,
+    requestId: 'apr_0123456789abcdef',
+    tool: 'Bash',
+  })
+  await until(() => requestedDecisions(r).length === 1, 'the decision to be requested')
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.fail(new Error('the adapter blew up'))
+  await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
+
+  assert.equal(answeredDecisions(r).length, 1)
+  assert.equal(answeredDecisions(r)[0]?.decisionId, requestedDecisions(r)[0]?.decisionId)
+
+  r.feeds.get('ses_cccccccccccccccc')?.push({ type: 'session.ended', reason: 'stopped' })
+  await run
+})
+
+test('an approval the provider no longer holds is not answered, and says so', async () => {
+  const r = rig(undefined, { respondNotFound: true })
+  const session = approvalSession(r)
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), {
+    type: 'approval.requested',
+    turnId,
+    requestId: 'apr_0123456789abcdef',
+    tool: 'Bash',
+  })
+  await until(() => requestedDecisions(r).length === 1, 'the decision to be requested')
+  assert.equal(await session.answerApproval(requestedDecisions(r)[0]!.decisionId, 'allow'), false)
+
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
 })
