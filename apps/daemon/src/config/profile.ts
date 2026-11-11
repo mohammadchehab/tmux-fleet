@@ -206,7 +206,8 @@ export interface ProvidersProfile {
  * Naming it here is what makes the answering model a decision instead of an
  * accident. `provider` decides where the call goes and therefore which env it
  * is given; `model` must be an id that provider serves — a DeepSeek id on
- * `claude` is refused at `fleet up` by the adapter, and a `deepinfra` block
+ * `claude` is refused at `fleet up` by the adapter, `cursor` is refused at load (it has
+ * no structured-completion call to answer with), and a `deepinfra` block
  * with no key is a startup error rather than a quiet fall back to the machine.
  *
  * Absent, the Judge keeps its old behaviour: the cheap default model on
@@ -662,7 +663,16 @@ const cursorBlock = (): Schema<CursorProfile> =>
  */
 const judgeBlock = (): Schema<JudgeProfile> =>
   objectAs<JudgeProfile>()({
-    provider: oneOf(profileProviders),
+    // Not every provider a peer can run on can answer a Judge question. The transport is
+    // one schema-constrained completion through the Claude SDK, which `claude` and
+    // `deepinfra` (its Anthropic-compatible endpoint) both serve; `cursor` is a read-only
+    // agent CLI with no such call. Accepting it would send a cursor model id to the SDK on
+    // fleetd's own login and call that "the profile's judge", so it is refused here.
+    provider: refine(
+      oneOf(profileProviders),
+      (provider) => provider !== 'cursor',
+      'claude or deepinfra: the Judge answers through the Claude SDK, which cursor cannot',
+    ),
     model: text(80),
   })
 

@@ -497,6 +497,23 @@ describe('the judge block', () => {
     assert.throws(() => decodeProfile(minimal({ judge: { provider: 'openai', model: 'gpt-5' } })), /openai/)
   })
 
+  it('refuses `cursor` as the judge, rather than accepting it and answering with another provider (TASK-79)', () => {
+    // The Judge's transport is one schema-constrained completion through the Claude SDK
+    // (claude, or deepinfra's Anthropic-compatible endpoint). cursor-agent is a read-only
+    // agent CLI with no such call, so a `cursor` judge would send a cursor model id to the
+    // Claude SDK on fleetd's own login: ignored, silently. It is refused at load instead.
+    assert.throws(
+      () => decodeProfile(minimal({ judge: { provider: 'cursor', model: 'composer-2.5' } })),
+      /judge.*cursor|cursor.*judge|claude or deepinfra/,
+    )
+  })
+
+  it('still accepts claude and deepinfra as the judge', () => {
+    for (const provider of ['claude', 'deepinfra']) {
+      assert.equal(decodeProfile(minimal({ judge: { provider, model: 'some-model' } })).judge?.provider, provider)
+    }
+  })
+
   it('refuses a block with no model, rather than defaulting to one the provider may not serve', () => {
     assert.throws(() => decodeProfile(minimal({ judge: { provider: 'deepinfra' } })), /model/)
   })
