@@ -163,12 +163,22 @@ export interface DeepInfraProfile {
  * whose model is not here is refused at `fleet up` by the adapter, rather than
  * handed a guessed window and purged at a fraction of the context it had.
  *
- * There is nothing else to configure. Cursor authenticates the CLI on the
- * machine (`cursor-agent login`), so there is no key here — not even the name of
- * one; and being read-only is not a setting: the adapter honours `plan` mode
- * only, whatever a peer's profile says.
+ * Cursor authenticates the CLI on the machine (`cursor-agent login`), so on a
+ * logged-in machine there is no key to configure. A machine that is not logged in
+ * (a headless box) names where the key lives with `tokenEnv` / `tokenFile` — a
+ * reference, never the key itself, as for DeepInfra (TASK-24); with neither the
+ * route is off. Being read-only is not a setting: the adapter honours `plan`
+ * mode only, whatever a peer's profile says.
  */
 export interface CursorProfile {
+  /**
+   * The variable in **fleetd's own** environment that holds the key; defaults to
+   * `CURSOR_API_KEY` when only `tokenFile` is named. Naming either turns the
+   * route on.
+   */
+  readonly tokenEnv?: string
+  /** The file to read the key from when the variable yields nothing: its **first line**. No default. */
+  readonly tokenFile?: string
   /**
    * The context window per cursor model id, in tokens. Keys are the ids
    * `cursor-agent models` prints, which is what a peer's `model` must name too.
@@ -640,6 +650,8 @@ const deepInfraBlock = (): Schema<DeepInfraProfile> =>
 const cursorBlock = (): Schema<CursorProfile> =>
   objectAs<CursorProfile>()({
     contextLimits: optional(record(positiveInt())),
+    tokenEnv: optional(text(120)),
+    tokenFile: optional(text(400)),
   })
 
 /**

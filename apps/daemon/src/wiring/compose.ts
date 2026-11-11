@@ -278,8 +278,9 @@ export const buildProviders = (profile: Profile): ReadonlyMap<string, Provider> 
   if (needed.has('cursor')) {
     // Read-only, plan-mode only: the adapter refuses any other permission mode,
     // so a profile that listed a cursor peer cannot make it a writing one. The
-    // block carries context windows and nothing else — cursor is authenticated by
-    // the CLI on this machine, and there is no key for a profile to name.
+    // block carries context windows and, on a machine that is not logged in, the
+    // *reference* to a key (`tokenEnv`/`tokenFile`, TASK-24). The key itself is
+    // resolved per session by `providerEnv` and never reaches this provider's config.
     const block = profile.providers?.cursor
     providers.set(
       'cursor',

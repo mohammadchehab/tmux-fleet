@@ -29,6 +29,7 @@ import { join } from 'node:path'
 import { fleetError } from '@fleet/foundation-core'
 import { deepInfraEnv } from '@fleet/runtime-provider-deepinfra'
 
+import { cursorEnv, cursorKeyRouted, readCursorToken } from './cursor-env.ts'
 import { modelFor } from '../config/profile.ts'
 import type { Profile, PeerProfile, ProfileProvider, JudgeProfile } from '../config/profile.ts'
 
@@ -107,14 +108,20 @@ export const readDeepInfraToken = async (options: DeepInfraEnvOptions): Promise<
  * silently ran as that login (§14.1's env drift). Nothing about the call needs a
  * peer, so nothing about the fragment should have required one.
  *
- * A provider whose auth is the machine's own (`claude`, `cursor`) gets an empty
- * fragment: there is no credential to hand over, and pretending otherwise would
- * be a token that does not exist. `deepinfra` is the one provider whose session
- * — and therefore whose Judge call — needs anything more than a process.
+ * A provider whose auth is the machine's own (`claude`, and `cursor` unless the
+ * profile names a key reference — TASK-24) gets an empty fragment: there is no
+ * credential to hand over, and pretending otherwise would be a token that does
+ * not exist. `deepinfra` always needs more than a process, `cursor` only on a
+ * machine that is not logged in.
  */
 export const providerEnvFor =
   (options: DeepInfraEnvOptions) =>
   async (provider: ProfileProvider, model: string): Promise<Readonly<Record<string, string>>> => {
+    // `cursor` is routed only when the profile names where its key lives (TASK-24);
+    // otherwise it is the machine's own login, and the fragment stays empty.
+    if (provider === 'cursor') {
+      return cursorKeyRouted(options.profile) ? cursorEnv(await readCursorToken(options)) : {}
+    }
     if (provider !== DEEP_INFRA) return {}
     const block = options.profile.providers?.deepinfra
     const token = await readDeepInfraToken(options)
