@@ -12,12 +12,28 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import { renderBoard, renderUnreachable } from '../src/render.ts'
-import { PEER, REPO, statusFixture, workFixture } from './fixtures.ts'
+import type { PeerId, WorkId } from '@fleet/foundation-core'
+
+import { PEER, REPO, activityFixture, statusFixture, workFixture } from './fixtures.ts'
 
 const AT = '2026-11-10T12:00:00.000Z'
 
-const page = (work: Parameters<typeof renderBoard>[0]['work']): string =>
-  renderBoard({ status: statusFixture(), work, renderedAt: AT })
+// Both answers are optional and neither is positional: the cost report and the
+// activity projection are two readings of the same rows, and a call that passed
+// one where the other was meant would still typecheck as an array.
+const page = (
+  work: Parameters<typeof renderBoard>[0]['work'],
+  extra: { usage?: Parameters<typeof renderBoard>[0]['usage']; activity?: Parameters<typeof renderBoard>[0]['activity'] } = {},
+): string =>
+  // `??`, not a spread over a default: a key present but `undefined` would still
+  // overwrite the default and reduce `BoardPage` to a maybe.
+  renderBoard({
+    status: statusFixture(),
+    work,
+    usage: extra.usage ?? [],
+    activity: extra.activity ?? [],
+    renderedAt: AT,
+  })
 
 describe('board: the rows are the projection rows', () => {
   it('groups by state in the state machine order, not by arrival', () => {
@@ -77,11 +93,82 @@ describe('board: a row says what a person needs to act on it', () => {
     assert.match(html, /jira:FLEET-7/)
   })
 
+  it('says what the peer is doing now, and the edits this Work has taken', () => {
+    const html = page([workFixture({ workId: 'wrk_0000000000000001', state: 'in_progress', assignee: PEER })], {
+      activity: [activityFixture()],
+    })
+    assert.match(html, /<span class="doing">Edit packages\/foundation\/store\/src\/peers\.ts<\/span>/)
+    assert.match(html, /<span class="edits">14 edits<\/span>/)
+  })
+
+  it('joins activity by workId, so one peer`s tool never appears on another row', () => {
+    const html = page(
+      [
+        workFixture({ workId: 'wrk_0000000000000001', state: 'in_progress' }),
+        workFixture({ workId: 'wrk_0000000000000002', state: 'proposed' }),
+      ],
+      { activity: [activityFixture()] },
+    )
+    assert.equal(html.match(/class="doing"/g)?.length, 1)
+  })
+
+  it('says nothing about activity when the projection has none, rather than guessing', () => {
+    const html = page([workFixture({ workId: 'wrk_0000000000000001' })])
+    assert.doesNotMatch(html, /class="doing"/)
+    assert.doesNotMatch(html, /class="edits"/)
+  })
+
   it('shows why a blocked Work is blocked', () => {
     const html = page([
       workFixture({ workId: 'wrk_0000000000000001', state: 'blocked', blockedReason: 'waiting on the architect' }),
     ])
     assert.match(html, /waiting on the architect/)
+  })
+})
+
+describe('board: what a Work has cost', () => {
+  const usage = (
+    peer: string,
+    workId: string | undefined,
+    turns: number,
+    costUsd: number,
+  ): Parameters<typeof renderBoard>[0]['usage'][number] => ({
+    peerId: peer as PeerId,
+    role: 'engineer',
+    ...(workId === undefined ? {} : { workId: workId as WorkId }),
+    turns,
+    inputTokens: turns * 1_000,
+    outputTokens: turns * 100,
+    cachedTokens: 0,
+    costUsd,
+    toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+    redirects: 0,
+    updatedAt: AT,
+  })
+
+  it('adds up every peer that worked on the Work, and only those', () => {
+    const html = page(
+      [workFixture({ workId: 'wrk_0000000000000001' }), workFixture({ workId: 'wrk_0000000000000002' })],
+      {
+        usage: [
+          usage('engineer-1', 'wrk_0000000000000001', 5, 0.42),
+          usage('engineer-2', 'wrk_0000000000000001', 3, 0.1),
+          usage('engineer-1', 'wrk_0000000000000002', 1, 0.07),
+          // The rollups are the fleet's bill; folding them into a Work would count
+          // every turn twice.
+          usage('engineer-1', undefined, 9, 0.59),
+        ],
+      },
+    )
+    assert.match(html, /8 turns · in 8000 out 800 · \$0\.52/)
+    assert.match(html, /1 turns · in 1000 out 100 · \$0\.07/)
+    assert.match(html, /<span class="meta">\$0\.59 spent<\/span>/, 'the fleet total is the rollup')
+  })
+
+  it('leaves the line off a Work nothing has been recorded against', () => {
+    const html = page([workFixture({ workId: 'wrk_0000000000000001' })], { usage: [usage('engineer-1', undefined, 9, 0.59)] })
+    assert.doesNotMatch(html, /class="cost"/, '$0.00 would claim the Work was free, not that it is unmeasured')
+    assert.match(html, /\$0\.59 spent/)
   })
 })
 

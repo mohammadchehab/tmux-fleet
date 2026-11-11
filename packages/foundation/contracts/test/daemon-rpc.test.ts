@@ -59,6 +59,10 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
       toolCalls: { grep: 1, glob: 0, read: 2, codegraph: 3 },
     },
   ],
+  note: [
+    { peerId: 'peer-1', phase: 'implement', body: 'the checks verdict is pinned to the head sha' },
+    { peerId: 'peer-1', phase: 'blocked', body: 'nothing can replay a partial log' },
+  ],
   decide: [{ id: 'dec_0123456789abcdef', decision: 'yes' }, { id: 'dec_0123456789abcdef', decision: 'no', note: 'later' }],
   'events.append': [{ events: [evalCaseScoredEvent] }],
   evals: [{ runId: 'evr_4c1d9a7b2e5f6038' }],
@@ -90,6 +94,7 @@ test('the method set is the one a client builds against, and the usage report a 
     'peek',
     'decide',
     'usage',
+    'note',
     'events.append',
     'evals',
     'replay',

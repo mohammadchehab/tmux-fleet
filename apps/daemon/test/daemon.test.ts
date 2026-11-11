@@ -24,6 +24,7 @@ import {
   profilePaths,
   type BriefId,
   type DecisionId,
+  type MessageId,
   type PeerId,
   type Repo,
   type Seq,
@@ -162,6 +163,17 @@ const mergedWhileDown = (): readonly AppendEvent[] => {
   ]
 }
 
+/** A message that was sent before the daemon started and is already acknowledged: history, not a pending box. */
+const ackedWhileDown = (): readonly AppendEvent[] => {
+  const msgId = 'msg_0000000000000001' as MessageId
+  const ts = '2026-11-10T09:00:00.000Z'
+  const to = 'engineer-1' as PeerId
+  return [
+    { ts, type: 'message.sent', subject: msgId, actor: 'pm', data: { msgId, to, from: 'pm', kind: 'info', briefVersion: 1, body: 'already answered' } },
+    { ts, type: 'message.acked', subject: msgId, actor: 'peer:engineer-1', data: { msgId, to } },
+  ]
+}
+
 const harness = async (
   options: {
     readonly reachable?: boolean
@@ -169,8 +181,15 @@ const harness = async (
     readonly seed?: readonly AppendEvent[]
     /** Every write the daemon makes, in the order the scheduler's own calls allow it. */
     readonly order?: string[]
+    /** The profile `fleet up` reads, when a test's answer is in the profile itself (TASK-12). */
+    readonly profile?: Profile
+    /** What the providers `compose.ts` would have built can do. */
+    readonly providerCapabilities?: (provider: string) => { readonly effort: boolean } | undefined
+    /** The shared fleet's loop, when the profile is in an engagement (shared-fleet.md §2.2). */
+    readonly coordination?: { start(): void; stop(): void }
   } = {},
 ) => {
+  const declared = options.profile ?? profile()
   const paths = pathsFor()
   for (const dir of persistentDirs(paths)) await mkdir(dir, { recursive: true })
   const store: EventStore = await openSqliteStore({ path: paths.storePath })
@@ -193,13 +212,27 @@ const harness = async (
   // about what the API writes, and a build that actually spawned `pnpm` would
   // be testing the machine it runs on.
   const ledger = createDaemonBuilds({
-    profile: profile(),
+    profile: declared,
     sink: { append: (batch) => store.append(batch) },
     builds: store.reader().builds,
     logDir: join(paths.artifactsDir, 'builds'),
     process: async () => ({ code: 0, durationMs: 1 }),
   })
-  const daemon = createDaemon({ profile: profile(), paths, store, append, supervisor, mailbox, scheduler, ledger, pid: 99 })
+  const daemon = createDaemon({
+    profile: declared,
+    paths,
+    store,
+    append,
+    supervisor,
+    mailbox,
+    scheduler,
+    ledger,
+    pid: 99,
+    ...(options.providerCapabilities === undefined
+      ? {}
+      : { providerCapabilities: options.providerCapabilities }),
+    ...(options.coordination === undefined ? {} : { coordination: options.coordination }),
+  })
   return { daemon, store, supervisor, scheduler, paths }
 }
 
@@ -230,6 +263,33 @@ test('up starts the supervisor before the scheduler, and down stops them the oth
   assert.deepEqual(scheduler.log, ['scheduler.start', 'scheduler.stop'])
   assert.deepEqual(supervisor.log, ['supervisor.start', 'supervisor.stop'])
   assert.equal(daemon.running, false)
+})
+
+test('a second down after up stops the sessions the second up started', async () => {
+  const { daemon, supervisor, scheduler } = await harness()
+
+  await daemon.up()
+  await daemon.down()
+  await daemon.up()
+  await daemon.down()
+
+  assert.deepEqual(
+    supervisor.log,
+    ['supervisor.start', 'supervisor.stop', 'supervisor.start', 'supervisor.stop'],
+    'the second down must stop the peers the second up started, not return the first stop again',
+  )
+  assert.deepEqual(scheduler.log, ['scheduler.start', 'scheduler.stop', 'scheduler.start', 'scheduler.stop'])
+  assert.equal(daemon.running, false)
+})
+
+test('two up calls in flight start the supervisor and the scheduler once', async () => {
+  const { daemon, supervisor, scheduler } = await harness()
+
+  const [first, second] = await Promise.all([daemon.up(), daemon.up()])
+  assert.deepEqual(supervisor.log, ['supervisor.start'], 'a second `up` while the first is starting must not start peers again')
+  assert.deepEqual(scheduler.log, ['scheduler.start'])
+  assert.deepEqual(second, first)
+  await daemon.down()
 })
 
 test('up catches up a Work whose PR merged while fleetd was down, after the scheduler starts', async () => {
@@ -360,6 +420,33 @@ test('peek refuses a peer this fleet does not have, rather than calling it an em
   await daemon.down()
 })
 
+test('peek with limit 0 returns nothing, rather than the whole pending box', async () => {
+  // `count()` allows 0, and `slice(-0)` is `slice(0)` — the whole box. A limit of
+  // zero asks for nothing, and "nothing" is an empty list, not everything there is.
+  const { daemon } = await harness({ reachable: false })
+  await daemon.up()
+  await daemon.send({ to: 'engineer-1' as PeerId, kind: 'info', body: 'take #14' })
+
+  const none = await daemon.peek({ peer: 'engineer-1' as PeerId, limit: 0 })
+  assert.deepEqual(none.messages, [], 'limit 0 is an empty answer, not the pending box')
+
+  // The same call with a limit still means "the last n" — the fix narrows 0, nothing else.
+  const one = await daemon.peek({ peer: 'engineer-1' as PeerId, limit: 1 })
+  assert.deepEqual(one.messages.map((message) => message.body), ['take #14'])
+  await daemon.down()
+})
+
+test('peek with limit 0 returns nothing from the history fallback either', async () => {
+  // The box is empty, so `peek` reads the projection instead; that slice is the
+  // second place `-0` would have turned "nothing" into "everything".
+  const { daemon } = await harness({ seed: ackedWhileDown() })
+  await daemon.up()
+
+  const { messages } = await daemon.peek({ peer: 'engineer-1' as PeerId, limit: 0 })
+  assert.deepEqual(messages, [])
+  await daemon.down()
+})
+
 test('a send to a registered peer with no session queues, and stays pending until one is there', async () => {
   // The queue rule: an unanswered session is not an error the sender must fix —
   // the message waits in the box and the Mailbox replays it on resume (§7).
@@ -420,6 +507,68 @@ test('usage records a peer\'s turn as turn.usage_recorded, and refuses a peer th
   assert.equal(recorded[0]?.actor, 'peer:engineer-1')
 
   await assert.rejects(() => daemon.usage({ ...report, peerId: 'ghost' as PeerId }), /no peer/)
+  await daemon.down()
+})
+
+test('a note lands on the Work the peer holds, and the reply names the Work the peer did not', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+
+  const WORK = 'wrk_7f3a91c2d84b0e56' as WorkId
+  await store.append([
+    { ts: '2026-11-10T09:00:00.000Z', type: 'work.proposed', subject: WORK, actor: 'user', causedBy: [], data: { workId: WORK, title: 'Say which phase the board is in', dependsOn: [] } },
+    { ts: '2026-11-10T09:01:00.000Z', type: 'work.assigned', subject: WORK, actor: 'pm', causedBy: [], data: { workId: WORK, peerId: 'engineer-1' as PeerId, briefId: 'brf_0123456789abcdef' as BriefId, briefVersion: 1 } },
+  ])
+
+  // §5.1: the peer names the phase and the words; the Work is the daemon's answer.
+  assert.deepEqual(await daemon.note({ peerId: 'engineer-1' as PeerId, phase: 'blocked', body: 'no way to replay a partial log' }), {
+    workId: WORK,
+    phase: 'blocked',
+  })
+
+  const noted = (await store.read(1)).filter((event) => event.type === 'work.noted')
+  assert.equal(noted.length, 1)
+  assert.equal(noted[0]?.subject, WORK)
+  assert.equal(noted[0]?.actor, 'peer:engineer-1')
+  assert.deepEqual(noted[0]?.data, {
+    workId: WORK,
+    peerId: 'engineer-1',
+    phase: 'blocked',
+    body: 'no way to replay a partial log',
+  })
+
+  // A peer with nothing assigned has nothing to note on, and one that the fleet does
+  // not have is not a peer: the same code, because neither names a Work.
+  await assert.rejects(
+    () => daemon.note({ peerId: 'architect-1' as PeerId, phase: 'plan', body: 'reading the design' }),
+    (thrown: unknown) => {
+      assert.equal((thrown as { code?: string }).code, 'not_found')
+      return true
+    },
+  )
+  await daemon.down()
+})
+
+test('a peer holding two live Works is a conflict, not a guess about which one it meant', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+
+  const A = 'wrk_7f3a91c2d84b0e56' as WorkId
+  const B = 'wrk_2b3c4d5e6f708192' as WorkId
+  const assigned = (workId: WorkId, ts: string): AppendEvent[] => [
+    { ts, type: 'work.proposed', subject: workId, actor: 'user', causedBy: [], data: { workId, title: 'x', dependsOn: [] } },
+    { ts, type: 'work.assigned', subject: workId, actor: 'pm', causedBy: [], data: { workId, peerId: 'engineer-1' as PeerId, briefId: 'brf_0123456789abcdef' as BriefId, briefVersion: 1 } },
+  ]
+  await store.append([...assigned(A, '2026-11-10T09:00:00.000Z'), ...assigned(B, '2026-11-10T09:02:00.000Z')])
+
+  await assert.rejects(
+    () => daemon.note({ peerId: 'engineer-1' as PeerId, phase: 'implement', body: 'x' }),
+    (thrown: unknown) => {
+      assert.equal((thrown as { code?: string }).code, 'conflict')
+      assert.match((thrown as Error).message, /holds 2 Works/)
+      return true
+    },
+  )
   await daemon.down()
 })
 
@@ -526,5 +675,73 @@ test('replay refuses a `to` with no `from` rather than reading it as a rebuild',
   await assert.rejects(
     () => daemon.replay({ to: 5 }),
     (thrown: unknown) => thrown instanceof FleetError && thrown.code === 'invalid_input',
+  )
+})
+
+/**
+ * TASK-12: a profile may ask for a reasoning level, and a provider that cannot
+ * honour one must not let the fleet look as if it had.
+ *
+ * The warning is on the status `fleet up` prints, not on the store: it is about
+ * this machine's providers, which is a fact about the daemon and not about the
+ * fleet's work, and a stored event would outlive the provider that caused it.
+ */
+test('up warns, naming the peer, when the profile asks for an effort the provider cannot honour', async () => {
+  const asked: Profile = {
+    profile: 'test',
+    repos: [],
+    roles: { reviewer: { effort: 'high' } },
+    peers: [
+      // The role supplies the effort; cursor cannot honour it.
+      { id: 'reviewer-1' as PeerId, role: 'reviewer', provider: 'cursor', model: 'gpt-5.2' },
+      // The same effort on claude, which can: no warning, because there is
+      // nothing to warn about.
+      { id: 'engineer-1' as PeerId, role: 'engineer', provider: 'claude', model: 'claude-opus-5-5', effort: 'high' },
+    ],
+  }
+  const { daemon } = await harness({
+    profile: asked,
+    providerCapabilities: (provider) => (provider === 'cursor' ? { effort: false } : { effort: true }),
+  })
+  await daemon.up()
+
+  assert.deepEqual(daemon.status.warnings, [
+    "peer 'reviewer-1' asks for effort 'high', but provider 'cursor' cannot honour it: the session starts at that provider's own default",
+  ])
+  await daemon.down()
+})
+
+test('a fleet that asked for no effort carries no warnings, even on a provider that could not honour one', async () => {
+  const { daemon } = await harness({ providerCapabilities: () => ({ effort: false }) })
+  await daemon.up()
+  // Absent on the status rather than an empty list: `fleet up` prints warnings
+  // it has, and a field that is always there invites a reader to think it means
+  // something when it is empty.
+  assert.equal(daemon.status.warnings, undefined)
+  await daemon.down()
+})
+
+test('a shared fleet starts publishing once it is up, and stops before the scheduler on down', async () => {
+  const order: string[] = []
+  const coordination = {
+    start: () => {
+      order.push('coordination.start')
+    },
+    stop: () => {
+      order.push('coordination.stop')
+    },
+  }
+  const { daemon } = await harness({ order, coordination })
+
+  await daemon.up()
+  assert.ok(
+    order.indexOf('scheduler.start') < order.indexOf('coordination.start'),
+    `the pool hears from a fleet that is up, not one coming up: ${order.join(', ')}`,
+  )
+
+  await daemon.down()
+  assert.ok(
+    order.indexOf('coordination.stop') < order.indexOf('scheduler.stop'),
+    `a fleet going down stops telling the pool its peers are idle first: ${order.join(', ')}`,
   )
 })

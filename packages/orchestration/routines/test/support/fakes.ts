@@ -134,6 +134,9 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
       get: async (key) => current.notifications.find((row) => row.key === key),
     },
     findings: { all: async () => [] },
+    // No questions are seeded: the routines' own tests never read one, and the
+    // snapshot asks once so a routine under test sees an empty question log.
+    judge: { all: async () => [], get: async () => undefined },
     messages: { all: async () => [], forPeer: async () => [] },
     pullRequests: { all: async () => current.pullRequests },
     worktrees: { all: async () => current.worktrees },
@@ -147,6 +150,15 @@ export const fakeRead = (rows: Partial<FakeRows> = {}): FakeRead => {
     // No compactions are seeded: no routine reads them yet, and an empty read is
     // what the daemon's `ls` would get from a fleet that has never compacted.
     compactions: { all: async () => [] },
+    // §6.2's cost report is not something a routine decides on; no test in this
+    // package reads it, so the fake answers the empty report.
+    tokens: {
+      all: async () => [],
+      month: async (month) => ({ month, costUsd: 0, turns: 0, unpricedTurns: 0 }),
+    },
+    // No activity is seeded either: a routine decides from the log, and the
+    // activity row is a reading of it for a person, not an input to a rule.
+    activity: { all: async () => [] },
     put: (next) => {
       Object.assign(current, next)
     },

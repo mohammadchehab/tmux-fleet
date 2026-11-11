@@ -11,6 +11,10 @@
  * The listener takes its socket path, host and port as arguments and returns
  * how to reach it and how to stop it. It never reads the environment and never
  * exits the process: `main.ts` does both.
+ *
+ * It answers only under the names it was asked to serve — loopback and its
+ * configured host — because a page the board does not know has no business
+ * reading a fleet's Work (§2, DNS rebinding).
  */
 
 import { createServer } from 'node:http'
@@ -37,6 +41,34 @@ export interface RunningBoard {
   stop(): Promise<void>
 }
 
+/**
+ * The names a browser may put in `Host`: the loopback names it would use to
+ * open the board, and whatever `--host` bound to.
+ *
+ * This is the whole defence against DNS rebinding (§2). A hostile page points
+ * its own name at 127.0.0.1; the browser keeps the *name* in `Host` and still
+ * considers the page same-origin with its own site, so without this check its
+ * script reads the fleet's rows. The name is the attack, so the name is what is
+ * checked — the connection's source address is not, because by then the
+ * browser has already sent it from loopback.
+ */
+const allowedHosts = (configured: string): ReadonlySet<string> =>
+  new Set(['localhost', '127.0.0.1', '::1', configured.toLowerCase()])
+
+/** The name half of `Host: name`, `name:port`, `[::1]` or `[::1]:port`; undefined when the line carries none. */
+const hostNameOf = (header: string | undefined): string | undefined => {
+  const value = header?.trim().toLowerCase() ?? ''
+  if (value === '') return undefined
+  // a bracketed address is already isolated from its port, brackets and all
+  if (value.startsWith('[')) {
+    const close = value.indexOf(']')
+    return close < 0 ? undefined : value.slice(1, close)
+  }
+  // only a single colon can be the port's: `::1` sent bare has several
+  const colon = value.lastIndexOf(':')
+  return colon < 0 || value.indexOf(':') !== colon ? value : value.slice(0, colon)
+}
+
 const htmlHeaders: Readonly<Record<string, string>> = {
   'content-type': 'text/html; charset=utf-8',
   'cache-control': 'no-store',
@@ -52,7 +84,13 @@ const page = async (options: ServeOptions): Promise<{ readonly status: number; r
     const [ls, work] = await Promise.all([options.call('ls', {}), options.call('work', {})])
     return {
       status: 200,
-      body: renderBoard({ status: ls.status, work: work.work, renderedAt: options.now() }),
+      body: renderBoard({
+        status: ls.status,
+        work: work.work,
+        usage: ls.tokens,
+        activity: ls.activity,
+        renderedAt: options.now(),
+      }),
     }
   } catch (thrown) {
     // Any failure here is the daemon's, not the request's: the board has no
@@ -64,7 +102,19 @@ const page = async (options: ServeOptions): Promise<{ readonly status: number; r
 }
 
 export const serveBoard = async (options: ServeOptions): Promise<RunningBoard> => {
+  const allowed = allowedHosts(options.host)
+
   const server: Server = createServer((request, response) => {
+    // first, and before the daemon is read: a request arriving under a name the
+    // board does not answer to is refused, not served — and a refusal must not
+    // depend on a read having happened
+    const host = hostNameOf(request.headers.host)
+    if (host === undefined || !allowed.has(host)) {
+      response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+      response.end('the board answers only for 127.0.0.1, localhost, [::1] and its configured host\n')
+      return
+    }
+
     const path = (request.url ?? '/').split('?')[0] ?? '/'
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       response.writeHead(405, { allow: 'GET, HEAD', 'content-type': 'text/plain; charset=utf-8' })

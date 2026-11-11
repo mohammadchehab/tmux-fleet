@@ -190,6 +190,8 @@ const tell = async (deps: WorktreeGcDeps, workId: WorkId | undefined, body: stri
 interface Keep {
   readonly kind: 'keep'
   readonly why: string
+  /** Kept because somebody is working there, not because of anything to report: the owner is not told. */
+  readonly quiet?: true
 }
 
 /** Why a checkout goes. `merged` decides whether the Work it belonged to is finished too. */
@@ -270,6 +272,13 @@ const askers = (deps: WorktreeGcDeps): Ask => {
  * not that.
  */
 const fateOf = (row: Worktree, outcome: 'merged' | 'closed', ref: PullRequestRef, isAlive: HolderLiveness): Fate => {
+  // §9: only an `active` checkout is being worked in. Nothing re-scans a checkout after
+  // `worktree.created`, so `dirty`, `unpushed` and `holders` on an `active` row are the
+  // defaults it was born with and not a scan's answer; deleting on them is a guess, and
+  // a peer's own checkout (the supervisor makes every one `active`) is the one it is
+  // running in. Whoever classifies a checkout as no longer active is who releases it.
+  if (row.class === 'active') return { kind: 'keep', why: `The worktree at ${row.path} is active; it was kept.`, quiet: true }
+
   // §9, first and without exception: nothing is deleted with local-only work.
   if (row.dirty || row.unpushed) {
     const why = row.dirty ? 'has uncommitted changes' : 'has commits that were never pushed'
@@ -398,13 +407,15 @@ const finishWork = async (deps: WorktreeGcDeps, ts: Timestamp, workId: WorkId | 
  */
 const outcomeOf = async (rows: readonly PullRequest[], row: Worktree, ask: Ask): Promise<Decided> => {
   const mine = rows.filter((pr) => pr.repo === row.repo && pr.head === row.branch)
-  const merged = mine.find((pr) => pr.merged)
-  if (merged !== undefined) {
-    return { finished: true, outcome: 'merged', ref: { repo: merged.repo, number: merged.number } }
-  }
   if (mine.length === 0) return { finished: false, outcome: 'none' }
 
-  const answers = await Promise.all(mine.map((pr) => ask({ repo: pr.repo, number: pr.number })))
+  // A merge settles only its own PR. A peer's branch is reused for every PR it opens
+  // (§9), so a merged PR and an open one share a head, and "one open PR on the branch
+  // is one reason to stay" has to hold whichever row the log happens to list first.
+  // The merged rows are the log's; every other row is the forge's to say is closed.
+  const merged = mine.find((pr) => pr.merged)
+  const rest = mine.filter((pr) => !pr.merged)
+  const answers = await Promise.all(rest.map((pr) => ask({ repo: pr.repo, number: pr.number })))
   // One PR the forge did not answer leaves the verdict unknown, and unknown keeps: it
   // may be the closed one, and a run that cannot tell must not act as though it can.
   if (answers.some((answer) => !answer.heard)) return { finished: false, outcome: 'unknown' }
@@ -412,6 +423,10 @@ const outcomeOf = async (rows: readonly PullRequest[], row: Worktree, ask: Ask):
   // the log has not recorded yet: that merge has a wake of its own, and it will arrive
   // with the `work.merged` this body needs to move the Work too.
   if (answers.some((answer) => answer.heard && answer.state !== 'closed')) return { finished: false, outcome: 'open' }
+
+  if (merged !== undefined) {
+    return { finished: true, outcome: 'merged', ref: { repo: merged.repo, number: merged.number } }
+  }
 
   // Closed without merging, and every row on the branch agrees. The first is the one
   // whose Work the log names.
@@ -451,9 +466,8 @@ const onMerge = async (
   const ref = data?.pr
   if (ref === undefined) return { outcome: { actions: 0, actionsFailed: 0, inputsHash: hashOf(empty) }, observations: empty }
 
-  const pr = (await deps.read.pullRequests.all()).find(
-    (row) => row.repo === ref.repo && row.number === ref.number,
-  )
+  const prs = await deps.read.pullRequests.all()
+  const pr = prs.find((row) => row.repo === ref.repo && row.number === ref.number)
   if (pr === undefined || !pr.merged) {
     return {
       outcome: { actions: 0, actionsFailed: 0, inputsHash: hashOf({ ...empty, pr: at(ref), merged: pr?.merged }) },
@@ -468,7 +482,19 @@ const onMerge = async (
   const isAlive = deps.isAlive ?? stillRunning
   // Decided once per row: the fate is a reading of the row, and reading it twice is
   // how a run reports a different verdict from the one it acted on.
-  const fates = rows.map((row) => ({ row, fate: fateOf(row, 'merged', ref, isAlive) }))
+  // Not every PR on the branch is the merged one: while another is open or unanswered the
+  // checkout is still somebody's, so the merge of the first settles nothing (`outcomeOf`).
+  const ask = askers(deps)
+  const fates: { row: Worktree; fate: Fate }[] = []
+  for (const row of rows) {
+    const decided = await outcomeOf(prs, row, ask)
+    fates.push({
+      row,
+      fate: decided.finished && decided.outcome === 'merged'
+        ? fateOf(row, 'merged', ref, isAlive)
+        : { kind: 'keep', why: `The worktree at ${row.path} still has a PR in flight; it was kept.`, quiet: true },
+    })
+  }
   const observations = fates.map(({ row, fate }) => ({ worktreeId: String(row.worktreeId), verdict: fate.kind }))
 
   // No checkout left is the ordinary case after `branch-cleanup` got there first, and it
@@ -478,7 +504,7 @@ const onMerge = async (
   for (const { row, fate } of fates) {
     tally = plus(
       tally,
-      fate.kind === 'keep' ? await tell(deps, workId, fate.why) : await removeCheckout(deps, ts, row, fate, workId),
+      fate.kind === 'keep' ? (fate.quiet === true ? none : await tell(deps, workId, fate.why)) : await removeCheckout(deps, ts, row, fate, workId),
     )
   }
 
@@ -533,7 +559,7 @@ const sweep = async (
     const workId = ownerOfWork(prs, row, decided.outcome)
     tally = plus(
       tally,
-      fate.kind === 'keep' ? await tell(deps, workId, fate.why) : await removeCheckout(deps, ts, row, fate, workId),
+      fate.kind === 'keep' ? (fate.quiet === true ? none : await tell(deps, workId, fate.why)) : await removeCheckout(deps, ts, row, fate, workId),
     )
   }
 

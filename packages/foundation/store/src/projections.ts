@@ -27,6 +27,7 @@ import {
   type Finding,
   type FleetEvent,
   type Holder,
+  type JudgeQuestionRecord,
   type Message,
   type Notification,
   type Peer,
@@ -49,6 +50,10 @@ export const PROJECTION_TABLES = [
   'peers',
   'sessions',
   'peer_failures',
+  // Activity is dropped on replay like every other projection: `peer_tool_counts`
+  // is a counter, so replaying it onto rows that survived would double every edit.
+  'peer_activity',
+  'peer_tool_counts',
   'work',
   'work_depends',
   'work_prs',
@@ -62,7 +67,9 @@ export const PROJECTION_TABLES = [
   'routines',
   'notifications',
   'findings',
+  'judge_questions',
   'token_report',
+  'spend_by_month',
   'messages',
   'eval_runs',
   'eval_cases',
@@ -215,6 +222,32 @@ const updatePeer = (db: Sqlite, peerId: string, patch: Partial<Peer>, event: Fle
 }
 
 // --------------------------------------------------------------------- sessions
+
+/**
+ * The Work a peer is on right now: assigned to it and not finished (§5.1). The
+ * same rule the PM's state snapshot uses, and the one a replay must apply, so
+ * the Work an activity row is counted against is the Work the peer was actually
+ * on when the call was made — read in log order, never from the clock.
+ *
+ * A peer can hold more than one open Work only if the PM broke its own rule;
+ * the most recently touched one is what a reader means by "current".
+ */
+const currentWorkOf = (db: Sqlite, peerId: string): string | undefined =>
+  db.get<{ work_id: string }>(
+    `SELECT work_id FROM work
+      WHERE assignee = ? AND state NOT IN ('cleaned', 'cancelled')
+      ORDER BY updated_at DESC, work_id
+      LIMIT 1`,
+    peerId,
+  )?.work_id
+
+/**
+ * The tools whose calls mean a Work is being *reworked* rather than explored.
+ * Claude Code's names; a provider that calls its editor something else counts
+ * nothing, which is the honest answer rather than a mapping this store invented
+ * (§6.2's `countToolCall` makes the same choice).
+ */
+const editToolNames: readonly string[] = ['Edit', 'Write']
 
 const writeSession = (db: Sqlite, session: Session): void =>
   writeRow(
@@ -799,6 +832,43 @@ const resolveNotification = (db: Sqlite, key: NotificationKey, ts: string): void
   writeNotification(db, parse(PROJECTION_SCHEMAS.notification, { ...current, state: 'resolved', resolvedAt: ts }))
 }
 
+const JUDGE_QUESTION_COLUMNS = [
+  'question_id',
+  'kind',
+  'inputs_hash',
+  'work_id',
+  'asked_for',
+  'asked_at',
+  'answered_at',
+  'model',
+  'data',
+] as const
+
+const writeJudgeQuestion = (db: Sqlite, question: JudgeQuestionRecord): void => {
+  writeRow(
+    db,
+    'judge_questions',
+    JUDGE_QUESTION_COLUMNS,
+    [
+      question.questionId,
+      question.kind,
+      question.inputsHash,
+      question.workId ?? null,
+      question.askedFor ?? null,
+      question.askedAt,
+      question.answeredAt ?? null,
+      question.model ?? null,
+      JSON.stringify(question),
+    ],
+    ['question_id'],
+  )
+}
+
+const judgeQuestionById = (db: Sqlite, id: string): JudgeQuestionRecord | undefined => {
+  const row = db.get<{ data: string }>('SELECT data FROM judge_questions WHERE question_id = ?', id)
+  return row === undefined ? undefined : json(PROJECTION_SCHEMAS.judgeQuestion, row.data)
+}
+
 const writeFinding = (db: Sqlite, finding: Finding): void =>
   writeRow(
     db,
@@ -857,6 +927,7 @@ interface TokenRow {
   readonly input_tokens: number
   readonly output_tokens: number
   readonly cached_tokens: number
+  readonly cost_usd: number
   readonly grep: number
   readonly glob: number
   readonly read: number
@@ -874,6 +945,7 @@ const tokenReportFromRow = (row: TokenRow): TokenReport =>
     inputTokens: Number(row.input_tokens),
     outputTokens: Number(row.output_tokens),
     cachedTokens: Number(row.cached_tokens),
+    costUsd: Number(row.cost_usd),
     toolCalls: {
       grep: Number(row.grep),
       glob: Number(row.glob),
@@ -896,6 +968,7 @@ const writeTokenReport = (db: Sqlite, report: TokenReport): void =>
       'input_tokens',
       'output_tokens',
       'cached_tokens',
+      'cost_usd',
       'grep',
       'glob',
       'read',
@@ -911,6 +984,7 @@ const writeTokenReport = (db: Sqlite, report: TokenReport): void =>
       report.inputTokens,
       report.outputTokens,
       report.cachedTokens,
+      report.costUsd,
       report.toolCalls.grep,
       report.toolCalls.glob,
       report.toolCalls.read,
@@ -938,6 +1012,7 @@ const tokenReportFor = (db: Sqlite, peerId: string, role: string, workId: string
           inputTokens: 0,
           outputTokens: 0,
           cachedTokens: 0,
+          costUsd: 0,
           toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
           redirects: 0,
           updatedAt: new Date(0).toISOString(),
@@ -977,6 +1052,18 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       )
       return
     }
+    case 'peer.standards_set': {
+      const { peerId, version } = event.data
+      const current = peerById(db, peerId)
+      // A version only goes up (§12.1): the Mailbox rejects mail citing an older
+      // one, so a lower or equal one would un-reject what it just rejected.
+      if (current !== undefined && version <= current.briefVersion) {
+        recordAnomaly(db, event, 'peer', `standards version ${String(version)} does not exceed ${String(current.briefVersion)} for ${peerId}`)
+        return
+      }
+      updatePeer(db, peerId, { briefVersion: version }, event)
+      return
+    }
     case 'peer.state_changed': {
       const { peerId, state, sessionId } = event.data
       updatePeer(db, peerId, sessionId === undefined ? { state } : { state, currentSessionId: sessionId }, event)
@@ -1000,6 +1087,43 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       )
       // §6.1 `failure`: a crash, a session that will not resume, a config mismatch.
       raiseNotification(db, notificationKeyOf('failure', peerId, reason), 'failure', ts)
+      return
+    }
+    case 'peer.tool_used': {
+      const { peerId, tool, target } = event.data
+      if (peerById(db, peerId) === undefined) {
+        missing(db, event, 'peer', peerId)
+        return
+      }
+      // Last-write-wins for "what is it doing": the newest call is the answer, and
+      // the target is cleared when the newest call had none, so a provider that
+      // does not summarise does not leave the previous tool's path looking current.
+      db.run(
+        `INSERT INTO peer_activity (peer_id, last_tool, last_target, last_tool_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (peer_id) DO UPDATE SET
+           last_tool = excluded.last_tool,
+           last_target = excluded.last_target,
+           last_tool_at = excluded.last_tool_at`,
+        peerId,
+        tool,
+        target ?? null,
+        ts,
+      )
+      // Only an edit against a Work is counted, and only against the Work the peer
+      // was on at this point in the log: a call with no current Work is activity
+      // (the row above) but not rework of anything.
+      if (!editToolNames.includes(tool)) return
+      const workId = currentWorkOf(db, peerId)
+      if (workId === undefined) return
+      db.run(
+        `INSERT INTO peer_tool_counts (peer_id, work_id, tool, count)
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT (peer_id, work_id, tool) DO UPDATE SET count = peer_tool_counts.count + 1`,
+        peerId,
+        workId,
+        tool,
+      )
       return
     }
     case 'peer.compacted': {
@@ -1678,7 +1802,27 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
     case 'turn.usage_recorded': {
-      const { peerId, workId, inputTokens, outputTokens, cachedTokens, toolCalls } = event.data
+      const { peerId, workId, inputTokens, outputTokens, cachedTokens, toolCalls, costUsd } = event.data
+      // The boundary is the only place a turn's end is recorded, so it is also
+      // where "when did this peer last finish a turn" is kept for `fleet ls`.
+      db.run(
+        `INSERT INTO peer_activity (peer_id, last_turn_at) VALUES (?, ?)
+         ON CONFLICT (peer_id) DO UPDATE SET last_turn_at = excluded.last_turn_at`,
+        peerId,
+        ts,
+      )
+      // The month's total, which is what a monthly cap is measured against
+      // (shared-fleet.md §3); the rows below never reset a period.
+      db.run(
+        `INSERT INTO spend_by_month (month, cost_usd, turns, unpriced_turns) VALUES (?, ?, 1, ?)
+         ON CONFLICT (month) DO UPDATE SET
+           cost_usd = cost_usd + excluded.cost_usd,
+           turns = turns + 1,
+           unpriced_turns = unpriced_turns + excluded.unpriced_turns`,
+        new Date(ts).toISOString().slice(0, 7),
+        costUsd ?? 0,
+        costUsd === undefined ? 1 : 0,
+      )
       const role = peerById(db, peerId)?.role ?? 'unknown'
       // The per-Work row, and the peer's rollup under the empty work id (§6.2).
       const rows: readonly string[] = workId === undefined ? [''] : [workId, '']
@@ -1694,6 +1838,9 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
             inputTokens: current.inputTokens + inputTokens,
             outputTokens: current.outputTokens + outputTokens,
             cachedTokens: current.cachedTokens + cachedTokens,
+            // A turn that reported no price adds nothing: the rollup stays the
+            // sum of what was actually priced (§6.2).
+            costUsd: current.costUsd + (costUsd ?? 0),
             toolCalls: {
               grep: current.toolCalls.grep + toolCalls.grep,
               glob: current.toolCalls.glob + toolCalls.glob,
@@ -1816,16 +1963,44 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
 
+    case 'judge.requested': {
+      const { questionId, kind, inputsHash, workId, askedFor } = event.data
+      // The `input` the question was formed from is deliberately not kept: it is
+      // the card's own text, already in the `work` row, and storing it again would
+      // make every answer's row carry a copy of the fleet's longest fields. The
+      // hash is what §5.4 needs a replay to recognise.
+      writeJudgeQuestion(
+        db,
+        parse(PROJECTION_SCHEMAS.judgeQuestion, {
+          questionId,
+          kind,
+          inputsHash,
+          workId,
+          askedFor,
+          askedAt: ts,
+        }),
+      )
+      return
+    }
+    case 'judge.answered': {
+      const { questionId, answer, model } = event.data
+      const current = judgeQuestionById(db, questionId)
+      // An answer with no question is a log that lost its head: `missing` records
+      // the anomaly rather than inventing a question to hang the answer on.
+      if (current === undefined) {
+        missing(db, event, 'judge', questionId)
+        return
+      }
+      writeJudgeQuestion(db, parse(PROJECTION_SCHEMAS.judgeQuestion, { ...current, answer, model, answeredAt: ts }))
+      return
+    }
     // ---------------------------------------------- recorded, not projected yet
-    // `judge.requested`/`judge.answered` are the typed question log (§5.3);
     // `purge.*`, `index.*` and `scan.skipped` describe a process, not a row the
     // PM or the board reads. They stay in `events` and are read from there.
     //
     // Named one by one, never caught by a `default`: a new type in the registry
     // then has to be *decided* here — projected above, or recorded-only in this
     // list — because the `satisfies` below makes forgetting it a typecheck error.
-    case 'judge.requested':
-    case 'judge.answered':
     case 'purge.started':
     case 'purge.saved':
     case 'purge.degraded':
@@ -1842,6 +2017,12 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
     // came from is already merged — so it is read from `events` when someone asks
     // where a branch went.
     case 'branch.deleted':
+    // `work.noted` is a peer's structured progress note (§5.1). It moves no state:
+    // the board mirror is `tracker-sync` reacting to the event itself, and the one
+    // phase with a consequence — `blocked` — is a PM rule appending a Decision, not
+    // a column. A Work row holding "the latest note" would be a second answer to
+    // what the log already answers, so it is read from `events`.
+    case 'work.noted':
       return
   }
 
@@ -1969,6 +2150,11 @@ export const readers = (db: Sqlite): ReadModel => {
       all: async () => rows(PROJECTION_SCHEMAS.notification, 'SELECT data FROM notifications ORDER BY created_at, key'),
       get: async (key) => notificationByKey(db, key),
     },
+    judge: {
+      all: async () =>
+        rows(PROJECTION_SCHEMAS.judgeQuestion, 'SELECT data FROM judge_questions ORDER BY asked_at, question_id'),
+      get: async (id) => judgeQuestionById(db, id),
+    },
     findings: {
       all: async () => rows(PROJECTION_SCHEMAS.finding, 'SELECT data FROM findings ORDER BY raised_at, finding_id'),
     },
@@ -2003,6 +2189,72 @@ export const readers = (db: Sqlite): ReadModel => {
         const cases = rows<EvalCase>(PROJECTION_SCHEMAS.evalCase, 'SELECT data FROM eval_cases WHERE run_id = ? ORDER BY case_id', runId)
         return { run, cases }
       },
+    },
+    tokens: {
+      // Every row, the peer rollup (`work_id = ''`) first: §6.2's report is read
+      // whole — `fleet ls` prints both levels and the board looks a Work up — and
+      // the table is one row per peer per Work, not one per turn, so there is
+      // nothing here that grows with the log's history.
+      all: async () =>
+        db.all<TokenRow>('SELECT * FROM token_report ORDER BY peer_id, work_id').map((row) => tokenReportFromRow(row)),
+      month: async (month) => {
+        const row = db.get<{ cost_usd: number; turns: number; unpriced_turns: number }>(
+          'SELECT cost_usd, turns, unpriced_turns FROM spend_by_month WHERE month = ?',
+          month,
+        )
+        return parse(PROJECTION_SCHEMAS.monthSpend, {
+          month,
+          costUsd: Number(row?.cost_usd ?? 0),
+          turns: Number(row?.turns ?? 0),
+          unpricedTurns: Number(row?.unpriced_turns ?? 0),
+        })
+      },
+    },
+    activity: {
+      // One query for the whole fleet: the last tool, the current Work, and that
+      // Work's edit count, joined in SQL. A peer with neither an activity row nor
+      // a current Work is not returned — the caller has no use for a row that says
+      // nothing, the same reason compactions return only peers that compacted.
+      all: async () =>
+        db
+          .all<{
+            peer_id: string
+            work_id: string | null
+            last_tool: string | null
+            last_target: string | null
+            last_tool_at: string | null
+            last_turn_at: string | null
+            edits: number
+          }>(
+            `SELECT p.peer_id,
+                    w.work_id,
+                    a.last_tool,
+                    a.last_target,
+                    a.last_tool_at,
+                    a.last_turn_at,
+                    (SELECT COALESCE(SUM(c.count), 0) FROM peer_tool_counts c
+                      WHERE c.peer_id = p.peer_id AND c.work_id = w.work_id) AS edits
+               FROM peers p
+               LEFT JOIN peer_activity a ON a.peer_id = p.peer_id
+               LEFT JOIN work w ON w.work_id = (
+                 SELECT w2.work_id FROM work w2
+                  WHERE w2.assignee = p.peer_id AND w2.state NOT IN ('cleaned', 'cancelled')
+                  ORDER BY w2.updated_at DESC, w2.work_id
+                  LIMIT 1)
+              WHERE a.peer_id IS NOT NULL OR w.work_id IS NOT NULL
+              ORDER BY p.peer_id`,
+          )
+          .map((row) =>
+            parse(PROJECTION_SCHEMAS.peerActivity, {
+              peerId: row.peer_id,
+              ...(row.work_id === null ? {} : { workId: row.work_id }),
+              ...(row.last_tool === null ? {} : { lastTool: row.last_tool }),
+              ...(row.last_target === null ? {} : { lastTarget: row.last_target }),
+              ...(row.last_tool_at === null ? {} : { lastToolAt: row.last_tool_at }),
+              ...(row.last_turn_at === null ? {} : { lastTurnAt: row.last_turn_at }),
+              edits: row.edits,
+            }),
+          ),
     },
     compactions: {
       // Grouped in SQL rather than by the caller: `fleet ls` wants a count per

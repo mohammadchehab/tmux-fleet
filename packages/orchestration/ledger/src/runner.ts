@@ -13,6 +13,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -64,10 +65,12 @@ export interface ProcessInvocation {
   readonly args: readonly string[]
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly cwd?: string
-  /** Both streams are appended here, so a build is readable while it runs. */
+  /** Both streams are written here (the file starts empty: a run owns its log), so a build is readable while it runs. */
   readonly logPath: string
-  /** Stdout alone is appended here as well, when a caller wants the answer without the narration. */
+  /** Stdout alone is written here as well, when a caller wants the answer without the narration. */
   readonly stdoutPath?: string
+  /** Kill the process if it runs longer than this (milliseconds). */
+  readonly timeoutMs?: number
 }
 
 export interface ProcessOutcome {
@@ -78,16 +81,42 @@ export interface ProcessOutcome {
 /** Runs one program with argv, no shell. Only a spawn failure rejects; a non-zero exit resolves. */
 export type RunProcess = (invocation: ProcessInvocation) => Promise<ProcessOutcome>
 
+/**
+ * How long a build may run before the runner kills it. A build that hangs holds its
+ * key in the ledger's `inFlight` map, and every request for that `(repo, sha, task)`
+ * waits on it, so "no limit" is not neutral: it is a build that blocks the next
+ * caller for ever. An hour is above any build the fleet runs today; a profile's
+ * `builds.timeoutMinutes` moves it.
+ */
+export const DEFAULT_BUILD_TIMEOUT_MS = 60 * 60_000
+
 /** A path segment a log filename may carry: no `:` (a task's separator), no `/`. */
 const slug = (value: string): string => value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'x'
 
 /**
- * `artifacts/builds/<sha>-<task>.log` (§1.1). The task is slugged rather than
- * quoted: a log path travels through a shell on the remote host, and a filename
- * that needs quoting is a filename that will one day not be quoted.
+ * `artifacts/builds/<sha>-<task>-<hash>.log` (§1.1). The task is slugged rather than
+ * quoted: a log path travels through a shell on the remote host, and a filename that
+ * needs quoting is a filename that will one day not be quoted.
+ *
+ * A slug is lossy (`a-b:c` and `a:b-c` are one slug) and carries no repo, so the name
+ * ends in a short hash of the whole key. Two builds that are different keys never share
+ * a log, whatever their slugs; one build is always the same name, so a reclaimed run
+ * finds (and, since `spawnToLog` truncates, replaces) its own.
  */
-export const buildLogPath = (logDir: string, sha: Sha, task: string): string =>
-  join(logDir, `${slug(sha)}-${slug(task)}.log`)
+export const buildLogPath = (logDir: string, sha: Sha, task: string, repo: Repo): string => {
+  const key = createHash('sha256').update(`${repo}\0${sha}\0${task}`).digest('hex').slice(0, 8)
+  return join(logDir, `${slug(sha)}-${slug(task)}-${key}.log`)
+}
+
+/**
+ * The error a build's own timeout raises. A build that ran too long ran, and its
+ * answer is "too slow"; any other reason `run` threw is the *infrastructure* failing
+ * (no such binary, a full disk), which says nothing about the commit.
+ */
+export const buildTimeoutError = (timeoutMs: number): Error =>
+  Object.assign(new Error(`timeout: process exceeded ${timeoutMs}ms`), { name: 'BuildTimeoutError' })
+
+export const isBuildTimeout = (error: unknown): boolean => error instanceof Error && error.name === 'BuildTimeoutError'
 
 /** Exit code → what §11's `build.finished` records. A signal death is a failure, not a success. */
 export const statusOf = (code: number | null): BuildStatus => (code === 0 ? 'succeeded' : 'failed')
@@ -101,13 +130,38 @@ export const statusOf = (code: number | null): BuildStatus => (code === 0 ? 'suc
 export const spawnToLog: RunProcess = (invocation) => {
   const startedAt = Date.now()
   return new Promise((resolve, reject) => {
+    let resolved = false
+    const finish = (outcome: ProcessOutcome) => {
+      if (resolved) return
+      resolved = true
+      resolve(outcome)
+    }
+    const fail = (error: Error) => {
+      if (resolved) return
+      resolved = true
+      reject(error)
+    }
+
     void mkdir(dirname(invocation.logPath), { recursive: true })
       .then(() => {
-        const log = createWriteStream(invocation.logPath, { flags: 'a' })
+        const log = createWriteStream(invocation.logPath, { flags: 'w' })
         // The answer file is a copy of stdout, not a replacement for it: the log
         // stays the whole build, in order, for whoever reads it afterwards.
         const answer =
-          invocation.stdoutPath === undefined ? undefined : createWriteStream(invocation.stdoutPath, { flags: 'a' })
+          invocation.stdoutPath === undefined ? undefined : createWriteStream(invocation.stdoutPath, { flags: 'w' })
+
+        // Handle stream errors: EACCES, ENOSPC, etc.
+        log.once('error', (error) => {
+          killTree()
+          answer?.destroy()
+          fail(error)
+        })
+        answer?.once('error', (error) => {
+          killTree()
+          log.destroy()
+          fail(error)
+        })
+
         const env: NodeJS.ProcessEnv = { ...process.env }
         for (const [key, value] of Object.entries(invocation.env ?? {})) {
           if (value === undefined) delete env[key]
@@ -117,23 +171,50 @@ export const spawnToLog: RunProcess = (invocation) => {
           cwd: invocation.cwd,
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
+          // Its own process group, so a timeout can end what the build started and not
+          // only the shell it started it through: a grandchild that holds the pipes open
+          // would keep the build "running" after its leader was gone.
+          detached: true,
         })
+        const killTree = () => {
+          try {
+            if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL')
+            else child.kill('SIGKILL')
+          } catch {
+            child.kill('SIGKILL')
+          }
+        }
+
+        // Set up timeout if requested
+        let timeoutHandle: NodeJS.Timeout | undefined
+        if (invocation.timeoutMs !== undefined) {
+          timeoutHandle = setTimeout(() => {
+            // The log is what a person reads to learn why a build ended; a kill with
+            // no line in it looks like a build that simply stopped.
+            log.write(`\nfleet: build timed out after ${invocation.timeoutMs}ms and was killed\n`)
+            killTree()
+            fail(buildTimeoutError(invocation.timeoutMs as number))
+          }, invocation.timeoutMs)
+        }
+
         child.stdout?.on('data', (chunk: Buffer) => {
           log.write(chunk)
           answer?.write(chunk)
         })
         child.stderr?.pipe(log, { end: false })
         child.once('error', (error) => {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
           log.end(`${String(error)}\n`)
           answer?.end()
-          reject(error)
+          fail(error)
         })
         child.once('close', (code) => {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
           log.end()
           answer?.end()
-          resolve({ code, durationMs: Date.now() - startedAt })
+          finish({ code, durationMs: Date.now() - startedAt })
         })
       })
-      .catch(reject)
+      .catch(fail)
   })
 }

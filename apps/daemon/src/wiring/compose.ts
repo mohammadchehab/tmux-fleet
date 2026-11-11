@@ -39,13 +39,16 @@ import {
 } from '@fleet/foundation-core'
 import type {
   BranchHead,
+  Coordination,
   EventSink,
   ProjectManager,
   ProviderRegistry,
   PullRequests,
   RoutineKind,
   Tracker,
+  RepoFiles,
   Worktrees,
+  WorktreeProvisioner,
 } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore, type StoreFactory } from '@fleet/foundation-store'
 import { createGitHubPullRequests } from '@fleet/integrations-github'
@@ -64,12 +67,14 @@ import { ClaudeProvider, createStructuredCompletion } from '@fleet/runtime-provi
 import { createCursorProvider } from '@fleet/runtime-provider-cursor'
 import { createDeepInfraProvider } from '@fleet/runtime-provider-deepinfra'
 import type { Provider } from '@fleet/runtime-provider-sdk'
+import type { BookkeepingFailure } from '@fleet/runtime-supervisor'
 import { execFileExec, readFileNode, tempPathNode, whichProbe, type ToolIo } from '@fleet/security-scanners'
-import { createBranchHead, createWorktrees } from '@fleet/workspace-worktree'
+import { createBranchHead, createRepoFiles, createWorktreeProvisioner, createWorktrees } from '@fleet/workspace-worktree'
 import { createBranchCleanupFactory } from '../routines/branch-cleanup.ts'
+import { coordinationFor } from '../routines/coordination.ts'
 import { createDaemon, type Daemon } from './daemon.ts'
 import { createDaemonBuilds } from './builds.ts'
-import { createProviderEnv } from '../env/deepinfra-env.ts'
+import { createProviderEnv, judgeEnvFor, type DeepInfraEnvOptions } from '../env/deepinfra-env.ts'
 import { createExecutorRouter, type KindExecutor } from '../execution/executor.ts'
 import { createDaemonExecutors } from '../execution/executors.ts'
 import { createDaemonJudge } from '../execution/judge.ts'
@@ -80,6 +85,7 @@ import { loadProfile, type Profile, type TrackerProfile } from '../config/profil
 import { createSecurityScanFactory } from '../routines/security.ts'
 import { createDaemonServer, type DaemonServer } from '../api/server.ts'
 import { createSupervisor, type Supervisor } from '../execution/sessions.ts'
+import { createStandingBriefs } from '../execution/standards.ts'
 import { createTrackerSyncFactory } from '../routines/tracker-sync.ts'
 import { createWorktreeGcFactory } from '../routines/worktree-gc.ts'
 import { createWakingSink, deliverOnSessionStart } from '../execution/wake.ts'
@@ -119,6 +125,14 @@ export interface ComposeDeps {
    * test passes a fake, so a suite never authenticates or touches a repository.
    */
   readonly pullRequests?: PullRequests
+  /**
+   * shared-fleet.md §2: the coordination transport, for a profile with a `coord`
+   * block. Defaults to git against the block's repository; a test passes the
+   * in-memory one, so a suite never reaches GitHub.
+   */
+  readonly coordination?: Coordination
+  /** Who this fleet publishes as, when `coord.user` is absent. Defaults to asking `gh`. */
+  readonly githubLogin?: () => Promise<string>
   /** Providers to construct instead of the built-in set, by the profile's `provider` name. */
   readonly providers?: ReadonlyMap<string, Provider>
   /**
@@ -158,6 +172,10 @@ export interface ComposeDeps {
    * suite never removes a directory on the machine it runs on.
    */
   readonly worktrees?: Worktrees
+  /** §9's creator; absent, the real `git`. A test supplies one so no repository is touched. */
+  readonly worktreeProvisioner?: WorktreeProvisioner
+  /** §12.1: where a peer's repo standards are read from; absent, the default branch via the real `git`. */
+  readonly repoFiles?: RepoFiles
   /**
    * The board `tracker-sync` reads and writes (§3). Defaults to the adapter the
    * profile's `trackers.system` names — `@fleet/integrations-trackers-backlog`
@@ -191,6 +209,13 @@ export interface Composed {
    * what ran, not what is installed.
    */
   readonly scheduler: Scheduler
+  /**
+   * §5.3's Judge, exposed for the same reason as `scheduler`: a test composing a
+   * real fleet has no other handle on it, and the two things worth asserting
+   * about it — which model answers, and where the call is sent — are properties
+   * of this object rather than of anything the ledger records.
+   */
+  readonly judge: JudgeService
   /**
    * The waking sink's own append. A composed fleet's writes have to wake the same
    * way the daemon's do — a test that appended straight to the store would be
@@ -293,6 +318,17 @@ const trackerFor = async (profile: TrackerProfile, credentials: JiraCredentialSo
   })
 }
 
+/**
+ * The daemon log's one line for a bookkeeping append the store refused
+ * (TASK-57): the peer, the turn and what the store said. Named rather than
+ * inlined into the wiring below so the sentence a person reads is the thing
+ * under test, and so it is one line per failure by construction.
+ */
+export const bookkeepingFailureLine = (failure: BookkeepingFailure): string => {
+  const reason = failure.error instanceof Error ? failure.error.message : String(failure.error)
+  return `fleetd: bookkeeping for ${String(failure.peerId)} failed on turn ${String(failure.turnId)} and the session stays live: ${reason}`
+}
+
 export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   const clock = deps.clock ?? systemClock
   const paths = profilePaths(deps.profileName, deps.roots)
@@ -315,7 +351,11 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   await store.migrate()
 
   const providers = deps.providers ?? buildProviders(profile)
-  const pm = deps.pm ?? createProjectManager()
+  // §6.1's spend cap is a PM rule, so the profile's budget is policy the PM holds rather than something a rule
+  // reaches for: no `budget` block means no cap, and the rule then never asks about money.
+  const pm =
+    deps.pm ??
+    createProjectManager(profile.budget === undefined ? {} : { budgetUsd: profile.budget.usd })
 
   // §5.2: an append is the fleet's clock, so every committed batch wakes what
   // listens for it. The sink wraps the store rather than living inside it: the
@@ -338,17 +378,53 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // environment or the file the profile names — never stored, never in argv,
   // never in an event or an error. The supervisor asks again on every start, so
   // a rotated key takes effect without restarting the daemon.
-  const providerEnv = createProviderEnv({
+  const providerEnvOptions: DeepInfraEnvOptions = {
     profile,
     environ: deps.environ ?? process.env,
     configHome: paths.configHome,
-  })
+  }
+  const providerEnv = createProviderEnv(providerEnvOptions)
+
+  // §5.3's Judge is a provider path, so it gets the same fragment a peer's
+  // session does — from the profile's `judge:` block, never from fleetd's own
+  // identity. Read once here rather than per question, because the Judge is one
+  // call site and a question is not a session.
+  //
+  // No block means no fragment, which is the old behaviour deliberately kept: a
+  // machine that is logged in answers on that login, and a profile that wants the
+  // Judge somewhere else says so. What must not happen is the silent version — a
+  // `judge:` block that names a provider and is then ignored — so a missing key
+  // throws here, before the fleet is up, rather than being discovered later as a
+  // question that escalated for no stated reason.
+  const judgeEnv = await judgeEnvFor(providerEnvOptions)(profile.judge)
 
   // The supervisor is the only thing that may hold a provider instance (§2), so
   // it is built first and the Mailbox reaches peers through it (§7). It appends
   // through the waking sink, because `session.started` is the event that wakes
   // the delivery of whatever is waiting for that peer.
-  const supervisor = createSupervisor({ profile, paths, store: wake, providers, clock, providerEnv })
+  const supervisor = createSupervisor({
+    profile,
+    paths,
+    read: store.reader(),
+    worktrees: deps.worktreeProvisioner ?? createWorktreeProvisioner(),
+    standing: createStandingBriefs({
+      profile,
+      paths,
+      repoFiles: deps.repoFiles ?? createRepoFiles(),
+      events: store,
+      read: store.reader(),
+      append: wake.append,
+      clock,
+    }),
+    store: wake, providers, clock, providerEnv,
+    // TASK-57: a bookkeeping row the store refused is not a dead session, but it
+    // must not vanish either — the spend cap reads these rows, and a fleet that
+    // silently stopped measuring would look exactly like a fleet that stopped
+    // spending. One line per failure, with the peer, the turn and what the store said.
+    onBookkeepingFailure: (failure) => {
+      console.error(bookkeepingFailureLine(failure))
+    },
+  })
 
   const mailbox = createMailbox({
     store: { append: wake.append, messages: store.reader().messages },
@@ -393,9 +469,12 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     createDaemonJudge({
       store,
       // §5.3's transport: one schema-constrained call, run in the profile's own
-      // directory with no session, no tools and no settings. The Judge's own
-      // default model is the cheap one (§5.3) until a profile names another.
-      transport: createStructuredCompletion({ cwd: paths.stateDir }),
+      // directory with no session, no tools and no settings. `env` is the
+      // profile's `judge:` fragment (see above), so the answering model is the
+      // one the profile named rather than whatever identity fleetd was started
+      // with; absent a block, the cheap default model on fleetd's own identity.
+      transport: createStructuredCompletion({ cwd: paths.stateDir, env: judgeEnv }),
+      ...(profile.judge === undefined ? {} : { model: profile.judge.model }),
       clock,
     })
   executors.push(
@@ -484,6 +563,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
             system: trackers.system,
             query: trackers.query,
             ...(trackers.role === undefined ? {} : { role: trackers.role }),
+            ...(trackers.comments === undefined ? {} : { comments: trackers.comments }),
           }),
         }),
     ...(scanners === undefined
@@ -535,7 +615,38 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     ...(deps.buildProcess === undefined ? {} : { process: deps.buildProcess }),
   })
 
-  const daemon = createDaemon({ profile, paths, store, append: wake.append, supervisor, mailbox, scheduler, ledger, clock })
+  // shared-fleet.md §3: a profile in an engagement publishes its pace. `loadProfile`
+  // has refused a `coord` block without a `budget`, so the cap is there. Built
+  // before the daemon and started by `up`, so `fleet up` is where a missing `gh`
+  // login is refused rather than a log line an hour later.
+  const coordination =
+    profile.coord === undefined || profile.budget === undefined
+      ? undefined
+      : await coordinationFor({
+          coord: profile.coord,
+          capUsd: profile.budget.usd,
+          paths,
+          read: store.reader(),
+          clock,
+          ...(deps.coordination === undefined ? {} : { coordination: deps.coordination }),
+          ...(deps.githubLogin === undefined ? {} : { login: deps.githubLogin }),
+        })
+
+  const daemon = createDaemon({
+    profile,
+    paths,
+    store,
+    append: wake.append,
+    supervisor,
+    mailbox,
+    scheduler,
+    ledger,
+    clock,
+    // So `fleet up` can say when a profile asked for an effort the provider it
+    // named cannot honour (TASK-12): the map here is the one the sessions run on.
+    providerCapabilities: (name) => providers.get(name)?.capabilities,
+    ...(coordination === undefined ? {} : { coordination }),
+  })
   const server = await createDaemonServer({
     api: daemon,
     socketPath: paths.socketPath,
@@ -558,7 +669,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     },
   })
 
-  return { daemon, server, store, supervisor, scheduler, append: wake.append, lock }
+  return { daemon, server, store, supervisor, scheduler, judge, append: wake.append, lock }
 }
 
 /** The log path a supervisor writes to; exported so the log line and §2's layout cannot drift apart. */

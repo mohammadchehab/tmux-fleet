@@ -356,6 +356,78 @@ CREATE INDEX IF NOT EXISTS peer_compactions_peer ON peer_compactions (peer_id);
 `
 
 /**
+ * What each peer is doing right now (§4), one row per peer: the last tool the
+ * provider reported and its short target, and when the peer's last turn ended.
+ * A row per peer rather than an event tail, because `fleet ls`, the view and
+ * the board all ask the same question — "what is it doing" — and answering it
+ * from the log would make the cost of drawing a screen depend on the size of
+ * the fleet's history.
+ */
+const PEER_ACTIVITY = `
+CREATE TABLE IF NOT EXISTS peer_activity (
+  peer_id      TEXT PRIMARY KEY,
+  last_tool    TEXT,
+  last_target  TEXT,
+  last_tool_at TEXT,
+  last_turn_at TEXT
+) STRICT;
+
+-- Edit/Write calls per (peer, Work): a counter, not a row per call, because the
+-- question is "how much is this peer rewriting" and a log of every touch answers
+-- a different one. Keyed by Work so a Work handed to another peer keeps its own
+-- count, and so the count survives the peer switching away and back.
+CREATE TABLE IF NOT EXISTS peer_tool_counts (
+  peer_id TEXT NOT NULL,
+  work_id TEXT NOT NULL,
+  tool    TEXT NOT NULL,
+  count   INTEGER NOT NULL,
+  PRIMARY KEY (peer_id, work_id, tool)
+) STRICT;
+`
+
+/**
+ * §5.3's typed question log, projected so a rule reads an answer as state rather
+ * than as the event that carried it. One row per question, not two: the answer
+ * fills the row in when it arrives, so an open question is the row with no
+ * `answered_at` rather than a row that is not there yet. A rule asking "was this
+ * card called thin?" therefore reads one row either way.
+ */
+const JUDGE_QUESTIONS = `
+CREATE TABLE IF NOT EXISTS judge_questions (
+  question_id TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  inputs_hash TEXT NOT NULL,
+  work_id     TEXT,
+  asked_for   TEXT,
+  asked_at    TEXT NOT NULL,
+  answered_at TEXT,
+  model       TEXT,
+  data        TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS judge_questions_work ON judge_questions (work_id);
+`
+
+// The month a turn falls in is its event's `ts` in UTC; `strftime` normalises an
+// offset the same way the reducer's `toISOString()` does, so the backfill and a
+// replay agree on every row.
+const SPEND_BY_MONTH = `
+CREATE TABLE IF NOT EXISTS spend_by_month (
+  month          TEXT PRIMARY KEY,
+  cost_usd       REAL NOT NULL,
+  turns          INTEGER NOT NULL,
+  unpriced_turns INTEGER NOT NULL
+) STRICT;
+INSERT OR IGNORE INTO spend_by_month (month, cost_usd, turns, unpriced_turns)
+  SELECT strftime('%Y-%m', ts),
+         SUM(COALESCE(json_extract(data, '$.costUsd'), 0)),
+         COUNT(*),
+         SUM(json_extract(data, '$.costUsd') IS NULL)
+    FROM events
+   WHERE type = 'turn.usage_recorded'
+   GROUP BY 1;
+`
+
+/**
  * Migrations, in order. A store records the highest applied version in
  * `store_meta` and applies everything above it; version 1 is the initial
  * schema (architecture §3).
@@ -393,6 +465,47 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 5,
     name: 'delivered_session_id',
     statements: ['ALTER TABLE messages ADD COLUMN delivered_session_id TEXT;'],
+  },
+  {
+    // additive: the token report could count tokens but not price them, so
+    // `fleet ls` had numbers and no bill (§6.2). `cost_usd` is what the turns
+    // that published a price add up to; a row written before this column existed
+    // reads 0, and so does a peer whose provider prices nothing.
+    //
+    // Added here rather than to `token_report`'s CREATE TABLE above, because a
+    // fresh store applies the migrations in order too — the column has to come
+    // from one place, not two.
+    version: 6,
+    name: 'token_cost',
+    statements: ['ALTER TABLE token_report ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;'],
+  },
+  {
+    // additive: activity is a projection of a new event (`peer.tool_used`), so an
+    // existing log has nothing to backfill into it. Version 7, not 6: 6 is
+    // `token_cost` above, and two migrations sharing a version means whichever
+    // the store applied first wins and the other is never applied at all.
+    version: 7,
+    name: 'peer_activity',
+    statements: [PEER_ACTIVITY],
+  },
+  {
+    // additive: the question log was projectable all along — `judge.requested`
+    // and `judge.answered` have been in the events table since version 1 — so a
+    // replay fills this table from a log an older store already holds, and
+    // nothing needs backfilling at upgrade time.
+    version: 8,
+    name: 'judge_questions',
+    statements: [JUDGE_QUESTIONS],
+  },
+  {
+    // additive, and backfilled: `turn.usage_recorded` has been in the log since
+    // version 1, and `migrate()` does not replay it. Without the INSERT an upgraded
+    // store would report this month as unspent until its next rebuild — and a fleet
+    // that reads itself as under pace bids for work it cannot pay for
+    // (shared-fleet.md §3).
+    version: 9,
+    name: 'spend_by_month',
+    statements: [SPEND_BY_MONTH],
   },
 ]
 

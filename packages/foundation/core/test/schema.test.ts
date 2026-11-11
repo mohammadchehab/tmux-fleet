@@ -62,6 +62,21 @@ describe('schema combinators', () => {
     assert.throws(() => parse(oneOf(['a', 'b']), 'c'), /expected "a"|"b"/)
   })
 
+  test('a record keeps a __proto__ key as data and its prototype stays Object.prototype (TASK-49)', () => {
+    // JSON.parse makes `__proto__` an own key; `out[key] = …` on a plain object
+    // would hit the prototype setter instead: a primitive value is dropped, an
+    // object value replaces the prototype.
+    const primitive = parse(record(string()), JSON.parse('{"__proto__":"x","a":"b"}')) as Record<string, string>
+    assert.equal(Object.hasOwn(primitive, '__proto__'), true, 'the key is not dropped')
+    assert.equal(Object.getOwnPropertyDescriptor(primitive, '__proto__')?.value, 'x')
+    assert.equal(primitive['a'], 'b')
+
+    const nested = parse(record(object({ polluted: string() })), JSON.parse('{"__proto__":{"polluted":"yes"}}'))
+    assert.equal(Object.getPrototypeOf(nested), Object.prototype, 'the prototype is not replaced')
+    assert.equal(Object.hasOwn(nested, '__proto__'), true)
+    assert.equal((nested as { polluted?: string }).polluted, undefined, 'nothing is inherited from the key')
+  })
+
   test('array, record and array paths report the index', () => {
     assert.deepEqual(parse(array(string()), ['a']), ['a'])
     assert.deepEqual(parse(record(string()), { k: 'v' }), { k: 'v' })

@@ -31,7 +31,7 @@ const peer = {
   updatedAt: now,
 }
 
-const listing: LsResult = { status, peers: [peer], routines: [], decisions: [], compactions: [] }
+const listing: LsResult = { status, peers: [peer], routines: [], decisions: [], compactions: [], tokens: [], activity: [] }
 
 const message = {
   msgId: 'msg_0123456789abcdef',
@@ -175,7 +175,25 @@ describe('callDaemon', () => {
         (thrown: unknown) => thrown,
       )
       assert.equal(code(error), 'external_failed')
+      assert.equal(isUnreachable(error), true)
       assert.match((error as Error).message, /closed the connection without answering/)
+    } finally {
+      await daemon.close()
+    }
+  })
+
+  it('is not unreachable when a live daemon answers with an external failure of its own', async () => {
+    // A `gh` call that failed inside the daemon is `external_failed` too. The daemon answered, so
+    // `fleet up` must not take it for "nobody is listening" and start a second one.
+    const daemon = await serve(() => failed('external_failed', 'gh pr list failed'))
+    try {
+      const error = await callDaemon({ socketPath: daemon.socketPath }, 'ls', {}).then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      )
+      assert.equal(code(error), 'external_failed', 'the daemon\'s own code is kept for the user')
+      assert.match((error as Error).message, /gh pr list failed/)
+      assert.equal(isUnreachable(error), false)
     } finally {
       await daemon.close()
     }

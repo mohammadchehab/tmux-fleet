@@ -14,6 +14,7 @@ import { isFleetErrorCode, type TurnId } from '@fleet/foundation-core'
 import { capabilityChecks, type Provider, type QuestionId } from '@fleet/runtime-provider-sdk'
 
 import { claudeCapabilities, ClaudeProvider } from '../src/index.ts'
+import { systemPromptOf } from '../src/session.ts'
 
 const provider: Provider = new ClaudeProvider()
 
@@ -27,6 +28,7 @@ test('declares the capabilities the spike measured, and no others', () => {
   assert.deepEqual(provider.capabilities, {
     resume: true,
     modelSwitch: true,
+    effort: true,
     usageTokens: true,
     usageCost: true,
     structuredOutput: true,
@@ -117,6 +119,7 @@ test('capabilities default to what the spike measured, frozen, and are a promise
   assert.deepEqual(fresh.capabilities, {
     resume: true,
     modelSwitch: true,
+    effort: true,
     usageTokens: true,
     usageCost: true,
     structuredOutput: true,
@@ -163,4 +166,15 @@ test('a provider that cannot resume refuses a resume spec before it spawns anyth
 test('the launch checks reject with typed codes, so the supervisor can restart on them', () => {
   assert.ok(isFleetErrorCode('config_mismatch'))
   assert.ok(isFleetErrorCode('permission_mode_mismatch'))
+})
+
+test('a peer’s standards ride in the system prompt, appended to Claude Code’s own, and nothing is appended when there are none (§12.1)', () => {
+  // `settingSources: []` means the session reads no AGENTS.md or CLAUDE.md, so this
+  // is the one way the repo's rules reach the peer.
+  assert.deepEqual(systemPromptOf({ systemPromptAppend: 'Never push to main.' }), {
+    type: 'preset',
+    preset: 'claude_code',
+    append: 'Never push to main.',
+  })
+  assert.deepEqual(systemPromptOf({}), { type: 'preset', preset: 'claude_code' })
 })

@@ -14,6 +14,7 @@ export {
   type BuildRun,
   type BuildRunner,
   type BuildRunResult,
+  DEFAULT_BUILD_TIMEOUT_MS,
   type ProcessInvocation,
   type ProcessOutcome,
   type RunProcess,

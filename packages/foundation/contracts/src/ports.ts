@@ -11,6 +11,7 @@ import type {
   FleetError,
   NotificationKey,
   PeerId,
+  QuestionId,
   Repo,
   Result,
   Seq,
@@ -26,8 +27,8 @@ import type { Message } from './projections/mailbox.ts'
 import type { MessageAckState } from './events/messages.ts'
 import type { ProviderHandle, Turn } from './provider.ts'
 import type { Build, PullRequest, Worktree } from './projections/delivery.ts'
-import type { Decision, Finding, Notification, Routine } from './projections/ops.ts'
-import type { Peer, PeerCompactions, Session } from './projections/peers.ts'
+import type { Decision, Finding, JudgeQuestionRecord, MonthSpend, Notification, Routine, TokenReport } from './projections/ops.ts'
+import type { Peer, PeerActivity, PeerCompactions, Session } from './projections/peers.ts'
 import type { Work } from './projections/work.ts'
 import type { ExternalItem } from './shapes.ts'
 import type { WorkState } from './work-state.ts'
@@ -181,6 +182,24 @@ export interface Tracker {
 
   /** Point the ticket at the PR that implements it (§10). Idempotent: the same URL twice adds nothing. */
   link(key: string, prUrl: string): Promise<void>
+
+  /**
+   * Post a note on the ticket: how a peer's structured progress (`work.noted`,
+   * §5.1) reaches the board a human is reading.
+   *
+   * Idempotent on the body, the same way `link` is on the URL. `tracker-sync` is
+   * woken by an event and may see that event more than once — a re-run, a
+   * resumed session, a replayed log — and a card that collected one copy of a
+   * note per wake would be unreadable. So an adapter sends a body the ticket
+   * already carries nowhere, and treats "already there" as success rather than
+   * as a call it dodged.
+   *
+   * Unlike `transition`, this is sent even when the profile maps no state for
+   * the note: a note is not a column, and the fleet has no vocabulary to invent
+   * for it. The body arrives already rendered — the note's phase is part of the
+   * text — because a board that only understands prose cannot show a phase.
+   */
+  comment(key: string, body: string): Promise<void>
 }
 
 /**
@@ -213,11 +232,64 @@ export interface BranchHead {
  */
 export interface Worktrees {
   /**
+   * Create a worktree for a Work topic. The worktree is created under
+   * `<checkout>/.claude/worktrees/<topic>` on a fresh branch cut from the
+   * remote's default branch. The caller records `worktree.created` (§9).
+   */
+  create(input: {
+    readonly repo: Repo
+    readonly checkoutPath: string
+    readonly topic: string
+    readonly workId: string
+  }): Promise<{ readonly path: string; readonly branch: string }>
+
+  /**
    * Remove the checkout at `path`, and nothing else: a path git does not know, or
    * one holding changes, throws instead of being forced. §9's rule — nothing is
    * deleted with local-only work — is enforced by git as well as by the caller.
    */
   remove(path: string): Promise<void>
+}
+
+/**
+ * A file as a repository's default branch has it (§12.1): what a peer's standards
+ * are read from, instead of a working tree the peer can edit — until a peer has a
+ * worktree of its own, its cwd *is* the checkout, and a peer that could change its
+ * own rules by editing `AGENTS.md` would be judged against what it wrote.
+ */
+export interface RepoFiles {
+  /**
+   * `path` at the tip of the default branch of the repository `cwd` belongs to,
+   * and the commit it was read at. `undefined` when there is nothing to read:
+   * `cwd` is not a repository, it has no default branch yet, or the file is not
+   * on it. Never the working tree.
+   */
+  read(cwd: string, path: string): Promise<{ readonly text: string; readonly ref: string } | undefined>
+}
+
+/**
+ * §9's creation half: make a checkout for a peer under the repo's own
+ * `.claude/worktrees/<topic>`. Kept apart from `Worktrees` (removal) so a fake of
+ * the one need not grow the other, and because the two have different callers:
+ * the supervisor creates, `branch-cleanup` and `worktree-gc` remove.
+ *
+ * Idempotent, because a daemon restart asks again for a peer whose checkout is
+ * already there.
+ */
+export interface WorktreeProvisioner {
+  /**
+   * A checkout of the repository at `root` at `<root>/.claude/worktrees/<topic>`,
+   * on `branch` (created from `base` when it does not exist yet). `created` is
+   * false when git already listed that path, so the caller can tell a reuse from
+   * a new checkout. A branch another checkout holds, or a path git refuses, throws.
+   */
+  ensure(input: {
+    readonly root: string
+    readonly topic: string
+    readonly branch: string
+    /** Defaults to the remote's default branch, else `origin/main`, else `HEAD`. */
+    readonly base?: string
+  }): Promise<{ readonly path: string; readonly created: boolean }>
 }
 
 /**
@@ -286,6 +358,16 @@ export interface ReadModel {
   readonly findings: {
     all(): Promise<readonly Finding[]>
   }
+  /**
+   * §5.3's typed question log, projected so a rule reads an answer as state
+   * rather than as the event that carried it. That is what lets `dispatch` stop
+   * waking on `judge.answered` — an event its own body causes to be appended,
+   * and so a tick it would be re-entering itself to run (§6).
+   */
+  readonly judge: {
+    all(): Promise<readonly JudgeQuestionRecord[]>
+    get(id: QuestionId): Promise<JudgeQuestionRecord | undefined>
+  }
   /** §7's projection: what the Mailbox wrote, and what `fleet peek` reads. */
   readonly messages: {
     all(): Promise<readonly Message[]>
@@ -319,6 +401,30 @@ export interface ReadModel {
    */
   readonly compactions: {
     all(): Promise<readonly PeerCompactions[]>
+  }
+  /**
+   * §6.2's cost report: a row per peer *and* Work, plus a rollup row per peer
+   * with no `workId`. Asking for both in one read is what lets `fleet ls` print
+   * a peer's bill and the board price each Work without two queries that could
+   * disagree about a turn appended between them.
+   */
+  readonly tokens: {
+    all(): Promise<readonly TokenReport[]>
+    /**
+     * The fleet's spend in `month` (`YYYY-MM`, UTC): zeros for a month with no
+     * turns, never `undefined`, because "spent nothing" is the answer.
+     */
+    month(month: string): Promise<MonthSpend>
+  }
+
+  /**
+   * What each peer is doing right now (§4): its current Work, the last tool it
+   * ran and that call's target, and how much it has edited that Work. A peer
+   * with nothing to say has no row, the same way a peer that never compacted
+   * has no compaction row.
+   */
+  readonly activity: {
+    all(): Promise<readonly PeerActivity[]>
   }
 }
 
@@ -378,4 +484,84 @@ export interface PeerSessionLease {
  */
 export interface PeerSessions {
   acquire(peerId: PeerId): Promise<Result<PeerSessionLease, FleetError>>
+}
+
+// ------------------------------------------------------------ coordination (shared-fleet.md §2)
+
+/**
+ * A ref in a shared fleet's coordination repository, named without `refs/heads/`
+ * (`eng-07/fleet/alice`, `eng-07/claim/7f3a9c…`), and the commit it points at.
+ */
+export interface CoordinationRef {
+  readonly name: string
+  readonly sha: Sha
+}
+
+/**
+ * What one ref holds: a flat set of named files. Flat on purpose — a fleet
+ * branch, a claim and a rotation each carry a handful of small documents, and
+ * a tree with no directories has no path a payload can climb out of.
+ */
+export type CoordinationFiles = Readonly<Record<string, string>>
+
+/**
+ * The medium shared fleets coordinate through (shared-fleet.md §2): one
+ * repository every member's fleet reads and writes, and nothing listening on any
+ * laptop. Implemented by `@fleet/integrations-coordination` over `git` and
+ * injected by `apps/daemon`; the poll loop, the pace publisher and the key
+ * manager see only this.
+ *
+ * Every ref has one writer (§2.1), and the port says which kind each call is for:
+ * `publish` replaces a ref this fleet owns, `create` makes one that may exist only
+ * once, `release` deletes one this fleet decided on. All three are pinned to the
+ * sha the caller last saw, so a write decided on stale inputs fails instead of
+ * landing — the same rule as `PullRequests.merge`.
+ */
+export interface Coordination {
+  /**
+   * Every ref and its sha, in one request (§2.2's poll), optionally only those
+   * under `prefix` (`eng-07/`). A ref's absence here is a fact: the list is the
+   * whole remote, not a page.
+   */
+  refs(prefix?: string): Promise<readonly CoordinationRef[]>
+
+  /**
+   * The files a ref holds, fetched only when `ref.sha` is not already local, so
+   * a poll that saw nothing move costs nothing. The answer names the sha it read,
+   * which is newer than `ref.sha` when the ref moved in between. `undefined` when
+   * the ref is gone.
+   */
+  read(ref: CoordinationRef): Promise<{ readonly sha: Sha; readonly files: CoordinationFiles } | undefined>
+
+  /**
+   * Replace a ref this fleet owns with one parentless commit holding `files`
+   * (§2.1: a fleet branch is a current state, not a history, so a hundred fleets
+   * do not push a hundred histories). `expected` is the sha the caller last
+   * published, `undefined` for a ref that must not exist yet. Anything else on the
+   * remote is a `head_moved` `FleetError` and nothing is written.
+   */
+  publish(input: {
+    readonly ref: string
+    readonly files: CoordinationFiles
+    readonly expected: Sha | undefined
+    readonly message: string
+  }): Promise<Sha>
+
+  /**
+   * Create a ref that may exist only once — a claim, a rotation (§2.1). Of any
+   * number of simultaneous creates exactly one is `created`; every other caller
+   * gets `created: false` and the winner's sha, never an error, because losing
+   * the race is the expected outcome for all but one.
+   */
+  create(input: {
+    readonly ref: string
+    readonly files: CoordinationFiles
+    readonly message: string
+  }): Promise<{ readonly created: boolean; readonly sha: Sha }>
+
+  /**
+   * Delete a ref, pinned to `expected` (§2.3: releasing a stale claim). A ref that
+   * moved is `head_moved` and stays; one already gone is `not_found`.
+   */
+  release(ref: string, expected: Sha): Promise<void>
 }

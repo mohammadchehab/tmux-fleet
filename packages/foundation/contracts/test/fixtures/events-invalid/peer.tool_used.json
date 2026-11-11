@@ -1,0 +1,16 @@
+{
+  "input": {
+    "seq": 5,
+    "ts": "2026-11-10T09:42:00.000Z",
+    "type": "peer.tool_used",
+    "subject": "engineer-1",
+    "actor": "peer:engineer-1",
+    "data": {
+      "peerId": 42,
+      "sessionId": "ses_1a2b3c4d5e6f7081",
+      "tool": "Edit",
+      "target": "packages/foundation/store/src/projections.ts"
+    }
+  },
+  "path": "data.peerId"
+}

@@ -51,6 +51,9 @@ test('it declares itself read-only, with no cost and no schema', () => {
   assert.deepEqual(cursorCapabilities, {
     resume: true,
     modelSwitch: true,
+    // The CLI has no reasoning level to set, so an effort in the spec is a
+    // request this provider cannot honour — `fleet up` says so (TASK-12).
+    effort: false,
     usageTokens: true,
     usageCost: false,
     structuredOutput: false,

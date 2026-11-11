@@ -67,12 +67,12 @@ import { appendIssues, fleetEvent } from './events/registry.ts'
 import type { AppendEvent, FleetEvent } from './events/registry.ts'
 import { evalRunWithCases } from './projections/evals.ts'
 import type { EvalRunWithCases } from './projections/evals.ts'
-import { decision, routine } from './projections/ops.ts'
-import type { Decision, Routine } from './projections/ops.ts'
+import { decision, routine, tokenReport } from './projections/ops.ts'
+import type { Decision, Routine, TokenReport } from './projections/ops.ts'
 import { message } from './projections/mailbox.ts'
 import type { Message } from './projections/mailbox.ts'
-import { peer, peerCompactions } from './projections/peers.ts'
-import type { Peer, PeerCompactions } from './projections/peers.ts'
+import { peer, peerActivity, peerCompactions } from './projections/peers.ts'
+import type { Peer, PeerActivity, PeerCompactions } from './projections/peers.ts'
 import { work } from './projections/work.ts'
 import type { Work } from './projections/work.ts'
 
@@ -82,6 +82,8 @@ import { buildCommand } from './shapes.ts'
 import type { BuildCommand } from './shapes.ts'
 import { turnKinds } from './provider.ts'
 import type { TurnKind } from './provider.ts'
+import { workNotePhase } from './work-state.ts'
+import type { WorkNotePhase } from './work-state.ts'
 
 // ----------------------------------------------------------------- envelope
 
@@ -101,6 +103,7 @@ export const daemonMethods = [
   'peek',
   'decide',
   'usage',
+  'note',
   'events.append',
   'evals',
   'replay',
@@ -191,6 +194,13 @@ export interface DaemonStatus {
   readonly startedAt: string
   readonly socketPath: string
   readonly storePath: string
+  /**
+   * Things the fleet started despite, in the user's words (TASK-12). The fleet is
+   * up — a warning is not a refusal — but the profile asked for something the
+   * provider cannot honour, and silence would let it look honoured. Omitted when
+   * there is nothing to say, so an ordinary `fleet up` prints what it always did.
+   */
+  readonly warnings?: readonly string[]
 }
 
 export const daemonStatus = (): Schema<DaemonStatus> =>
@@ -200,6 +210,7 @@ export const daemonStatus = (): Schema<DaemonStatus> =>
     startedAt: string({ minLength: 1, maxLength: 40 }),
     socketPath: string({ minLength: 1, maxLength: 500 }),
     storePath: string({ minLength: 1, maxLength: 500 }),
+    warnings: optional(array(string({ minLength: 1, maxLength: 500 }), { maxItems: 50 })),
   })
 
 // -------------------------------------------------------------------- params
@@ -287,6 +298,31 @@ export const usageParams = (): Schema<UsageParams> =>
     cachedTokens: count(),
     toolCalls: object({ grep: count(), glob: count(), read: count(), codegraph: count() }),
     costUsd: optional(number({ min: 0 })),
+  })
+
+/**
+ * `note`: a peer says where it has got to (§5.1), and the Work it is about is
+ * *not* a parameter. A peer names no workId because a peer does not choose what
+ * it is working on — the PM assigned it — so the daemon resolves the Work from
+ * `assignee`, which is the one column that answers "what is this peer on". A
+ * peer that passes a workId could describe someone else's Work, and a peer with
+ * two open Works would have to pick one from a list it did not make.
+ *
+ * `peerId` is explicit for the same reason `usage`'s is: the caller is the peer,
+ * and the daemon has no other way to know which session is on the socket. The
+ * CLI fills it from `FLEET_PEER`, which the daemon sets for every session.
+ */
+export interface NoteParams {
+  readonly peerId: PeerId
+  readonly phase: WorkNotePhase
+  readonly body: string
+}
+
+export const noteParams = (): Schema<NoteParams> =>
+  objectAs<NoteParams>()({
+    peerId: peerId(),
+    phase: workNotePhase(),
+    body: text(2000),
   })
 
 /** The methods that take no arguments; `{}` and an absent `params` are the same request. */
@@ -406,6 +442,7 @@ export interface DaemonParams {
   readonly peek: PeekParams
   readonly decide: DecideParams
   readonly usage: UsageParams
+  readonly note: NoteParams
   readonly 'events.append': EventsAppendParams
   readonly evals: EvalsParams
   readonly replay: ReplayParams
@@ -426,6 +463,7 @@ const paramsSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonParamsOf
   peek: peekParams,
   decide: decideParams,
   usage: usageParams,
+  note: noteParams,
   'events.append': eventsAppendParams,
   evals: evalsParams,
   replay: replayParams,
@@ -465,6 +503,17 @@ export interface LsResult {
    * count of zero, without a row for every peer that is behaving.
    */
   readonly compactions: readonly PeerCompactions[]
+  /**
+   * §6.2's cost report, as the projection holds it: a row per peer and Work, and
+   * a rollup row per peer with no `workId`. `ls` prints both rather than summing
+   * here — a client that wanted one peer's total should not have to re-add rows.
+   */
+  readonly tokens: readonly TokenReport[]
+  /**
+   * What each peer is doing right now (§4): `state` says `working`, this says
+   * at what. One row per peer with something to say.
+   */
+  readonly activity: readonly PeerActivity[]
 }
 
 export const lsResult = (): Schema<LsResult> =>
@@ -474,6 +523,8 @@ export const lsResult = (): Schema<LsResult> =>
     routines: array(routine()),
     decisions: array(decision()),
     compactions: array(peerCompactions()),
+    tokens: array(tokenReport()),
+    activity: array(peerActivity()),
   })
 
 /** `send`: the id the Mailbox minted, so the client can find it in `peek`. */
@@ -499,6 +550,19 @@ export interface UsageResult {
 }
 
 export const usageResult = (): Schema<UsageResult> => objectAs<UsageResult>()({ recorded: literal(true) })
+
+/**
+ * `note`: the Work the note landed on, and the phase it carried. The Work comes
+ * back because the peer did not name it — it is the daemon's answer to "what am
+ * I on", and a peer that read the reply learns which Work its words are on.
+ */
+export interface NoteResult {
+  readonly workId: WorkId
+  readonly phase: WorkNotePhase
+}
+
+export const noteResult = (): Schema<NoteResult> =>
+  objectAs<NoteResult>()({ workId: workId(), phase: workNotePhase() })
 
 /**
  * `events.append` answers with the seqs it wrote, in order: the store assigns
@@ -594,6 +658,7 @@ export interface DaemonResults {
   readonly peek: PeekResult
   readonly decide: DecisionRow
   readonly usage: UsageResult
+  readonly note: NoteResult
   readonly 'events.append': EventsAppendResult
   readonly evals: EvalsResult
   readonly replay: ReplayResult
@@ -611,6 +676,7 @@ const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[
   peek: peekResult,
   decide: decision,
   usage: usageResult,
+  note: noteResult,
   'events.append': eventsAppendResult,
   evals: evalRunWithCases,
   replay: replayResult,
@@ -643,6 +709,11 @@ export interface DaemonApi {
   decide(params: DecideParams): Promise<DecisionRow>
   /** Record one turn's usage as `turn.usage_recorded`; what the `token-report` projection reads (§6.2). */
   usage(params: UsageParams): Promise<UsageResult>
+  /**
+   * A peer says where it has got to (§5.1). The Work is resolved from the peer's
+   * assignee, not named by it — see `NoteParams`.
+   */
+  note(params: NoteParams): Promise<NoteResult>
   /**
    * Append `eval.*` events, and only those (§17). The single write a client has:
    * an eval runner is dev tooling that may not import the daemon, and the store

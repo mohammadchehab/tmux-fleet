@@ -5,7 +5,7 @@
  * here rather than silently rendering `undefined` on a page.
  */
 
-import type { DaemonStatus, LsResult, Work, WorkState } from '@fleet/foundation-contracts'
+import type { DaemonStatus, LsResult, PeerActivity, Work, WorkState } from '@fleet/foundation-contracts'
 import type { PeerId, Repo, WorkId } from '@fleet/foundation-core'
 
 export const statusFixture = (): DaemonStatus => ({
@@ -22,6 +22,8 @@ export const lsFixture = (): LsResult => ({
   routines: [],
   decisions: [],
   compactions: [],
+  tokens: [],
+  activity: [],
 })
 
 /**
@@ -38,6 +40,26 @@ export const workFixture = (overrides: Partial<Omit<Work, 'workId'>> & { readonl
     prs: [],
     createdAt: '2026-11-10T09:00:00.000Z',
     updatedAt: '2026-11-10T09:00:00.000Z',
+    ...rest,
+  }
+}
+
+/**
+ * A peer-activity row, joined to a Work by `workId`. The target is the
+ * adapter's short summary — a path or a description, never tool arguments.
+ */
+export const activityFixture = (
+  overrides: Partial<Omit<PeerActivity, 'peerId'>> & { readonly peerId?: string } = {},
+): PeerActivity => {
+  const { peerId: raw, ...rest } = overrides
+  return {
+    peerId: (raw ?? 'engineer-1') as PeerId,
+    workId: 'wrk_0000000000000001' as WorkId,
+    lastTool: 'Edit',
+    lastTarget: 'packages/foundation/store/src/peers.ts',
+    lastToolAt: '2026-11-10T11:58:01.000Z',
+    lastTurnAt: '2026-11-10T11:58:01.000Z',
+    edits: 14,
     ...rest,
   }
 }

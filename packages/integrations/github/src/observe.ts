@@ -278,22 +278,28 @@ export const refShaFrom = (stdout: string): string | undefined => {
 }
 
 /**
- * `gh api repos/…/branches --slurp` as the port's `Branch[]`. `--jq` has already
- * flattened each page's rows to `{name, sha}`, so this only checks the shape: a
- * missing name or an unusable sha is a call this package does not model, not a
- * branch to skip silently — a sweep that skipped a branch would leave it forever.
+ * `gh api repos/…/branches --paginate --slurp` as the port's `Branch[]`. `--slurp` is what makes the
+ * output one JSON value, an array of pages, but `gh` refuses it together with `--jq`, so the flattening
+ * is done here: each page's rows, `commit.sha` as the head. A missing name or an unusable sha is a call
+ * this package does not model, not a branch to skip silently — a sweep that skipped a branch would
+ * leave it forever.
  */
 export const branchListFrom = (raw: unknown): readonly Branch[] => {
   if (!Array.isArray(raw)) {
     throw fleetError('external_failed', 'gh api branches printed something that is not a list')
   }
   const branches: Branch[] = []
-  for (const row of list(raw)) {
-    const name = text(row['name'])
-    if (name === undefined || name === '') {
-      throw fleetError('external_failed', 'gh reported a branch with no name')
+  for (const page of raw as readonly unknown[]) {
+    if (!Array.isArray(page)) {
+      throw fleetError('external_failed', 'gh api branches printed a page that is not a list')
     }
-    branches.push({ name, sha: shape(shaShape(), row['sha'], 'branch head') })
+    for (const row of list(page)) {
+      const name = text(row['name'])
+      if (name === undefined || name === '') {
+        throw fleetError('external_failed', 'gh reported a branch with no name')
+      }
+      branches.push({ name, sha: shape(shaShape(), record(row['commit'])?.['sha'], 'branch head') })
+    }
   }
   return branches
 }

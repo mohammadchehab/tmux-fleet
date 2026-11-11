@@ -11,14 +11,15 @@
 
 import type { Infer, Schema } from '@fleet/foundation-core'
 import { brief, contract, contractVersionRef, work } from './work.ts'
-import { peer, peerCompactions, session } from './peers.ts'
+import { peer, peerActivity, peerCompactions, session } from './peers.ts'
 import { build, holder, pullRequest, worktree } from './delivery.ts'
 import { message } from './mailbox.ts'
-import { decision, finding, notification, routine, tokenReport } from './ops.ts'
+import { decision, finding, judgeQuestion, monthSpend, notification, routine, tokenReport } from './ops.ts'
 import { evalCase, evalRun } from './evals.ts'
 
 export const PROJECTION_SCHEMAS = {
   peer: peer(),
+  peerActivity: peerActivity(),
   peerCompactions: peerCompactions(),
   session: session(),
   work: work(),
@@ -34,7 +35,9 @@ export const PROJECTION_SCHEMAS = {
   routine: routine(),
   notification: notification(),
   finding: finding(),
+  judgeQuestion: judgeQuestion(),
   tokenReport: tokenReport(),
+  monthSpend: monthSpend(),
   evalRun: evalRun(),
   evalCase: evalCase(),
 } as const

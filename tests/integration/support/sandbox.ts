@@ -23,6 +23,7 @@
  * finished — sometimes between two calls of a test that counts the log.
  */
 
+import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,7 +36,7 @@ import {
   type PullRequests,
   type RoutineKind,
 } from '../../../packages/foundation/contracts/src/index.ts'
-import { profilePaths, type ProfilePaths } from '../../../packages/foundation/core/src/index.ts'
+import { profilePaths, type ProfilePaths, type WorktreeId } from '../../../packages/foundation/core/src/index.ts'
 import { compose, type Composed } from '../../../apps/daemon/src/wiring/compose.ts'
 import { stateFilePathOf } from '../../../apps/daemon/src/execution/sessions.ts'
 import { rpcCall } from '../../../apps/daemon/src/api/server.ts'
@@ -200,6 +201,28 @@ export const createSandbox = async (options: SandboxOptions = {}): Promise<Sandb
     // own step and the process is the test runner's, so it stays.
     exit: () => {},
   })
+
+  // Every peer starts in a checkout (§9), and two peers that can write may not
+  // share one, so the squad gets what the worktree manager will give it: one
+  // active worktree each, owned by its peer. They name their own repo, so a test
+  // that looks for *the* checkout of `sandbox/tmux-fleet` still finds only its own.
+  const at = new Date().toISOString()
+  await composed.store.append(
+    peers.map((peer) => ({
+      type: 'worktree.created' as const,
+      ts: at,
+      subject: 'sandbox/peer-worktrees',
+      actor: 'pm' as const,
+      data: {
+        worktreeId: `wtr_${createHash('sha256').update(peer.id).digest('hex').slice(0, 16)}` as WorktreeId,
+        repo: 'sandbox/peer-worktrees' as never,
+        branch: `peer/${peer.id}`,
+        path: join(home, 'worktrees', peer.id),
+        ownerPeerId: peer.id as never,
+        class: 'active' as const,
+      },
+    })),
+  )
 
   const raw = (method: DaemonMethod, params?: unknown): Promise<DaemonResponse> =>
     rpcCall(paths.socketPath, { id: `${method}-${String(Math.random()).slice(2, 8)}`, method, ...(params === undefined ? {} : { params }) })

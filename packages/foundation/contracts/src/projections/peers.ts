@@ -11,11 +11,12 @@ import {
   providerSessionRef,
   sessionId,
   timestamp,
+  workId,
   worktreeId,
 } from '@fleet/foundation-core'
 import { compactionTriggers, permissionMode, providerId } from '../provider.ts'
 import type { PeerState } from '@fleet/foundation-core'
-import type { PeerId, SessionId, ProviderSessionRef, WorktreeId } from '@fleet/foundation-core'
+import type { PeerId, SessionId, ProviderSessionRef, WorkId, WorktreeId } from '@fleet/foundation-core'
 import type { CompactionTrigger, PermissionMode } from '../provider.ts'
 
 export interface Peer {
@@ -70,6 +71,52 @@ export const peerCompactions = (): Schema<PeerCompactions> =>
     lastAt: timestamp(),
     lastTrigger: oneOf(compactionTriggers),
     lastPreTokens: count(),
+  })
+
+/**
+ * What a peer is doing right now (§4). `Peer.state` can say `working`; it
+ * cannot say *at what*, and a person watching `fleet ls` had only the mailbox
+ * to guess from. This is the missing half, and it is a projection like any
+ * other: derived from `peer.tool_used` and `turn.usage_recorded`, so a replay
+ * shows the same activity the live fleet did.
+ *
+ * One row per peer with something to say — a current Work, a tool call, or a
+ * finished turn. A peer that has none of those has no row, the same way a peer
+ * that never compacted has no compaction row.
+ */
+export interface PeerActivity {
+  readonly peerId: PeerId
+  /** The Work the peer is on: assigned, and not yet cleaned or cancelled. */
+  readonly workId?: WorkId
+  /** The provider's name for the last tool it ran. */
+  readonly lastTool?: string
+  /** That call's target — a file path, and only for the tools whose target is one. */
+  readonly lastTarget?: string
+  readonly lastToolAt?: string
+  /**
+   * When the peer's last turn ended, as far as the fleet could account for it.
+   * Absent for a provider that reports no spend, which is the same "not known
+   * here" the compaction cost uses rather than a zero that would read as a time.
+   */
+  readonly lastTurnAt?: string
+  /**
+   * Edit and Write calls this peer has made on `workId`: how much it is
+   * rewriting, which is the number that says a peer is thrashing. Reads and
+   * searches are deliberately not counted — they are the turn working, not the
+   * Work being reworked (§6.2 counts those separately).
+   */
+  readonly edits: number
+}
+
+export const peerActivity = (): Schema<PeerActivity> =>
+  objectAs<PeerActivity>()({
+    peerId: peerId(),
+    workId: optional(workId()),
+    lastTool: optional(string({ minLength: 1, maxLength: 64 })),
+    lastTarget: optional(string({ minLength: 1, maxLength: 200 })),
+    lastToolAt: optional(timestamp()),
+    lastTurnAt: optional(timestamp()),
+    edits: count(),
   })
 
 export interface Session {

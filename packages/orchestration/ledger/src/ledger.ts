@@ -58,7 +58,7 @@ import { buildKey, buildStdoutPath } from '@fleet/foundation-contracts'
 
 import { routeBuildHost, validateRouting, type BuildRouting } from './host.ts'
 import type { BuildCommand, BuildRunResult, BuildRunner } from './runner.ts'
-import { buildLogPath } from './runner.ts'
+import { buildLogPath, isBuildTimeout } from './runner.ts'
 
 export interface BuildRequest {
   readonly repo: Repo
@@ -119,9 +119,11 @@ export const createBuildLedger = (deps: BuildLedgerDeps): BuildLedger => {
       throw fleetError('invalid_input', 'a build needs a task: it is one half of what the ledger keys a build on')
     }
 
-    // 1. Uniqueness. A build that has an answer answers this request.
+    // 1. Uniqueness. A build that has an answer answers this request. `cancelled` is not
+    // one: the infrastructure failed before the build reached a verdict (see below), and
+    // answering a later request with that would make a network blip permanent for the sha.
     const existing = await deps.builds.find(request.repo, request.sha, request.task)
-    if (existing !== undefined && existing.status !== 'running') {
+    if (existing !== undefined && existing.status !== 'running' && existing.status !== 'cancelled') {
       return { build: existing, deduped: true }
     }
 
@@ -137,7 +139,7 @@ export const createBuildLedger = (deps: BuildLedgerDeps): BuildLedger => {
     }
 
     const buildId = existing?.buildId ?? mint()
-    const logPath = buildLogPath(deps.logDir, request.sha, request.task)
+    const logPath = buildLogPath(deps.logDir, request.sha, request.task, request.repo)
     const stdoutPath = buildStdoutPath(logPath)
     // A peer's request is the peer's act; a routine's (a nightly eval on `main`)
     // is the scheduler's. §3 keeps the two distinguishable in the log.
@@ -171,13 +173,18 @@ export const createBuildLedger = (deps: BuildLedgerDeps): BuildLedger => {
         logPath,
         stdoutPath,
       })
-    } catch {
-      // A runner that could not start is a failed build, not a lost one: the
-      // log is the runner's to fill in, and the row must not stay `running`
-      // (that is a promise no retry would ever keep). The reason travels in the
-      // error's own message, which `spawnToLog` also writes into the log.
+    } catch (thrown) {
+      // A runner that could not start is a build that ended, not a lost one: the log
+      // is the runner's to fill in, and the row must not stay `running` (that is a
+      // promise no retry would ever keep). The reason travels in the error's own
+      // message, which `spawnToLog` also writes into the log.
+      //
+      // What it ended *as* depends on who failed. A build that overran its limit ran
+      // and was too slow: `failed`, and final. Anything else — no such binary, a full
+      // disk, a stream that broke — is the infrastructure, which says nothing about the
+      // commit, so it is `cancelled` and the next request runs the build again.
       result = {
-        status: 'failed',
+        status: isBuildTimeout(thrown) ? 'failed' : 'cancelled',
         durationMs: Math.max(1, Date.now() - startedAt),
         exitCode: null,
       }

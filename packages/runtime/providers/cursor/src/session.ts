@@ -28,6 +28,8 @@
  *   and plan mode is what makes that safe.
  * - **stderr is not surfaced.** The CLI echoes request detail there, and these
  *   strings become stored events; a failure is reported by exit code instead.
+ *   It is still read, and thrown away: a pipe nobody drains fills at 64 KiB and
+ *   blocks the CLI's next write, which hangs the turn with no error at all.
  */
 
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
@@ -52,6 +54,7 @@ import type {
   TurnEndReason,
   Usage,
 } from '@fleet/runtime-provider-sdk'
+import { buildChildEnv } from '@fleet/runtime-provider-sdk'
 
 import { openingMessage } from './brief.ts'
 import { parseLines, type CursorTurnUsage } from './stream.ts'
@@ -242,6 +245,10 @@ export class CursorSession {
       this.#model,
       '--resume',
       this.chatId,
+      // End of options: a turn is a person's or a peer's words, and one that opens with a
+      // dash (a bullet, a rule, a pasted flag) would otherwise be read as an option and
+      // fail the turn, or — for `--yolo` — switch one on. cursor-agent honours `--`.
+      '--',
       turn.text,
     ]
     let child: TurnProcess
@@ -249,8 +256,9 @@ export class CursorSession {
       child = spawn(this.#config.executable, args, {
         cwd: this.#spec.cwd,
         // The spec's env is this one process's environment, which is what removes
-        // v1's shared-tmux env drift (§4, §13, §14.1).
-        env: { ...process.env, ...this.#spec.env },
+        // v1's shared-tmux env drift (§4, §13, §14.1) — on top of an allowlist of
+        // process variables, never `process.env`, so fleetd's keys stay in fleetd.
+        env: { ...buildChildEnv(this.#spec).env },
         stdio: ['ignore', 'pipe', 'pipe'],
       }) as TurnProcess
     } catch (thrown) {
@@ -269,6 +277,8 @@ export class CursorSession {
 
   /** Read the turn's stdout, and finish the turn when the process is done. */
   #pump(live: LiveTurn): void {
+    // Drained, never kept (see the file comment).
+    live.child.stderr.resume()
     let buffered = ''
     live.child.stdout.setEncoding('utf8')
     live.child.stdout.on('data', (chunk: string) => {
@@ -332,10 +342,11 @@ export class CursorSession {
         live.usage = line.usage
         this.#turnTokens = line.usage
         const reason: TurnEndReason = live.interrupted ? 'interrupted' : line.failed ? 'failed' : 'completed'
-        this.#endTurn(live, line.usage, line.error)
-        if (reason === 'failed') {
-          this.#emit({ type: 'error', message: line.error ?? 'cursor-agent reported a failed turn', retryable: true })
-        }
+        // `#endTurn` reads failure from the error, so a failure the CLI gave no
+        // words for still needs one — or it would be reported as completed.
+        const error = line.failed ? (line.error ?? 'cursor-agent reported a failed turn') : undefined
+        this.#endTurn(live, line.usage, error)
+        if (reason === 'failed' && error !== undefined) this.#emit({ type: 'error', message: error, retryable: true })
         return
       }
       // `init` names a display model and its own permission vocabulary, and the

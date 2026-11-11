@@ -37,8 +37,11 @@ export const assignReadyWork: Rule = (ctx) => {
     const peer = free.find((candidate) => !taken.has(String(candidate.peerId)) && fits(candidate, work, ctx))
     if (peer === undefined) continue
     taken.add(String(peer.peerId))
-    // v1 for a Work nobody has held; on a re-assign, the version after the one it was left on
-    const version = (work.briefVersion ?? 0) + 1
+    // v1 for a Work nobody has held and a peer that carries nothing; otherwise the version after
+    // the higher of the one the Work was left on and the one the peer's context already carries
+    // (§12.1: versioned per peer, only up). The executor refuses a brief that is not newer than the
+    // peer's, and a standing brief or an earlier Work has already moved that counter.
+    const version = Math.max(work.briefVersion ?? 0, peer.briefVersion) + 1
     drafts.push(
       draft(`assign:${String(work.workId)}`, {
         kind: 'assign',

@@ -49,5 +49,8 @@ export * from './projections/evals.ts'
 export * from './mailbox.ts'
 export * from './ports.ts'
 
+// what a shared fleet publishes about itself (shared-fleet.md §3)
+export * from './coordination.ts'
+
 // the daemon's local API, the port between `fleetd` and every client (§2)
 export * from './daemon-rpc.ts'

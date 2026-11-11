@@ -670,3 +670,238 @@ test('a compaction says whether the configured limit was the reason, which is th
 
   await store.close()
 })
+
+test('a turn adds its price to the Work and to the peer rollup, and an unpriced turn adds nothing', async () => {
+  const store = await open()
+  await store.append([
+    event('peer.registered', 'engineer-1', {
+      peerId: 'engineer-1',
+      role: 'engineer',
+      providerId: 'claude-code',
+      model: 'claude-sonnet-5-5',
+      permissionMode: 'acceptEdits',
+      worktreeId: 'wtr_5e6f708192a3b4c5',
+    }),
+  ])
+
+  const turn = (workId: string | undefined, costUsd: number | undefined, ts: string): AppendEvent[] => [
+    event(
+      'turn.usage_recorded',
+      'engineer-1',
+      {
+        peerId: 'engineer-1',
+        sessionId: 'ses_1a2b3c4d5e6f7081',
+        ...(workId === undefined ? {} : { workId }),
+        contextTokens: 172_400,
+        contextLimit: 200_000,
+        inputTokens: 61_200,
+        outputTokens: 4_180,
+        cachedTokens: 148_000,
+        toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+        ...(costUsd === undefined ? {} : { costUsd }),
+      },
+      ts,
+    ),
+  ]
+
+  await store.append(turn('wrk_7f3a91c2d84b0e56', 0.42, '2026-11-10T10:00:00.000Z'))
+  // A provider that prices nothing: the turn still counts, the spend does not move.
+  await store.append(turn('wrk_7f3a91c2d84b0e56', undefined, '2026-11-10T10:01:00.000Z'))
+
+  const rows = await store.reader().tokens.all()
+  const work = rows.find((row) => row.workId === 'wrk_7f3a91c2d84b0e56')
+  const rollup = rows.find((row) => row.workId === undefined)
+
+  assert.equal(work?.role, 'engineer', 'the role comes from the peer row, not the event')
+  assert.equal(work?.turns, 2)
+  assert.equal(work?.costUsd, 0.42, 'an unknown cost is not a free one, and not a new price either')
+
+  assert.equal(rollup?.turns, 2, 'the rollup counts every turn the peer ran')
+  assert.equal(rollup?.inputTokens, 122_400)
+  assert.equal(rollup?.costUsd, 0.42, 'the rollup sums what was actually priced')
+
+  await store.close()
+})
+
+/** A turn as `turn.usage_recorded` records it, priced or not, at `ts`. */
+const usage = (costUsd: number | undefined, ts: string): AppendEvent =>
+  event(
+    'turn.usage_recorded',
+    'engineer-1',
+    {
+      peerId: 'engineer-1',
+      contextTokens: 1_000,
+      contextLimit: 200_000,
+      inputTokens: 100,
+      outputTokens: 10,
+      cachedTokens: 0,
+      toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+      ...(costUsd === undefined ? {} : { costUsd }),
+    },
+    ts,
+  )
+
+const SPEND_LOG: readonly AppendEvent[] = [
+  usage(1.5, '2026-10-30T09:00:00.000Z'),
+  // 01:00 on the 1st in UTC+2 is still October in UTC, which is the month the cap is kept in.
+  usage(0.25, '2026-11-01T01:00:00.000+02:00'),
+  usage(2, '2026-11-01T00:00:00.000Z'),
+  usage(undefined, '2026-11-10T10:00:00.000Z'),
+  usage(0.5, '2026-11-10T11:00:00.000Z'),
+]
+
+test("a month's spend is the sum of that month's turns in UTC, and an unpriced turn is counted as one", async () => {
+  const store = await open()
+  await store.append([...SPEND_LOG])
+  const reader = store.reader()
+
+  assert.deepEqual(await reader.tokens.month('2026-10'), { month: '2026-10', costUsd: 1.75, turns: 2, unpricedTurns: 0 })
+  assert.deepEqual(await reader.tokens.month('2026-11'), { month: '2026-11', costUsd: 2.5, turns: 3, unpricedTurns: 1 })
+  assert.deepEqual(
+    await reader.tokens.month('2026-12'),
+    { month: '2026-12', costUsd: 0, turns: 0, unpricedTurns: 0 },
+    'a month with no turns spent nothing, which is an answer, not a miss',
+  )
+
+  await store.rebuild()
+  assert.deepEqual(await reader.tokens.month('2026-11'), { month: '2026-11', costUsd: 2.5, turns: 3, unpricedTurns: 1 })
+  await store.close()
+})
+
+test("a store upgraded from schema 8 has this month's spend at once, not after its next rebuild", async () => {
+  const path = tempStorePath()
+  const before = await openSqliteStore({ path, clock: fixedClock })
+  await before.append([...SPEND_LOG])
+  await before.close()
+
+  // What a store written by the previous build looks like: the log, and no table.
+  const db = new DatabaseSync(path)
+  db.exec("DROP TABLE spend_by_month; UPDATE store_meta SET value = '8' WHERE key = 'schema_version';")
+  db.close()
+
+  const after = await openSqliteStore({ path, clock: fixedClock })
+  const reader = after.reader()
+  assert.deepEqual(await reader.tokens.month('2026-10'), { month: '2026-10', costUsd: 1.75, turns: 2, unpricedTurns: 0 })
+  assert.deepEqual(await reader.tokens.month('2026-11'), { month: '2026-11', costUsd: 2.5, turns: 3, unpricedTurns: 1 })
+  await after.close()
+})
+
+const standardsSet = (version: number, digest: string, ts = '2026-11-10T09:02:00.000Z'): AppendEvent =>
+  event(
+    'peer.standards_set',
+    'engineer-1',
+    {
+      peerId: 'engineer-1',
+      version,
+      briefId: `brf_${String(version).padStart(16, '0')}`,
+      digest,
+      sources: [{ name: 'AGENTS.md', chars: 120, truncated: false, ref: 'abc1234' }],
+      skipped: [],
+    },
+    ts,
+    'pm',
+  )
+
+const digestA = 'a'.repeat(64)
+const digestB = 'b'.repeat(64)
+
+test('peer.standards_set moves the peer’s briefVersion, which is what the Mailbox judges mail against (§7, §12.1)', async () => {
+  const store = await open()
+  await store.append([appendable('peer.registered.json')])
+  assert.equal((await store.reader().peers.get('engineer-1' as never))?.briefVersion, 0)
+
+  await store.append([standardsSet(1, digestA)])
+  assert.equal((await store.reader().peers.get('engineer-1' as never))?.briefVersion, 1)
+  await store.append([standardsSet(2, digestB)])
+  assert.equal((await store.reader().peers.get('engineer-1' as never))?.briefVersion, 2)
+})
+
+test('a standards version that does not go up is an anomaly and leaves the peer’s version alone', async () => {
+  const store = await open()
+  await store.append([appendable('peer.registered.json'), standardsSet(3, digestA)])
+  await store.append([standardsSet(3, digestB), standardsSet(2, digestB, '2026-11-10T09:03:00.000Z')])
+
+  assert.equal((await store.reader().peers.get('engineer-1' as never))?.briefVersion, 3)
+  assert.equal((await store.health()).anomalies, 2)
+})
+
+test('latest(type, subject) is the newest event of that type about that subject, or nothing', async () => {
+  const store = await open()
+  assert.equal(await store.latest('peer.standards_set', 'engineer-1'), undefined)
+
+  await store.append([appendable('peer.registered.json'), standardsSet(1, digestA), standardsSet(2, digestB, '2026-11-10T09:03:00.000Z')])
+  const latest = await store.latest('peer.standards_set', 'engineer-1')
+  assert.equal(latest?.type === 'peer.standards_set' && latest.data.digest, digestB)
+  assert.equal(await store.latest('peer.standards_set', 'engineer-2'), undefined, 'another subject has none')
+  assert.equal(await store.latest('peer.registered', 'engineer-1').then((e) => e?.type), 'peer.registered')
+})
+
+test('a Judge question is one row, and the answer fills it in rather than replacing it', async () => {
+  const store = await open()
+  const questionId = 'qst_2b7c9d1e4f6a8b0c'
+  await store.append([
+    event('judge.requested', questionId, {
+      questionId,
+      kind: 'thin_card',
+      input: { kind: 'thin_card', title: 'Retarget the stacked children', goal: 'Keep the stack honest.', acceptance: [] },
+      inputsHash: 'sha256:4c1d7e9a0b2f3568',
+    }),
+  ])
+
+  const asked = await store.reader().judge.get(questionId as never)
+  assert.equal(asked?.askedAt, '2026-11-10T10:00:00.000Z')
+  assert.equal(asked?.answer, undefined, 'asked, not yet answered: the row exists either way')
+
+  await store.append([
+    event(
+      'judge.answered',
+      questionId,
+      {
+        questionId,
+        kind: 'thin_card',
+        answer: { kind: 'thin_card', thin: false, missing: [], why: 'It names the goal and its acceptance.' },
+        model: 'claude-haiku-4-5',
+        durationMs: 900,
+        retries: 0,
+      },
+      undefined,
+      'judge:claude-haiku-4-5',
+    ),
+  ])
+
+  const answered = await store.reader().judge.get(questionId as never)
+  assert.equal(answered?.answer?.kind, 'thin_card')
+  assert.equal(answered?.model, 'claude-haiku-4-5')
+  assert.equal(answered?.answeredAt, '2026-11-10T10:00:00.000Z')
+  assert.equal(answered?.askedAt, '2026-11-10T10:00:00.000Z', 'the question keeps when it was asked')
+  assert.equal((await store.reader().judge.all()).length, 1, 'an answer is not a second question')
+})
+
+test('an answer with no question on file is an anomaly, not an invented question', async () => {
+  const path = tempStorePath()
+  const store = await openSqliteStore({ path, clock: fixedClock })
+  const questionId = 'qst_9e8d7c6b5a493827'
+  await store.append([
+    event('judge.answered', questionId, {
+      questionId,
+      kind: 'thin_card',
+      answer: { kind: 'thin_card', thin: true, missing: ['a goal'], why: 'the body is one line' },
+      model: 'claude-haiku-4-5',
+      durationMs: 700,
+      retries: 0,
+    }),
+  ])
+
+  assert.equal(await store.reader().judge.get(questionId as never), undefined)
+  assert.deepEqual(await anomalies(path), [
+    {
+      event_seq: 1,
+      projection: 'judge',
+      event_type: 'judge.answered',
+      subject: questionId,
+      detail: `no judge row for ${questionId}`,
+      at: '2026-11-10T10:00:00.000Z',
+    },
+  ])
+  await store.close()
+})

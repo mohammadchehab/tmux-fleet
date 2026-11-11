@@ -70,6 +70,20 @@ const statusOf = (fields: Record<string, unknown>): string => {
 }
 
 /**
+ * The column an issue sits in now, or `undefined` when the answer did not say.
+ * Nothing here is worth a second error: it only ever refines one the caller
+ * already has, so a body it cannot read is the same as no answer at all.
+ */
+export const currentStatusOf = (raw: unknown): string | undefined => {
+  try {
+    const issue = asObject(raw, 'issue')
+    return statusOf(asObject(issue['fields'], 'issue fields'))
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * One issue as the contract's item. `pull` and `get` map through this one
  * function, because a search result and a fetched issue carry the same fields
  * when the same `fields` are asked for.
@@ -109,6 +123,24 @@ export const issuesFrom = (raw: unknown, what: string): readonly unknown[] => {
 /** A search page's `nextPageToken`, when the enhanced endpoint is in use. */
 export const nextTokenFrom = (raw: unknown): string | undefined =>
   stringOrUndefined(asObject(raw, 'search page')['nextPageToken'])
+
+/**
+ * The `body` of every comment on an issue, in the order the page listed them —
+ * each still ADF, because `adfToText` is what knows how to read one back.
+ *
+ * A page with no `comments` array is refused rather than read as "no comments":
+ * `comment` asks this question to decide whether to append, and a malformed read
+ * answering "nothing there" would post a duplicate of a note already on the
+ * ticket.
+ */
+export const commentsFrom = (raw: unknown): readonly unknown[] => {
+  const page = asObject(raw, 'comment page')
+  const comments = page['comments']
+  if (!Array.isArray(comments)) {
+    throw fleetError('external_failed', 'jira comment page printed no `comments` array')
+  }
+  return comments.map((comment) => (typeof comment === 'object' && comment !== null ? (comment as Record<string, unknown>)['body'] : undefined))
+}
 
 /** Whether the enhanced endpoint said this was the last page. */
 export const isLastPage = (raw: unknown): boolean => asObject(raw, 'search page')['isLast'] === true

@@ -20,6 +20,7 @@ import {
   type Timestamp,
 } from '@fleet/foundation-core'
 import {
+  eventTypes,
   fleetEvent,
   type AppendEvent,
   type FleetEvent,
@@ -47,8 +48,19 @@ interface EventRow {
   readonly data: string
 }
 
-const toEvent = (row: EventRow): FleetEvent =>
-  parse(fleetEvent(), {
+/** Every type this build registers, so a row's `type` alone decides whether it is knowable. */
+const registered = new Set<string>(eventTypes)
+
+const toEvent = (row: EventRow): FleetEvent | undefined => {
+  // Unknown event type after a rollback to an older build: skip the row but keep it in the log.
+  // A future upgrade may register the type and replay it.
+  //
+  // Only an unregistered type earns the skip. Every schema error reads "expected …" — as does
+  // JSON.parse's "Unexpected token" — so testing the message instead of the type dropped corrupt
+  // rows of *known* events as if they were from the future, and a rebuild replayed past them (§5.4).
+  if (!registered.has(row.type)) return undefined
+
+  return parse(fleetEvent(), {
     seq: Number(row.seq),
     ts: row.ts,
     type: row.type,
@@ -57,6 +69,7 @@ const toEvent = (row: EventRow): FleetEvent =>
     causedBy: row.caused_by === null ? undefined : (JSON.parse(row.caused_by) as unknown),
     data: JSON.parse(row.data) as unknown,
   })
+}
 
 const SELECT_EVENTS = 'SELECT seq, ts, type, subject, actor, caused_by, data FROM events'
 
@@ -178,12 +191,25 @@ class SqliteEventStore implements EventStore {
     return this.#db
       .all<EventRow>(`${SELECT_EVENTS} WHERE seq >= ? ORDER BY seq LIMIT ?`, from, limit)
       .map((row) => toEvent(row))
+      .filter((event): event is FleetEvent => event !== undefined)
+  }
+
+  async latest(type: FleetEvent['type'], subject: string): Promise<FleetEvent | undefined> {
+    const row = this.#db.get<EventRow>(`${SELECT_EVENTS} WHERE type = ? AND subject = ? ORDER BY seq DESC LIMIT 1`, type, subject)
+    if (row === undefined) return undefined
+    const event = toEvent(row)
+    // If the event is unknown and couldn't be parsed, look further back
+    if (event === undefined) {
+      return undefined
+    }
+    return event
   }
 
   async *iterate(from: Seq, to?: Seq): AsyncIterable<FleetEvent> {
     const sql = to === undefined ? `${SELECT_EVENTS} WHERE seq >= ? ORDER BY seq` : `${SELECT_EVENTS} WHERE seq >= ? AND seq <= ? ORDER BY seq`
     for (const row of this.#db.iterate<EventRow>(sql, ...(to === undefined ? [from] : [from, to]))) {
-      yield toEvent(row)
+      const event = toEvent(row)
+      if (event !== undefined) yield event
     }
   }
 
@@ -224,7 +250,8 @@ class SqliteEventStore implements EventStore {
       this.#db.transaction(() => {
         clearProjections(this.#db)
         for (const row of this.#db.iterate<EventRow>(`${SELECT_EVENTS} ORDER BY seq`)) {
-          applyEvent(this.#db, toEvent(row))
+          const event = toEvent(row)
+          if (event !== undefined) applyEvent(this.#db, event)
         }
         // A replay has to agree with the append that wrote the log, so the same mode applies.
         this.#assertProjectionsClean(1)

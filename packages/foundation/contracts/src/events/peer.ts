@@ -5,6 +5,7 @@
  */
 
 import {
+  array,
   boolean,
   count,
   event,
@@ -20,9 +21,10 @@ import {
   type Schema,
   type SessionId,
 } from '@fleet/foundation-core'
-import { peerId, providerSessionRef, sessionId, worktreeId } from '@fleet/foundation-core'
+import { briefId, peerId, positiveInt, providerSessionRef, sessionId, worktreeId } from '@fleet/foundation-core'
+import { contentHash } from '../shapes.ts'
 import { peerState } from '@fleet/foundation-core'
-import { compactionTriggers, permissionMode, providerId } from '../provider.ts'
+import { compactionTriggers, effort, permissionMode, providerId } from '../provider.ts'
 
 /** A peer exists. Written once per peer, from the profile's squad (§6, §1.1 config). */
 export const peerRegistered = event(
@@ -34,6 +36,56 @@ export const peerRegistered = event(
     model: string({ minLength: 1 }),
     permissionMode: permissionMode(),
     worktreeId: optional(worktreeId()),
+  }),
+)
+
+/**
+ * A peer's standing brief changed (§12.1): the standards it works under — the
+ * repo's own `AGENTS.md`/`CLAUDE.md`, the profile's non-negotiables, the skill
+ * documents its role needs — were read and are not what the peer last carried.
+ *
+ * Written **only when `digest` differs** from the peer's last one, before the
+ * session that will carry it starts, so the store and the session agree on what
+ * the peer was told. `version` goes up (the same per-peer counter a Work's
+ * `brief.published` moves, so a later `assign` must exceed it) and the projection
+ * sets `peer.briefVersion` from it; the Mailbox's staleness check (§7) reads that.
+ *
+ * Standards are read from the filesystem, which is not deterministic; this event
+ * is what makes them so. The bytes live in a content-addressed file named by
+ * `digest` (a cache and an archive, never the truth), and `sources` records what
+ * was read: how many characters, whether it was cut, and the commit it came from
+ * — so a peer's rules can be audited, and a replay does not re-read a disk — and
+ * `skipped` what it was meant to read and could not.
+ *
+ * Not `brief.published`: that is a Work's brief and carries a `workId`, and a
+ * standing brief belongs to a peer, not a Work.
+ */
+export const peerStandardsSet = event(
+  'peer.standards_set',
+  object({
+    peerId: peerId(),
+    version: positiveInt(),
+    briefId: briefId(),
+    /** sha-256 of what the peer is handed — its brief text and its standards — so a changed role is a changed brief too. */
+    digest: contentHash(),
+    sources: array(
+      object({
+        /** How the peer is told where it came from: `AGENTS.md`, `Non-negotiables (…)`, `skill:…`. */
+        name: text(300),
+        chars: count(),
+        truncated: boolean(),
+        /** The commit it was read at, when it came from git; absent for a profile-owned file. */
+        ref: optional(string({ minLength: 1, maxLength: 100 })),
+      }),
+      { maxItems: 40 },
+    ),
+    /**
+     * What the peer was *meant* to carry and does not: a repo with no default
+     * branch to read `AGENTS.md` from, a file that is not on it. Recorded so the
+     * board can say "no repo standards loaded" instead of a peer quietly working
+     * without them.
+     */
+    skipped: array(object({ name: text(300), reason: text(300) }), { maxItems: 40 }),
   }),
 )
 
@@ -107,6 +159,31 @@ export const peerFailed = event(
 )
 
 /**
+ * One tool call inside a peer's turn (§4). `Peer.state` says a peer is
+ * `working`; it cannot say at what, and a person watching `fleet ls` had to
+ * guess from a mailbox that only ever showed what was sent to it.
+ *
+ * Both fields are the provider's own `tool.use` event's: `tool` is the
+ * adapter's name for the tool, `target` its short summary. A target is stored
+ * only when it is a **file path** — `Read`, `Edit`, `Write`, `MultiEdit`,
+ * `NotebookEdit` — and never a command, a URL, a search query or a sub-agent's
+ * brief: any of those can carry a token, and a redactor is a guess about where
+ * one sits. Every other tool, including one this fleet has never seen,
+ * contributes the name alone. A provider that does not summarise (cursor) does
+ * the same, which is the honest answer rather than a target this fleet inferred.
+ */
+export const peerToolUsed = event(
+  'peer.tool_used',
+  object({
+    peerId: peerId(),
+    sessionId: optional(sessionId()),
+    tool: string({ minLength: 1, maxLength: 64 }),
+    /** The adapter's short target, bounded again so one log row stays small. */
+    target: optional(string({ minLength: 1, maxLength: 200 })),
+  }),
+)
+
+/**
  * A provider compacted a peer's context on its own or on a person's say-so (§8).
  *
  * Recorded because a compaction is money: the conversation is re-sent to a
@@ -157,6 +234,13 @@ export const sessionStarted = event(
     providerId: providerId(),
     providerSessionRef: providerSessionRef(),
     model: string({ minLength: 1 }),
+    /**
+     * The reasoning level the session was asked to start on (TASK-12). It is a
+     * *requested* value, like `model`: absent means the profile asked for none,
+     * not that the provider had no opinion. Whether the provider could honour it
+     * is `fleet up`'s warning, recorded there rather than in this event.
+     */
+    effort: optional(effort()),
     permissionMode: permissionMode(),
     endpoint: optional(string({ minLength: 1, maxLength: 500 })),
     resumed: boolean(),

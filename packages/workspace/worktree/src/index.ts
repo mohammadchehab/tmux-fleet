@@ -12,3 +12,5 @@
 export * from './branch-head.ts'
 export * from './git.ts'
 export * from './worktrees.ts'
+export * from './provision.ts'
+export * from './repo-files.ts'

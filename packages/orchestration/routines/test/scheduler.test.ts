@@ -238,11 +238,14 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     'tracker-sync': { enabled: false },
   }
 
+  /** Every routine but `standup` off: the one routine with a daily period. */
+  const standupOnly = { ...dispatchOnly, dispatch: { enabled: false }, standup: { enabled: true } }
+
   /** A body that fails with a settable error until it is told to succeed, and counts its runs. */
-  const flaky = () => {
+  const flaky = (kind: RoutineKind = 'dispatch') => {
     const state = { failing: true, error: 'remote said 500', runs: 0 }
     const factory: RoutineFactory = (): RoutineBody => ({
-      kind: 'dispatch',
+      kind,
       run: async () => {
         state.runs += 1
         if (state.failing) throw new Error(state.error)
@@ -255,6 +258,13 @@ describe('a failing routine backs off, and says so once it is broken', () => {
   const failingHarness = (overrides: Partial<SchedulerDeps> = {}) => {
     const { state, factory } = flaky()
     const built = harness({ config: dispatchOnly, factories: { dispatch: factory }, ...overrides })
+    return { state, ...built }
+  }
+
+  /** The same, for the daily routine: the one whose period is a day. */
+  const dailyHarness = () => {
+    const { state, factory } = flaky('standup')
+    const built = harness({ config: standupOnly, factories: { standup: factory } })
     return { state, ...built }
   }
 
@@ -284,12 +294,17 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     clock.advance(5_000)
     await scheduler.tick()
     assert.equal(state.runs, 1, 'a failed routine must not be due on the next tick')
+    // `dispatch` is a 60 s heartbeat, so its own period is the floor: the tick
+    // interval doubling has to come out shorter than a minute for a while.
     clock.advance(5_000)
     await scheduler.tick()
-    assert.equal(state.runs, 2, 'twice the tick interval is the first retry')
+    assert.equal(state.runs, 1, 'nor before the routine period has passed')
+    clock.advance(50_000)
+    await scheduler.tick()
+    assert.equal(state.runs, 2, 'the first retry is at the routine period')
   })
 
-  it('doubles the backoff from the tick interval and caps it at the routine period', async () => {
+  it('doubles past the routine period, and caps the wait at an hour', async () => {
     const { deps, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
     const scheduler = createScheduler(deps)
     await scheduler.tick()
@@ -297,10 +312,58 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     for (let failure = 0; failure < 14; failure += 1) {
       waits.push(await waitForNextRun(state, () => scheduler.tick(), clock))
     }
-    // 2 s, 4, 8, … and never longer than the hour a heartbeat routine is given:
-    // waiting past its own period would be a routine that never ran again.
-    const expected = waits.map((_, index) => Math.min(1_000 * 2 ** (index + 1), 60 * 60 * 1_000))
+    // `max(period, min(tick · 2^failures, 1 h))`: `dispatch` runs every 60 s, so
+    // the doubling only starts to bite once it is longer than a minute, and never
+    // past the hour — a routine waiting longer than that has stopped running.
+    const HOUR = 60 * 60 * 1_000
+    const expected = waits.map((_, index) => Math.max(60_000, Math.min(1_000 * 2 ** (index + 1), HOUR)))
     assert.deepEqual(waits, expected)
+    // The point of the block: the doubling does get past the period, rather than
+    // being flattened to it.
+    assert.ok(waits.at(-1) === HOUR, `the last wait should have reached the hour, got ${waits.at(-1)}`)
+  })
+
+  it('never retries a daily routine sooner than its day', async () => {
+    const HOUR = 60 * 60 * 1_000
+    const { deps, state, clock } = dailyHarness()
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    assert.equal(state.runs, 1)
+
+    clock.advance(23 * HOUR)
+    await scheduler.tick()
+    assert.equal(state.runs, 1, 'the window has reopened, but not the day the backoff waits out')
+
+    clock.advance(HOUR - 1)
+    await scheduler.tick()
+    assert.equal(state.runs, 1, 'a millisecond short of the day is still short of it')
+
+    clock.advance(1)
+    await scheduler.tick()
+    assert.equal(state.runs, 2, 'and at the day it is retried, once')
+  })
+
+  it('runs on a later recurring trigger when the first one is not due', async () => {
+    // `standup` is a daily schedule; an `everyMinutes` override appends a heartbeat after it, so the
+    // routine's triggers are [schedule, heartbeat]. 03:17 never falls inside the minute these ticks cover.
+    const { state, factory } = flaky('standup')
+    state.failing = false
+    const { deps, clock } = harness({
+      config: { ...standupOnly, standup: { enabled: true, at: '03:17', everyMinutes: 1 } },
+      factories: { standup: factory },
+    })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    assert.equal(state.runs, 1, 'a routine that never ran is due')
+
+    clock.advance(60_000)
+    const records = await scheduler.tick()
+    assert.equal(state.runs, 2, 'the heartbeat is due, though the schedule listed before it is not')
+    assert.deepEqual(
+      records.map((record) => record.trigger),
+      ['heartbeat'],
+      'and the run is labelled with the trigger that fired',
+    )
   })
 
   it('escalates at the third failure, naming the error and the next retry', async () => {
@@ -316,8 +379,58 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     assert.equal(escalation.data.routineId, 'dispatch')
     assert.equal(escalation.data.failures, 3)
     assert.match(escalation.data.error, /remote said 500/)
-    // The same backoff the tick will judge the retry against: 1 s doubled three times.
-    assert.equal(escalation.data.retryAt, new Date(Date.parse(escalation.ts) + 8_000).toISOString())
+    // The same backoff the tick will judge the retry against — `max(period, 1 s
+    // doubled three times)`, and `dispatch`'s period is the minute that wins.
+    assert.equal(escalation.data.retryAt, new Date(Date.parse(escalation.ts) + 60_000).toISOString())
+  })
+
+  it('still escalates when the escalation itself hit a refused store (TASK-2)', async () => {
+    const { deps, store, state, clock } = failingHarness({ tickIntervalMs: 1_000 })
+    // The store's own error and the body's are the same words, as when the body
+    // died on a store write: the repeat that follows must not be taken for a
+    // banner already rung.
+    state.error = 'store_failed: store is unavailable'
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    assert.equal(state.runs, 2)
+    // The third failure is the one that would escalate, and the store refuses
+    // the very write that starts it: no body runs, no banner can be written.
+    clock.advance(61_000)
+    store.failNext(1)
+    await scheduler.tick()
+    assert.equal(state.runs, 2, 'the refused start ran no body')
+    assert.equal(store.ofType('routine.failing').length, 0, 'nothing could be written yet')
+    // The store is back and the same error repeats: the banner was never said.
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    assert.equal(store.ofType('routine.failing').length, 1, 'the dropped escalation is owed, not announced')
+  })
+
+  it('still escalates when the batch that carried the escalation was refused (TASK-2)', async () => {
+    const inner = fakeStore()
+    let refuseEscalation = false
+    const store = {
+      append: async (batch: Parameters<typeof inner.append>[0]) => {
+        if (refuseEscalation && batch.some((event) => event.type === 'routine.failing')) {
+          refuseEscalation = false
+          throw new Error('store is unavailable')
+        }
+        return inner.append(batch)
+      },
+    }
+    const { deps, state, clock } = failingHarness({ tickIntervalMs: 1_000, store })
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    // The third failure is the one that escalates, and the batch carrying the
+    // banner is refused: the banner was not said, so it must not be remembered
+    // as said.
+    refuseEscalation = true
+    clock.advance(61_000)
+    await assert.rejects(scheduler.tick(), /store is unavailable/)
+    assert.equal(inner.ofType('routine.failing').length, 0)
+    await waitForNextRun(state, () => scheduler.tick(), clock)
+    assert.equal(inner.ofType('routine.failing').length, 1, 'the refused escalation is owed, not announced')
   })
 
   it('does not ring again while the error is the same', async () => {

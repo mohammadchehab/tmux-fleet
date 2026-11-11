@@ -26,7 +26,7 @@ import type { FleetEvent } from './events/registry.ts'
 import type { RoutineKind, RoutineTrigger } from './events/ops.ts'
 import type { Message } from './projections/mailbox.ts'
 import type { PullRequest, Worktree } from './projections/delivery.ts'
-import type { Decision, Finding, Notification, Routine } from './projections/ops.ts'
+import type { Decision, Finding, JudgeQuestionRecord, Notification, Routine, TokenReport } from './projections/ops.ts'
 import type { Peer, Session } from './projections/peers.ts'
 import type { Work } from './projections/work.ts'
 
@@ -51,6 +51,18 @@ export interface FleetState {
   readonly routines: readonly Routine[]
   readonly findings: readonly Finding[]
   readonly notifications: readonly Notification[]
+  /**
+   * The typed question log (§5.3), so a rule can read an answer as state. Its
+   * absence is what forced `dispatch` to wake on `judge.answered` (§6).
+   */
+  readonly judge: readonly JudgeQuestionRecord[]
+  /**
+   * §6.2's cost report, so the spend cap is a rule over a value like every other
+   * policy here and not a routine that reads the store. A rollup row (no
+   * `workId`) is a peer's whole bill; a per-Work row is its breakdown, never an
+   * addition to it (§6.1's budget question sums the rollups only).
+   */
+  readonly tokens: readonly TokenReport[]
 }
 
 /** A `FleetState` with nothing in it: what a first run, and most tests, start from. */
@@ -65,6 +77,8 @@ export const emptyFleetState = (): FleetState => ({
   routines: [],
   findings: [],
   notifications: [],
+  judge: [],
+  tokens: [],
 })
 
 /**

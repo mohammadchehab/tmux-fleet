@@ -13,10 +13,11 @@ import {
   type Repo,
   type SessionId,
   type Sha,
+  type WorkId,
 } from '@fleet/foundation-core'
 import { buildStdoutPath } from '@fleet/foundation-contracts'
 import type { BuildsResult, DaemonMethod, EvalRunWithCases, LsResult } from '@fleet/foundation-contracts'
-import type { DaemonCaller } from '../src/client.ts'
+import { unreachableError, type DaemonCaller } from '../src/client.ts'
 import { run, type RunDeps } from '../src/run.ts'
 
 const now = '2026-11-10T09:00:00.000Z'
@@ -61,12 +62,31 @@ const compactions = [
   { peerId: 'engineer-1' as PeerId, count: 2, lastAt: now, lastTrigger: 'manual' as const, lastPreTokens: 90000 },
 ]
 
+const tokens = [
+  { peerId: 'engineer-1' as PeerId, role: 'engineer', turns: 12, inputTokens: 12000, outputTokens: 3000, cachedTokens: 900, costUsd: 4.12, toolCalls: { grep: 1, glob: 0, read: 2, codegraph: 3 }, redirects: 0, updatedAt: now },
+  { peerId: 'engineer-1' as PeerId, role: 'engineer', workId: 'wrk_7f3a91c2d84b0e56' as WorkId, turns: 8, inputTokens: 9000, outputTokens: 2000, cachedTokens: 600, costUsd: 3.01, toolCalls: { grep: 1, glob: 0, read: 1, codegraph: 2 }, redirects: 0, updatedAt: now },
+]
+
+const activity = [
+  {
+    peerId: 'engineer-1' as PeerId,
+    workId: 'wrk_0123456789abcdef' as WorkId,
+    lastTool: 'Edit',
+    lastTarget: 'packages/foundation/store/src/projections.ts',
+    lastToolAt: now,
+    lastTurnAt: now,
+    edits: 14,
+  },
+]
+
 const listing: LsResult = {
   status,
   peers: [peer],
   routines: [routine],
   decisions: [decision],
   compactions,
+  tokens,
+  activity,
 }
 
 type Answer = (params: unknown) => unknown
@@ -120,7 +140,7 @@ const harness = (answers: Partial<Record<DaemonMethod, Answer>>, overrides: Part
 const argv = (...words: readonly string[]): readonly string[] => ['node', 'fleet', ...words]
 
 const unreachable = (): never => {
-  throw new FleetError('external_failed', `cannot reach fleetd at ${socketPath}: connect ENOENT`)
+  throw unreachableError(`cannot reach fleetd at ${socketPath}: connect ENOENT`)
 }
 
 describe('run: the command line', () => {
@@ -177,13 +197,26 @@ describe('run: ls', () => {
     // quietly compacting says so in one number rather than in rows nobody reads.
     assert.match(text, /compactions \(2 total\) \(1\)/)
     assert.match(text, /engineer-1 {2}2x {2}last manual {2}pre 90000/)
+    // Spend is shown per Work and rolled up per peer; the heading is the fleet
+    // total, taken from the rollups so no Work's cost is counted twice (§6.2).
+    assert.match(text, /tokens \(\$4\.12 total\) \(2\)/)
+    assert.match(text, /engineer-1 +engineer +all +12 turns +in 12000 +out 3000 +cached 900 +\$4\.12/)
+    assert.match(text, /engineer-1 +engineer +wrk_7f3a91c2d84b0e56 +8 turns +in 9000 +out 2000 +cached 600 +\$3\.01/)
+    // A peer that says `working` is a peer whose reader wants to know at what:
+    // tool, target, Work and how much of that Work it has rewritten (§4).
+    assert.match(text, /activity \(1\)/)
+    assert.match(
+      text,
+      /engineer-1 {2}Edit {2}packages\/foundation\/store\/src\/projections\.ts {2}wrk_0123456789abcdef {2}edits 14 {2}\d{4}-\d\d-\d\dT/,
+    )
   })
 
   it('says so in each section that is empty rather than printing a bare heading', async () => {
-    const empty: LsResult = { status, peers: [], routines: [], decisions: [], compactions: [] }
+    const empty: LsResult = { status, peers: [], routines: [], decisions: [], compactions: [], tokens: [], activity: [] }
     const { deps, out } = harness({ ls: () => empty })
     assert.equal(await run(argv('ls'), deps), 0)
     assert.match(out[0] ?? '', /none registered/)
+    assert.match(out[0] ?? '', /none: no peer has a Work or has used a tool/)
     assert.match(out[0] ?? '', /none: no peer has compacted/)
     assert.match(out[0] ?? '', /nothing waiting on the user/)
   })
@@ -192,6 +225,20 @@ describe('run: ls', () => {
     const { deps, out } = harness({ ls: () => listing })
     assert.equal(await run(argv('ls', '--json'), deps), 0)
     assert.deepEqual(JSON.parse(out[0] ?? ''), listing)
+  })
+
+  it('accepts profile as a positional argument for consistency with up/down', async () => {
+    const { deps, out, sockets } = harness({ ls: () => listing })
+    assert.equal(await run(argv('ls', 'other-fleet'), deps), 0)
+    assert.match(out[0] ?? '', /squad/)
+    assert.match(sockets[0] ?? '', /\/other-fleet\//)
+  })
+
+  it('accepts profile as --profile flag', async () => {
+    const { deps, out, sockets } = harness({ ls: () => listing })
+    assert.equal(await run(argv('ls', '--profile', 'other-fleet'), deps), 0)
+    assert.match(out[0] ?? '', /squad/)
+    assert.match(sockets[0] ?? '', /\/other-fleet\//)
   })
 })
 
@@ -220,14 +267,43 @@ describe('run: send', () => {
 
   it('ends a command with no arguments at the command, with no dangling space', async () => {
     const { deps, err } = harness({})
-    assert.equal(await run(argv('ls', 'extra'), deps), 2)
-    assert.equal(err[0], 'fleet: usage: fleet ls')
+    assert.equal(await run(argv('ls', 'profile1', 'profile2'), deps), 2)
+    assert.match(err[0] ?? '', /usage: fleet ls/)
   })
 
   it('refuses a peer id the contract would refuse, without a round trip', async () => {
     const { deps, err, calls } = harness({})
     assert.equal(await run(argv('send', '../etc', 'info', 'hi'), deps), 2)
     assert.match(err[0] ?? '', /peer: expected/)
+    assert.deepEqual(calls, [])
+  })
+})
+
+describe('run: note', () => {
+  it('notes on the Work the caller holds, naming the peer from FLEET_PEER', async () => {
+    const { deps, out, calls } = harness(
+      { note: () => ({ workId: 'wrk_7f3a91c2d84b0e56', phase: 'implement' }) },
+      { env: { FLEET_PROFILE: 'squad', FLEET_PEER: 'engineer-1' } },
+    )
+    assert.equal(await run(argv('note', 'implement', 'the', 'checks', 'verdict', 'is', 'pinned'), deps), 0)
+    // A peer names no workId: the daemon reads it off the assignee (§5.1).
+    assert.deepEqual(calls, [
+      { method: 'note', params: { peerId: 'engineer-1', phase: 'implement', body: 'the checks verdict is pinned' } },
+    ])
+    assert.match(out[0] ?? '', /noted implement on wrk_7f3a91c2d84b0e56/)
+  })
+
+  it('refuses a phase outside the closed list, naming the four that exist', async () => {
+    const { deps, err, calls } = harness({}, { env: { FLEET_PROFILE: 'squad', FLEET_PEER: 'engineer-1' } })
+    assert.equal(await run(argv('note', 'done', 'finished it'), deps), 2)
+    assert.match(err[0] ?? '', /phase "done" is not one of plan, implement, mr, blocked/)
+    assert.deepEqual(calls, [])
+  })
+
+  it('refuses to guess whose note it is when the shell was not started by the fleet', async () => {
+    const { deps, err, calls } = harness({})
+    assert.equal(await run(argv('note', 'plan', 'read the design'), deps), 2)
+    assert.match(err[0] ?? '', /FLEET_PEER is not set/)
     assert.deepEqual(calls, [])
   })
 })
@@ -365,6 +441,20 @@ describe('run: down', () => {  it('reports the daemon stopped', async () => {
     assert.equal(out[0], 'squad is not running')
     assert.deepEqual(err, [])
   })
+
+  it('accepts profile as a positional argument for consistency with up/ls', async () => {
+    const { deps, out, sockets } = harness({ down: () => ({ stopped: true }) })
+    assert.equal(await run(argv('down', 'other-fleet'), deps), 0)
+    assert.equal(out[0], 'fleetd stopped')
+    assert.match(sockets[0] ?? '', /\/other-fleet\//)
+  })
+
+  it('accepts profile as --profile flag', async () => {
+    const { deps, out, sockets } = harness({ down: () => ({ stopped: true }) })
+    assert.equal(await run(argv('down', '--profile', 'other-fleet'), deps), 0)
+    assert.equal(out[0], 'fleetd stopped')
+    assert.match(sockets[0] ?? '', /\/other-fleet\//)
+  })
 })
 
 describe('run: a profile that is not there', () => {
@@ -483,6 +573,16 @@ describe('run: evals run', () => {
     const { deps, calls } = evals(await built(evalAnswer({ kind: 'saved', exitCode: 0 })))
     assert.equal(await run(judge('--save-baseline'), deps), 0)
     assert.deepEqual((calls[0]?.params as { command: { args: string[] } }).command.args, ['--save-baseline'])
+  })
+
+  it('files a --save-baseline run under its own build task, so a plain run of the same identity cannot dedupe it away (TASK-35)', async () => {
+    const plain = evals(await built(evalAnswer({ kind: 'pass', exitCode: 0 })))
+    assert.equal(await run(judge(), plain.deps), 0)
+    const saving = evals(await built(evalAnswer({ kind: 'saved', exitCode: 0 })))
+    assert.equal(await run(judge('--save-baseline'), saving.deps), 0)
+
+    const taskOf = (calls: readonly { params?: unknown }[]) => (calls[0]?.params as { task: string }).task
+    assert.notEqual(taskOf(saving.calls), taskOf(plain.calls), 'the ledger keys on (repo, sha, task)')
   })
 
   it('sends the rows through events.append in the two batches the citation rule asks for', async () => {
@@ -609,6 +709,16 @@ describe('run: up', () => {
     assert.equal(await run(argv('up', 'squad'), deps), 0)
     assert.deepEqual(started, [])
     assert.match(out[0] ?? '', /squad up, pid 4242/)
+  })
+
+  it('says what it started despite, after the addresses it gives (TASK-12)', async () => {
+    // The fleet is up: a warning is not a failure, so it comes after the socket
+    // and the store rather than replacing them, and it names the peer — the one
+    // thing a person can go and change in the profile.
+    const warned = { ...status, warnings: ["peer 'reviewer-1' asks for effort 'high', but provider 'cursor' cannot honour it"] }
+    const { deps, out } = harness({ up: () => warned })
+    assert.equal(await run(argv('up', 'squad'), deps), 0)
+    assert.match(out[0] ?? '', /^squad up, pid 4242\nsocket .*\nstore .*\nwarn {4}peer 'reviewer-1' asks for effort 'high'/)
   })
 
   it('starts fleetd when the socket is dead, then waits for it to answer', async () => {
@@ -794,5 +904,41 @@ describe('run: build', () => {
     assert.equal(code, 2)
     assert.match(err[0] ?? '', /sha: expected/)
     assert.deepEqual(calls, [])
+  })
+
+  it('send body can contain words starting with - (e.g., "-1" or "-fix")', async () => {
+    const { deps, out, calls } = harness({ send: () => ({ msgId: 'msg_0123456789abcdef' }) })
+    const code = await run(argv('send', 'engineer-1', 'info', '-fix', 'the', 'build'), deps)
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      { method: 'send', params: { to: 'engineer-1', kind: 'info', body: '-fix the build' } },
+    ])
+  })
+
+  it('send body can contain --option-like words', async () => {
+    const { deps, out, calls } = harness({ send: () => ({ msgId: 'msg_0123456789abcdef' }) })
+    const code = await run(argv('send', 'engineer-1', 'info', '--help', 'me'), deps)
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      { method: 'send', params: { to: 'engineer-1', kind: 'info', body: '--help me' } },
+    ])
+  })
+
+  it('decide answer can contain words starting with - (e.g., "-1")', async () => {
+    const { deps, out, calls } = harness({ decide: () => ({ options: [] }) })
+    const code = await run(argv('decide', 'dec_0123456789abcdef', '-1'), deps)
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      { method: 'decide', params: { id: 'dec_0123456789abcdef', decision: '-1' } },
+    ])
+  })
+
+  it('decide answer can contain --option-like words', async () => {
+    const { deps, out, calls } = harness({ decide: () => ({ options: [] }) })
+    const code = await run(argv('decide', 'dec_0123456789abcdef', '--help', 'option'), deps)
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      { method: 'decide', params: { id: 'dec_0123456789abcdef', decision: '--help option' } },
+    ])
   })
 })

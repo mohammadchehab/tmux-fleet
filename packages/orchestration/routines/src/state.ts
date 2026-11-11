@@ -15,8 +15,20 @@
 import type { FleetState, ReadModel } from '@fleet/foundation-contracts'
 
 export const snapshot = async (read: ReadModel): Promise<FleetState> => {
-  const [peers, sessions, work, decisions, messages, pullRequests, worktrees, routines, findings, notifications] =
-    await Promise.all([
+  const [
+    peers,
+    sessions,
+    work,
+    decisions,
+    messages,
+    pullRequests,
+    worktrees,
+    routines,
+    findings,
+    notifications,
+    judge,
+    tokens,
+  ] = await Promise.all([
       read.peers.all(),
       read.sessions.all(),
       read.work.all(),
@@ -27,6 +39,13 @@ export const snapshot = async (read: ReadModel): Promise<FleetState> => {
       read.routines.all(),
       read.findings.all(),
       read.notifications.all(),
+      // §5.3's question log travels with the snapshot so a rule reads an answer as
+      // state. It is in the same `Promise.all` as everything else because a tick
+      // that read it afterwards would be reading a second fleet (§5.2).
+      read.judge.all(),
+      // §6.1's spend cap is a rule, so the ledger travels with the snapshot for
+      // the same reason the question log does: a rule cannot await the store.
+      read.tokens.all(),
     ])
 
   return {
@@ -40,5 +59,7 @@ export const snapshot = async (read: ReadModel): Promise<FleetState> => {
     routines,
     findings,
     notifications,
+    judge,
+    tokens,
   }
 }

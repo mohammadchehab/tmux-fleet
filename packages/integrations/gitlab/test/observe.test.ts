@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { parse, repo } from '@fleet/foundation-core'
+import { parse, repo, sha } from '@fleet/foundation-core'
 import {
   checksFrom,
   createdFrom,
@@ -38,12 +38,26 @@ const mrJson = (overrides: Readonly<Record<string, unknown>> = {}): Record<strin
   ...overrides,
 })
 
-const pipeline = (id: number, status: string) => ({ id, status, ref: 'feat', sha: 'abc1234' })
+const pipeline = (id: number, status: string, overrides: Readonly<Record<string, unknown>> = {}) => ({
+  id,
+  status,
+  ref: 'feat',
+  sha: 'abc1234',
+  ...overrides,
+})
+
+/** The head `mrJson` reports, so a call that pins grading has something to pin it to. */
+const head = { sha: parse(sha(), 'abc1234'), ref: 'feat' } as const
 
 describe('checksFrom: §10 reads the newest pipeline as one of three states', () => {
-  it('is passing on a successful pipeline, and on one that ran no jobs', () => {
+  it('is passing on a successful pipeline', () => {
     assert.deepEqual(checksFrom([pipeline(1, 'success')]), { state: 'passing', failing: [] })
-    assert.deepEqual(checksFrom([pipeline(1, 'skipped')]), { state: 'passing', failing: [] })
+  })
+
+  it('is pending on a skipped pipeline — it ran no jobs, so it says nothing about the commit', () => {
+    // `[skip ci]` produces this for the head. Reading it as green would let the gate merge exactly the push nobody
+    // checked, which is the case rule 1 is written for.
+    assert.deepEqual(checksFrom([pipeline(1, 'skipped')]), { state: 'pending', failing: [] })
   })
 
   it('is pending when there is no pipeline at all — not green, because nothing ran', () => {
@@ -76,6 +90,38 @@ describe('checksFrom: §10 reads the newest pipeline as one of three states', ()
   it('reads the single `head_pipeline` a merge request embeds, as one pipeline', () => {
     assert.deepEqual(checksFrom({ id: 9, status: 'success' }), { state: 'passing', failing: [] })
     assert.deepEqual(checksFrom({ id: 9, status: 'failed' }), { state: 'failing', failing: ['pipeline 9'] })
+  })
+})
+
+describe('checksFrom: the verdict is about the head sha, whatever else the merge request ran', () => {
+  it('is pending when the newest pipeline is green on an older commit and the head has none', () => {
+    // The finding this block exists for: `id` order says 2 is newest, and the merge request would have read
+    // `passing` on a head no pipeline ever touched.
+    const older = pipeline(2, 'success', { sha: '0ld0000' })
+    const alsoOlder = pipeline(1, 'failed', { sha: '0ld0000' })
+    assert.deepEqual(checksFrom([older, alsoOlder], head), { state: 'pending', failing: [] })
+  })
+
+  it('grades a pipeline on the head, even when a newer one ran on a different commit', () => {
+    const onHead = pipeline(1, 'failed', { sha: 'abc1234' })
+    const newer = pipeline(2, 'success', { sha: '0ld0000' })
+    assert.deepEqual(checksFrom([onHead, newer], head), { state: 'failing', failing: ['pipeline 1'] })
+  })
+
+  it('drops a pipeline for another branch, so a green one on a sibling ref is not this head’s verdict', () => {
+    assert.deepEqual(checksFrom([pipeline(1, 'success', { ref: 'other' })], head), { state: 'pending', failing: [] })
+    // A row with no ref is the same branch as far as GitLab tells us; only a differing ref is a mismatch.
+    assert.deepEqual(checksFrom([pipeline(1, 'success', { ref: undefined })], head), { state: 'passing', failing: [] })
+  })
+
+  it('never grades a row with no sha, because it cannot be shown to describe the head', () => {
+    assert.deepEqual(checksFrom([pipeline(1, 'success', { sha: undefined })], head), { state: 'pending', failing: [] })
+  })
+
+  it('still grades the newest matching attempt, so a retry on the head is not held red by the one it replaced', () => {
+    const retried = pipeline(4, 'success', { sha: 'abc1234' })
+    const firstTry = pipeline(3, 'failed', { sha: 'abc1234' })
+    assert.deepEqual(checksFrom([firstTry, retried], head), { state: 'passing', failing: [] })
   })
 })
 
@@ -134,7 +180,7 @@ describe('footers: the two fields GitLab cannot know', () => {
 
 describe('pullRequestFrom: one merge request as the contract shape', () => {
   it('maps the fields the port speaks in, with iid as the number', () => {
-    const pr = pullRequestFrom(mrJson(), where, [pipeline(1, 'success')])
+    const pr = pullRequestFrom(mrJson(), where, { pipelines: [pipeline(1, 'success')] })
     assert.equal(pr.repo, where)
     assert.equal(pr.number, 7)
     assert.equal(pr.base, 'main')
@@ -153,10 +199,29 @@ describe('pullRequestFrom: one merge request as the contract shape', () => {
     assert.equal(pullRequestFrom(mrJson({ merged_at: '2026-11-03T00:00:00.000Z' }), where).merged, true)
   })
 
+  it('reads the review from the approvals endpoint, which is the only place GitLab says it', () => {
+    // `approved` is not a field of the merge request: it lives at `/approvals`, so a
+    // row read without that call is `pending` by omission, not by GitLab's answer.
+    const approved = pullRequestFrom(mrJson(), where, { approvals: { approved: true } })
+    assert.equal(approved.review, 'approved')
+    assert.equal(pullRequestFrom(mrJson(), where, { approvals: { approved: false } }).review, 'pending')
+    // The row's own copy is a fallback for a caller that had one, and the endpoint's answer wins over it.
+    assert.equal(
+      pullRequestFrom(mrJson({ approvals: { approved: true } }), where, { approvals: { approved: false } }).review,
+      'pending',
+    )
+  })
+
   it('falls back to the embedded head_pipeline when the caller passed no pipelines', () => {
-    const pr = pullRequestFrom(mrJson({ head_pipeline: { id: 5, status: 'failed' } }), where)
+    const pr = pullRequestFrom(mrJson({ head_pipeline: { id: 5, status: 'failed', sha: 'abc1234' } }), where)
     assert.equal(pr.checks, 'failing')
     assert.deepEqual(pr.failingChecks, ['pipeline 5'])
+  })
+
+  it('reads pending when the merged pipelines are green but ran on an older commit', () => {
+    const pr = pullRequestFrom(mrJson(), where, { pipelines: [pipeline(7, 'success', { sha: '0ld0000' })] })
+    assert.equal(pr.checks, 'pending')
+    assert.equal(pr.headSha, 'abc1234')
   })
 
   it('carries GitLab’s own state, in the words the contract uses', () => {
@@ -187,6 +252,14 @@ describe('the single-value reads', () => {
     assert.deepEqual(gradedChecksFrom(mrJson(), [pipeline(1, 'failed')]), {
       state: 'failing',
       failing: ['pipeline 1'],
+      headSha: 'abc1234',
+    })
+  })
+
+  it('cannot report a sha the verdict did not grade: a green pipeline on an older commit is pending', () => {
+    assert.deepEqual(gradedChecksFrom(mrJson(), [pipeline(1, 'success', { sha: '0ld0000' })]), {
+      state: 'pending',
+      failing: [],
       headSha: 'abc1234',
     })
   })

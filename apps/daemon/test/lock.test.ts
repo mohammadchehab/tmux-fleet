@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -85,6 +85,42 @@ describe('the store lock', () => {
           new RegExp(`already has a fleetd, pid ${String(process.pid)}`).test((thrown as Error).message),
       )
       await lock.release()
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('takes over a lock that names this process’s pid when this process never took it (TASK-62)', async () => {
+    // A crashed fleetd's file, and the kernel handed its pid to the new one: container
+    // restarts over a persistent state volume do exactly this. Two live processes never
+    // share a pid, so a file naming ours that we did not write is the predecessor's.
+    const home = await withHome()
+    try {
+      const path = join(home, 'daemon', 'fleetd.lock')
+      await mkdir(join(home, 'daemon'), { recursive: true })
+      await writeFile(path, `${String(process.pid)}\n`, 'utf8')
+      // Older than the grace an empty file gets, so only the pid decides.
+      const old = new Date(Date.now() - 60_000)
+      await utimes(path, old, old)
+
+      const lock = await acquireFleetLock(path)
+      assert.equal((await readFile(path, 'utf8')).trim(), String(process.pid))
+      await lock.release()
+      assert.equal(await exists(path), false)
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('still refuses when this very process holds the lock, and takes it again after release', async () => {
+    const home = await withHome()
+    try {
+      const path = join(home, 'daemon', 'fleetd.lock')
+      const first = await acquireFleetLock(path)
+      await assert.rejects(() => acquireFleetLock(path), (thrown: unknown) => code(thrown) === 'conflict')
+      await first.release()
+      const second = await acquireFleetLock(path)
+      await second.release()
     } finally {
       await rm(home, { recursive: true, force: true })
     }
@@ -188,6 +224,54 @@ describe('the store lock', () => {
       const lock = await acquireFleetLock(path)
       assert.equal((await readFile(path, 'utf8')).trim(), String(process.pid))
       await lock.release()
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('does not remove a live fleetd’s lock that replaced the stale one while the takeover was deciding', async () => {
+    const home = await withHome()
+    try {
+      const path = join(home, 'daemon', 'fleetd.lock')
+      await mkdir(join(home, 'daemon'), { recursive: true })
+      const stranger = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' })
+      try {
+        assert.ok(stranger.pid !== undefined)
+        await writeFile(path, `${String(stranger.pid)}\n`, 'utf8')
+        // The stale file is judged, and while it is, a rival fleetd takes the lock
+        // the way the real one does: it removes the leftover and creates its own.
+        let asked = 0
+        const commandOf = (): string => {
+          asked += 1
+          if (asked > 1) return 'node /opt/fleet/bin/fleetd locked'
+          spawnSync('rm', ['-f', path])
+          spawnSync('sh', ['-c', `echo ${String(process.pid)} > ${path}`])
+          return `${process.execPath} -e setTimeout(() => {}, 60_000)`
+        }
+        await assert.rejects(
+          () => acquireFleetLock(path, { pid: deadPid(), commandOf }),
+          (thrown) => code(thrown) === 'conflict',
+        )
+        assert.equal((await readFile(path, 'utf8')).trim(), String(process.pid), 'the rival’s fresh lock stays its own')
+      } finally {
+        stranger.kill()
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a lock file that is still empty, because a fleetd is between creating it and writing its pid', async () => {
+    const home = await withHome()
+    try {
+      const path = join(home, 'daemon', 'fleetd.lock')
+      await mkdir(join(home, 'daemon'), { recursive: true })
+      await writeFile(path, '', 'utf8')
+      await assert.rejects(
+        () => acquireFleetLock(path),
+        (thrown) => code(thrown) === 'conflict',
+      )
+      assert.equal(await readFile(path, 'utf8'), '', 'the file a booting fleetd made is not a leftover')
     } finally {
       await rm(home, { recursive: true, force: true })
     }

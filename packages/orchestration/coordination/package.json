@@ -1,0 +1,17 @@
+{
+  "name": "@fleet/orchestration-coordination",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "What a shared fleet tells the others (shared-fleet.md §3): its budget pace and idle capacity, published on its own branch on change or every ten minutes, and the other fleets' read back — over the Coordination port, never git itself.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fleet/foundation-contracts": "workspace:*",
+    "@fleet/foundation-core": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}

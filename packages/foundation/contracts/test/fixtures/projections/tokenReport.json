@@ -6,6 +6,7 @@
   "inputTokens": 61200,
   "outputTokens": 4180,
   "cachedTokens": 148000,
+  "costUsd": 4.12,
   "toolCalls": {
     "grep": 2,
     "glob": 1,

@@ -17,11 +17,13 @@ import type {
   FleetEvent,
   Message,
   Peer,
+  PeerActivity,
   PeerCompactions,
   ReplayResult,
   Routine,
+  TokenReport,
 } from '@fleet/foundation-contracts'
-import type { DownResult, LsResult, PeekResult, SendResult, UpResult } from '@fleet/foundation-contracts'
+import type { DownResult, LsResult, NoteResult, PeekResult, SendResult, UpResult } from '@fleet/foundation-contracts'
 
 const indent = (lines: readonly string[], by: number): readonly string[] =>
   lines.map((line) => `${' '.repeat(by)}${line}`)
@@ -56,6 +58,27 @@ const peerRow = (peer: Peer): readonly string[] => [
   peer.currentSessionId ?? '-',
 ]
 
+/**
+ * What a busy peer is doing (§4). `state` says `working`; this says at what, on
+ * which Work, and how much of that Work it has rewritten — the three things a
+ * person watching a fleet wants before deciding whether to interrupt it.
+ *
+ * The target is the provider's own short summary (a path, a description), so it
+ * is already safe to print. It is shortened again here only so one long path
+ * cannot push the other columns off a terminal; the daemon's payload is not cut.
+ */
+const activityRow = (row: PeerActivity): readonly string[] => [
+  row.peerId,
+  row.lastTool ?? '-',
+  row.lastTarget === undefined ? '-' : shorten(row.lastTarget, 56),
+  row.workId ?? '-',
+  `edits ${String(row.edits)}`,
+  row.lastTurnAt ?? 'no turn yet',
+]
+
+const shorten = (value: string, max: number): string =>
+  value.length <= max ? value : `${value.slice(0, max - 1)}…`
+
 const routineRow = (routine: Routine): readonly string[] => [
   routine.kind,
   routine.state,
@@ -77,6 +100,23 @@ const compactionRow = (row: PeerCompactions): readonly string[] => [
   `last ${row.lastTrigger}`,
   `pre ${String(row.lastPreTokens)}`,
   row.lastAt,
+]
+
+/**
+ * §6.2's cost report, one line per row: a peer's rollup (`all`) and its rows per
+ * Work. Tokens stay counts — the report measures them — and the cost is the sum
+ * of the turns that published a price, so a provider that prices nothing shows
+ * `$0.00` rather than a guess.
+ */
+const tokenRow = (row: TokenReport): readonly string[] => [
+  row.peerId,
+  row.role,
+  row.workId ?? 'all',
+  `${String(row.turns)} turns`,
+  `in ${String(row.inputTokens)}`,
+  `out ${String(row.outputTokens)}`,
+  `cached ${String(row.cachedTokens)}`,
+  `$${row.costUsd.toFixed(2)}`,
 ]
 
 /**
@@ -103,12 +143,26 @@ export const formatLs = (result: LsResult): string => {
     index === 0 ? decisionLines(row) : ['', ...decisionLines(row)],
   )
   const total = result.compactions.reduce((sum, row) => sum + row.count, 0)
+  // The rollup rows are the fleet's bill; the per-Work rows are its breakdown and
+  // summing those too would count every turn twice.
+  const spend = result.tokens
+    .filter((row) => row.workId === undefined)
+    .reduce((sum, row) => sum + row.costUsd, 0)
   const lines = [
     `${status.profile}  pid ${String(status.pid)}  up since ${status.startedAt}`,
     `socket  ${status.socketPath}`,
     `store   ${status.storePath}`,
     '',
     ...section('peers', result.peers.length, columns(result.peers.map(peerRow)), 'none registered'),
+    '',
+    // Right after the peers, because it answers the question the peers row raises:
+    // a peer that says `working` is a peer whose reader wants to know at what (§4).
+    ...section(
+      'activity',
+      result.activity.length,
+      columns(result.activity.map(activityRow)),
+      'none: no peer has a Work or has used a tool',
+    ),
     '',
     ...section('routines', result.routines.length, columns(result.routines.map(routineRow)), 'none'),
     '',
@@ -121,19 +175,32 @@ export const formatLs = (result: LsResult): string => {
       'none: no peer has compacted',
     ),
     '',
+    ...section(`tokens ($${spend.toFixed(2)} total)`, result.tokens.length, columns(result.tokens.map(tokenRow)), 'none: no turn has been recorded'),
+    '',
     ...section('decisions', result.decisions.length, decisionRows, 'nothing waiting on the user'),
   ]
   return lines.join('\n')
 }
 
-export const formatUp = (result: UpResult): string =>
-  [`${result.profile} up, pid ${String(result.pid)}`, `socket  ${result.socketPath}`, `store   ${result.storePath}`].join(
-    '\n',
-  )
+export const formatUp = (result: UpResult): string => {
+  const lines = [
+    `${result.profile} up, pid ${String(result.pid)}`,
+    `socket  ${result.socketPath}`,
+    `store   ${result.storePath}`,
+  ]
+  // The fleet is up; these are the things it started *despite* (TASK-12), so they
+  // come after the addresses and are prefixed rather than reworded as a failure.
+  for (const warning of result.warnings ?? []) lines.push(`warn    ${warning}`)
+  return lines.join('\n')
+}
 
 export const formatDown = (_result: DownResult): string => 'fleetd stopped'
 
 export const formatSend = (result: SendResult, peer: string): string => `sent ${result.msgId} to ${peer}`
+
+/** `fleet note` echoes the Work: the peer named the phase, the daemon named the Work it landed on. */
+export const formatNote = (result: NoteResult): string =>
+  `noted ${result.phase} on ${String(result.workId)} (mirrored to the board when the profile maps one)`
 
 const messageLines = (message: Message): readonly string[] => {
   const head = [

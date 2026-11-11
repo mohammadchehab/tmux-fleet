@@ -134,32 +134,31 @@ const toolUses = (message: Record<string, unknown>): ToolUseBlock[] => {
 }
 
 /**
+ * The tools whose call has a target this fleet is willing to put in the log:
+ * the ones whose input names a file, and nothing else. Claude's names.
+ *
+ * The rule is a **default-deny allowlist**, because the alternatives all fail
+ * open. A command (`Bash`), a URL (`WebFetch`), a search query (`WebSearch`), a
+ * sub-agent's brief (`Task`/`Agent`), and anything under an MCP server can each
+ * carry a token — `curl -H 'Authorization: …'`, `?token=…`, `user:pw@host` — and
+ * a pattern-based redactor is a guess about where a secret sits, not a rule
+ * about what may be stored. A tool this adapter has never heard of gets the
+ * same answer as Bash: the name, and nothing else. So a tool added tomorrow
+ * leaks nothing.
+ */
+const TARGET_TOOL_NAMES: ReadonlySet<string> = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
+/**
  * A short summary of a tool call for the event stream — never the whole input
- * (§4). One safe, already-short field per tool; anything else gets none, and
- * the store keeps only `tool`.
+ * (§4). Only the tools in `TARGET_TOOL_NAMES` contribute one, and theirs is the
+ * path they touch; every other call is the name alone. The 200-character bound
+ * is here so one log row stays small, not as a redaction.
  */
 export const summariseToolUse = (name: string, input: Record<string, unknown>): string | undefined => {
-  const first = (key: string): string | undefined => {
-    const value = input[key]
-    return typeof value === 'string' && value.length > 0 ? truncate(value, 200) : undefined
-  }
-  switch (name) {
-    case 'Bash':
-      return first('command')
-    case 'Read':
-    case 'Write':
-    case 'Edit':
-    case 'NotebookEdit':
-      return first('file_path')
-    case 'Task':
-    case 'Agent':
-      return first('description')
-    case 'WebFetch':
-    case 'WebSearch':
-      return first('url') ?? first('query')
-    default:
-      return undefined
-  }
+  if (!TARGET_TOOL_NAMES.has(name)) return undefined
+  const path = input.file_path
+  if (typeof path !== 'string' || path.length === 0) return undefined
+  return truncate(path, 200)
 }
 
 const truncate = (value: string, max: number): string =>

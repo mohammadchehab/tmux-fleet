@@ -21,10 +21,17 @@ export interface EvalBuildIdentity {
   readonly suite: string
   readonly provider: string
   readonly model: string
+  /**
+   * Whether the run writes a baseline. It is part of the identity because it is
+   * a different run: a plain one that already exists must not stand in for it, or
+   * `--save-baseline` is deduped away and no baseline is ever written (TASK-35).
+   */
+  readonly saveBaseline?: boolean
 }
 
 /**
- * The `task` an eval run is filed under: `evals:<suite>:<provider>:<model>`.
+ * The `task` an eval run is filed under: `evals:<suite>:<provider>:<model>`, with
+ * `:baseline` after it for a run that saves one.
  *
  * §11 keys the ledger on `(repo, sha, task)`, so `task` is the only place a caller can
  * say "which build". §17 asks for one more thing than §11's triple: an eval run is
@@ -33,26 +40,27 @@ export interface EvalBuildIdentity {
  * a three-tuple key, and this is the encoding that keeps the one promise without
  * widening the store's `UNIQUE (repo, sha, task)`.
  *
- * A component may not contain `:` — the separator would move the class boundary or
- * split a detail in two, and the next reader of the string would decode a different
- * identity than the caller encoded. A model named `a:b` is refused here rather than
- * silently truncated, because the ledger's whole job is that two different runs never
- * share a key.
+ * Each part is encoded before it is joined (`encodeTaskPart`): a `:` becomes `%3A` and a `%`
+ * becomes `%25`, and nothing else changes. A real model id can hold a colon (an ollama
+ * tag, `llama3:8b`), and one raw would move the class boundary, split a detail in two, or
+ * let a model called `x:baseline` take the key of a baseline run of `x`. The encoding is
+ * injective, so two different identities never share a key, and a name with neither
+ * character is spelled exactly as before, so every key already in the log still matches.
+ * The class stays the text before the first `:`, which no encoded part can contain.
  */
-export const evalBuildTask = ({ suite, provider, model }: EvalBuildIdentity): string => {
+export const evalBuildTask = ({ suite, provider, model, saveBaseline }: EvalBuildIdentity): string => {
   const parts = { suite, provider, model }
   for (const [name, value] of Object.entries(parts)) {
     if (typeof value !== 'string' || value.length === 0) {
       throw fleetError('invalid_input', `an eval build identity needs a non-empty ${name}`, { details: parts })
     }
-    if (value.includes(':')) {
-      throw fleetError('invalid_input', `the eval ${name} "${value}" contains ":", which separates a build task's parts`, {
-        details: parts,
-      })
-    }
   }
-  return `evals:${suite}:${provider}:${model}`
+  const task = `${EVAL_TASK_CLASS}:${encodeTaskPart(suite)}:${encodeTaskPart(provider)}:${encodeTaskPart(model)}`
+  return saveBaseline === true ? `${task}:baseline` : task
 }
+
+/** One part of a task, with the separator (and the escape itself) escaped so the join is unambiguous. */
+const encodeTaskPart = (value: string): string => value.replace(/%/g, '%25').replace(/:/g, '%3A')
 
 /**
  * The class every eval task has to route together (§11's "by task class"), so a

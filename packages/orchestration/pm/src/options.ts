@@ -22,6 +22,11 @@ export interface PmOptions {
   readonly duplicateThreshold?: number
   /** §5.3 `thin_card`: a description shorter than this many characters is a card with no goal. */
   readonly thinCardChars?: number
+  /**
+   * §6.1: the fleet's soft cap, in USD. Once the ledger's bill for the fleet reaches it, the tick asks the user
+   * whether to continue or raise it. No cap means no question — a default would make every fleet ask one.
+   */
+  readonly budgetUsd?: number
 }
 
 export interface ResolvedPmOptions {
@@ -31,6 +36,8 @@ export interface ResolvedPmOptions {
   readonly reviewerRole: string
   readonly duplicateThreshold: number
   readonly thinCardChars: number
+  /** Absent when the profile sets no cap, which is the only value that means "never ask". */
+  readonly budgetUsd?: number
 }
 
 export const defaultPmOptions: ResolvedPmOptions = {
@@ -52,4 +59,6 @@ export const resolveOptions = (options: PmOptions = {}): ResolvedPmOptions => ({
   reviewerRole: given(options.reviewerRole, defaultPmOptions.reviewerRole),
   duplicateThreshold: given(options.duplicateThreshold, defaultPmOptions.duplicateThreshold),
   thinCardChars: given(options.thinCardChars, defaultPmOptions.thinCardChars),
+  // Not defaulted: an undefined cap means the profile never set one, and `given` would need a sentinel number.
+  ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }),
 })

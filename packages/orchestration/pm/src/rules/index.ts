@@ -8,7 +8,10 @@
  *    tick that would otherwise merge it — and because it moved, `mergeBlocker` then refuses it (§10).
  * 2. **`supersede_brief` before `assign`.** A stale brief is corrected before any new Work is handed out, so a peer
  *    is never briefed twice in one tick.
- * 3. **`unblock` after `request_decisions`, before `idle`.** The user-facing rules speak first, so a Work they
+ * 3. **`raise_blocked_notes` between `request_decisions` and `unblock`.** A peer's `blocked` note and a Work the
+ *    fleet marked blocked ask the user the same question (`blockedDecisionId`), so they share a claim and this order
+ *    decides which words carry it: the note is the peer's own account, so it speaks before the projection's.
+ * 4. **`unblock` after `request_decisions`, before `idle`.** The user-facing rules speak first, so a Work they
  *    already put a question about is not asked about a second way; and §5.2's row order is `unblock`, then `idle`.
  *
  * `dedupe` before `assign` is not implicit — §5.2 says it — and is why a rule takes a `questioned` set.
@@ -18,7 +21,7 @@ export { draft } from './context.ts'
 export type { Draft, Rule, RuleContext } from './context.ts'
 export { assignReadyWork } from './assign.ts'
 export { questionDuplicates, questionThinCards, similarity } from './dedupe.ts'
-export { requestDecisions } from './escalate.ts'
+export { budgetDecisionId, requestDecisions } from './escalate.ts'
 export {
   approvalDecisionId,
   approvalInputsHash,
@@ -27,6 +30,8 @@ export {
   retargetDependents,
 } from './gate.ts'
 export { raiseCapacityGaps } from './idle.ts'
+export { raiseBlockedNotes } from './note.ts'
+export { markReadyWork } from './ready.ts'
 export { blockedDecisionId, unblockWaitingPeers } from './unblock.ts'
 export { supersedeStaleBriefs } from './stale.ts'
 export { renderStandupDue } from './standup.ts'
@@ -36,6 +41,8 @@ import { questionDuplicates, questionThinCards } from './dedupe.ts'
 import { requestDecisions } from './escalate.ts'
 import { mergeGreenPrs, retargetDependents } from './gate.ts'
 import { raiseCapacityGaps } from './idle.ts'
+import { raiseBlockedNotes } from './note.ts'
+import { markReadyWork } from './ready.ts'
 import { unblockWaitingPeers } from './unblock.ts'
 import { supersedeStaleBriefs } from './stale.ts'
 import { renderStandupDue } from './standup.ts'
@@ -48,8 +55,10 @@ export const pmRules: readonly Rule[] = [
   supersedeStaleBriefs,
   questionDuplicates,
   questionThinCards,
+  markReadyWork,
   assignReadyWork,
   requestDecisions,
+  raiseBlockedNotes,
   unblockWaitingPeers,
   raiseCapacityGaps,
   renderStandupDue,

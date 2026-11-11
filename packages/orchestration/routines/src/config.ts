@@ -59,6 +59,10 @@ export const defaultTriggers: Readonly<Record<RoutineKind, readonly Trigger[]>> 
         // to avoid.
         'work.mergeable',
         'work.merged',
+        // A `blocked` note is the one phase a peer reports that the PM must answer, and the
+        // note is recorded-only — the heartbeat after it has the Work but not the words.
+        // This line is what lets the tick that carries the note raise the decision.
+        'work.noted',
         'peer.registered',
         'peer.state_changed',
         'contract.published',
@@ -100,7 +104,11 @@ export const defaultTriggers: Readonly<Record<RoutineKind, readonly Trigger[]>> 
   // picked up is the difference the sync exists to remove.
   'tracker-sync': [
     { kind: 'heartbeat', everyMs: 300_000 },
-    { kind: 'event', types: ['work.started', 'work.review_requested', 'work.merged'] },
+    // `work.noted` is in the list because a note is a sink event with no state
+    // to move: woken by the heartbeat it would be a pull, and the note would
+    // never reach the card. The types this routine appends (`work.proposed`,
+    // `tracker.synced`) are not among them, so the wake cannot re-enter it (§6).
+    { kind: 'event', types: ['work.started', 'work.review_requested', 'work.merged', 'work.noted'] },
   ],
   notify: [
     { kind: 'heartbeat', everyMs: 300_000 },

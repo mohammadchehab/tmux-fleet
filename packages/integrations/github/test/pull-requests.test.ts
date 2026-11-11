@@ -294,13 +294,16 @@ describe('branches and deleteBranch: ยง10 keeps the delete, the gate does not (ย
   const head = 'abc1234' as Sha
 
   it('lists every branch with the commit it points at, following the paginated API', async () => {
-    // `--slurp --jq 'add | map(...)'` prints one flat array, which is what the fake's
-    // stdout is: the jq runs inside `gh`, so the adapter reads the already-flattened shape.
-    const fake = fakeGh(() =>
-      json([
-        { name: 'feat', sha: 'abc1234' },
-        { name: 'fleet/work-1', sha: 'def5678' },
-      ]),
+    // What `gh api --paginate --slurp` prints: one array of pages, each page the API's own rows. The fake
+    // refuses the one flag combination real `gh` refuses (`--slurp` with `--jq`), so a call that cannot run
+    // against GitHub cannot pass here either.
+    const fake = fakeGh((args) =>
+      args.includes('--slurp') && args.includes('--jq')
+        ? { code: 1, stderr: 'the `--slurp` option is not supported with `--jq` or `--template`' }
+        : json([
+            [{ name: 'feat', commit: { sha: 'abc1234', url: 'https://api.github.com/x' }, protected: false }],
+            [{ name: 'fleet/work-1', commit: { sha: 'def5678', url: 'https://api.github.com/y' }, protected: false }],
+          ]),
     )
     const branches = await createGitHubPullRequests({ gh: fake.gh }).branches(where)
 

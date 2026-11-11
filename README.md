@@ -1,78 +1,70 @@
 # tmux-fleet
 
-A fleet of AI sessions that build software together, in Claude Code or Cursor — being rebuilt so that one
-deterministic supervisor, not a set of chat sessions, is what actually runs the fleet.
+**A daemon that runs a team of coding agents.**
 
-**The design is [`docs/design/fleet-v2-architecture.md`](docs/design/fleet-v2-architecture.md).** Read it before
-touching anything here; it is the authority on layout, dependency direction and what each phase adds.
+tmux-fleet manages a pool of AI agents—Claude, Cursor, or Deepinfra—orchestrating them through a supervisor, a PM (project manager), a judge, and a persistent board. One agent at a time claims a piece of work, solves it, and hands off the result. The fleet is event-sourced: every decision is audited, every state change is recorded, and any agent can replay the log to catch up. There is no server, no auth, no rate limits—just a local daemon and your git repos.
 
-## One checkout
+**Why?** Coding agents work best in small, focused tasks. A fleet breaks a large goal into pieces, routes them to agents with the right skills and availability, runs them in parallel where safe, and hands off results deterministically. One agent's work triggers the PM to reassess; the judge answers hard questions that PM rules could not decide; the board tracks what each agent is doing and what is next.
 
-| | where | what it is |
-|---|---|---|
-| **v2** | `packages/`, `apps/`, `tests/` | one event-sourced store, one supervisor process, peers behind a typed `Provider` |
+## Quickstart
 
-The bash fleet that lived here as `legacy/v1/` was deleted once the v2 fleet took over (design §1.1, "what happens to
-the old bash"). It is not gone from history: `git log -- legacy/v1` has it, and the last commit that carried it can be
-checked out whole.
-
-## Working in v2
-
-Node ≥22.18 runs the TypeScript directly — there is no build step, and a package's `exports` map points at its
-`src/index.ts`.
+From the root of this checkout:
 
 ```sh
-task install          # pnpm install --frozen-lockfile
-task typecheck        # tsc --noEmit — the compiler is the lint; there is no eslint (§14)
-task test:node        # node --test: tests/ and every package's own test/
-task test             # test:node, then typecheck — the whole gate
+# Install and set up a profile
+pnpm install
+pnpm fleet init me      # writes ~/.config/fleet/profiles/me.yaml
+# Edit the config: add your repo(s) under `repos`
+pnpm fleet up me        # starts fleetd
+
+# In another terminal, see what the fleet is doing
+pnpm fleet ls           # list peers and their Work
+pnpm fleet-view me      # tmux dashboard of all peers
+pnpm fleet-board me     # web board of Work items at http://127.0.0.1:7777
 ```
 
-`task test` is the gate, and it is the only one: the shellcheck and skill-frontmatter lint went with v1. Cross-package
-tests live in `tests/` — that
-is where the §1.1 rules live — and a package's own unit tests sit beside it as `test/*.test.ts`, run in the same sweep,
-so a new package needs no task of its own.
+The fleet reads from your repos, opens PRs, and records everything in the event store. Each agent works on one piece of Work at a time: propose → ready → assigned → in progress → merged. The PM assigns ready Work to idle peers; the judge answers questions the PM cannot decide alone.
 
-## First run
+## Providers
 
-From the root of this checkout — no `pnpm link`, no PATH to set up, the root `fleet` script runs the CLI in place:
+Choose which AI platform powers your agents. Each is a `Provider` that answers one question: "given a git state and a task, what does the agent propose?" Multiple providers in one fleet is supported—each peer can use a different one.
+
+- **Claude** — Anthropic's Claude models via the Anthropic API. Includes code analysis and sophisticated reasoning. Start here if you have Anthropic API access.
+- **Cursor** — Cursor's agent. Integrates with your IDE and respects your editor config. Good for development workflows where the agent works alongside you.
+- **Deepinfra** — Open-source models (Llama, Qwen, etc.) via Deepinfra's API. Lower cost, community-driven inference.
+
+## Architecture
+
+The fleet is one event-sourced store, one supervisor process, and a pool of peers. Every decision flows through:
+
+1. **Supervisor** — watches peers: registers them, detects when they go idle or fail, and adjusts the fleet state.
+2. **PM (project manager)** — runs every tick to decide what Work should be ready and who should work on it. It wakes on Work state changes, peer availability, and judge answers.
+3. **Judge** — answers questions PM rules cannot decide: "Is this PR mergeable? Is this task description clear enough?" Uses structured completions from the agent's provider.
+4. **Board** — a persistent log of Work items: proposed, ready, assigned, in progress, merged. Synced with your tracker (GitHub, Linear, etc.) if configured.
+
+## Learn more
+
+- **[Fleet v2 architecture](docs/design/fleet-v2-architecture.md)** — the design of record. Start here to understand how the fleet works and why it is built this way.
+- **[Running a fleet](docs/runbook/README.md)** — operations guide: setting up profiles, managing peers, debugging, and monitoring.
+- **[Decisions](docs/decisions/)** — the reasoning behind major design choices.
+
+## Working on the fleet
+
+Node ≥22.18 runs TypeScript directly—no build step. A package's `exports` map points at its `src/index.ts`.
 
 ```sh
-pnpm fleet init me     # writes ~/.config/fleet/profiles/me.yaml once; it never overwrites one
-pnpm fleet up me       # starts fleetd and registers the profile's peers
+task test             # Run all tests (node --test + typecheck)
+task typecheck        # tsc --noEmit (compiler is the lint)
 ```
 
-`fleet init` writes a comment-rich starter: every routine kind, every model id this repo knows, and a profile that
-`fleet up` accepts as written. Edit the one thing it cannot know — `repos`, one `owner/name` per repository — then
-`fleet up me`. Everything after that is a client of the daemon it started: `pnpm fleet ls`,
-`pnpm fleet send pm info "..."`, `pnpm fleet down`, and `pnpm fleet-view me` for the tmux view — one read-only pane
-per peer, redrawn from the same API; `pnpm fleet-view me --once` prints it without tmux. `pnpm fleet-board me` serves a
-read-only web board of the Work items on `http://127.0.0.1:7777/`, re-read from the daemon on every request;
-`pnpm fleet-board me --once` prints the same page instead of listening.
+The architecture is enforced as a test: `tests/architecture/` walks the codebase and fails if imports violate §1.1 (foundation importable by all, groups never sideways, only `apps/daemon` wires things). See [AGENTS.md](AGENTS.md) for the import rules and conventions.
 
-## Tool policy
+## One checkout, two eras
 
-A session's `toolPolicy` is a guard rail, not a sandbox; no-production is enforced by environment. An `allow` rule
-covers one whole command and never one carrying `;`, `&`, `|`, a backtick, `$(`, `<`, `>` or a newline — those go to a
-person, as does any subject over 64 KB. Nothing is truncated: `deny` and `ask` rules are searches over the whole
-input, so a command hidden in a chain is still caught. File paths are resolved against the session's cwd before a rule
-sees them.
+**v2** (current) is rebuilt in TypeScript with an event store, supervisor, and deterministic PM. It lives in `packages/`, `apps/`, and `tests/`.
 
-## Layout (§1.1)
+**v1** (legacy bash fleet) was deleted once v2 took over. It is not lost—`git log -- legacy/v1` has the full history if you need to reference or restore it.
 
-```
-packages/foundation/     core, contracts, store     — what everything may import
-packages/runtime/        providers/, supervisor, mailbox
-packages/orchestration/  pm, routines, briefs, gate, ledger
-packages/workspace/      worktree, codegraph
-packages/security/       findings, scanners
-packages/notify/         core, channels/macos
-packages/integrations/   github, trackers
-apps/                    daemon (fleetd), clients/, hooks/
-tests/architecture/      the import-direction rules, enforced as a test
-```
+---
 
-The dependency rules are not a convention, they are a test: `tests/architecture/` walks the real workspace, resolves
-every import and fails on a violation, naming `file:line`. In short — foundation is importable by everything; groups
-never import another group sideways (they declare a port in `foundation/contracts` and `apps/daemon` injects it); a
-provider never imports the store; apps never import apps, and only `apps/daemon` wires anything.
+**Status:** v2 is under active development. The core architecture is stable; new features land as PRs to main. Join the discussion or file issues for features, providers, or operational improvements.

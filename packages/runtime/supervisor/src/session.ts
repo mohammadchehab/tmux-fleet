@@ -33,16 +33,38 @@ import {
   type SessionId,
   type TurnId,
 } from '@fleet/foundation-core'
-import type { ProviderEvent, SessionEndReason, StateFile, Usage } from '@fleet/foundation-contracts'
+import type { Effort, ProviderEvent, SessionEndReason, StateFile, Usage } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle, Turn } from '@fleet/runtime-provider-sdk'
 
 import { peerStateOf } from './peer-state.ts'
 import { purgeTrigger, type PurgeLimits } from './policy.ts'
 import { restartStateFileOf, type PurgeOutcome } from './purge.ts'
-import { sessionIdOf, type SessionRecord } from './records.ts'
+import { permissionModeOf, sessionIdOf, type SessionRecord } from './records.ts'
 import { emptyToolCalls, withToolCall, type ToolCalls } from './tool-calls.ts'
 
 export type { SessionRecord } from './records.ts'
+
+/**
+ * The event schema's own bounds (§4). A provider's `tool.use` summary is
+ * already short, but its contract allows 500 characters and the activity event
+ * allows 200; the cut happens here, at the writer, so the store never has to
+ * refuse a record the session already thought it made.
+ */
+const TOOL_MAX = 64
+const TARGET_MAX = 200
+
+/**
+ * The one kind of target this fleet stores: the path an edit-family call names.
+ * The supervisor is the writer of `peer.tool_used`, so it does not take the
+ * adapter's word for what is safe — a provider that summarises more than this
+ * (a command, a URL, a brief) has it dropped here and the event keeps the tool
+ * name alone. Claude's names, the same set the claude adapter allowlists; a
+ * provider that summarises nothing, like cursor, is unaffected.
+ */
+const TARGET_TOOLS: ReadonlySet<string> = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
+const bounded = (value: string, max: number): string =>
+  value.length <= max ? value : `${value.slice(0, max - 1)}…`
 
 /** What a purge needs from the live session: its handle, its brief, and a way to ask. */
 export interface PurgeInput {
@@ -52,10 +74,34 @@ export interface PurgeInput {
   readonly ask: (text: string) => Promise<void>
 }
 
+/**
+ * A bookkeeping append the store refused, kept out of the session's way
+ * (TASK-4, TASK-57).
+ *
+ * The row is a measurement, not the session, so a refused append must not end
+ * one — but dropping it in silence leaves a fleet whose spend cap reads those
+ * rows unable to tell a turn it never spent from one it never measured. This is
+ * the whole of what the supervisor knows about it: whose turn it was, which
+ * turn, and what the store said.
+ */
+export interface BookkeepingFailure {
+  readonly peerId: PeerId
+  readonly turnId: TurnId
+  readonly error: unknown
+}
+
 export interface PeerSessionPorts {
   readonly provider: Provider
   readonly handle: SessionHandle
   readonly peerId: PeerId
+  /**
+   * The reasoning level the profile asked this peer's session to start on
+   * (TASK-12). `handle.model` is what the process *reports* running; effort has
+   * no such report from any provider we run, so what `session.started` records is
+   * the request — absent when the profile asked for nothing, which is not the
+   * same as a provider that disagreed.
+   */
+  readonly effort?: Effort
   /** The brief version the session was started against; carried into the purge (§7, §12). */
   readonly briefVersion: number
   /** Per provider and model, from `config/policies/limits` (§8). */
@@ -67,6 +113,14 @@ export interface PeerSessionPorts {
    * crash and can reorder them, and neither is visible until it matters.
    */
   readonly record: (record: SessionRecord) => void | Promise<void>
+  /**
+   * Where a refused bookkeeping append goes instead of out of `run()`
+   * (TASK-57). The sink that would carry the complaint is the store that just
+   * refused it, so the complaint needs somewhere else to land — the daemon log,
+   * under fleetd. Absent, the failure is dropped, which is TASK-4's behaviour and
+   * is what a test with no use for the line gets.
+   */
+  readonly onBookkeepingFailure?: (failure: BookkeepingFailure) => void
   /**
    * Run one purge and return with the fresh session. Injected so this file
    * holds the loop and `purge.ts` holds the protocol, and so tests can purge
@@ -170,6 +224,13 @@ export class PeerSession {
     this.#handle = ports.handle
   }
 
+  /**
+   * The session running *now*, which is not the one this object was built with.
+   * A recovery and a purge both replace `#handle` under `run()`, so a holder
+   * that cached the handle it saw at construction keeps naming a session that
+   * has ended — and `deliver` would go to the replacement while the caller's
+   * record of where the turn went pointed at the dead one (§7, §8).
+   */
   get handle(): SessionHandle {
     return this.#handle
   }
@@ -242,6 +303,13 @@ export class PeerSession {
   async #pump(handle: SessionHandle): Promise<PurgeOutcome | undefined> {
     const { clock, limits, provider } = this.#ports
     const sessionId = sessionIdOf(handle)
+    // Subscribe before anything is awaited: a provider hands out its stream on the call, and what it emits
+    // while the start is being recorded has to be waiting here, not lost.
+    const stream = provider.events(handle)
+    // The adapter's own `session.started` stays inside it (§4), so this is the one place the store learns a
+    // session began: the sessions projection, the mailbox's replay on start and the Work sync all hang off it.
+    // Written before the first event is read, so it is the first record of the session.
+    await this.#recordStart(handle)
     const startedAt = clock.millis()
     // Nothing is reset here. A new stream starts owning nothing because the
     // session it replaces abandoned what it owned when it ended, and a leftover
@@ -266,11 +334,19 @@ export class PeerSession {
     }
 
     let failed: unknown
+    // A session the provider says crashed or exited on its own is recovered
+    // (TASK-39). Its end is already in the store, written by `#apply`, so it
+    // leaves the loop normally and is thrown after it: thrown from inside, it
+    // would be caught as a stream failure and recorded ended a second time.
+    let endedOnItsOwn: 'crash' | 'exit' | undefined
     try {
-      for await (const event of provider.events(handle)) {
+      for await (const event of stream) {
         await this.#apply(handle, event, purge !== undefined)
 
-        if (event.type === 'session.ended') break
+        if (event.type === 'session.ended') {
+          if (event.reason === 'crash' || event.reason === 'exit') endedOnItsOwn = event.reason
+          break
+        }
         if (event.type !== 'turn.ended') continue
 
         // A turn boundary reached *during* a purge is the peer answering the ask.
@@ -296,12 +372,28 @@ export class PeerSession {
         if (this.#state !== 'idle' || this.#pending.size > 0 || this.#openTurns.size > 0) continue
 
         turns += 1
-        const usage = await provider.usage(handle)
+        const usage = await this.#usageOrUndefined(handle)
+        // No measurement, no trigger: the purge is judged against these numbers,
+        // and a boundary that cannot be measured is one that is not judged. The
+        // turn still counts above, because the counter is what the next boundary
+        // is judged against.
+        if (usage === undefined) continue
         // §6.2's measurement, at the boundary the fleet already owns: the same
         // `usage()` the purge reads, plus what the turn spent. Recorded before
         // the trigger is judged, so a turn that causes a purge has still been
         // counted — the handoff costs tokens too.
-        await this.#recordUsage(handle, event.turnId, usage)
+        //
+        // A rejected row is bookkeeping, not the session: the `try` around this
+        // loop is for the stream, and a store that refuses this one append used to
+        // end a healthy session as `crashed` and hand it to `recover` — the peer
+        // replaced because a measurement could not be filed. The sink that would
+        // carry the complaint is the store that just refused it, and a session is
+        // the wrong thing to sacrifice to make it visible: the failure goes to
+        // `onBookkeepingFailure` instead, which under fleetd is the daemon log
+        // (TASK-4, TASK-57).
+        await this.#recordUsage(handle, event.turnId, usage).catch((error: unknown) =>
+          this.#reportBookkeepingFailure(event.turnId, error),
+        )
         const trigger = purgeTrigger({
           usage,
           usageTokens: provider.capabilities.usageTokens,
@@ -362,7 +454,13 @@ export class PeerSession {
       throw failed
     }
 
-    return purge === undefined ? undefined : await purge
+    // A purge already under way restarts the peer itself; recovering as well
+    // would start a second session over the first.
+    if (purge !== undefined) return await purge
+    if (endedOnItsOwn !== undefined) {
+      throw fleetError('provider_failed', `session ended with reason '${endedOnItsOwn}', triggering recovery`)
+    }
+    return undefined
   }
 
   async #apply(handle: SessionHandle, event: ProviderEvent, purging: boolean): Promise<void> {
@@ -374,11 +472,32 @@ export class PeerSession {
         this.#openTurns.set(event.turnId, sessionId)
         break
       case 'tool.use': {
-        // A call reported after its turn ended belongs to no boundary that will
-        // ever be judged, so it counts nothing — and counting it would keep an
-        // entry in `#toolCalls` that nothing clears.
-        if (this.#endedTurn?.turnId === event.turnId) break
+        // A call is counted against the turn that is running, and only that
+        // turn: a call reported after its turn ended belongs to no boundary
+        // that will ever be judged, so it counts nothing — and counting it
+        // would keep an entry in `#toolCalls` that nothing clears. The open
+        // turns are the test, not `#endedTurn`: that slot holds the turn that
+        // ended *most recently*, so a late call for an older one would pass a
+        // comparison against it and leak exactly the entry this guards against.
+        if (!this.#openTurns.has(event.turnId)) break
         this.#toolCalls.set(event.turnId, withToolCall(this.#toolCalls.get(event.turnId) ?? emptyToolCalls, event.tool))
+        // What the peer is doing, not only that it is busy (§4). Written here,
+        // where the stream says it, so a replay sees the same activity the live
+        // fleet showed; the projection keeps the latest and counts the edits.
+        // The target survives only for the tools whose summary is a file path.
+        const target = TARGET_TOOLS.has(event.tool) ? event.summary : undefined
+        await record({
+          type: 'peer.tool_used',
+          ts: clock.now(),
+          subject: peerId,
+          actor: peerActor(peerId),
+          data: {
+            peerId,
+            sessionId,
+            tool: bounded(event.tool, TOOL_MAX),
+            ...(target === undefined ? {} : { target: bounded(target, TARGET_MAX) }),
+          },
+        })
         break
       }
       case 'turn.ended':
@@ -512,6 +631,38 @@ export class PeerSession {
   }
 
   /**
+   * `usage()`, or `undefined` when the provider cannot answer it right now.
+   *
+   * The measurement is read at the boundary for two things — the purge's trigger
+   * and the usage row — and a provider that fails the call costs this boundary
+   * both, not the session. A dead session is a fact about the peer; a failed
+   * measurement is a fact about a stats call, and the fleet must not confuse them.
+   */
+  async #usageOrUndefined(handle: SessionHandle): Promise<Usage | undefined> {
+    try {
+      return await this.#ports.provider.usage(handle)
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Tell whoever is listening that a bookkeeping append was refused (TASK-57).
+   *
+   * The port is a log, not a store: if the log itself throws — a closed stderr, a
+   * subscriber with a bug — the session must still not be sacrificed to it, which
+   * is the one rule this call exists under. So the port's own failure is dropped,
+   * and dropped knowingly: there is nothing left to report it to.
+   */
+  #reportBookkeepingFailure(turnId: TurnId, error: unknown): void {
+    try {
+      this.#ports.onBookkeepingFailure?.({ peerId: this.#ports.peerId, turnId, error })
+    } catch {
+      // Nothing left to report a failure to. The session is what matters.
+    }
+  }
+
+  /**
    * One finished turn, as the store hears about it (§6.2).
    *
    * Two sources, and neither is a guess: the context side is the `usage()` the
@@ -636,6 +787,27 @@ export class PeerSession {
    * the store, so both go through here and a reader cannot tell them apart by
    * accident (§3, §4).
    */
+  async #recordStart(handle: SessionHandle): Promise<void> {
+    const { clock, effort, peerId, record } = this.#ports
+    await record({
+      type: 'session.started',
+      ts: clock.now(),
+      subject: sessionIdOf(handle),
+      actor: peerActor(peerId),
+      data: {
+        peerId,
+        sessionId: sessionIdOf(handle),
+        providerId: handle.providerId,
+        providerSessionRef: handle.sessionRef,
+        model: handle.model,
+        ...(effort === undefined ? {} : { effort }),
+        permissionMode: permissionModeOf(handle),
+        // Every start here is a new session: a purge or a recovery starts a fresh one carrying a state file.
+        resumed: false,
+      },
+    })
+  }
+
   async #recordEnd(handle: SessionHandle, endReason: SessionEndReason, code?: number): Promise<void> {
     const { clock, peerId, record } = this.#ports
     await record({

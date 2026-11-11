@@ -1,0 +1,8 @@
+{
+  "input": {
+    "kind": "mark_ready",
+    "causedBy": [61],
+    "workId": "wrk_not_a_work_id"
+  },
+  "path": "workId"
+}

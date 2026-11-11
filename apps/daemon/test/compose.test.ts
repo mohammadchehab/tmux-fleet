@@ -17,10 +17,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { profilePaths } from '@fleet/foundation-core'
+import { profilePaths, type PeerId, type TurnId } from '@fleet/foundation-core'
 import type { Tracker } from '@fleet/foundation-contracts'
 
-import { buildProviders, compose } from '../src/wiring/compose.ts'
+import { buildProviders, compose, bookkeepingFailureLine } from '../src/wiring/compose.ts'
 import { decodeProfile, type Profile } from '../src/config/profile.ts'
 
 const MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
@@ -147,6 +147,7 @@ ${trackers ?? ''}`,
     get: async () => assert.fail('a composed fleet must not read a card before it is started'),
     transition: async () => assert.fail('a composed fleet must not move a card before it is started'),
     link: async () => assert.fail('a composed fleet must not link a PR before it is started'),
+    comment: async () => assert.fail('a composed fleet must not comment on a card before it is started'),
   })
 
   const clean = async (home: string, composed: Awaited<ReturnType<typeof compose>>): Promise<void> => {
@@ -242,5 +243,108 @@ ${trackers ?? ''}`,
     } finally {
       await clean(home, composed)
     }
+  })
+})
+
+/**
+ * §5.3's Judge, as `fleet up` builds it.
+ *
+ * The daemon used to build the Judge's transport with no env, so its one-shot
+ * call ran on fleetd's ambient identity: on a machine with no Claude login it
+ * answered `subtype: success` with no structured output and every `thin_card`
+ * escalated forever; on a machine with one it silently judged as that login.
+ *
+ * A profile that names a `judge:` block must therefore be able to make the
+ * composition root read that provider's credential — and must be refused at
+ * start when it cannot, rather than falling back to the machine.
+ */
+describe('the profile’s judge block, as the daemon builds it', () => {
+  const withJudge = async (judge: string): Promise<string> => {
+    const home = await mkdtemp(join(tmpdir(), 'fleet-judge-'))
+    const configHome = join(home, '.config')
+    const paths = profilePaths('judged', { home, configHome })
+    await mkdir(join(configHome, 'fleet', 'profiles'), { recursive: true })
+    await writeFile(
+      paths.profileFile,
+      `profile: judged
+repos: [backbase/me-services-fleet]
+peers:
+  - id: engineer-1
+    role: engineer
+    provider: claude
+    model: claude-sonnet-5-5
+${judge}
+`,
+      'utf8',
+    )
+    return home
+  }
+
+  it('refuses to start when the judge names a provider whose key is missing', async () => {
+    // The point of the test: this refusal can only happen if the block reached
+    // the env builder. A compose that ignored `judge:` would start happily and
+    // judge on whatever identity the machine has.
+    const home = await withJudge(`judge:
+  provider: deepinfra
+  model: ${MODEL}
+`)
+    try {
+      await assert.rejects(
+        compose({ profileName: 'judged', roots: { home, configHome: join(home, '.config') }, environ: {} }),
+        (thrown: unknown) => code(thrown) === 'config_mismatch',
+      )
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('asks the model the block names, so the request and the pinned env agree', async () => {
+    const home = await withJudge(`judge:
+  provider: deepinfra
+  model: ${MODEL}
+`)
+    const composed = await compose({
+      profileName: 'judged',
+      roots: { home, configHome: join(home, '.config') },
+      environ: { DEEPINFRA_API_KEY: 'not-a-real-key' },
+    })
+    try {
+      // Without this the transport would pin DeepSeek in the env and then ask
+      // for `claude-haiku-4-5` in the request, which is the same vendor mismatch
+      // in a different place.
+      assert.equal(composed.judge.model, MODEL)
+    } finally {
+      await composed.daemon.down().catch(() => {})
+      await composed.server.close().catch(() => {})
+      await composed.store.close().catch(() => {})
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('a bookkeeping append the store refused (TASK-57)', () => {
+  // TASK-4 stopped a refused row from failing a healthy session, at the cost of
+  // dropping it in silence. The daemon's half of the fix is this line: it has to
+  // name the peer and the turn, or the person reading the log cannot tell which
+  // measurement went missing, and the reason, or they cannot tell why.
+  it('is one log line naming the peer, the turn and what the store said', () => {
+    const line = bookkeepingFailureLine({
+      peerId: 'engineer-1' as PeerId,
+      turnId: 'trn_0123456789abcdef' as TurnId,
+      error: new Error('database is locked'),
+    })
+    assert.equal(
+      line,
+      'fleetd: bookkeeping for engineer-1 failed on turn trn_0123456789abcdef and the session stays live: database is locked',
+    )
+  })
+
+  it('still says something usable when the store threw something that is not an Error', () => {
+    const line = bookkeepingFailureLine({
+      peerId: 'engineer-1' as PeerId,
+      turnId: 'trn_0123456789abcdef' as TurnId,
+      error: 'SQLITE_BUSY',
+    })
+    assert.match(line, /failed on turn trn_0123456789abcdef .*: SQLITE_BUSY$/)
   })
 })

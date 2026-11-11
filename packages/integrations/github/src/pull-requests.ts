@@ -275,17 +275,11 @@ export const createGitHubPullRequests = (options: GitHubOptions = {}): GitHubPul
     /**
      * Every remote branch, head sha included. `--paginate` on its own concatenates
      * the pages into output no JSON parser can read, so `--slurp` collects them into
-     * one array and `add` joins it: one call, one JSON value, whatever the repo's size.
+     * one array of pages: one call, one JSON value, whatever the repo's size. `gh`
+     * refuses `--slurp` together with `--jq`, so `branchListFrom` flattens the pages.
      */
     async branches(repo) {
-      const raw = await gh.json([
-        'api',
-        `repos/${githubRepo(repo)}/branches?per_page=100`,
-        '--paginate',
-        '--slurp',
-        '--jq',
-        'add | map({name: .name, sha: .commit.sha})',
-      ])
+      const raw = await gh.json(['api', `repos/${githubRepo(repo)}/branches?per_page=100`, '--paginate', '--slurp'])
       return branchListFrom(raw)
     },
 

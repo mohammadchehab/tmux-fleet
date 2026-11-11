@@ -22,7 +22,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { mkdir, open, readFile, rm } from 'node:fs/promises'
+import { mkdir, open, readFile, rm, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { fleetError } from '@fleet/foundation-core'
 
@@ -70,6 +70,25 @@ const pidIn = async (lockPath: string): Promise<number | undefined> => {
   }
 }
 
+/** How long an empty lock file is believed to be a fleetd mid-acquire: `wx` creates it, the pid is written a moment later. */
+const EMPTY_LOCK_GRACE_MS = 2_000
+
+/**
+ * Which file is at `lockPath`. A replaced file is a different file whatever its
+ * inode says — ext4 and tmpfs hand a just-freed inode number straight back — so
+ * the identity is the inode, its times to the nanosecond, its size and what it
+ * says. `mtimeMs` rides along only for the age of an empty lock.
+ */
+const identityOf = async (lockPath: string): Promise<{ readonly key: string; readonly mtimeMs: number } | undefined> => {
+  try {
+    const [exact, content] = await Promise.all([stat(lockPath, { bigint: true }), readFile(lockPath, 'utf8')])
+    const key = [exact.dev, exact.ino, exact.mtimeNs, exact.ctimeNs, exact.size, content].map(String).join('|')
+    return { key, mtimeMs: Number(exact.mtimeNs / 1_000_000n) }
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * The names `fleetd` runs under: the bin itself, and the entry point a checkout
  * runs directly (`FLEET_DAEMON_BIN=…/apps/daemon/src/main.ts`). A process that
@@ -109,6 +128,16 @@ const servedBy = async (socketPath: string, pid: number): Promise<boolean> => {
   const status = (reply.result as { status?: { pid?: unknown } }).status
   return status?.pid === pid
 }
+
+/**
+ * The locks this process wrote and has not released, as `<path>\0<pid>`. A pid is
+ * unique among live processes, so a lock file naming *our* pid is either ours (it is in
+ * here) or a crashed predecessor's that the kernel gave the same pid to — the usual
+ * case after a reboot or a container restart over a persistent state volume. The pid
+ * alone cannot tell the two apart; this can.
+ */
+const heldHere = new Set<string>()
+const heldKey = (lockPath: string, pid: number): string => `${lockPath}\0${String(pid)}`
 
 /** What the lock's holder turned out to be: a fleetd, demonstrably something else, or unreadable. */
 type HolderVerdict = 'fleetd' | 'not-fleetd' | 'unknown'
@@ -151,11 +180,25 @@ export const acquireFleetLock = async (lockPath: string, options: FleetLockOptio
           cause: error,
         })
       }
+      // The file the verdict below is about. Removing "the lock" afterwards would
+      // remove whatever is there by then, and a rival fleetd that replaced a stale
+      // file while this one was deciding has a live lock this one must not delete.
+      const judged = await identityOf(lockPath)
+      if (judged === undefined) continue
       const holder = await pidIn(lockPath)
+      if (holder === undefined && Date.now() - judged.mtimeMs < EMPTY_LOCK_GRACE_MS) {
+        throw fleetError('conflict', `the lock at ${lockPath} is being written by another fleetd; try again`, {
+          details: { lockPath },
+        })
+      }
       if (holder !== undefined && alive(holder)) {
         // This very process is the holder: no evidence to gather, and taking
-        // over its own lock would be handing it away.
-        const verdict = holder === pid ? 'fleetd' : await holderVerdict(holder, options)
+        // over its own lock would be handing it away. But only when it really is
+        // its own: a file naming our pid that this process never wrote is a dead
+        // predecessor's with a recycled pid, and refusing it would refuse every
+        // restart until someone deleted the file by hand.
+        const verdict =
+          holder === pid ? (heldHere.has(heldKey(lockPath, pid)) ? 'fleetd' : 'not-fleetd') : await holderVerdict(holder, options)
         // The pid dying between the two reads is a leftover, not a holder: the
         // verdict is re-read rather than trusting evidence about a process that
         // was alive a moment ago.
@@ -172,6 +215,12 @@ export const acquireFleetLock = async (lockPath: string, options: FleetLockOptio
       // No pid, a pid that is gone, or a live pid that is provably not a fleetd:
       // whoever wrote the file is not this fleet's daemon, so it is a leftover
       // and this fleetd is the one that takes over.
+      // Checked again right before the remove. What is left is the gap between
+      // this stat and the unlink, which a filesystem cannot close without a
+      // compare-and-delete; it is microseconds, where it was a whole verdict.
+      const now = await identityOf(lockPath)
+      if (now === undefined) continue
+      if (now.key !== judged.key) continue
       await rm(lockPath, { force: true })
       continue
     }
@@ -181,11 +230,13 @@ export const acquireFleetLock = async (lockPath: string, options: FleetLockOptio
     } finally {
       await handle.close()
     }
+    heldHere.add(heldKey(lockPath, pid))
 
     return {
       path: lockPath,
       pid,
       async release() {
+        heldHere.delete(heldKey(lockPath, pid))
         // Only if it is still ours: a lock a newer fleetd took over is not this
         // one's to remove, and removing it would hand the store to a third.
         if ((await pidIn(lockPath)) === pid) await rm(lockPath, { force: true })

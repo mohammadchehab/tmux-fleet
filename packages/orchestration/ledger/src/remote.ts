@@ -19,7 +19,10 @@
  *    to read.
  * 3. **The checkout pins the sha.** The ledger's uniqueness is on
  *    `(repo, sha, task)` (§11); a runner that built the branch head instead
- *    would make that key a lie.
+ *    would make that key a lie. And it is the build's *own* tree — a detached
+ *    worktree, installed from that sha's lockfile and removed afterwards — because
+ *    the ledger coalesces only identical keys, so builds of other shas run at the
+ *    same time and must not share a working directory.
  * 4. **The checkout's own bins are on PATH.** A workspace bin — `fleet-evals-judge`
  *    for one — is only on PATH inside the checkout that installed it, so a build
  *    that runs one would otherwise fail on the remote host for a reason that has
@@ -28,16 +31,21 @@
  */
 
 import type { BuildRunner } from './runner.ts'
-import { spawnToLog, statusOf } from './runner.ts'
+import { DEFAULT_BUILD_TIMEOUT_MS, spawnToLog, statusOf } from './runner.ts'
 
 export interface RemoteRunnerOptions {
   /** The `ssh` target: a host, or a `~/.ssh/config` alias such as `hetzner`. */
   readonly target: string
-  /** Where the checkouts live on the remote host; one directory per repo below it. */
+  /** Where the repos live on the remote host (one directory each); builds get throwaway trees under `<root>/.builds`. */
   readonly root: string
   /** The repo's remote, as `git` sees it. Defaults to `origin`. */
   readonly remote?: string
   readonly process?: typeof spawnToLog
+  /**
+   * Kill the `ssh` of a build that runs longer than this. Its hang-up reaches the remote
+   * script, whose trap removes the build's tree. Defaults to `DEFAULT_BUILD_TIMEOUT_MS`.
+   */
+  readonly timeoutMs?: number
 }
 
 /** A single argument as a POSIX shell sees it: quoted, so nothing in it is syntax. */
@@ -65,18 +73,34 @@ export const remoteScript = (
     value === undefined ? [] : [`export ${key}=${shellQuote(value)}`],
   )
   const argv = [build.command.bin, ...(build.command.args ?? [])].map(shellQuote)
+  const builds = `${options.root}/.builds`
   return [
     'set -e',
     `cd ${shellQuote(dir)}`,
     // The sha first: a PR head is often not on a branch, so a plain fetch would
     // not bring it. The fallback covers a server that refuses a sha fetch.
     `git fetch --quiet ${shellQuote(remote)} ${shellQuote(build.sha)} 2>/dev/null || git fetch --quiet ${shellQuote(remote)}`,
-    `git checkout --quiet --detach ${shellQuote(build.sha)}`,
+    // One tree per build. The repo directory is only the object store: two builds at
+    // different shas would otherwise move the same working tree under each other, and
+    // a result would describe whichever commit was checked out last.
+    `mkdir -p ${shellQuote(builds)}`,
+    `tree=$(mktemp -d ${shellQuote(`${builds}/XXXXXX`)})`,
+    // Gone however the build ends — a failure, or ssh hanging up on a timeout — and a
+    // path that git no longer knows is deleted all the same.
+    `trap 'cd /; git -C ${shellQuote(dir)} worktree remove --force "$tree" >/dev/null 2>&1 || rm -rf "$tree"; git -C ${shellQuote(dir)} worktree prune' EXIT`,
+    `trap 'exit 143' HUP INT TERM`,
+    `git worktree add --quiet --detach "$tree" ${shellQuote(build.sha)}`,
+    'cd "$tree"',
+    // A fresh tree has no node_modules, and the lockfile of *this* sha decides what a
+    // build runs on. Its output goes to the log: stdout is the build's answer.
+    'if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile --silent >&2; fi',
     // After the checkout, so a build sees the bins of the tree it is building; the
     // host's PATH stays behind them as a fallback for `git`, `ssh` and a shell.
-    `export PATH=${shellQuote(`${dir}/node_modules/.bin`)}:"$PATH"`,
+    'export PATH="$tree/node_modules/.bin":"$PATH"',
     ...exports,
-    `exec ${argv.join(' ')}`,
+    // Not `exec`: the trap has to run after the command, and `set -e` hands its exit
+    // code to the shell, so ssh still reports the build's own status.
+    argv.join(' '),
   ].join('\n')
 }
 
@@ -92,6 +116,9 @@ export const remoteArgv = (target: string, script: string): readonly string[] =>
   script,
 ]
 
+/** The exit code `ssh` itself uses when it could not run the command at all. */
+const SSH_ERROR = 255
+
 export const createRemoteRunner = (options: RemoteRunnerOptions): BuildRunner => {
   const run = options.process ?? spawnToLog
   return {
@@ -105,8 +132,14 @@ export const createRemoteRunner = (options: RemoteRunnerOptions): BuildRunner =>
         // stdout and its stderr the command's stderr — so the answer file is
         // filled in on this side, by the same rule a local build follows.
         stdoutPath: build.stdoutPath,
+        timeoutMs: options.timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS,
       })
-      return { status: statusOf(outcome.code), durationMs: outcome.durationMs, exitCode: outcome.code }
+      // 255 is ssh's own error (no route, refused, a dropped connection), not the build's: the
+      // build did not reach a verdict, so it is `cancelled` and runs again on the next request.
+      // A remote command that itself exits 255 is read the same way; that is the price of
+      // ssh using the one code for both.
+      const status = outcome.code === SSH_ERROR ? 'cancelled' : statusOf(outcome.code)
+      return { status, durationMs: outcome.durationMs, exitCode: outcome.code }
     },
   }
 }

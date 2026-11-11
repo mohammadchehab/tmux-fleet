@@ -85,6 +85,13 @@ export interface EventStore {
   /** Read a window, oldest first. `from` is inclusive. */
   read(from: Seq, limit?: number): Promise<readonly FleetEvent[]>
 
+  /**
+   * The newest event of `type` whose subject is `subject`, or `undefined`. An
+   * indexed lookup on the log itself, for a fact that is an event and not a
+   * projection column — the supervisor asks it what standards a peer last carried.
+   */
+  latest(type: FleetEvent['type'], subject: string): Promise<FleetEvent | undefined>
+
   /** Stream a window; `to` is inclusive, and absent means "to the head". */
   iterate(from: Seq, to?: Seq): AsyncIterable<FleetEvent>
 

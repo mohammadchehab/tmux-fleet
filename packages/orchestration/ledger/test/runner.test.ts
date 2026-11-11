@@ -11,28 +11,43 @@ import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import { buildStdoutPath } from '@fleet/foundation-contracts'
 import { buildLogPath, spawnToLog, statusOf } from '../src/runner.ts'
-import { sha } from './support/fakes.ts'
+import { repo, sha } from './support/fakes.ts'
 
 const SHA = sha()
 
+describe('buildLogPath keys a file to the whole build (TASK-97)', () => {
+  const other = repo('acme/gadgets')
+
+  it('does not give two different tasks one file when their slugs agree', () => {
+    const a = buildLogPath('/logs', SHA, 'evals:judge:a-b:c', repo())
+    const b = buildLogPath('/logs', SHA, 'evals:judge:a:b-c', repo())
+    assert.notEqual(a, b)
+    assert.equal(a, buildLogPath('/logs', SHA, 'evals:judge:a-b:c', repo()), 'and one build keeps one name')
+  })
+
+  it('does not give two repos one file for the same sha and task', () => {
+    assert.notEqual(buildLogPath('/logs', SHA, 'test', repo()), buildLogPath('/logs', SHA, 'test', other))
+  })
+})
+
 describe('buildLogPath', () => {
-  it('is one file per (sha, task), in the artifacts directory the profile names', () => {
-    assert.equal(
-      buildLogPath('/home/fleet/.fleet/dev/artifacts/builds', SHA, 'evals:judge:claude:opus'),
-      `/home/fleet/.fleet/dev/artifacts/builds/${SHA}-evals-judge-claude-opus.log`,
+  it('is one file per (repo, sha, task), in the artifacts directory the profile names', () => {
+    assert.match(
+      buildLogPath('/home/fleet/.fleet/dev/artifacts/builds', SHA, 'evals:judge:claude:opus', repo()),
+      new RegExp(`^/home/fleet/\\.fleet/dev/artifacts/builds/${SHA}-evals-judge-claude-opus-[0-9a-f]{8}\\.log$`),
     )
   })
 
   it('keeps a task readable and a path impossible', () => {
     // A task is a key, and a key that could contain `/` would let one build
     // write over another's log.
-    const path = buildLogPath('/logs', SHA, 'test/../../etc/passwd')
-    assert.equal(path, `/logs/${SHA}-test-..-..-etc-passwd.log`)
+    const path = buildLogPath('/logs', SHA, 'test/../../etc/passwd', repo())
+    assert.ok(path.startsWith(`/logs/${SHA}-test-..-..-etc-passwd-`))
     assert.ok(!path.slice('/logs/'.length).includes('/'))
   })
 
   it('answers a path for a task that slugs to nothing', () => {
-    assert.equal(buildLogPath('/logs', SHA, '///'), `/logs/${SHA}-x.log`)
+    assert.match(buildLogPath('/logs', SHA, '///', repo()), new RegExp(`^/logs/${SHA}-x-[0-9a-f]{8}\\.log$`))
   })
 })
 
@@ -59,11 +74,62 @@ describe('spawnToLog', () => {
     assert.equal(await readFile(stdoutPath, 'utf8'), '{"answer":1}\n')
   })
 
+  it('starts each run from empty files, so a rerun of a build does not append to the first', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
+    const logPath = join(dir, 'build.log')
+    const stdoutPath = buildStdoutPath(logPath)
+    const say = (text: string) => ({
+      file: process.execPath,
+      args: ['-e', `process.stderr.write('narration ${text}\\n'); process.stdout.write('{"run":"${text}"}\\n')`],
+      logPath,
+      stdoutPath,
+    })
+
+    await spawnToLog(say('first'))
+    await spawnToLog(say('second'))
+
+    assert.equal(await readFile(stdoutPath, 'utf8'), '{"run":"second"}\n', 'the answer is the last run’s alone')
+    assert.doesNotMatch(await readFile(logPath, 'utf8'), /first/)
+  })
+
   it('writes no answer file when none was asked for', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
     const logPath = join(dir, 'build.log')
     await spawnToLog({ file: process.execPath, args: ['-e', "process.stdout.write('hi\\n')"], logPath })
     await assert.rejects(() => readFile(buildStdoutPath(logPath), 'utf8'), /ENOENT/)
+  })
+
+  it('times out and kills a hung process', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
+    const logPath = join(dir, 'build.log')
+    const timeoutMs = 100
+
+    const promise = spawnToLog({
+      file: process.execPath,
+      args: ['-e', "setInterval(() => {}, 1000)"],
+      logPath,
+      timeoutMs,
+    })
+
+    // Should reject after timeout, not hang forever
+    await assert.rejects(promise, /timeout/)
+  })
+
+  it('rejects with stream write errors instead of throwing uncaught exceptions', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
+    // Use a path that will fail with EACCES by pointing to a directory
+    const logPath = join(dir, 'subdir')
+    // Create the directory so opening it as a file will fail
+    await import('node:fs/promises').then((fs) => fs.mkdir(logPath))
+
+    const promise = spawnToLog({
+      file: process.execPath,
+      args: ['-e', "process.stdout.write('test\\n')"],
+      logPath,
+    })
+
+    // Should reject, not throw an uncaught exception
+    await assert.rejects(promise)
   })
 })
 

@@ -28,6 +28,9 @@
  * main repository's git directory, and its parent is the directory to remove from.
  */
 
+import { realpathSync } from 'node:fs'
+import { resolve as resolvePath } from 'node:path'
+
 import type { Worktrees } from '@fleet/foundation-contracts'
 import { execFileGit, type GitRunner } from './git.ts'
 
@@ -41,40 +44,188 @@ const registered = async (runner: GitRunner, root: string): Promise<readonly str
   if (listed.code !== 0) {
     throw refused(`could not ask git which worktrees ${root} has`, listed)
   }
+  // Normalize paths to handle symlinks (e.g., /var -> /private/var on macOS)
+  // by removing common /private prefix that git adds on some systems
   return listed.stdout
     .split('\n')
     .filter((line) => line.startsWith('worktree '))
-    .map((line) => line.slice('worktree '.length).trim())
+    .map((line) => {
+      const path = line.slice('worktree '.length).trim()
+      // Remove /private prefix if it exists, to normalize macOS paths
+      return path.startsWith('/private/var/') ? path.slice('/private'.length) : path
+    })
+}
+
+const TOPIC_PATTERN = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/
+
+/** Validate checkoutPath: must be absolute, contain no `..`, and be a git repo at its root. */
+const validateCheckoutPath = async (runner: GitRunner, checkoutPath: string): Promise<void> => {
+  if (!checkoutPath.startsWith('/')) {
+    throw new Error(`checkoutPath must be absolute; got "${checkoutPath}"`)
+  }
+
+  if (checkoutPath.includes('..')) {
+    throw new Error(`checkoutPath must not contain ".."; got "${checkoutPath}"`)
+  }
+
+  // Check if path exists and is realpath'd
+  let realPath: string
+  try {
+    realPath = realpathSync(checkoutPath)
+    if (realPath !== checkoutPath) {
+      throw new Error(
+        `checkoutPath must be realpath'd (no symlinks or relative components); got "${checkoutPath}", resolved to "${realPath}"`,
+      )
+    }
+  } catch (err) {
+    // If realpathSync fails and it's not our custom error, let git validation catch it
+    if (err instanceof Error && err.message.includes('realpath')) throw err
+  }
+
+  const result = await runner(['rev-parse', '--show-toplevel'], checkoutPath)
+  if (result.code !== 0) {
+    throw new Error(`checkoutPath is not a git repository; got "${checkoutPath}"`)
+  }
+
+  const repoRoot = result.stdout.trim()
+  if (repoRoot !== checkoutPath) {
+    throw new Error(
+      `checkoutPath must be the git repository root; got "${checkoutPath}", but repository root is "${repoRoot}"`,
+    )
+  }
 }
 
 export const createWorktrees = (runner: GitRunner = execFileGit): Worktrees => ({
+  async create(input) {
+    const { repo, checkoutPath, topic, workId } = input
+
+    // Validate checkoutPath: absolute, realpath'd, no `..`, and is the git repo root
+    await validateCheckoutPath(runner, checkoutPath)
+
+    // Validate topic: lowercase alphanumeric + hyphens, 1-40 chars
+    if (!TOPIC_PATTERN.test(topic)) {
+      throw new Error(
+        `invalid topic "${topic}": must be 1-40 characters, lowercase alphanumeric and hyphens, start and end with alphanumeric`,
+      )
+    }
+
+    // Worktree path: <checkout>/.claude/worktrees/<topic>
+    const path = `${checkoutPath.replace(/\/+$/, '')}/.claude/worktrees/${topic}`
+
+    // Get default branch from remote
+    const defaultBranch = await runner(['rev-parse', '--abbrev-ref', 'origin/HEAD'], checkoutPath)
+    if (defaultBranch.code !== 0) {
+      throw refused(`could not determine default branch for ${repo}`, defaultBranch)
+    }
+    const base = defaultBranch.stdout.trim().replace(/^origin\//, '')
+
+    // Branch name for the worktree: work-<topic>-<first-8-chars-of-workid>
+    // Ensure it's a valid ref name
+    const branch = `work-${topic}`
+
+    // A name already taken is not this call's to adopt: the branch would carry
+    // commits this call knows nothing about, and the `checkout -b` below would
+    // report that as a git quirk rather than an answer. Refused here, before a
+    // checkout exists, so there is nothing to undo — and the message names the
+    // one case that is common: a leftover from a create that failed before the
+    // failure paths below deleted their branch.
+    const taken = await runner(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], checkoutPath)
+    if (taken.code === 0) {
+      throw new Error(
+        `branch ${branch} already exists; nothing was created — delete it if it is left over from an earlier failed create`,
+      )
+    }
+
+    // Put the repository back the way this call found it. `git worktree remove`
+    // never touches a branch, so cleaning up only the checkout leaves
+    // `work-<topic>` behind and every retry then dies at `checkout -b`: a failure
+    // that should have cost one attempt cost the topic instead. The branch is
+    // deleted from the repository rather than the checkout, because by then the
+    // checkout this ran in is the one just removed.
+    const undo = async (): Promise<void> => {
+      await runner(['worktree', 'remove', path], checkoutPath).catch(() => {})
+      await runner(['branch', '-D', branch], checkoutPath).catch(() => {})
+    }
+
+    // Create the worktree: git worktree add --detach <path> <base>
+    const created = await runner(['worktree', 'add', '--detach', path, `origin/${base}`], checkoutPath)
+    if (created.code !== 0) throw refused(`git refused to create worktree at ${path}`, created)
+
+    // Create and check out the work branch
+    const branchCreated = await runner(['checkout', '-b', branch, `origin/${base}`], path)
+    if (branchCreated.code !== 0) {
+      await undo()
+      throw refused(`git refused to create branch ${branch}`, branchCreated)
+    }
+
+    // Push the branch to make it remote-tracking
+    const pushed = await runner(['push', '-u', 'origin', branch], path)
+    if (pushed.code !== 0) {
+      await undo()
+      throw refused(`git refused to push branch ${branch}`, pushed)
+    }
+
+    return { path, branch }
+  },
+
   async remove(path) {
     // A relative path is resolved against whatever the daemon's cwd happens to be,
     // which is a second, silent answer to "which checkout". Only an absolute one.
     if (!path.startsWith('/')) throw new Error(`${path} is not an absolute path; no worktree was removed`)
 
-    // The repository this checkout belongs to, asked of git rather than inferred
-    // from where §9 says checkouts live.
-    const common = await runner(['rev-parse', '--path-format=absolute', '--git-common-dir'], path)
-    if (common.code !== 0) {
-      throw new Error(`${path} is not a worktree git knows: ${common.stderr.trim() || 'no message'}`)
+    // Normalize the path to handle symlinks (e.g., /var -> /private/var on macOS)
+    let normalizedPath: string
+    try {
+      normalizedPath = realpathSync(path)
+    } catch {
+      // If realpath fails (directory doesn't exist), use the path as-is
+      normalizedPath = path
     }
 
-    // `<repo>/.git` -> `<repo>`: the directory `worktree remove` has to run in.
-    const gitDir = common.stdout.trim()
-    if (gitDir === '') throw new Error(`git named no common directory for ${path}`)
-    const root = gitDir.endsWith('/.git') ? gitDir.slice(0, -'/.git'.length) : gitDir
+    // The repository this checkout belongs to, asked of git rather than inferred
+    // from where §9 says checkouts live.
+    const common = await runner(['rev-parse', '--path-format=absolute', '--git-common-dir'], normalizedPath)
+
+    let root: string
+    if (common.code !== 0) {
+      // If rev-parse failed with "cannot change to" or "spawn git ENOENT", the worktree
+      // directory has already been deleted from the filesystem. In this case, infer the
+      // repo path from the worktree path. Since paths follow the pattern
+      // <repo>/.claude/worktrees/<topic>, we can go up two directories. If that fails,
+      // fall back to the original error.
+      const isDeletedDir = common.stderr.includes('cannot change to') || common.stderr.includes('ENOENT')
+      if (isDeletedDir) {
+        // Path is <repo>/.claude/worktrees/<topic>, so parent is <repo>/.claude/worktrees
+        const parentDir = normalizedPath.replace(/\/+$/, '').split('/').slice(0, -1).join('/')
+        // Parent of that is <repo>/.claude
+        const claudeDir = parentDir.split('/').slice(0, -1).join('/')
+        // Parent of that is <repo>
+        const inferredRoot = claudeDir.split('/').slice(0, -1).join('/')
+
+        if (!inferredRoot || inferredRoot === '') {
+          throw new Error(`${path} is not a worktree git knows: ${common.stderr.trim() || 'no message'}`)
+        }
+        root = inferredRoot
+      } else {
+        throw new Error(`${path} is not a worktree git knows: ${common.stderr.trim() || 'no message'}`)
+      }
+    } else {
+      // `<repo>/.git` -> `<repo>`: the directory `worktree remove` has to run in.
+      const gitDir = common.stdout.trim()
+      if (gitDir === '') throw new Error(`git named no common directory for ${path}`)
+      root = gitDir.endsWith('/.git') ? gitDir.slice(0, -'/.git'.length) : gitDir
+    }
 
     // Only a checkout git has registered for this repository may be removed. The
     // path came from a projection row; git's registry is what makes it a worktree
     // rather than a string.
     const known = await registered(runner, root)
-    const wanted = path.replace(/\/+$/, '')
+    const wanted = normalizedPath.replace(/\/+$/, '')
     if (!known.some((entry) => entry.replace(/\/+$/, '') === wanted)) {
-      throw new Error(`${path} is not a worktree ${root} has; nothing was removed`)
+      throw new Error(`${normalizedPath} is not a worktree ${root} has; nothing was removed`)
     }
 
-    const removed = await runner(['worktree', 'remove', path], root)
-    if (removed.code !== 0) throw refused(`git refused to remove the worktree at ${path}`, removed)
+    const removed = await runner(['worktree', 'remove', normalizedPath], root)
+    if (removed.code !== 0) throw refused(`git refused to remove the worktree at ${normalizedPath}`, removed)
   },
 })

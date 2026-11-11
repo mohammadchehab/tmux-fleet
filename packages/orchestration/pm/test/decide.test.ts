@@ -21,6 +21,7 @@ import {
 } from '../src/index.ts'
 import type { RuleContext } from '../src/index.ts'
 import type { DecideRequest, FleetEvent, FleetState, PmAction, PullRequest } from '@fleet/foundation-contracts'
+import type { QuestionId } from '@fleet/foundation-core'
 import {
   architect,
   decision,
@@ -79,6 +80,36 @@ test('a peer takes the next ready Work for its role, with a v1 brief', () => {
   // a heartbeat cites nothing: no event asked for this
   assert.deepEqual(assign.causedBy, [])
   assert.match(inputsHash, /^[0-9a-f]{16}$/)
+})
+
+test('a brief goes above the version the peer already carries, or the executor refuses it as not newer (§12.1)', () => {
+  // A peer's version is one counter: a standing brief (`peer.standards_set`) or an
+  // earlier Work's brief has already moved it, and a v1 here would be refused.
+  for (const carried of [1, 4]) {
+    const request: DecideRequest = {
+      state: state({
+        peers: [peer({ peerId: 'engineer-1' as never, briefVersion: carried })],
+        work: [work({ title: 'Ship the store', role: 'engineer', body: 'Make the append-only store pass its tests.' })],
+      }),
+      tick: tick(),
+    }
+    const assign = decide(request).actions[0]
+    if (assign?.kind !== 'assign') return assert.fail('expected an assign')
+    assert.equal(assign.brief.version, carried + 1)
+  }
+})
+
+test('a re-assigned Work still goes above the peer’s version when the Work’s own is higher', () => {
+  const request: DecideRequest = {
+    state: state({
+      peers: [peer({ peerId: 'engineer-1' as never, briefVersion: 2 })],
+      work: [work({ title: 'Ship the store', role: 'engineer', body: 'x', briefVersion: 5 })],
+    }),
+    tick: tick(),
+  }
+  const assign = decide(request).actions[0]
+  if (assign?.kind !== 'assign') return assert.fail('expected an assign')
+  assert.equal(assign.brief.version, 6)
 })
 
 test('a brief names the contract version the published event carries, and no other', () => {
@@ -374,22 +405,97 @@ test('a proposed card with no goal is a thin card', () => {
   assert.deepEqual(question.input.acceptance, [])
 })
 
+test('a card the Judge found not thin becomes ready, read from the question rather than its answer event', () => {
+  const card = work({ state: 'proposed', title: 'Do the store', body: 'soon' })
+
+  // Ask first: the id the rule derives is the one the question is recorded under.
+  const asking = decide({ state: state({ peers: [peer()], work: [card] }), tick: tick() })
+  const asked = asking.actions[0]
+  if (asked?.kind !== 'request_judge') return assert.fail('expected the card to be questioned')
+
+  const answered = decide({
+    state: state({
+      peers: [peer()],
+      work: [card],
+      judge: [
+        {
+          questionId: asked.questionId,
+          kind: 'thin_card',
+          inputsHash: 'sha256:4c1d7e9a0b2f3568',
+          workId: card.workId,
+          askedAt: T0,
+          answer: { kind: 'thin_card', thin: false, missing: [], why: 'The card names its goal.' },
+          model: 'claude-haiku-4-5',
+          answeredAt: T0,
+        },
+      ],
+    }),
+    tick: tick(),
+  })
+
+  const ready = answered.actions.find((action) => action.kind === 'mark_ready')
+  if (ready?.kind !== 'mark_ready') return assert.fail('expected the answered card to become ready')
+  assert.equal(ready.workId, card.workId)
+  assert.match(ready.reason ?? '', /found no missing goal/)
+})
+
+test('a card the Judge called thin stays proposed', () => {
+  const card = work({ state: 'proposed', title: 'Do the store', body: 'soon' })
+  const asking = decide({ state: state({ peers: [peer()], work: [card] }), tick: tick() })
+  const asked = asking.actions[0]
+  if (asked?.kind !== 'request_judge') return assert.fail('expected the card to be questioned')
+
+  const answered = decide({
+    state: state({
+      peers: [peer()],
+      work: [card],
+      judge: [
+        {
+          questionId: asked.questionId,
+          kind: 'thin_card',
+          inputsHash: 'sha256:4c1d7e9a0b2f3568',
+          workId: card.workId,
+          askedAt: T0,
+          answer: { kind: 'thin_card', thin: true, missing: ['a goal'], why: 'The body is one line.' },
+          model: 'claude-haiku-4-5',
+          answeredAt: T0,
+        },
+      ],
+    }),
+    tick: tick(),
+  })
+
+  // A thin card is re-asked on every tick, and that is the question rules' own business
+  // (`questionThinCards` derives the same `questionId`, so a repeat collapses in the
+  // executor). What must not happen is a promotion: a thin verdict is an answer, not a
+  // flavour of yes.
+  assert.ok(!kinds(answered.actions).includes('mark_ready'), 'a thin verdict is an answer, not a flavour of yes')
+})
+
 test('an escalated Judge answer becomes the user s decision, carrying its question', () => {
+  // The answer is stated as a *row on the question*, and the tick is given no
+  // `judge.answered` event at all: reading it from the projection is what lets a
+  // heartbeat ask this, not only the tick that saw the answer arrive (§5.3, §6).
   const request: DecideRequest = {
-    state: state({ peers: [peer()] }),
-    event: event('judge.answered', 'qst_0000000000000001', {
-      questionId: 'qst_0000000000000001',
-      kind: 'escalate',
-      answer: {
-        kind: 'escalate',
-        escalate: true,
-        question: 'Two stores are in play. Which one is the source of truth?',
-        options: ['sqlite', 'json'],
-        why: 'the card names both',
-      },
-      model: 'claude-haiku-4-5',
-      durationMs: 1200,
-      retries: 0,
+    state: state({
+      peers: [peer()],
+      judge: [
+        {
+          questionId: 'qst_0000000000000001' as QuestionId,
+          kind: 'escalate',
+          inputsHash: 'sha256:0000000000000001',
+          askedAt: T0,
+          answer: {
+            kind: 'escalate',
+            escalate: true,
+            question: 'Two stores are in play. Which one is the source of truth?',
+            options: ['sqlite', 'json'],
+            why: 'the card names both',
+          },
+          model: 'claude-haiku-4-5',
+          answeredAt: T0,
+        },
+      ],
     }),
   }
 
@@ -752,4 +858,66 @@ test('a Work with no ticket says nothing about one', () => {
   assert.equal(assign?.kind, 'assign')
   if (assign?.kind !== 'assign') return
   assert.doesNotMatch(assign.brief.text, /Ticket:/)
+})
+
+// ------------------------------------------------------------------ blocked notes
+// §5.1: a peer's `work.noted` with phase `blocked` is the peer saying it cannot go on. `plan`,
+// `implement` and `mr` are progress and the PM does nothing with them; `blocked` raises the same
+// inbox row `work.blocked` would, because it is the same question about the same Work.
+
+/** An engineer working its own Work, and the note it just wrote. */
+const noted = (over: { phase?: string; body?: string; workId?: string } = {}) => ({
+  snapshot: state({
+    peers: [peer({ peerId: 'engineer-1' as never, state: 'working' })],
+    work: [work({ state: 'in_progress', assignee: 'engineer-1' as never })],
+  }),
+  note: event('work.noted', 'wrk_0000000000000001', {
+    workId: over.workId ?? 'wrk_0000000000000001',
+    peerId: 'engineer-1',
+    phase: over.phase ?? 'blocked',
+    body: over.body ?? 'the store has no way to replay a partial log',
+  }),
+})
+
+test('a blocked note becomes one question in the inbox, naming the peer and the words it used', () => {
+  const { snapshot, note } = noted()
+  const actions = decide({ state: snapshot, tick: tick(), event: note }).actions
+
+  const asked = only(actions, 'request_decision')
+  assert.equal(asked.decisionKind, 'blocked')
+  assert.equal(asked.decisionId, blockedDecisionId(snapshot.work[0]!), 'the same row `work.blocked` would raise')
+  assert.equal(asked.workId, snapshot.work[0]!.workId)
+  assert.deepEqual(asked.options, [])
+  assert.match(asked.question, /engineer-1 says it is blocked/)
+  assert.match(asked.question, /no way to replay a partial log/)
+  assert.deepEqual(asked.causedBy, [note.seq], 'the question cites the note that asked it')
+})
+
+test('a progress note is mirrored to the board and asks the user nothing', () => {
+  for (const phase of ['plan', 'implement', 'mr']) {
+    const { snapshot, note } = noted({ phase })
+    assert.deepEqual(decide({ state: snapshot, tick: tick(), event: note }).actions, [], `${phase} moves nothing`)
+  }
+})
+
+test('a blocked note does not open a second row for a Work the user already has a question about', () => {
+  const { snapshot, note } = noted()
+  const asked = only(decide({ state: snapshot, tick: tick(), event: note }).actions, 'request_decision')
+  const answered = state({
+    peers: snapshot.peers,
+    work: snapshot.work,
+    decisions: [decision({ decisionId: asked.decisionId, kind: 'blocked', workId: asked.workId })],
+  })
+
+  assert.deepEqual(decide({ state: answered, tick: tick(), event: note }).actions, [])
+})
+
+test('a heartbeat has no note to read, so a blocked note never asks twice from the clock alone', () => {
+  const { snapshot } = noted()
+  assert.deepEqual(decide({ state: snapshot, tick: tick() }).actions, [])
+})
+
+test('a note about a Work the fleet does not have is left in the log rather than guessed at', () => {
+  const { snapshot, note } = noted({ workId: 'wrk_00000000000000ff' })
+  assert.deepEqual(decide({ state: snapshot, tick: tick(), event: note }).actions, [])
 })

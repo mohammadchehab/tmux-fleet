@@ -15,7 +15,7 @@ import {
   workId,
   worktreeId,
 } from '@fleet/foundation-core'
-import { blockReason } from '../work-state.ts'
+import { blockReason, workNotePhase } from '../work-state.ts'
 import { externalRef, line, pullRequestRef } from '../shapes.ts'
 
 /** A Work exists. `dependsOn` holds the ids of Work or Contract it must wait for (§5.2, §12). */
@@ -55,6 +55,31 @@ export const workAssigned = event(
 export const workStarted = event(
   'work.started',
   object({ workId: workId(), peerId: peerId(), sessionId: optional(sessionId()) }),
+)
+
+/**
+ * A peer's structured progress note (§5.1): what it is doing, phrased in one of
+ * four phases rather than as free text.
+ *
+ * The phase is what earns the event its place. A note is mirrored to the board
+ * a human reads (`Tracker.comment`), and a board only tells you something when
+ * every comment has the same shape — `plan` / `implement` / `mr` — so the
+ * closed list in `work-state.ts` is the contract, not a suggestion.
+ *
+ * `blocked` is the one phase with a consequence: the PM raises a `Decision` for
+ * it, because the alternative is a peer waiting on a question nobody was asked.
+ * It is a note, not a state: `work.blocked` is the transition the PM makes, and
+ * a peer saying it is stuck is information, not the PM's own verdict.
+ */
+export const workNoted = event(
+  'work.noted',
+  object({
+    workId: workId(),
+    /** Who said it. Every note has an author; an unattributed one cannot be acted on. */
+    peerId: peerId(),
+    phase: workNotePhase(),
+    body: text(2000),
+  }),
 )
 
 /** The peer says the work is ready for review (a PR exists or was updated). */

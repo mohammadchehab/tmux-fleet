@@ -8,7 +8,7 @@
  * executable bit.
  */
 
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, writeSync } from 'node:fs'
 
 const CHAT_ID = '3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d'
 const args = process.argv.slice(2)
@@ -16,6 +16,12 @@ const args = process.argv.slice(2)
 const record = () => {
   const log = process.env.FAKE_CURSOR_LOG
   if (log) appendFileSync(log, `${JSON.stringify(args)}\n`)
+  // Where the process was started, for a test that asserts the session's cwd.
+  const cwdLog = process.env.FAKE_CURSOR_CWD_LOG
+  if (cwdLog) appendFileSync(cwdLog, `${process.cwd()}\n`)
+  // The names (never the values) of the environment the process was given.
+  const envLog = process.env.FAKE_CURSOR_ENV_LOG
+  if (envLog) appendFileSync(envLog, `${JSON.stringify(Object.keys(process.env).sort())}\n`)
 }
 
 const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
@@ -33,7 +39,26 @@ const flag = (name) => {
   return at === -1 ? undefined : args[at + 1]
 }
 
-const prompt = args[args.length - 1] ?? ''
+// The real CLI's argument parser, as far as this adapter meets it: an argument that starts
+// with `-` before a `--` is an option, and one it does not know is an error. So a prompt
+// like "- list item" only reaches the model when the adapter put `--` in front of it.
+const WITH_VALUE = new Set(['--output-format', '--mode', '--model', '--resume'])
+const FLAGS = new Set(['-p', '--yolo', '--force'])
+const positional = []
+for (let at = 0; at < args.length; at += 1) {
+  const arg = args[at]
+  if (arg === '--') {
+    positional.push(...args.slice(at + 1))
+    break
+  }
+  if (WITH_VALUE.has(arg)) at += 1
+  else if (FLAGS.has(arg)) continue
+  else if (arg.startsWith('-') && arg.length > 1) {
+    process.stderr.write(`error: unknown option '${arg}'\n`)
+    process.exit(1)
+  } else positional.push(arg)
+}
+const prompt = positional[0] ?? ''
 const model = flag('--model')
 const sessionId = 'chat-session-1'
 
@@ -50,6 +75,19 @@ if (prompt.includes('INTERRUPT')) {
 } else if (prompt.includes('FAIL')) {
   emit({ type: 'result', subtype: 'error', is_error: true, duration_ms: 12, result: 'the model refused', session_id: sessionId })
   process.exit(1)
+} else if (prompt.includes('MUTE')) {
+  // A failure the CLI reports without a word of explanation.
+  emit({ type: 'result', subtype: 'error', is_error: true, duration_ms: 12, result: '', session_id: sessionId })
+  process.exit(1)
+} else if (prompt.includes('NOISY')) {
+  // Far more on stderr than a pipe buffers (64 KiB on macOS and Linux), written
+  // before the result: a parent that never reads stderr leaves this write, and so
+  // the process, blocked forever. `writeSync` blocks on a full pipe the way a
+  // native CLI's write(2) does; `process.stderr.write` is asynchronous on a macOS
+  // pipe and would hide the bug by buffering in this process instead.
+  writeSync(2, 'x'.repeat(1024 * 1024))
+  emit({ type: 'result', subtype: 'success', is_error: false, duration_ms: 34, result: 'done', session_id: sessionId })
+  process.exit(0)
 } else {
   emit({ type: 'tool_call', subtype: 'started', call_id: 'call-1', tool_call: { shellToolCall: { command: 'rg TODO' } } })
   emit({ type: 'tool_call', subtype: 'completed', call_id: 'call-1', tool_call: { shellToolCall: { command: 'rg TODO' } } })

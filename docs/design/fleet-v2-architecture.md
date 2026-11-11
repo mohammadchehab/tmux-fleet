@@ -249,6 +249,13 @@ Core entities (projections), all keyed by **stable ids**, never by tmux names or
 | `Build` | `repo`, `sha`, `task`, `host`, `status`, `logPath`; unique on `(repo, sha, task)` |
 | `Decision` | `decisionId`, `kind`, `inputsHash`, `typedQuestion`, `typedAnswer`, `judgeModel`, `rule?`. Every PM branch is one |
 | `Routine` | `routineId`, `kind`, `trigger`, `lastRun`, `state` |
+| `PeerActivity` | `peerId`, `workId?` (the current Work, by §5.1's rule), `lastTool?`, `lastTarget?`, `lastToolAt?`, `lastTurnAt?`, `edits` |
+
+`Peer.state` says `working`; it cannot say at what. `PeerActivity` is the answer, built from a `peer.tool_used` event the
+supervisor writes from the provider's own `tool.use` (§4): the tool's name, and the adapter's short **already-redacted**
+summary of it — a file path, a description — never its arguments. `edits` counts `Edit`/`Write` calls against the Work
+the peer was assigned at that point in the log, which is why the counter is a projection of the log and not a number a
+client keeps.
 
 The board (Backlog.md) and Jira become **sinks and sources via adapters** (`Work.external`), not the state of the
 fleet. A card is created from `Work`, and a Jira change enters as an event.
@@ -380,6 +387,19 @@ The shared types (`SessionSpec`, `Turn`, `ProviderEvent`, `PermissionMode`, `Pro
 `blocked(reason)` and `cancelled`. Transitions are pure functions of events; the PM only appends the event that
 causes them.
 
+A peer reports progress with `fleet note <phase> <text>`, which appends `work.noted` — the four phases are a closed
+list, `plan | implement | mr | blocked`, and the Work is resolved from the peer's `assignee` rather than named by it
+(a peer does not choose what it works on). A note is recorded-only: it moves no state, because a peer that could
+append `work.blocked` would be walking the machine above. `blocked` is the one phase with a consequence — it raises the
+same `Decision` `unblock` would, one per Work.
+
+Mirroring a note to the board as a comment is **opt-in per tracker**: `trackers.comments: true`, and absent means no.
+A board a profile maps is not necessarily the fleet's own, and a note is peer-written prose, so posting it
+automatically into a customer's Jira would be a disclosure the fleet has no mandate to make. With the gate shut
+`tracker-sync` appends nothing for the note and records `commented: 0`; with it open the body is passed through
+`redactSecrets` (`@fleet/foundation-core`) before it leaves the machine. The `blocked` Decision is unaffected either
+way — that path never leaves the machine.
+
 ### 5.2 The loop
 
 One tick runs on any event (not a timer poll) and on a heartbeat. Each tick is a pure function
@@ -393,6 +413,7 @@ One tick runs on any event (not a timer poll) and on a heartbeat. Each tick is a
 | track PR | PR event | update `Work`; when checks green on head SHA and review satisfied → `mergeable` |
 | merge | `mergeable` | PR gate (§10) merges; PM never merges itself |
 | unblock | peer `waiting_input` ∧ its own `Work` is `blocked` | route by `Work.blockedOn`: an answered `Decision` from the log if there is one, else the reviewer role for `peer`/`contract`, else a `Decision` row for the user — one per `Work`, never a Judge call |
+| note | `work.noted` with phase `blocked` | the same `Decision` row `unblock` raises for that Work, once — a note the fleet can act on is never answered by nobody |
 | idle | peer `idle` > N min, nothing assignable | mark capacity free; raise `no_work` to the user, once |
 | standup | schedule | render a report from projections; no model call |
 | stale | `Brief` older than a newer `Contract` version | supersede the brief, tell the peer (§12) |
@@ -444,11 +465,12 @@ A routine declares `{id, trigger, run(ctx)}`; its runs are events (`routine.star
 silent routine is visible. Per-profile enable/disable lives in the profile; the defaults are all on. Peers never
 need to be told about any of them.
 
-**A failing routine is not retried on every tick.** Success is what moves `lastRun`, so a routine that fails is
-still due — which, left alone, means a broken routine hits its remote every tick, forever, in silence. The scheduler
-therefore records the failed attempt too and holds the next try off for a backoff: **double the tick interval**,
-capped at the routine's own period (a day for a scheduled routine; an hour for a heartbeat or event routine, whose
-"period" is too short to be a cap). `lastRun` itself stays a record of success — the backoff only spaces retries.
+**A failing routine is not retried on every tick.** A failed run is a run, so it moves `lastRun` and the routine is
+next due at its own period — that alone keeps a broken routine off the next tick. What it does not do is stop it:
+left alone, a heartbeat retries every period forever, in silence. The scheduler therefore records the failure count
+and holds the next try off until `last attempt + max(period, min(tick · 2^failures, 1 h))`. The doubling only ever
+*lengthens* a retry past the period, never shortens it: a broken daily routine still runs at most once a day, and a
+broken heartbeat backs off from its minute towards the hour rather than hammering its remote every 60 s.
 At the **third consecutive failure** the scheduler appends `routine.failing`, which §6.1 projects into a `failure`
 notification naming the routine, the error and the next retry; it says it again only when the error changes or the
 routine recovers, so a broken remote rings once, not once a retry.
@@ -557,6 +579,10 @@ projection holds `open | confirmed | dismissed | fixed` with the decision that m
    from the provider's `usage()`. The `token-report` projection gives, per peer and role, tokens per Work item, the
    share of exploration done through codegraph, and redirect counts. Baseline: run a fixed set of tasks with the guard
    `off` then `enforce`; the stated target is a measured drop in tokens per completed Work item, reported, not assumed.
+   The report is read back where a person already looks: `fleet ls` prints a `tokens` section — one row per peer
+   rollup and one per Work, with the fleet total in the heading — and the board prints a Work's turns, tokens and
+   cost on its row and the fleet total in the header. `costUsd` is the sum of the turns the provider priced: a turn
+   that reported no price adds nothing, so a peer whose model prices nothing reads as unmeasured, never as free.
    Under fleetd the **supervisor** is the measurer: it already consumes the session's event stream, so it records the
    row at the turn boundary from the provider's `turnSpend()` (the boundary message's cumulative counters, so subagents
    and sidechains are billed) and `usage()`, counting `toolCalls` off the stream's own `tool.use` events. Nothing is
@@ -771,6 +797,10 @@ saved   ── provider.stop; provider.start(fresh session, brief vN + StateFile
 The Worktree manager is the only thing that creates or deletes worktrees; peers ask the API (`worktree.create`).
 
 - **Create**: under the repo's own `.claude/worktrees/<topic>`, owner recorded at creation (event, not an owner file).
+  Today the supervisor is the creator for a peer: at every session start a peer that can write and owns no active
+  worktree is given `<checkout>/.claude/worktrees/peer-<id>` on branch `peer/<id>` (from the remote's default branch),
+  recorded as `worktree.created` with the peer as owner, and a read-only peer works in the profile's checkout. The
+  per-Work-topic `worktree.create` API a peer calls itself is not built yet.
 - **Track**: class is computed from git/gh facts on events, not scanned on demand.
 - **Holders**: processes whose cwd is inside it (lsof) are recorded; `gc` reports them and never kills them, and
   raises a user-visible item after N days (the stray Electron dev process case).
@@ -809,13 +839,20 @@ The Worktree manager is the only thing that creates or deletes worktrees; peers 
 or runs it once. Heavy tasks route to the remote host (hetzner) by task class in the profile; light ones run locally.
 The same SHA+task never runs twice and results are shared by all peers.
 
-A build keeps two files under `artifacts/builds/`. `<sha>-<task>.log` is everything the build said — both streams, in
-order — which is the only account of a build that ran on another host. `<sha>-<task>.out` is stdout alone, for a caller
+A build keeps two files under `artifacts/builds/`, named `<sha>-<task>-<hash>` where the hash is of the whole
+`(repo, sha, task)` key, so two different builds never share a file however their slugs read. A run starts both files
+empty: a build the ledger reclaims after a crash replaces its first attempt's output rather than appending to it.
+`<sha>-<task>-<hash>.log` is everything the build said — both streams, in
+order — which is the only account of a build that ran on another host. `….out` is stdout alone, for a caller
 that asked for an answer and not for narration; `fleet evals run` is the first such caller, and the path is derived from
 `logPath` so a reader needs the one path the ledger already sends (`buildStdoutPath`, in `foundation` beside `buildKey`
 — a client may import foundation and nothing else, §1.1). A remote build checks the sha out and then puts that
 checkout's `node_modules/.bin` ahead of the host's PATH: a workspace bin is on no PATH but its own tree's, and a build
 should run the tools its lockfile pins rather than whatever the box happens to have.
+
+A build the infrastructure could not carry out — no such binary, a broken stream, an `ssh` that never connected (its exit
+code 255) — reached no verdict on the commit, so it is recorded `cancelled` and is not an answer: the next request for the
+key runs it again, under the same build id. A build that ran and failed, or ran past its limit, is `failed` and final.
 
 ## 12. Contracts before work
 
@@ -839,6 +876,23 @@ It is never edited; a change is a new Brief and `brief.superseded` on the old on
 - **Events first, then the send.** A failed send leaves a published brief and an assigned Work, which is true; the
   retry is safe because a brief that is already the Work's current one is treated as done and the send is skipped when
   the same brief is already in the peer's mailbox.
+- **A standing brief** (the peer's rules, not a Work's): `peer.standards_set {peerId, version, briefId, digest, sources,
+  skipped}`. A peer never reads the repo's `AGENTS.md`/`CLAUDE.md` or finds a skill on its own (the claude provider runs
+  with `settingSources: []`, and turning `user` settings on leaks hooks and env), so the daemon builds the text and hands
+  it over in `systemPromptAppend`, which works for every provider, `cursor` included. In precedence order: the profile's
+  `standards.nonNegotiables`, the role's `standards.skills` documents (inlined, not named: cursor has no skill tool),
+  then the repo's `AGENTS.md` and `CLAUDE.md`. The repo's files are read from the **default branch's commit** (the sha is
+  recorded), never a working tree a peer can edit; the profile's are read from disk, relative to the profile's own
+  directory. A profile-declared document that cannot be read, or is over the 16k-char document cap, **refuses the
+  peer** (never cut: a cut removes its last rules); `AGENTS.md`/`CLAUDE.md` over it are cut with a marker, and the whole
+  is capped at 40k chars because it rides in every turn. A repo file not on the default branch is `skipped` and
+  recorded, so the board can say "no repo standards loaded".
+  The event is written **only when `digest` (the brief text and the standards) differs** from the peer's last, **before**
+  the session that carries it starts; its `version` goes up on the same per-peer counter a Work's brief moves (the PM's
+  `assign` goes above it), and the projection sets `peer.briefVersion`. Filesystem reads are not deterministic and the
+  event is what makes them so; the bytes sit in `artifacts/standards/<digest>.md`, a cache, never the truth. Standards
+  are read when a session starts and kept for it (§8 restarts a purge on the same brief), so an edit reaches a peer at
+  its next start. `brief.published` stays Work-scoped.
 - **The store follows `brief.published`:** the peer's `briefVersion` (for the Mailbox's stale check, §7) and the
   Work's current `briefId`/`briefVersion` (for the `stale` rule), without moving the Work's state.
 - Contract gating stays the PM's (`needs_contract`): the executor does not re-derive it; a `ContractReader` port is

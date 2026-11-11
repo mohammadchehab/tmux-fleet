@@ -58,6 +58,28 @@ describe('the starter profile', () => {
   })
 })
 
+describe('the starter profile, as a fleet that comes up', () => {
+  it('names a checkout for its repo and makes only one peer a writer, so the first `fleet up` is not refused', () => {
+    const text = starterProfile('squad')
+    assert.match(text, /^checkouts:\n {2}owner\/name: \/\S+$/m)
+    // Two peers that can write cannot share the checkout (the supervisor refuses
+    // the second), and the starter has two peers on one repo: the pm must read.
+    const pm = text.slice(text.indexOf('- id: pm'), text.indexOf('- id: engineer-1'))
+    assert.match(pm, /^ {4}permissionMode: plan$/m)
+    assert.doesNotMatch(text.slice(text.indexOf('- id: engineer-1')).split('\n\n')[0] ?? '', /permissionMode: plan/)
+  })
+})
+
+describe('the starter profile and standards', () => {
+  it('shows how to declare standards but does not, so `fleet up` never fails on a document nobody wrote', () => {
+    const text = starterProfile('squad')
+    assert.match(text, /^# standards:$/m, 'the block is there to be uncommented')
+    assert.match(text, /^# {3}nonNegotiables: /m)
+    assert.doesNotMatch(text, /^standards:/m, 'a live key would name a file the starter does not create')
+    assert.match(text, /stops `fleet up` and names the key/)
+  })
+})
+
 describe('writing it', () => {
   it('writes the file `fleet up` reads, and says where it went', async () => {
     const written = await writeStarter('squad', { home })

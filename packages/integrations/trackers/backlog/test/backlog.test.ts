@@ -293,10 +293,57 @@ describe('link: the PR URL is appended to the notes, once', () => {
     assert.equal(calls.length, 2)
   })
 
+  it('a PR whose number is a prefix of one already noted is still recorded (TASK-30)', async () => {
+    const { run, calls } = runnerOf(ok(card({ implementationNotes: 'PR: https://github.com/acme/widgets/pull/12' })), ok(''))
+
+    await trackerOf(run).link('TASK-1', 'https://github.com/acme/widgets/pull/1')
+
+    assert.deepEqual(calls.map((call) => call.args), [
+      ['task', 'view', 'TASK-1', '--json'],
+      ['task', 'edit', 'TASK-1', '--append-notes', 'PR: https://github.com/acme/widgets/pull/1', '--plain'],
+    ])
+  })
+
   it('throws rather than inventing a card when the ticket is gone', async () => {
     const { run, calls } = runnerOf(failed(1, 'Task TASK-99 not found.'))
 
     await assert.rejects(() => trackerOf(run).link('TASK-99', 'https://github.com/acme/widgets/pull/7'), /has no card TASK-99/)
+    assert.equal(calls.length, 1, 'a missing card is not a reason to create one')
+  })
+})
+
+describe('comment: a note is appended to the notes, once', () => {
+  it('appends the note verbatim when the card does not carry it', async () => {
+    const { run, calls } = runnerOf(ok(card()), ok(''))
+
+    await trackerOf(run).comment('TASK-1', 'plan: reading the gitlab adapter')
+
+    assert.deepEqual(calls.map((call) => call.args), [
+      ['task', 'view', 'TASK-1', '--json'],
+      ['task', 'edit', 'TASK-1', '--append-notes', 'plan: reading the gitlab adapter', '--plain'],
+    ])
+  })
+
+  it('is idempotent: a card that already carries the note is not edited again', async () => {
+    const { run, calls } = runnerOf(ok(card({ implementationNotes: 'Notes a human wrote.\nimplement: fix written' })))
+
+    await trackerOf(run).comment('TASK-1', 'implement: fix written')
+
+    assert.deepEqual(calls.map((call) => call.args), [['task', 'view', 'TASK-1', '--json']])
+  })
+
+  it('a note that is only the start of a longer one already on the card is still appended (TASK-30)', async () => {
+    const { run, calls } = runnerOf(ok(card({ implementationNotes: 'plan: reading the gitlab adapter and the github one' })), ok(''))
+
+    await trackerOf(run).comment('TASK-1', 'plan: reading the gitlab adapter')
+
+    assert.equal(calls.length, 2)
+  })
+
+  it('throws rather than inventing a card when the ticket is gone', async () => {
+    const { run, calls } = runnerOf(failed(1, 'Task TASK-99 not found.'))
+
+    await assert.rejects(() => trackerOf(run).comment('TASK-99', 'plan: anything'), /has no card TASK-99/)
     assert.equal(calls.length, 1, 'a missing card is not a reason to create one')
   })
 })

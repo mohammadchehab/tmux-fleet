@@ -14,6 +14,7 @@ import type {
   Peer,
   PullRequest,
   PullRequestRef,
+  TokenReport,
   Work,
 } from '@fleet/foundation-contracts'
 import type { DecisionId, MessageId, NotificationKey, PeerId, Sha, WorkId } from '@fleet/foundation-core'
@@ -77,6 +78,24 @@ export const decision = (over: Partial<Decision> = {}): Decision => ({
   ...over,
 })
 
+/**
+ * One row of §6.2's cost report. No `workId` is the peer's rollup row — the fleet's bill is the sum of those, and the
+ * per-Work rows are their breakdown, so a builder that defaults to a rollup row is the one a spend test wants.
+ */
+export const tokenReport = (over: Partial<TokenReport> = {}): TokenReport => ({
+  peerId: 'engineer-1' as PeerId,
+  role: 'engineer',
+  turns: 10,
+  inputTokens: 1000,
+  outputTokens: 200,
+  cachedTokens: 0,
+  costUsd: 1,
+  toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+  redirects: 0,
+  updatedAt: T0,
+  ...over,
+})
+
 export const message = (over: Partial<Message> = {}): Message => ({
   msgId: 'msg_0000000000000001' as MessageId,
   to: 'engineer-1' as PeerId,
@@ -110,6 +129,8 @@ export const state = (over: Partial<FleetState> = {}): FleetState => ({
   routines: [],
   findings: [],
   notifications: [],
+  judge: [],
+  tokens: [],
   ...over,
 })
 

@@ -43,6 +43,7 @@ const stub = (id: string, capabilities: Partial<ProviderCapabilities>): Provider
     usageTokens: true,
     usageCost: true,
     structuredOutput: false,
+    effort: false,
     permissionModes: ['default'],
     ...capabilities,
   },

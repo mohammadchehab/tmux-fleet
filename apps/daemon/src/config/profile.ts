@@ -17,6 +17,7 @@ import {
   array,
   boolean,
   fleetError,
+  literal,
   number,
   objectAs,
   oneOf,
@@ -27,15 +28,18 @@ import {
   record,
   refine,
   SchemaError,
+  string,
   text,
   unionAs,
   type Schema,
 } from '@fleet/foundation-core'
 import type { PeerId } from '@fleet/foundation-core'
 import {
+  effort as effortSchema,
   profileProviders,
   routineKinds,
   workStates,
+  type Effort,
   type ProfileProvider,
   type WorkState,
 } from '@fleet/foundation-contracts'
@@ -64,10 +68,19 @@ export interface PeerProfile {
   readonly provider: ProfileProvider
   /**
    * The model the session starts on; the PM may switch it later (§4 `setModel`).
-   * Required, because `peer.registered` carries it and a default would be the
-   * daemon inventing a policy for how much this peer is allowed to think.
+   * Either this or the peer's role must declare one (see `roles`) — refused at
+   * load when neither does, because `peer.registered` carries a concrete model
+   * and a fallback would be the daemon inventing a policy for how much this peer
+   * is allowed to think. Naming it here wins over the role's (TASK-12).
    */
-  readonly model: string
+  readonly model?: string
+  /**
+   * The reasoning level the session starts on (TASK-12). Peer first, then the
+   * role's; absent in both means the provider's own default, unsaid. A provider
+   * whose `capabilities.effort` is false cannot honour this, and `fleet up` warns
+   * naming the peer rather than starting a session that quietly is not it.
+   */
+  readonly effort?: Effort
   /** Defaults to `default`: the safe mode, never `bypassPermissions` by omission (§13). */
   readonly permissionMode?: PermissionModeName
   /** Where the peer's worktrees are made (§9). Defaults to the profile's first repo. */
@@ -79,6 +92,22 @@ export interface PeerProfile {
    * the fleet's to invent and an estimate of zero would read as free.
    */
   readonly pricing?: PeerPricing
+}
+
+/**
+ * What a role declares for the peers that fill it (TASK-12): the model and the
+ * reasoning level they start on. Both optional, so a role can set a house model
+ * without having an opinion about effort.
+ *
+ * This is a *profile* default, not a daemon one: it is written down by the user
+ * in the same file, which is what keeps `PeerProfile.model`'s precedent — that
+ * nothing invents how much a peer may think — intact. A peer that names its own
+ * model or effort wins over its role's; what is refused is a peer whose model
+ * nothing names (see `modelFor`).
+ */
+export interface RoleProfile {
+  readonly model?: string
+  readonly effort?: Effort
 }
 
 /** A price, in the unit a vendor publishes it: US dollars per million input tokens. */
@@ -153,6 +182,33 @@ export interface ProvidersProfile {
   readonly cursor?: CursorProfile
 }
 
+/**
+ * §5.3: who answers the Judge's questions.
+ *
+ * The Judge is a *provider path*, not a peer (§4 of the §5.3 spike): one
+ * schema-constrained call, same child-env allowlist as a session, same model
+ * ids. Before this block existed the daemon built that call with no env at all,
+ * so it ran on fleetd's ambient identity — a machine with no Claude login
+ * answered `subtype: success` with no structured output and every `thin_card`
+ * escalated forever, and a machine *with* one silently ran as whoever that
+ * login was (§14.1's env drift, inside the Judge).
+ *
+ * Naming it here is what makes the answering model a decision instead of an
+ * accident. `provider` decides where the call goes and therefore which env it
+ * is given; `model` must be an id that provider serves — a DeepSeek id on
+ * `claude` is refused at `fleet up` by the adapter, and a `deepinfra` block
+ * with no key is a startup error rather than a quiet fall back to the machine.
+ *
+ * Absent, the Judge keeps its old behaviour: the cheap default model on
+ * whatever identity fleetd happens to have. That is the honest default for a
+ * machine that *is* logged in, and `fleet doctor`'s job to warn about — but a
+ * fleet that cares which model judges its work should say so.
+ */
+export interface JudgeProfile {
+  readonly provider: ProfileProvider
+  readonly model: string
+}
+
 /** §10: the forges this build has a `PullRequests` adapter for. */
 export const profileForges = ['github', 'gitlab'] as const
 export type ProfileForge = (typeof profileForges)[number]
@@ -207,6 +263,17 @@ interface TrackerProfileBase {
   readonly statuses?: Partial<Record<WorkState, string>>
   /** The role a Work proposed from a card asks for (§5.2's `assign`). */
   readonly role?: string
+  /**
+   * Whether a peer's note may be mirrored to this board as a comment: `true`
+   * turns `work.noted` into `Tracker.comment`, and **absent means no**.
+   *
+   * Off by default because a board is not necessarily ours. A `blocked` note
+   * still raises its Decision either way — that path is internal — but a note is
+   * peer-written prose, and posting it automatically into a customer's Jira is a
+   * disclosure the fleet does not get to make on the user's behalf. A profile
+   * that wants the mirroring says so, per board.
+   */
+  readonly comments?: boolean
 }
 
 /** A Backlog.md board: markdown files in a directory, read and written by its CLI. */
@@ -292,6 +359,8 @@ export interface ProfileBuilds {
   readonly host?: ProfileBuildHost
   /** Task classes that go to the remote host. Empty (or absent) means "nothing is heavy". */
   readonly heavy?: readonly string[]
+  /** Kill a build that runs longer than this many minutes. Absent takes the ledger's default (an hour). */
+  readonly timeoutMinutes?: number
   /** The remote host. Required for a `heavy` class to mean anything: the daemon refuses the combination. */
   readonly remote?: {
     /** The `ssh` target: a host, or a `~/.ssh/config` alias such as `hetzner`. */
@@ -303,12 +372,52 @@ export interface ProfileBuilds {
   }
 }
 
+/**
+ * §12.1: what every peer is held to, beyond what the target repo's own
+ * `AGENTS.md` and `CLAUDE.md` already say (those are read from the repo's default
+ * branch, never configured here).
+ *
+ * Both keys name documents by path: absolute, or relative to the directory the
+ * profile file is in — never to a repo or a peer's worktree, which a peer can
+ * edit. Declared means required: a document that cannot be read refuses the
+ * daemon's start with the key named, because a rule that goes missing without a
+ * word is how a peer writes off-standard code. Neither document is ever cut: one
+ * over the size a peer carries is refused, so the profile's author shortens it.
+ */
+export interface StandardsProfile {
+  /** A document of rules that outrank the repo's own. */
+  readonly nonNegotiables?: string
+  /**
+   * Documents a role must follow, by role — a skill's text, say. They are inlined
+   * into the peer's brief rather than named: the claude provider runs with
+   * `settingSources: []` and cursor has no skill tool, so a name alone is a
+   * sentence a peer cannot act on.
+   */
+  readonly skills?: Readonly<Record<string, readonly string[]>>
+}
+
 export interface Profile {
   /** The profile's own name; must match the file it was read from (§2). */
   readonly profile: string
   /** Repos the fleet may assign work in; the first is the default (§5.2). */
   readonly repos: readonly string[]
+  /**
+   * Where each repo is checked out on this machine, as an absolute path. A peer
+   * with no worktree of its own starts in its repo's checkout, so a peer's
+   * session sees that repo's AGENTS.md, CLAUDE.md and skills and not the
+   * fleet's state directory. Keys must be in `repos`; a repo with no entry has
+   * no checkout, and a peer on it is refused at start rather than started blind.
+   */
+  readonly checkouts?: Readonly<Record<string, string>>
+  /** §12.1: the standards every peer's brief carries. Absent, a peer gets the role statement alone. */
+  readonly standards?: StandardsProfile
   readonly peers: readonly PeerProfile[]
+  /**
+   * TASK-12: model and effort by role, the defaults every peer of that role
+   * starts on. A peer's own `model`/`effort` wins; this is what stops a profile
+   * repeating the same model on five engineers.
+   */
+  readonly roles?: Readonly<Record<string, RoleProfile>>
   /** §6's per-routine settings, handed to `planRoutines` unchanged. */
   readonly routines?: RoutinesConfig
   /**
@@ -317,10 +426,18 @@ export interface Profile {
    * to decide what to construct.
    */
   readonly providers?: ProvidersProfile
+  /** §5.3: who answers the Judge's questions. Absent, the cheap default on fleetd's own identity. */
+  readonly judge?: JudgeProfile
   /** §10: which forge the fleet's repos live on, and its host. Absent means `github.com`. */
   readonly forge?: ForgeProfile
   /** §6.1: where a notification goes. `none` keeps the ledger and sends nothing. */
   readonly notify?: { readonly channel: 'macos' | 'none' }
+  /**
+   * §6.1: the soft spend cap, in USD. Absent means the fleet never asks about money — a default cap would put a
+   * question in every profile's inbox, so it has to be written down. The question is raised once per value (see
+   * `budgetDecisionId`), so raising it here is also how the user says "carry on".
+   */
+  readonly budget?: { readonly usd: number }
   /**
    * §6.2: the scanners to run. The block's presence is what installs the
    * `security-scan` routine — a profile without it scans nothing, and scans
@@ -358,6 +475,36 @@ export interface Profile {
   readonly tickIntervalMs?: number
   /** §10: the user's choice, so the daemon never deletes a branch on its own initiative. */
   readonly deleteMergedBranches?: boolean
+  /**
+   * shared-fleet.md §6: the engagement this fleet pools its budget with. Absent,
+   * the fleet is on its own and talks to no coordination repository.
+   */
+  readonly coord?: CoordProfile
+}
+
+/**
+ * A shared fleet's engagement (shared-fleet.md §2, §6, §9). The namespace is a
+ * code name, never the customer's: the repository is the company's, and every ref
+ * a fleet writes carries it.
+ */
+export interface CoordProfile {
+  /** The engagement's code name, `eng-07`: the namespace of every ref this fleet writes. */
+  readonly engagement: string
+  /** `<org>/<team>`: the GitHub team that is the engagement's membership. */
+  readonly team: string
+  /** `<org>/<repo>`: the private coordination repository. */
+  readonly repo: string
+  /**
+   * This fleet's GitHub login, which names its branch. Absent, it is read from
+   * `gh` at `fleet up`, so nobody types it — but a machine with two accounts says
+   * which one here.
+   */
+  readonly user?: string
+  /**
+   * §9: whether task data is shared. Only `false` exists in this build: `true`
+   * needs Legal sign-off (§7, finding 2), and nothing here would honour it.
+   */
+  readonly taskData?: false
 }
 
 /**
@@ -371,12 +518,28 @@ const pricePerMillion = (): Schema<number> =>
 const peerPricing = (): Schema<PeerPricing> =>
   objectAs<PeerPricing>()({ inputUsdPerMillion: pricePerMillion() })
 
+/**
+ * The `roles` block (TASK-12), decoded the way it is written: one entry per role
+ * name. Role names are not a closed set — `role` on a peer is free text, because
+ * a fleet's org chart is its own — so the key is a name, and a `roles` entry no
+ * peer fills is simply unused rather than an error (a profile may plan ahead for
+ * a role it has not hired yet).
+ */
+const rolesBlock = (): Schema<Readonly<Record<string, RoleProfile>>> =>
+  record(
+    objectAs<RoleProfile>()({
+      model: optional(text(80)),
+      effort: optional(effortSchema()),
+    }),
+  )
+
 const peerProfile = (): Schema<PeerProfile> =>
   objectAs<PeerProfile>()({
     id: peerId(),
     role: text(60),
     provider: oneOf(profileProviders),
-    model: text(80),
+    model: optional(text(80)),
+    effort: optional(effortSchema()),
     permissionMode: optional(oneOf(permissionModes)),
     repo: optional(text(200)),
     pricing: optional(peerPricing()),
@@ -433,6 +596,25 @@ const routinesBlock = (): Schema<RoutinesConfig> => ({
 const notifyBlock = (): Schema<{ readonly channel: 'macos' | 'none' }> =>
   objectAs<{ readonly channel: 'macos' | 'none' }>()({ channel: oneOf(['macos', 'none'] as const) })
 
+const ORG_SLASH_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/
+
+const coordBlock = (): Schema<CoordProfile> =>
+  objectAs<CoordProfile>()({
+    // A ref segment as the transport accepts one, kept to lower case and short so a
+    // code name cannot smuggle a customer's name in by length alone.
+    engagement: string({ pattern: /^[a-z0-9][a-z0-9-]{1,31}$/ }),
+    team: string({ pattern: ORG_SLASH_NAME, maxLength: 200 }),
+    repo: string({ pattern: ORG_SLASH_NAME, maxLength: 200 }),
+    user: optional(string({ pattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/ })),
+    taskData: optional(literal(false)),
+  })
+
+/** A cap of 0 would ask the moment the first turn is billed; it is a number, but not a budget. */
+const budgetBlock = (): Schema<{ readonly usd: number }> =>
+  objectAs<{ readonly usd: number }>()({
+    usd: refine(number({ min: 0 }), (value) => value > 0, 'a budget in USD above zero'),
+  })
+
 /**
  * An empty allowlist is refused for the same reason an empty scanner set is: it
  * is a block that reads as configured and then permits nothing, so every peer on
@@ -458,6 +640,18 @@ const deepInfraBlock = (): Schema<DeepInfraProfile> =>
 const cursorBlock = (): Schema<CursorProfile> =>
   objectAs<CursorProfile>()({
     contextLimits: optional(record(positiveInt())),
+  })
+
+/**
+ * Both fields are required: a `judge:` block that names a provider and leaves
+ * the model to the default is the failure this block exists to prevent — the
+ * default is a Claude id, and a fleet whose peers are on DeepInfra would then
+ * send a Claude id to DeepInfra and get a model-not-found back per question.
+ */
+const judgeBlock = (): Schema<JudgeProfile> =>
+  objectAs<JudgeProfile>()({
+    provider: oneOf(profileProviders),
+    model: text(80),
   })
 
 const providersBlock = (): Schema<ProvidersProfile> =>
@@ -553,6 +747,7 @@ const buildsBlock = (): Schema<ProfileBuilds> =>
   objectAs<ProfileBuilds>()({
     host: optional(oneOf(profileBuildHosts)),
     heavy: optional(array(buildClass(), { maxItems: 20 })),
+    timeoutMinutes: optional(positiveInt()),
     remote: optional(remoteBuildBlock()),
   })
 
@@ -598,6 +793,9 @@ const trackerBase = {
   query: text(500),
   statuses: optional(statusesBlock()),
   role: optional(text(60)),
+  // Absent is off. See `TrackerProfileBase.comments`: the fleet does not post a
+  // peer's prose to a board, least of all a customer's, unless told to.
+  comments: optional(boolean()),
 } as const
 
 const backlogTrackerBlock = (): Schema<BacklogTrackerProfile> =>
@@ -649,22 +847,72 @@ const jiraTrackerBlock = (): Schema<JiraTrackerProfile> =>
 const trackerBlock = (): Schema<TrackerProfile> =>
   unionAs<TrackerProfile>()([backlogTrackerBlock(), jiraTrackerBlock()])
 
+const standardsBlock = (): Schema<StandardsProfile> =>
+  objectAs<StandardsProfile>()({
+    nonNegotiables: optional(text(400)),
+    skills: optional(record(array(text(400), { maxItems: 30 }))),
+  })
+
 export const profileSchema = (): Schema<Profile> =>
   objectAs<Profile>()({
     profile: text(60),
     repos: array(text(200), { maxItems: 50 }),
+    checkouts: optional(record(refine(text(400), (value) => value.startsWith('/'), 'an absolute path'))),
+    standards: optional(standardsBlock()),
     peers: array(peerProfile(), { maxItems: 50 }),
+    roles: optional(rolesBlock()),
     routines: optional(routinesBlock()),
     providers: optional(providersBlock()),
+    judge: optional(judgeBlock()),
     forge: optional(forgeBlock()),
     notify: optional(notifyBlock()),
+    budget: optional(budgetBlock()),
     security: optional(securityBlock()),
     builds: optional(buildsBlock()),
     trackers: optional(trackerBlock()),
     limits: optional(limitsBlock()),
     tickIntervalMs: optional(positiveInt()),
     deleteMergedBranches: optional(boolean()),
+    coord: optional(coordBlock()),
   })
+
+/** The `roles` entry a peer's role names, if the profile has one (TASK-12). */
+const roleOf = (
+  profile: Pick<Profile, 'roles'>,
+  peer: { readonly role: string },
+): RoleProfile | undefined => profile.roles?.[peer.role]
+
+/**
+ * The model a peer starts on: its own, then its role's (TASK-12's precedence
+ * `peer > role > refuse`). Refused rather than defaulted, because a model is the
+ * one thing `peer.registered` cannot be allowed to leave unsaid.
+ *
+ * The refusal names *both* places the model could have been written, because a
+ * message that says only "peer engineer-3 has no model" leaves the reader to
+ * guess whether the fix was the peer or a `roles` block they may not have heard of.
+ */
+export const modelFor = (
+  profile: Pick<Profile, 'roles'>,
+  peer: { readonly id: PeerId; readonly role: string; readonly model?: string },
+): string => {
+  const model = peer.model ?? roleOf(profile, peer)?.model
+  if (model === undefined) {
+    throw fleetError(
+      'invalid_input',
+      `peer '${peer.id}' declares no model and its role '${peer.role}' declares none: add \`model\` to that peer, or a \`roles: { ${peer.role}: { model: … } }\` block`,
+    )
+  }
+  return model
+}
+
+/**
+ * The reasoning level a peer starts on: its own, then its role's, then none —
+ * absent means the provider's default, which is a real answer and not a gap
+ * (TASK-12). Whether the provider can honour it is not this function's business;
+ * see `effortWarnings`.
+ */
+export const effortFor = (profile: Profile, peer: PeerProfile): Effort | undefined =>
+  peer.effort ?? roleOf(profile, peer)?.effort
 
 /**
  * Decode a parsed YAML value. Strict: an unknown key is refused here, because a
@@ -675,7 +923,44 @@ export const decodeProfile = (value: unknown): Profile => {
   // Decoded here rather than at the first session: a purge threshold out of
   // range is a profile mistake, and the profile is what this function is for.
   purgeLimitsOf(profile)
+  // A checkout for a repo the profile does not list is a typo, and a typo here
+  // would leave the peer on the real repo refused with no hint why.
+  for (const repo of Object.keys(profile.checkouts ?? {})) {
+    if (!profile.repos.includes(repo)) {
+      throw fleetError('invalid_input', `checkouts names '${repo}', which is not in repos: ${profile.repos.join(', ')}`)
+    }
+  }
+  // Every peer's model resolves here, not at the first session: a `roles` block
+  // that forgot a role is a profile mistake, and finding it at `fleet up` is the
+  // difference between a refused profile and a peer that dies on start (TASK-12).
+  for (const peer of profile.peers) modelFor(profile, peer)
   return profile
+}
+
+/**
+ * What the profile asked for that a peer's provider cannot honour (TASK-12).
+ *
+ * Effort is the whole set today, and it stays a warning rather than a refusal:
+ * the peer is otherwise perfectly startable, the model is right, and a fleet
+ * that refuses to start over a reasoning level would be stricter than the
+ * profile's own author. But it must not be silent — a session that quietly runs
+ * at the provider's default is the profile lying to the person who wrote it.
+ */
+export const effortWarnings = (
+  profile: Profile,
+  capabilitiesOf: (provider: ProfileProvider) => { readonly effort: boolean } | undefined,
+): readonly string[] => {
+  const warnings: string[] = []
+  for (const peer of profile.peers) {
+    const effort = effortFor(profile, peer)
+    if (effort === undefined) continue
+    const capabilities = capabilitiesOf(peer.provider)
+    if (capabilities === undefined || capabilities.effort) continue
+    warnings.push(
+      `peer '${peer.id}' asks for effort '${effort}', but provider '${peer.provider}' cannot honour it: the session starts at that provider's own default`,
+    )
+  }
+  return warnings
 }
 
 /**
@@ -724,6 +1009,12 @@ export const loadProfile = async (file: string, expectedName: string): Promise<P
   }
   if (profile.peers.length === 0) {
     throw fleetError('invalid_input', `${file} declares no peers, so the fleet would have nothing to run`)
+  }
+  if (profile.coord !== undefined && profile.budget === undefined) {
+    // shared-fleet.md §3: a fleet's pace is its spend against its cap, and a fleet
+    // with no cap would have no pace to publish — it would sit in the pool
+    // looking like it never spends.
+    throw fleetError('invalid_input', `${file} has a \`coord\` block but no \`budget\`; a shared fleet publishes its pace against \`budget.usd\``)
   }
   const ids = new Set(profile.peers.map((peer) => peer.id))
   if (ids.size !== profile.peers.length) {
