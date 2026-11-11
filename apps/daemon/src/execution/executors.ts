@@ -455,7 +455,9 @@ export const createBlockWorkExecutor = (deps: BlockWorkExecutorDeps): Executor =
       return failed(action, toFleetError(thrown, 'store_failed').message)
     }
     if (current === undefined) return failed(action, `no Work ${String(block.workId)} to block`)
-    if (!blockableStates.has(current.state)) return done(action, [])
+    // The decision was made against the Work as it was; the holder may have changed since, and a block is the
+    // holder's to write, so a Work that is no longer this peer's is left alone (TASK-126).
+    if (current.assignee !== block.peerId || !blockableStates.has(current.state)) return done(action, [])
 
     const written = await append(deps.store, [
       {
