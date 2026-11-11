@@ -11,7 +11,7 @@
  * strictly and with bounds, before anything reads a field of it.
  */
 
-import { array, count, literal, number, objectAs, string, timestamp, type Schema, type Timestamp } from '@fleet/foundation-core'
+import { array, count, literal, number, objectAs, optional, record, string, timestamp, type Schema, type Timestamp } from '@fleet/foundation-core'
 import { MONTH_PATTERN } from './projections/ops.ts'
 
 /** The one file a fleet branch holds in phase 1. */
@@ -75,6 +75,15 @@ export interface KeyRotation {
   readonly members: readonly string[]
   /** Members with no `ssh-ed25519` or `ssh-rsa` key on GitHub, so no copy. */
   readonly missing: readonly string[]
+  /**
+   * For each member who got a copy: the sha256 (hex) of each recipient it was
+   * sealed to, sorted. Per key and not one hash of the set, so a look can tell a
+   * key that was added (the copy is still sealed to every key it was) from one
+   * that was replaced or removed (it is sealed to a key the member no longer has).
+   * Absent on a record made before it was written; that record is rotated over
+   * once, because nothing in it says which keys its copies were sealed to.
+   */
+  readonly recipients?: Readonly<Record<string, readonly string[]>>
   /** The login of the fleet that made this rotation. */
   readonly by: string
   readonly at: Timestamp
@@ -88,6 +97,7 @@ export const keyRotation = (): Schema<KeyRotation> =>
     rotation: number({ int: true, min: 1, max: 999_999_999 }),
     members: array(login(), { maxItems: 500 }),
     missing: array(login(), { maxItems: 500 }),
+    recipients: optional(record(array(string({ pattern: /^[0-9a-f]{64}$/ }), { maxItems: 100 }))),
     by: login(),
     at: timestamp(),
   })

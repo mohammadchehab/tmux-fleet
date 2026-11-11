@@ -153,7 +153,7 @@ One random 32-byte key per engagement, **encrypted separately to each team membe
 - **Public keys** come from the authenticated API (`gh api users/<user>/keys`). The anonymous `github.com/<user>.keys`
   URL returns 404 for enterprise-managed accounts, so it is not used.
 - **Where it lives**: in the rotation that made it. `rotate/<n>` is created once and never edited; it holds
-  `rotation.json` (the members it was made for, the members with no usable key, who made it, when) and one
+  `rotation.json` (the members it was made for, the members with no usable key, a fingerprint of the keys each copy was sealed to, who made it, when) and one
   `<user>.age` per member. The highest `n` is the current key.
 - **Reading**: each fleet decrypts its own `<user>.age` from the current rotation with the owner's SSH private key and
   holds the key in memory only — never on disk, in git, in the environment or in an event. With `taskData: false`
@@ -180,6 +180,12 @@ difference is a **new rotation**, for the team as it now stands:
   uses any more. Releasing the leaver's claims is phase 2 (§9): with `taskData: false` there are none.
 - **A member had no usable key and added one**: they are listed in the rotation's `missing`, and the look that finds a
   key for them makes the rotation that includes them.
+- **A member added an SSH key**: the copy is still sealed to every key it was, so the look rotates and seals to the
+  keys as they now stand. Each rotation records, per member with a copy, the sha256 of each recipient it was sealed to.
+- **A member replaced or removed an SSH key**: the key they dropped can still open the copy sealed to it, and the fleet
+  cannot tell a rotated key from a stolen one. The look refuses and says which member; a person clears the ref
+  (decision-4). A record made before the fingerprints existed is rotated over once, since nothing in it says what its
+  copies were sealed to.
 
 Anyone with push on the repository can write a `rotate/` ref, so the rotations are not trusted as found. The numbers
 must run `1..n` with no gap; the current rotation must decode, name its own number, be made by one of its members,

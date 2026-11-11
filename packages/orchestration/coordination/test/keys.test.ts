@@ -9,12 +9,16 @@
  */
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
 import { ROTATION_FILE, type KeyWrap, type TeamDirectory } from '@fleet/foundation-contracts'
-import { reconcileKey, type KeyReconcileOptions } from '../src/index.ts'
+import { reconcileKey, type KeyOutcome, type KeyReconcileOptions } from '../src/index.ts'
 import { fakeCoordination, manualClock } from './support/fakes.ts'
 
 const ED = (who: string) => `ssh-ed25519 AAAA${who}`
+
+/** What a record stores for a member: the sha256, hex, of each recipient, sorted. */
+const fingerprint = (recipients: readonly string[]): string[] => recipients.map((r) => createHash('sha256').update(r).digest('hex')).sort()
 
 /** A team the test edits, and the keys each login has on GitHub. */
 const fakeTeam = (members: string[], keys: Record<string, string[]>) => {
@@ -95,6 +99,7 @@ describe('the first fleet up in an engagement', () => {
       rotation: 1,
       members: ['alice', 'bob'],
       missing: [],
+      recipients: { alice: fingerprint([ED('a')]), bob: fingerprint([ED('b')]) },
       by: 'alice',
       at: '2026-11-16T00:00:00.000Z',
     })
@@ -176,7 +181,16 @@ const forgeRotation = (
   n: number,
   edit: { record?: Record<string, unknown>; files?: Record<string, string> } = {},
 ) => {
-  const record = { version: 1, rotation: n, members: ['alice', 'bob'], missing: [], by: 'alice', at: '2026-11-01T00:00:00.000Z', ...edit.record }
+  const record = {
+    version: 1,
+    rotation: n,
+    members: ['alice', 'bob'],
+    missing: [],
+    by: 'alice',
+    at: '2026-11-01T00:00:00.000Z',
+    recipients: { alice: fingerprint([ED('a')]), bob: fingerprint([ED('b')]) },
+    ...edit.record,
+  }
   coordination.force(`rotate/${n}`, {
     [ROTATION_FILE]: JSON.stringify(record),
     'alice.age': fakeCopy('forged', [ED('a')]),
@@ -332,9 +346,108 @@ describe('a rotation whose copies are not the ones this fleet would have sealed'
     // A real rotation seals to every usable key a member has; one sealed to an
     // earlier subset is still a copy that member and nobody else can open, so it
     // is not a forgery — a member adding a key is a rotation for TASK-113, not here.
-    forgeRotation(coordination, 1, { files: { 'bob.age': fakeCopy('forged', [ED('b1')]) } })
+    forgeRotation(coordination, 1, { files: { 'bob.age': fakeCopy('forged', [ED('b1')]) }, record: { recipients: { alice: fingerprint([ED('a')]), bob: fingerprint([ED('b1')]) } } })
+
+    // The copy check (TASK-112) accepts it. A member who has gained a key since is a
+    // rotation (TASK-113), so it rotates rather than staying current.
+    assert.deepEqual(await reconcileKey(options()), { kind: 'rotated', rotation: 2, members: ['alice', 'bob'], missing: [] })
+  })
+})
+
+describe('a member who changes their keys while staying on the team (TASK-113)', () => {
+  const twoKeys = { alice: [ED('a'), ED('a2')], bob: [ED('b')] }
+
+  it('rotates when a key is added, since the copy is still sealed to every key it was', async () => {
+    const { team, wrap, options } = setup()
+    await reconcileKey(options())
+    team.state.keys = { alice: [ED('a'), ED('a2')], bob: [ED('b')] }
+
+    assert.deepEqual(await reconcileKey(options()), { kind: 'rotated', rotation: 2, members: ['alice', 'bob'], missing: [] })
+    assert.deepEqual(wrap.sealed.at(-2)?.to, [ED('a'), ED('a2')], 'the new copy is sealed to the keys as they now stand')
+  })
+
+  const refusal = (outcome: KeyOutcome): string => {
+    assert.equal(outcome.kind, 'refused')
+    return outcome.kind === 'refused' ? outcome.reason : ''
+  }
+
+  it('refuses when a key is replaced, naming the member and who must clear the ref (decision-4)', async () => {
+    const { coordination, team, options } = setup(['alice', 'bob'], { ...twoKeys })
+    await reconcileKey(options())
+    team.state.keys = { ...twoKeys, alice: [ED('a'), ED('a3')] }
+
+    const reason = refusal(await reconcileKey(options()))
+    assert.match(reason, /alice/)
+    assert.match(reason, /person must (remove|clear) rotate\/1/)
+    assert.equal((await coordination.refs('rotate/')).length, 1, 'nothing was rotated over it')
+  })
+
+  it('refuses when a key is removed', async () => {
+    const { coordination, team, options } = setup(['alice', 'bob'], { ...twoKeys })
+    await reconcileKey(options())
+    team.state.keys = { ...twoKeys, alice: [ED('a')] }
+
+    assert.match(refusal(await reconcileKey(options())), /alice/)
+    assert.equal((await coordination.refs('rotate/')).length, 1)
+  })
+
+  it('refuses when a member loses their last usable key', async () => {
+    const { team, options } = setup()
+    await reconcileKey(options())
+    team.state.keys = { alice: [ED('a')], bob: ['ecdsa-sha2-nistp256 AAAAx'] }
+
+    assert.match(refusal(await reconcileKey(options())), /bob/)
+  })
+
+  it('does not rotate when the keys are the same, in a different order', async () => {
+    const { team, options } = setup(['alice', 'bob'], { ...twoKeys })
+    await reconcileKey(options())
+    team.state.keys = { ...twoKeys, alice: [ED('a2'), ED('a')] }
 
     assert.deepEqual(await reconcileKey(options()), { kind: 'current', rotation: 1 })
+  })
+
+  it('does not rotate for a key age cannot use, which was never sealed to', async () => {
+    const { team, options } = setup()
+    await reconcileKey(options())
+    team.state.keys = { alice: [ED('a'), 'ecdsa-sha2-nistp256 AAAAy'], bob: [ED('b')] }
+
+    assert.deepEqual(await reconcileKey(options()), { kind: 'current', rotation: 1 })
+  })
+
+  it('stores a fingerprint of each key per member who has a copy, and none for a member who has not', async () => {
+    const { coordination, options } = setup(['alice', 'bob'], { alice: [ED('a')] })
+    await reconcileKey(options())
+
+    const record = JSON.parse((await filesOf(coordination, 1))[ROTATION_FILE]!)
+    assert.deepEqual(record.recipients, { alice: fingerprint([ED('a')]) })
+  })
+
+  it('rotates once over a record made before it had fingerprints, then holds', async () => {
+    const { coordination, options } = setup()
+    const { recipients: _unknown, ...older } = { recipients: 0, version: 1, rotation: 1, members: ['alice', 'bob'], missing: [], by: 'alice', at: '2026-11-01T00:00:00.000Z' }
+    coordination.force('rotate/1', {
+      [ROTATION_FILE]: JSON.stringify(older),
+      'alice.age': fakeCopy('forged', [ED('a')]),
+      'bob.age': fakeCopy('forged', [ED('b')]),
+    })
+
+    assert.deepEqual(await reconcileKey(options()), { kind: 'rotated', rotation: 2, members: ['alice', 'bob'], missing: [] })
+    assert.deepEqual(await reconcileKey(options()), { kind: 'current', rotation: 2 })
+  })
+
+  it('refuses a record whose fingerprints are not for exactly the members who have a copy', async () => {
+    const { coordination, options } = setup()
+    forgeRotation(coordination, 1, { record: { recipients: { alice: fingerprint([ED('a')]) } } })
+
+    assert.equal((await reconcileKey(options())).kind, 'refused')
+  })
+
+  it('refuses a fingerprint that is not a sha256', async () => {
+    const { coordination, options } = setup()
+    forgeRotation(coordination, 1, { record: { recipients: { alice: ['x'], bob: ['y'] } } })
+
+    assert.equal((await reconcileKey(options())).kind, 'refused')
   })
 })
 
