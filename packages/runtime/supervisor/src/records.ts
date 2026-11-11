@@ -39,6 +39,10 @@ export type PurgeRecord = Extract<
  * through every projection and replay fixture for a record a reader already
  * knows how to read — `code: 'invariant'` is what makes it distinguishable, and
  * the store's failure notification is what makes somebody see it.
+ *
+ * `peer.failed` is here for the same reason from the other side: a failed turn
+ * carries the provider's sentence about *why*, and §6.1's failure class is where
+ * that sentence belongs — a state change says the peer failed, not what failed.
  */
 export type SessionRecord =
   | PurgeRecord
@@ -50,6 +54,7 @@ export type SessionRecord =
           | 'peer.state_changed'
           | 'peer.compacted'
           | 'peer.tool_used'
+          | 'peer.failed'
           | 'turn.usage_recorded'
           | 'session.ended'
           | 'provider.errored'

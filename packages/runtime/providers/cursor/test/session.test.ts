@@ -20,14 +20,16 @@ const FAKE = fileURLToPath(new URL('./fixtures/fake-cursor-agent.mjs', import.me
 const MODEL = 'composer-2.5'
 const LIMIT = 200_000
 
-/** A provider driving the stand-in, plus the log it writes its arguments to. */
+/** A provider driving the stand-in, plus the logs it writes its arguments and prompts to. */
 const harness = (): {
   provider: CursorProvider
   spec: (over?: Partial<SessionSpec>) => SessionSpec
   calls: () => readonly (readonly string[])[]
+  prompts: () => readonly string[]
 } => {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-cursor-'))
   const log = join(dir, 'calls.jsonl')
+  const promptLog = join(dir, 'prompts.jsonl')
   const provider = new CursorProvider({
     executable: process.execPath,
     executableArgs: [FAKE],
@@ -39,18 +41,17 @@ const harness = (): {
     cwd: dir,
     model: MODEL,
     permissionMode: 'plan',
-    env: { FAKE_CURSOR_LOG: log },
+    env: { FAKE_CURSOR_LOG: log, FAKE_CURSOR_PROMPT_LOG: promptLog },
     brief: { briefId: 'brf_00000000000000aa' as SessionSpec['brief']['briefId'], version: 1, contractVersions: [], text: 'Build the thing.' },
     ...over,
   })
+  const lines = (path: string): readonly string[] =>
+    existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter((line) => line.trim() !== '') : []
   const calls = (): readonly (readonly string[])[] =>
-    existsSync(log)
-      ? readFileSync(log, 'utf8')
-          .split('\n')
-          .filter((line) => line.trim() !== '')
-          .map((line) => JSON.parse(line) as string[])
-      : []
-  return { provider, spec, calls }
+    lines(log).map((line) => JSON.parse(line) as string[])
+  /** The text each turn's process received, in order, however it was delivered. */
+  const prompts = (): readonly string[] => lines(promptLog).map((line) => JSON.parse(line) as string)
+  return { provider, spec, calls, prompts }
 }
 
 /** Read the session's events in the background, and resolve when one matches. */
@@ -90,7 +91,7 @@ const ended = (turnId?: string) => (event: ProviderEvent): boolean =>
 const turn = (text: string): Turn => ({ text, kind: 'info', briefVersion: 1 })
 
 test('start() creates a chat and delivers the brief as its opening turn', async () => {
-  const { provider, spec, calls } = harness()
+  const { provider, spec, calls, prompts } = harness()
   const handle = await provider.start(spec())
   const seen = watch(provider, handle)
 
@@ -106,22 +107,14 @@ test('start() creates a chat and delivers the brief as its opening turn', async 
 
   const [createChat, opening] = calls()
   assert.deepEqual(createChat, ['create-chat'], 'the chat is created before anything is spent')
-  assert.deepEqual(opening?.slice(0, 10), [
-    '-p',
-    '--trust',
-    '--output-format',
-    'stream-json',
-    '--stream-partial-output',
-    '--mode',
-    'plan',
-    '--model',
-    MODEL,
-    '--resume',
-  ])
-  assert.equal(opening?.[10], handle.sessionRef, 'the turn continues the chat the handle names')
-  assert.equal(opening?.[11], '--', 'the prompt follows the end of options, so its own words are never read as flags')
-  assert.match(String(opening?.[12]), /You are the engineer peer on the peer-1 account\./)
-  assert.match(String(opening?.[12]), /You are running read-only, in plan mode/, 'the peer is told what it can do')
+  assert.deepEqual(
+    opening,
+    ['-p', '--trust', '--output-format', 'stream-json', '--stream-partial-output', '--mode', 'plan', '--model', MODEL, '--resume', handle.sessionRef],
+    'the turn continues the chat the handle names, and carries no prompt on its command line',
+  )
+  const brief = prompts()[0] ?? ''
+  assert.match(brief, /You are the engineer peer on the peer-1 account\./)
+  assert.match(brief, /You are running read-only, in plan mode/, 'the peer is told what it can do')
   await provider.stop(handle)
 })
 
@@ -292,8 +285,8 @@ test('resume() continues the chat it is handed rather than creating one', async 
     0,
     'resuming a chat must not create another one',
   )
-  assert.equal(calls().at(-1)?.at(-4), '--resume')
-  assert.equal(calls().at(-1)?.at(-3), ref)
+  assert.equal(calls().at(-1)?.at(-2), '--resume')
+  assert.equal(calls().at(-1)?.at(-1), ref)
   await provider.stop(resumed)
 })
 
@@ -389,13 +382,13 @@ test('the spec’s cursor key never appears in argv or in the events the session
 })
 
 test('the standards in systemPromptAppend reach the cursor brief as session policy, after the brief itself (§12.1)', async () => {
-  const { provider, spec, calls } = harness()
+  const { provider, spec, prompts } = harness()
   const standards = 'Standards you work under\n\n<document name="AGENTS.md">\nNever push to main; open a PR.\n</document>'
   const handle = await provider.start(spec({ systemPromptAppend: standards }))
   await watch(provider, handle).until(ended(handle.briefTurnId))
 
-  // The opening turn is the last argument of the second call; `create-chat` is the first.
-  const opening = calls()[1]?.at(-1) ?? ''
+  // The opening turn is the first text the CLI was handed; `create-chat` takes none.
+  const opening = prompts()[0] ?? ''
   const at = (needle: string): number => opening.indexOf(needle)
   assert.ok(at('Build the thing.') > -1 && at('Build the thing.') < at('Session policy, which applies to everything you do:'))
   assert.ok(at('Session policy, which applies to everything you do:') < at('<document name="AGENTS.md">'))
@@ -403,15 +396,15 @@ test('the standards in systemPromptAppend reach the cursor brief as session poli
 })
 
 test('a cursor brief with no standards carries no session-policy section', async () => {
-  const { provider, spec, calls } = harness()
+  const { provider, spec, prompts } = harness()
   const handle = await provider.start(spec())
   await watch(provider, handle).until(ended(handle.briefTurnId))
 
-  assert.doesNotMatch(calls()[1]?.at(-1) ?? '', /Session policy/)
+  assert.doesNotMatch(prompts()[0] ?? '', /Session policy/)
 })
 
 test('a turn whose text starts with a dash is a prompt, not an option (TASK-93)', async () => {
-  const { provider, spec, calls } = harness()
+  const { provider, spec, calls, prompts } = harness()
   const handle = await provider.start(spec())
   const seen = watch(provider, handle)
   await seen.until(ended(handle.briefTurnId))
@@ -421,7 +414,8 @@ test('a turn whose text starts with a dash is a prompt, not an option (TASK-93)'
     const turnId = await provider.send(handle, turn(text))
     const done = await seen.until(ended(turnId))
     assert.equal(done.type === 'turn.ended' && done.reason, 'completed', `"${text}" is delivered as text`)
-    assert.deepEqual(calls().at(-1)?.slice(-2), ['--', text], 'after `--`, verbatim: it can no longer be a flag')
+    assert.equal(prompts().at(-1), text, 'verbatim, on a pipe: it can no longer be a flag')
+    assert.ok(calls().at(-1)?.every((arg) => !arg.startsWith('-') || arg.startsWith('--') || arg === '-p'), 'and never on the command line')
   }
   await provider.stop(handle)
 })
@@ -459,4 +453,24 @@ test('the display takes the delta lines of a recorded stream, once; thinking is 
   assert.equal(lines.filter((line) => line.kind === 'turn').length, boundaries.length)
   const ending = seen.events.find((event) => event.type === 'turn.ended')
   assert.equal(ending?.type === 'turn.ended' && ending.reason, 'completed', 'the partial output did not change how the turn ended')
+})
+
+test('a brief past the CLI’s command-line limit is delivered whole (cursor exits SIGKILL on a long argv prompt)', async () => {
+  const { provider, spec, prompts } = harness()
+  // The measured cliff: cursor-agent 2026.11.11 dies on a positional prompt of
+  // 978 characters, and every real brief — brief, contract versions, standards —
+  // is many times that. On stdin there is no cliff, so the turn completes.
+  const text = `${'You are the engineer peer. '.repeat(400)}\n- and a bullet that opens with a dash`
+  assert.ok(text.length > 10_000)
+
+  const handle = await provider.start(spec({ brief: { ...spec().brief, text } }))
+  const seen = watch(provider, handle)
+  const done = await seen.until(ended(handle.briefTurnId))
+  assert.equal(
+    done.type === 'turn.ended' ? done.reason : undefined,
+    'completed',
+    done.type === 'turn.ended' ? done.error : 'the brief turn never ended',
+  )
+  assert.equal(prompts()[0]?.includes(text), true, 'the CLI was handed the whole brief')
+  await provider.stop(handle)
 })

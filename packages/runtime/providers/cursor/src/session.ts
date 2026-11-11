@@ -9,6 +9,11 @@
  *   two ways to keep a conversation is `--resume <chatId>`, so the session's
  *   identity is the chat id and each turn is a fresh process that continues it.
  *   That is also why `interrupt()` kills a process instead of aborting a turn.
+ * - **The text goes on stdin, not on the command line.** A positional prompt
+ *   past about a kilobyte is killed with SIGKILL — no output, no exit line, no
+ *   stderr — and every session's first turn is the brief, which is many times
+ *   that length. On a pipe there is no length to hit, and a turn that opens with
+ *   a dash cannot be mistaken for an option.
  * - **`create-chat` gives the handle a real ref before anything runs.** It is
  *   local, takes no model call, and prints the id `--resume` takes, so `start()`
  *   has a `ProviderSessionRef` before the brief turn spends a token.
@@ -33,7 +38,7 @@
  */
 
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
-import type { Readable } from 'node:stream'
+import type { Readable, Writable } from 'node:stream'
 
 import {
   fleetError,
@@ -76,8 +81,8 @@ export interface CursorSessionConfig {
 /** What the adapter spawns, and how it says so. */
 const MODE_ARGUMENTS = ['--mode', 'plan'] as const
 
-/** The turn's process: stdin closed, both output pipes read. */
-type TurnProcess = ChildProcessByStdio<null, Readable, Readable>
+/** The turn's process: the text written to its stdin, both output pipes read. */
+type TurnProcess = ChildProcessByStdio<Writable, Readable, Readable>
 
 interface LiveTurn {
   readonly turnId: TurnId
@@ -260,11 +265,6 @@ export class CursorSession {
       this.#model,
       '--resume',
       this.chatId,
-      // End of options: a turn is a person's or a peer's words, and one that opens with a
-      // dash (a bullet, a rule, a pasted flag) would otherwise be read as an option and
-      // fail the turn, or — for `--yolo` — switch one on. cursor-agent honours `--`.
-      '--',
-      turn.text,
     ]
     let child: TurnProcess
     try {
@@ -274,7 +274,7 @@ export class CursorSession {
         // v1's shared-tmux env drift (§4, §13, §14.1) — on top of an allowlist of
         // process variables, never `process.env`, so fleetd's keys stay in fleetd.
         env: { ...buildChildEnv(this.#spec).env },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       }) as TurnProcess
     } catch (thrown) {
       this.#state = 'idle'
@@ -285,6 +285,19 @@ export class CursorSession {
       this.#display.close()
       return
     }
+
+    // The turn's text goes on stdin, never on the command line. A positional
+    // prompt past about a kilobyte kills the CLI outright — SIGKILL, no output,
+    // no exit line, nothing on stderr — and the *first* turn of every session is
+    // the brief, which is many times that: the peer came up `failed` with no
+    // reason recorded and no session end, and a short turn afterwards was the
+    // only sign of life. On a pipe there is no length to hit, and a turn that
+    // opens with a dash is a prompt there, not an option.
+    child.stdin.on('error', () => {
+      // A process that dies before reading its text reports that by exit code;
+      // an EPIPE here must not become an uncaught error inside fleetd.
+    })
+    child.stdin.end(turn.text)
 
     const live: LiveTurn = { turnId, child, at, interrupted: false, ended: false, usage: undefined }
     this.#live = live

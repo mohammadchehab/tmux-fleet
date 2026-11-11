@@ -262,8 +262,48 @@ test('events become peer states, and a completed turn that is under the limit ke
   assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
 })
 
-test('a tool summary is stored only when it is a path — a command never reaches the log', async () => {
-  // The supervisor is the writer of `peer.tool_used`, so it does not take the
+test('a failed turn records the provider’s own words, so `failed` is never a state with no reason (§6.1)', async () => {
+  const r = rig()
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), {
+    type: 'turn.ended',
+    turnId,
+    at: '2026-11-10T09:00:01.000Z',
+    reason: 'failed',
+    error: 'cursor-agent exited with signal SIGKILL without reporting a result',
+  })
+  await wait()
+  // A failed turn does not end the session — the peer is what is in a bad state.
+  assert.equal(session.state, 'failed')
+
+  const failure = r.records.find((record) => record.type === 'peer.failed')
+  assert.ok(failure !== undefined, 'the failure is recorded as a failure, not only as a state change')
+  assert.equal(failure.data.reason, 'provider_error')
+  assert.equal(failure.data.message, 'cursor-agent exited with signal SIGKILL without reporting a result')
+  assert.equal(failure.data.sessionId, 'ses_aaaaaaaaaaaaaaaa')
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [], 'and the store would take it')
+
+  await session.stop()
+  await run
+})
+
+test('a tool summary is stored only when it is a path — a command never reaches the log', async () => {  // The supervisor is the writer of `peer.tool_used`, so it does not take the
   // adapter's word for what is safe: a summary the event must not carry is
   // dropped here and the record keeps the tool's name alone (§4).
   const r = rig()

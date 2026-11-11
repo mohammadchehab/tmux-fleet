@@ -8,7 +8,7 @@
  * executable bit.
  */
 
-import { appendFileSync, writeSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeSync } from 'node:fs'
 
 const CHAT_ID = '3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d'
 const args = process.argv.slice(2)
@@ -58,7 +58,7 @@ for (let at = 0; at < args.length; at += 1) {
     process.exit(1)
   } else positional.push(arg)
 }
-const prompt = positional[0] ?? ''
+const prompt = positional[0] ?? readFileSync(0, 'utf8')
 const model = flag('--model')
 const sessionId = 'chat-session-1'
 
@@ -69,6 +69,21 @@ if (process.env.FAKE_CURSOR_REPLAY && args.includes('--stream-partial-output')) 
   process.stdout.write(readFileSync(process.env.FAKE_CURSOR_REPLAY, 'utf8'))
   process.exit(0)
 }
+
+// The real CLI's one hard limit, measured against cursor-agent 2026.11.11: a
+// positional prompt of 976 characters still runs, and 978 takes the process
+// down with SIGKILL before it prints anything — no init line, no result, no
+// stderr, the command line's own bytes being the difference. Reproduced here,
+// so an adapter that puts the text back on the command line fails this suite
+// the way it failed a fleet.
+if (positional[0] !== undefined && positional[0].length >= 978) {
+  process.kill(process.pid, 'SIGKILL')
+}
+
+// What the adapter delivered, however it delivered it: the prompt a test can
+// read back, independent of the argv it also records above.
+const promptLog = process.env.FAKE_CURSOR_PROMPT_LOG
+if (promptLog) appendFileSync(promptLog, `${JSON.stringify(prompt)}\n`)
 
 emit({ type: 'system', subtype: 'init', session_id: sessionId, model: 'Composer 2.5', permissionMode: 'default' })
 emit({ type: 'user', message: prompt, session_id: sessionId })
