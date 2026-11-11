@@ -422,6 +422,12 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
       clock,
     }),
     store: wake, providers, clock, providerEnv,
+    // TASK-117: a session failure the supervisor could not act on itself used to
+    // be dropped on the floor, so the daemon log said nothing. It is the same log
+    // every other fleetd line goes to (`logPathFor`).
+    onError: (peerId, error) => {
+      console.error(`fleetd: peer ${String(peerId)}: ${error instanceof Error ? error.message : String(error)}`)
+    },
     // TASK-57: a bookkeeping row the store refused is not a dead session, but it
     // must not vanish either — the spend cap reads these rows, and a fleet that
     // silently stopped measuring would look exactly like a fleet that stopped

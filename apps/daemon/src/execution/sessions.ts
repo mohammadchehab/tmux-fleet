@@ -669,7 +669,18 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       }
     } else {
       sessions.delete(peer.id)
-      if (options.now === true) await running.session.interrupt().catch((error: unknown) => onError(peer.id, error))
+      if (options.now === true) {
+        try {
+          await running.session.interrupt()
+        } catch (thrown) {
+          // The turn could not be stopped, so the boundary this hold waits for
+          // may never come (TASK-117: a failed interrupt used to be swallowed
+          // and the hold waited forever). The session was never stopped, so it
+          // goes back exactly as it was and the hold fails with the reason.
+          sessions.set(peer.id, running)
+          throw thrown
+        }
+      }
       try {
         await untilOrAbort(running.session.untilBoundary(), options.signal)
       } catch (thrown) {
