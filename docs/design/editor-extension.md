@@ -130,7 +130,14 @@ profile layout.
   running daemon; one is used, several ask once and the choice is saved to the workspace. Matching a profile to the
   workspace's repo waits until `ls` reports the profile's repos; a client does not parse profile files.
 - Setting `fleet.command` (default `fleet`) is the CLI the extension runs in terminals, so a development checkout can
-  point it at its own entry point.
+  point it at its own entry point. It is **machine scope**, and the extension reads the user value directly, because it
+  is a program this extension executes: a workspace setting arrives with the cloned repository, and "open a folder"
+  must not become "run this program". `fleet.socket` and `fleet.profile` stay workspace-scoped — they select which
+  daemon to read, and a repository may reasonably say which fleet it belongs to.
+- A setting the layout cannot use — a `fleet.profile` of `../elsewhere`, a profile scan that cannot read the home — is
+  the fifth state, **settings problem**: the tree shows what is wrong and a Refresh button, and the poll loop keeps
+  running so fixing the setting is all it takes. Discovery is I/O on the poll path, so it is read inside the same guard
+  as the `ls`: nothing on that path may throw the loop to a stop.
 - No running fleet: the tree shows "No fleet is running for this folder" and a Start button that runs `fleet up` in an
   integrated terminal. The extension polls the socket path every few seconds until it appears; it never starts a daemon
   itself.

@@ -191,7 +191,8 @@
         "fleet.command": {
           "type": "string",
           "default": "fleet",
-          "markdownDescription": "How to run the fleet CLI. `fleet` on an install; `node /path/to/apps/clients/cli/src/main.ts` in a checkout."
+          "scope": "machine",
+          "markdownDescription": "How to run the fleet CLI: `fleet` on an install, or the path to one. Machine scope, because this extension executes it — a repository's own settings may not name the program that runs on your machine."
         },
         "fleet.profile": {
           "type": "string",

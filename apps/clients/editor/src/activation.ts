@@ -101,6 +101,13 @@ const noticeOf = (state: FleetState): TreeNotice | undefined => {
         description: `daemon speaks v${String(state.daemonVersion)}`,
         tooltip: `This extension speaks v${String(PROTOCOL_VERSION)}. Reinstall it with \`fleet editor install\`.`,
       }
+    case 'problem':
+      return {
+        label: 'Cannot read the fleet settings',
+        description: 'settings',
+        tooltip: `${state.reason}\n\nFix the setting and this window asks again.`,
+        commandId: 'fleet.refresh',
+      }
     case 'connected':
       return undefined
   }
@@ -121,6 +128,8 @@ const statusOf = (state: FleetState): { readonly text: string; readonly tooltip:
       return { text: 'Fleet: disconnected', tooltip: state.reason }
     case 'version-mismatch':
       return { text: 'Fleet: protocol mismatch', tooltip: `daemon v${String(state.daemonVersion)}, extension v${String(PROTOCOL_VERSION)}` }
+    case 'problem':
+      return { text: 'Fleet: settings problem', tooltip: state.reason }
     case 'connected': {
       const peers = state.rows.peers.length
       const needs = countOf(state.rows)

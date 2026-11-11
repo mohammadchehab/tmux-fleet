@@ -79,6 +79,33 @@ test('a blank setting is a setting nobody wrote', () => {
   })
 })
 
+test('a profile name the layout rejects is a state, not a throw (§ the poll loop)', () => {
+  // `fleet.profile` is a workspace setting, so its bytes arrive with the
+  // repository. `profilePaths` throws on a name it cannot take, and this runs on
+  // the poll loop: throwing here stopped every later poll.
+  for (const profile of ['../elsewhere', 'Upper', 'with_underscore', 'a/b']) {
+    const found = discover({ ...base, profile })
+    assert.equal(found.kind, 'invalid', `"${profile}" is not a profile name`)
+    assert.ok(found.kind === 'invalid')
+    assert.match(found.reason, /not a profile name/)
+  }
+
+  const fromEnv = discover({ ...base, env: { FLEET_PROFILE: '../elsewhere' } })
+  assert.equal(fromEnv.kind, 'invalid', 'the environment is held to the same rule')
+})
+
+test('a directory under ~/.fleet that is not a profile name is dropped, never thrown', () => {
+  // Something else on the machine keeping a socket at `~/.fleet/<odd name>/...`
+  // is not a fleet and must not take the scan's answer down with it.
+  assert.deepEqual(discover({ ...base, running: ['.DS_Store'] }), { kind: 'none' })
+  assert.deepEqual(discover({ ...base, running: ['.DS_Store', 'alpha'] }), {
+    kind: 'socket',
+    socketPath: `${HOME}/.fleet/alpha/daemon/fleetd.sock`,
+    profile: 'alpha',
+    via: 'profile',
+  })
+})
+
 test('expandHome touches ~ and nothing else', () => {
   assert.equal(expandHome('~', '/h'), '/h')
   assert.equal(expandHome('~/x', '/h'), '/h/x')

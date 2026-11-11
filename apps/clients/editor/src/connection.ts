@@ -1,5 +1,5 @@
 /**
- * The connection the tree draws (§7, §9): one poll at a time, and the four
+ * The connection the tree draws (§7, §9): one poll at a time, and the five
  * things a window can be looking at.
  *
  * There is no long-lived socket here, because there is nothing to follow yet:
@@ -17,7 +17,9 @@
  * - `disconnected` is "there was a fleet, and now there is not", which keeps the
  *   last rows greyed out so a window that lost the daemon does not look like a
  *   window that has an empty fleet;
- * - `choose` is the one question §7 asks, asked once and saved.
+ * - `choose` is the one question §7 asks, asked once and saved;
+ * - `problem` is a setting or a scan the extension cannot use, which is a thing
+ *   to say and a Refresh away from fixed — never a reason to stop asking.
  */
 
 import type { DaemonStatus, LsResult } from '@fleet/foundation-contracts'
@@ -57,6 +59,12 @@ export type FleetState =
       readonly reason: string
     }
   | { readonly phase: 'version-mismatch'; readonly socketPath: string; readonly daemonVersion: number }
+  /**
+   * The settings or the profile scan could not be read, so there is nothing to
+   * look at and a reason to say. Its own state because it is neither "no fleet"
+   * (there may be one) nor "disconnected" (a socket was never reached).
+   */
+  | { readonly phase: 'problem'; readonly reason: string }
 
 export interface ConnectionDeps {
   /** Settings, the environment and the profile scan, resolved to one answer (`discovery.ts`, `profiles.ts`). */
@@ -68,6 +76,8 @@ export interface ConnectionDeps {
 }
 
 const EMPTY: FleetRows = { needsYou: [], peers: [] }
+
+const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 /** The daemon's own protocol number, when it sends one (§8). */
 const protocolVersionOf = (status: DaemonStatus): number | undefined => {
@@ -100,8 +110,23 @@ export class FleetConnection {
    * gone, which is a state, not an exception for the caller to handle.
    */
   async poll(): Promise<FleetState> {
-    const discovery = await this.deps.discover()
+    // Discovery is I/O — settings, the environment, a scan of `~/.fleet` — so it
+    // is inside the guard too. It used to sit above the try, and a rejection here
+    // (a `fleet.profile` the layout rejects, a scan that cannot read the home)
+    // escaped a `void this.poll()` and ended the interval's work: the window then
+    // sat on its last state, polling forever and finding nothing.
+    let discovery: Discovery
+    try {
+      discovery = await this.deps.discover()
+    } catch (error) {
+      this.socketPath = undefined
+      return this.setState({ phase: 'problem', reason: reasonOf(error) })
+    }
 
+    if (discovery.kind === 'invalid') {
+      this.socketPath = undefined
+      return this.setState({ phase: 'problem', reason: discovery.reason })
+    }
     if (discovery.kind === 'none') {
       this.socketPath = undefined
       return this.setState({ phase: 'no-fleet' })
@@ -128,7 +153,7 @@ export class FleetConnection {
         status: ls.status,
       })
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
+      const reason = reasonOf(error)
       const rows = this.state.phase === 'connected' ? this.state.rows : this.previousRows()
       return this.setState({ phase: 'disconnected', socketPath, rows, reason })
     }

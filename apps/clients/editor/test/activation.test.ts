@@ -8,7 +8,9 @@
  */
 
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import { activateWith, type Activation } from '../src/activation.ts'
 import type { FleetDaemon } from '../src/daemon.ts'
@@ -300,4 +302,16 @@ test('every command the manifest offers is registered, and nothing else is', asy
     'fleet.refresh',
     'fleet.start',
   ])
+})
+
+test('the setting that names the program is machine-scoped, so a repository cannot set it', async () => {
+  // `fleet.command` reaches `execFile` and a terminal. A workspace setting arrives
+  // with the cloned repository, which would make "open a folder" into "run this
+  // program". The manifest is what the editor enforces; `vscode-port` reads the
+  // user value directly as well, and the two must agree.
+  const manifest = JSON.parse(
+    await readFile(fileURLToPath(new URL('../manifest.json', import.meta.url)), 'utf8'),
+  ) as { readonly contributes: { readonly configuration: { readonly properties: Record<string, { readonly scope?: string }> } } }
+  const properties = manifest.contributes.configuration.properties
+  assert.equal(properties['fleet.command']?.scope, 'machine')
 })

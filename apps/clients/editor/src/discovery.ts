@@ -20,7 +20,7 @@
  * means their own home, which over Remote-SSH is the *remote* one.
  */
 
-import { profilePaths } from '@fleet/foundation-core'
+import { parseProfileName, profilePaths } from '@fleet/foundation-core'
 
 export interface DiscoveryInput {
   /** `fleet.socket`, verbatim. */
@@ -41,9 +41,29 @@ export type Discovery =
   | { readonly kind: 'choose'; readonly profiles: readonly string[] }
   /** Nothing to look at: no fleet is running for this folder. */
   | { readonly kind: 'none' }
+  /**
+   * A name was given that the layout cannot turn into a path — a `fleet.profile`
+   * of `../elsewhere`, say. It is a state, not a throw: this runs on the poll
+   * loop, and a settings typo must not be the thing that stops the loop.
+   */
+  | { readonly kind: 'invalid'; readonly reason: string }
 
 const given = (value: string | undefined): string | undefined =>
   value === undefined || value.trim() === '' ? undefined : value.trim()
+
+/**
+ * The socket a profile name resolves to, or `undefined` when the name is not one
+ * (`parseProfileName` is the gate every other client uses). A settings value and
+ * a directory under `~/.fleet` both arrive as strings this file did not write, so
+ * neither may throw where it is read.
+ */
+export const socketForProfile = (name: string, home: string): string | undefined => {
+  try {
+    return profilePaths(parseProfileName(name), { home }).socketPath
+  } catch {
+    return undefined
+  }
+}
 
 /** `~` and `~/x` against `home`; anything else is left exactly as written. */
 export const expandHome = (path: string, home: string): string => {
@@ -66,12 +86,11 @@ export const discover = (input: DiscoveryInput): Discovery => {
   }
 
   if (profileSetting !== undefined) {
-    return {
-      kind: 'socket',
-      socketPath: profilePaths(profileSetting, { home: input.home }).socketPath,
-      profile: profileSetting,
-      via: 'profile',
+    const socketPath = socketForProfile(profileSetting, input.home)
+    if (socketPath === undefined) {
+      return { kind: 'invalid', reason: `fleet.profile "${profileSetting}" is not a profile name (lowercase letters, digits and dashes, starting with a letter)` }
     }
+    return { kind: 'socket', socketPath, profile: profileSetting, via: 'profile' }
   }
 
   const envSocket = given(input.env['FLEET_SOCKET'])
@@ -87,23 +106,20 @@ export const discover = (input: DiscoveryInput): Discovery => {
 
   const envProfile = given(input.env['FLEET_PROFILE'])
   if (envProfile !== undefined) {
-    return {
-      kind: 'socket',
-      socketPath: profilePaths(envProfile, { home: input.home }).socketPath,
-      profile: envProfile,
-      via: 'env',
+    const socketPath = socketForProfile(envProfile, input.home)
+    if (socketPath === undefined) {
+      return { kind: 'invalid', reason: `FLEET_PROFILE "${envProfile}" is not a profile name (lowercase letters, digits and dashes, starting with a letter)` }
     }
+    return { kind: 'socket', socketPath, profile: envProfile, via: 'env' }
   }
 
-  const running = [...new Set(input.running)].sort()
+  // A name under `~/.fleet` that is not a profile name belongs to something else
+  // on this machine, not to a fleet: it is dropped rather than asked about.
+  const running = [...new Set(input.running.filter((name) => socketForProfile(name, input.home) !== undefined))].sort()
   const only = running.length === 1 ? running[0] : undefined
   if (only !== undefined) {
-    return {
-      kind: 'socket',
-      socketPath: profilePaths(only, { home: input.home }).socketPath,
-      profile: only,
-      via: 'profile',
-    }
+    const socketPath = socketForProfile(only, input.home)
+    if (socketPath !== undefined) return { kind: 'socket', socketPath, profile: only, via: 'profile' }
   }
   if (running.length > 1) return { kind: 'choose', profiles: running }
   return { kind: 'none' }

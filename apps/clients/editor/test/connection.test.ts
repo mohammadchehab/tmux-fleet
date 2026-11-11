@@ -73,6 +73,42 @@ test('a poll never rejects, whatever the daemon does', async () => {
   await assert.doesNotReject(async () => found.poll())
 })
 
+test('a discovery that throws is a state, and the next poll still runs', async () => {
+  // Discovery is I/O — settings, the environment, a scan of `~/.fleet` — and it
+  // used to sit outside the guard. A rejection there escaped the `void poll()` of
+  // the interval, so the window kept its last state and never asked again.
+  const states: FleetState[] = []
+  let broken = true
+  const found = new FleetConnection({
+    discover: async () => {
+      if (broken) throw new Error('EACCES: permission denied, scandir /home/tester/.fleet')
+      return socketed
+    },
+    list: async () => lsOf({ peers: [peerOf('engineer-1')] }),
+    onState: (state) => states.push(state),
+  })
+
+  const first = await found.poll()
+  assert.equal(first.phase, 'problem')
+  assert.ok(first.phase === 'problem')
+  assert.match(first.reason, /EACCES/)
+
+  broken = false
+  const second = await found.poll()
+  assert.equal(second.phase, 'connected', 'a settings problem must not end the loop')
+  assert.deepEqual(
+    states.map((state) => state.phase),
+    ['problem', 'connected'],
+  )
+})
+
+test('a profile setting the layout rejects is the same state, and says which setting', async () => {
+  const found = await connection({ kind: 'invalid', reason: 'fleet.profile "../elsewhere" is not a profile name' }, async () => lsOf()).poll()
+  assert.equal(found.phase, 'problem')
+  assert.ok(found.phase === 'problem')
+  assert.match(found.reason, /fleet\.profile/)
+})
+
 test('a daemon that speaks another protocol is its own state, with the number', async () => {
   const ls = { ...lsOf(), status: { ...lsOf().status, protocolVersion: PROTOCOL_VERSION + 1 } }
   const found = await connection(socketed, async () => ls).poll()

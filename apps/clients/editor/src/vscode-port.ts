@@ -61,9 +61,24 @@ const toTreeItem = (item: FleetItem): vscode.TreeItem => {
 /** The extension host's home, which under Remote-SSH is the remote one (§7). */
 const hostHome = (): string => process.env['HOME'] ?? process.env['USERPROFILE'] ?? homedir()
 
+/**
+ * Settings only the person may set, because the extension runs what they name.
+ *
+ * `fleet.command` is a program this file hands to `execFile` and to a terminal.
+ * It is offered no folder or workspace scope in the manifest, so the editor
+ * already refuses a repository's value; this reads the user's own value directly
+ * as well, so a manifest edited back to workspace scope is not enough to make a
+ * cloned repository name the program that runs here.
+ */
+const MACHINE_SETTINGS = new Set(['command'])
+
 export const vscodePort = (): EditorPort => {
-  const setting = <T>(key: string): T | undefined =>
-    vscode.workspace.getConfiguration('fleet').get<T>(key)
+  const setting = <T>(key: string): T | undefined => {
+    const configuration = vscode.workspace.getConfiguration('fleet')
+    if (!MACHINE_SETTINGS.has(key)) return configuration.get<T>(key)
+    const inspected = configuration.inspect<T>(key)
+    return inspected?.globalValue ?? inspected?.defaultValue
+  }
 
   return {
     home: hostHome(),
