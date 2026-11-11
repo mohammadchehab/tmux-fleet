@@ -67,11 +67,13 @@ export const raiseBlockedNotes: Rule = (ctx) => {
 
   // The note is also the transition (TASK-126): a Work that is not blocked yet becomes blocked, and that
   // `work.blocked` is what the rest of the fleet keys on. Only the question is asked for a Work already blocked.
-  if (work.state === 'blocked') return [asked]
+  // A note from a peer that does not hold the Work is not that Work's blocker, so only the question is raised.
+  if (work.state === 'blocked' || work.assignee !== note.peerId) return [asked]
   const block = draft(`block:${String(work.workId)}`, {
     kind: 'block_work',
     causedBy: ctx.causedBy,
     workId: work.workId,
+    peerId: note.peerId,
     reason: `${String(note.peerId)} says it is blocked: "${note.body}"`,
     // A note does not say who can clear it, so it is the user's question until a peer says otherwise.
     blockedOn: 'user',

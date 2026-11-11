@@ -4,6 +4,7 @@
     61
   ],
   "workId": "wrk_0123456789abcdef",
+  "peerId": "engineer-1",
   "reason": "peer engineer-1 says: the store has no way to replay a partial log",
   "blockedOn": "user"
 }
