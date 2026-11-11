@@ -78,7 +78,8 @@ A view container named Fleet in the activity bar, with one tree:
 - **Needs you (n)** — one item per open decision and per peer waiting for input. The count is also the container's
   badge, so it is visible with the side bar closed.
 - **Peers** — one item per peer: state icon, name, and a description of context used and what it is doing now. A peer
-  at or past the self-purge threshold gets a warning colour.
+  at or past the self-purge threshold gets a warning colour. Until the daemon reports context used (watch-and-attach §6),
+  the description shows what the peer is doing and its turn count, and the warning marks a peer that has compacted.
 
 Clicking a peer opens its output channel. Its context menu and inline buttons are the watch's actions:
 
@@ -124,9 +125,11 @@ profile layout.
 
 - A socket path setting is absolute; editor settings do not expand `~`, so the extension expands a leading `~` itself
   against the extension host's home.
-- Setting `fleet.profile` (workspace scope) names the profile. With it unset, the extension lists the profiles that
-  have a running daemon and whose repo is the workspace folder; one match is used, several ask once and the choice is
-  saved to the workspace.
+- Setting `fleet.profile` (workspace scope) names the profile. With it unset, the extension lists the profiles with a
+  running daemon; one is used, several ask once and the choice is saved to the workspace. Matching a profile to the
+  workspace's repo waits until `ls` reports the profile's repos; a client does not parse profile files.
+- Setting `fleet.command` (default `fleet`) is the CLI the extension runs in terminals, so a development checkout can
+  point it at its own entry point.
 - No running fleet: the tree shows "No fleet is running for this folder" and a Start button that runs `fleet up` in an
   integrated terminal. The extension polls the socket path every few seconds until it appears; it never starts a daemon
   itself.
@@ -154,7 +157,7 @@ machine.
   editor or editor server without the extension, naming the command to run. `fleet editor uninstall` reverses it.
 - Packaging is `vsce package` on the bundled output. The manifest carries a repository field and a licence file, so
   packaging needs no flags that skip checks.
-- Version: the extension reads the daemon's protocol version on connect. On a mismatch it shows "update the extension:
+- Version: `DaemonStatus` gains `protocolVersion`, added with `peer.watch`, and the extension reads it on connect. On a mismatch it shows "update the extension:
   run `fleet editor install`" and does nothing else, so an old extension cannot misread a new stream.
 
 ## 9. Failure and limits
@@ -198,7 +201,9 @@ After the watch-and-attach batch, in this order:
 
 - The view model's reducer and action list are pure and tested without an editor; they are the shared proof that both
   clients show the same thing.
-- The extension is tested with the editor's extension test runner against a fake daemon socket: rows appear, a decision
-  is answered with one `decide` call, a takeover opens a terminal with the expected command line.
+- The extension's logic takes a narrow port over the editor API (tree view, quick pick, terminal, output channel) and is
+  tested with `node --test` against a fake of that port and a fake daemon socket: rows appear, one row refreshes, a
+  decision is answered with one `decide` call, a takeover opens a terminal with the expected command line. The
+  editor's own test runner is not used: on macOS it opens a real window on the person's screen.
 - One manual pass per release in VS Code and in Cursor, local and over Remote-SSH: see a peer work, answer a decision,
   take over, release.
