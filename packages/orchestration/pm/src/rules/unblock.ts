@@ -30,6 +30,53 @@ import { draft, type Draft, type Rule, type RuleContext } from './context.ts'
 export const blockedDecisionId = (work: Work): DecisionId =>
   deriveId('dec', { kind: 'blocked', workId: work.workId }) as DecisionId
 
+/**
+ * The inbox row for the `episode`-th blocker on a Work. Episode 0 is `blockedDecisionId` exactly. A later episode is
+ * a blocker that came after the user answered the one before it: a new question, so a new row (TASK-125).
+ */
+export const episodeDecisionId = (work: Work, episode: number): DecisionId =>
+  episode === 0 ? blockedDecisionId(work) : (deriveId('dec', { kind: 'blocked', workId: work.workId, episode }) as DecisionId)
+
+/**
+ * §5.2 re-ask (TASK-125): a `work.blocked` for a Work whose latest blocker question is already answered is a new
+ * blocker. It is asked on the event that carries the transition, never on the heartbeat, so a Work that stays blocked
+ * after its answer is not asked again from the clock. It does not wait on the answer's delivery: route 1 still
+ * delivers the answered decision once (deduped by its id), and the new question sits in the inbox until it is answered.
+ */
+export const reaskBlockedWork: Rule = (ctx) => {
+  if (ctx.event?.type !== 'work.blocked') return []
+  const blocked = ctx.event.data
+  const work = ctx.state.work.find((row) => row.workId === blocked.workId)
+  if (work === undefined || work.state !== 'blocked') return []
+
+  // The episodes so far, in order. None means this is the first block: `unblockWaitingPeers` asks it (route 3).
+  const episodes: Decision[] = []
+  for (let episode = 0; ; episode += 1) {
+    const row = ctx.index.decision(episodeDecisionId(work, episode))
+    if (row === undefined) break
+    episodes.push(row)
+  }
+  const latest = episodes.at(-1)
+  if (latest === undefined || latest.state !== 'answered') return []
+
+  // Replaying this event's seq finds the row it raised, the same guard as the note route (TASK-70).
+  const inputsHash = shortHash({ kind: 'blocked', workId: work.workId, seq: String(ctx.event.seq) })
+  if (episodes.some((row) => row.inputsHash === inputsHash)) return []
+
+  return [draft(`reblock:${String(work.workId)}`, {
+    kind: 'request_decision',
+    causedBy: ctx.causedBy,
+    decisionId: episodeDecisionId(work, episodes.length),
+    decisionKind: 'blocked',
+    question:
+      `Work ${String(work.workId)}: ${work.title} is blocked again (${String(blocked.blockedOn)}): ` +
+      `${blocked.reason}. The earlier question about it was answered. Decide it, or cancel the Work.`,
+    options: [],
+    workId: work.workId,
+    inputsHash,
+  })]
+}
+
 export const unblockWaitingPeers: Rule = (ctx) => {
   const waiting = ctx.state.peers
     .filter((peer) => peer.state === 'waiting_input' && isLivePeer(peer))

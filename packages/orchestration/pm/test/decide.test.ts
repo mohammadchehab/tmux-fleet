@@ -21,7 +21,7 @@ import {
 } from '../src/index.ts'
 import type { RuleContext } from '../src/index.ts'
 import type { DecideRequest, FleetEvent, FleetState, PmAction, PullRequest } from '@fleet/foundation-contracts'
-import type { QuestionId } from '@fleet/foundation-core'
+import type { DecisionId, QuestionId } from '@fleet/foundation-core'
 import {
   architect,
   decision,
@@ -994,6 +994,115 @@ test('replaying a blocked note that already asked does not ask again after its a
 test('a note about a Work the fleet does not have is left in the log rather than guessed at', () => {
   const { snapshot, note } = noted({ workId: 'wrk_00000000000000ff' })
   assert.deepEqual(decide({ state: snapshot, tick: tick(), event: note }).actions, [])
+})
+
+// ----------------------------------------------- a second block after an answer (TASK-125)
+// A Work blocked again after the user answered the first question is a new blocker: a new inbox row, asked on the
+// `work.blocked` event that carries it, never on the heartbeat. The old answer is still delivered once, by its own
+// decision id, and the new question does not wait on that delivery.
+
+const blockedAgain = (seq: number, over: { reason?: string; blockedOn?: 'user' | 'contract' | 'peer' | 'external' } = {}) =>
+  event(
+    'work.blocked',
+    'wrk_0000000000000001',
+    {
+      workId: 'wrk_0000000000000001',
+      reason: over.reason ?? 'which price source is authoritative?',
+      blockedOn: over.blockedOn ?? 'user',
+    },
+    seq,
+  )
+
+/** A Decision the user answered, for the Work the `stuck` state is about. */
+const answeredRow = (asked: { decisionId: DecisionId; inputsHash: string }, text: string) =>
+  decision({
+    decisionId: asked.decisionId,
+    kind: 'blocked',
+    workId: 'wrk_0000000000000001' as never,
+    state: 'answered',
+    text,
+    answeredAt: T0,
+    inputsHash: asked.inputsHash,
+  })
+
+test('a second block after the first answer was delivered asks again, in a new row (two transitions)', () => {
+  const first = decide({ state: state(stuck({ blockedOn: 'user' })), tick: tick(), event: blockedAgain(41) })
+  const asked = only(first.actions, 'request_decision')
+
+  const settled = state({
+    ...stuck({ blockedOn: 'user', blockedReason: 'the second price source' }),
+    decisions: [answeredRow(asked, 'use the ECB feed')],
+    messages: [message({ to: 'engineer-1' as never, body: `Answer for Work wrk_0000000000000001 ... ${String(asked.decisionId)} ...` })],
+  })
+  const again = decide({ state: settled, tick: tick(), event: blockedAgain(57, { reason: 'the second price source' }) })
+
+  const reasked = only(again.actions, 'request_decision')
+  assert.notEqual(reasked.decisionId, asked.decisionId, 'a new blocker is a new row, not the answered one')
+  assert.equal(reasked.workId, asked.workId)
+  assert.equal(reasked.decisionKind, 'blocked')
+  assert.match(reasked.question, /blocked again/)
+  assert.match(reasked.question, /second price source/)
+  assert.deepEqual(kinds(again.actions).filter((kind) => kind === 'send_message'), [], 'the old answer was already told')
+})
+
+test('a second block while the first answer is still undelivered asks, and delivers the old answer once, in the same tick', () => {
+  const first = decide({ state: state(stuck({ blockedOn: 'user' })), tick: tick(), event: blockedAgain(41) })
+  const asked = only(first.actions, 'request_decision')
+
+  const undelivered = state({
+    ...stuck({ blockedOn: 'user' }),
+    decisions: [answeredRow(asked, 'use the ECB feed')],
+    messages: [],
+  })
+  const both = decide({ state: undelivered, tick: tick(), event: blockedAgain(57) })
+
+  const delivered = only(both.actions, 'send_message')
+  assert.match(delivered.body, /use the ECB feed/, 'the old answer still reaches the peer')
+  assert.match(delivered.body, new RegExp(String(asked.decisionId)), 'and names the decision it answers')
+  const reasked = only(both.actions, 'request_decision')
+  assert.notEqual(reasked.decisionId, asked.decisionId)
+})
+
+test('a heartbeat after the second block is answered and delivered asks nothing: the clock never re-asks', () => {
+  const first = decide({ state: state(stuck({ blockedOn: 'user' })), tick: tick(), event: blockedAgain(41) })
+  const asked = only(first.actions, 'request_decision')
+  const reasked = only(
+    decide({
+      state: state({ ...stuck({ blockedOn: 'user' }), decisions: [answeredRow(asked, 'use the ECB feed')], messages: [message({ to: 'engineer-1' as never, body: String(asked.decisionId) })] }),
+      tick: tick(),
+      event: blockedAgain(57),
+    }).actions,
+    'request_decision',
+  )
+
+  // Still blocked, the first answer told, the second question open or answered: a tick with no event adds nothing.
+  const answeredSecond = state({
+    ...stuck({ blockedOn: 'user' }),
+    decisions: [answeredRow(asked, 'use the ECB feed'), decision({ decisionId: reasked.decisionId, kind: 'blocked', workId: reasked.workId, state: 'open' })],
+    messages: [message({ to: 'engineer-1' as never, body: String(asked.decisionId) })],
+  })
+  assert.deepEqual(decide({ state: answeredSecond, tick: tick() }).actions, [])
+})
+
+test('replaying the second block event does not ask again', () => {
+  const first = decide({ state: state(stuck({ blockedOn: 'user' })), tick: tick(), event: blockedAgain(41) })
+  const asked = only(first.actions, 'request_decision')
+  const replayed = state({
+    ...stuck({ blockedOn: 'user' }),
+    decisions: [answeredRow(asked, 'use the ECB feed')],
+    messages: [message({ to: 'engineer-1' as never, body: String(asked.decisionId) })],
+  })
+  const reasked = only(decide({ state: replayed, tick: tick(), event: blockedAgain(57) }).actions, 'request_decision')
+
+  const settled = state({
+    ...stuck({ blockedOn: 'user' }),
+    decisions: [
+      answeredRow(asked, 'use the ECB feed'),
+      decision({ decisionId: reasked.decisionId, kind: 'blocked', workId: reasked.workId, state: 'answered', text: 'ok', answeredAt: T0, inputsHash: reasked.inputsHash }),
+    ],
+    messages: [message({ to: 'engineer-1' as never, body: String(asked.decisionId) }), message({ msgId: 'msg_0000000000000002' as never, to: 'engineer-1' as never, body: String(reasked.decisionId) })],
+  })
+  assert.deepEqual(decide({ state: settled, tick: tick(), event: blockedAgain(57) }).actions, [], 'the same event is the same block')
 })
 
 // -------------------------------------------------------------- the ledger the rules read (TASK-72)

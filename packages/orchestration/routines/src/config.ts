@@ -63,6 +63,8 @@ export const defaultTriggers: Readonly<Record<RoutineKind, readonly Trigger[]>> 
         // note is recorded-only — the heartbeat after it has the Work but not the words.
         // This line is what lets the tick that carries the note raise the decision.
         'work.noted',
+        // A Work blocked again after its question was answered is a new blocker, asked on this tick (TASK-125).
+        'work.blocked',
         'peer.registered',
         'peer.state_changed',
         'contract.published',
