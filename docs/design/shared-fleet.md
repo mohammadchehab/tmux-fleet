@@ -183,9 +183,19 @@ difference is a **new rotation**, for the team as it now stands:
 
 Anyone with push on the repository can write a `rotate/` ref, so the rotations are not trusted as found. The numbers
 must run `1..n` with no gap; the current rotation must decode, name its own number, be made by one of its members,
-give at least one member a copy, and hold exactly its record plus one `<login>.age` per member it names; and a lost
-race re-reads the winner and holds it to the same rule. Anything else is `refused` and logged, and nothing is rotated
-over it: a ref that blocks a revocation is for a person to remove, not for the fleet to step around.
+give at least one member a copy, hold exactly its record plus one `<login>.age` per member it names, and every one of
+those copies must be sealed to the member it is named for and to nobody else. A lost race re-reads the winner and
+holds it to the same rule. Anything else is `refused` and logged, and nothing is rotated over it: a ref that blocks a
+revocation is for a person to remove, not for the fleet to step around.
+
+The copies are checked against the keys the members have **now**, not against what the record says about them, because
+the record is the part an insider writes. A copy's header states the keys it is sealed to — `age` leaves it in the
+clear and binds it to the file key — and the identity in it is the tag `age` itself picks a private key by, so a copy a
+stranger could open is one the check refuses; nothing is decrypted, and no one signs anything. One case pays for that:
+a member who has since replaced or removed a key leaves a copy that is honest but no longer opens, which reads exactly
+like a forged one, so the look refuses, the log names the member, and a person removes the ref. Rotating instead was
+declined as decision-4 (b): a key that changed under the fleet is the moment a person should look, and with
+`taskData: false` no fleet is opening copies yet, so the refusal costs a rotation and not a secret.
 
 Of the fleets that see the same change, the first to create `rotate/<n+1>` wins (§2.1); the others' keys were never
 published. If no fleet is online, the rotation happens at the next `fleet up`; nothing leaks in between, because the

@@ -24,6 +24,11 @@
  * A rotation the team did not ask for is the failure to avoid, so this refuses
  * rather than rotates when the team reads as empty or this fleet's own user is
  * not on it: either is a token that cannot see the team, not a team that changed.
+ *
+ * A record is also a claim anyone with push can write, so the copies it names are
+ * read back and held to the keys each member has now, not to what it says about
+ * them (`unverifiableCopy`): a copy sealed to a stranger, or one that is not a
+ * copy `age` made, is a record that was not made here.
  */
 
 import { randomBytes } from 'node:crypto'
@@ -100,6 +105,7 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
     recipients.set(member, usable)
     return usable
   }
+  const copies: CopyCheck = { wrap: options.wrap, recipientsOf }
 
   if (current !== undefined) {
     // Rotation refs are written by anyone with push on the coordination
@@ -113,7 +119,7 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
     if (current.n >= MAX_ROTATION) {
       return { kind: 'refused', reason: `rotation ${current.n} is the last number a rotation can have` }
     }
-    const checked = await readRecord(options.coordination, current.ref)
+    const checked = await readRecord(options.coordination, current.ref, copies)
     if (!checked.ok) return { kind: 'refused', reason: `rotation ${current.n} is not one this fleet's rule would make: ${checked.reason}` }
     const record = checked.record
     if (sameList(record.members, members)) {
@@ -150,7 +156,7 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
   if (created.created) return { kind: 'rotated', rotation, members, missing }
   // Someone else made this number. A fleet's own lose is a valid rotation; an
   // attacker's ref that got there first is not, and must not read as a lost race.
-  const winner = await readRecord(options.coordination, { name: `${prefix}${rotation}`, sha: created.sha })
+  const winner = await readRecord(options.coordination, { name: `${prefix}${rotation}`, sha: created.sha }, copies)
   if (!winner.ok) return { kind: 'refused', reason: `rotation ${rotation} was made by someone else and is not valid: ${winner.reason}` }
   return { kind: 'lost_race', rotation }
 }
@@ -160,10 +166,12 @@ type Checked = { readonly ok: true; readonly record: KeyRotation } | { readonly 
 /**
  * A rotation's record, accepted only if it is what `reconcileKey` writes: it
  * decodes, names its own number, was made by one of its members, leaves at least
- * one member a copy, and its files are exactly the record plus one `<login>.age`
- * per member that has a copy.
+ * one member a copy, its files are exactly the record plus one `<login>.age` per
+ * member that has a copy, and every one of those copies is sealed to a key that
+ * member has now — otherwise it is a team member with push writing a key nobody
+ * else agreed to, which is the one thing a record cannot be trusted for.
  */
-const readRecord = async (coordination: Coordination, ref: CoordinationRef): Promise<Checked> => {
+const readRecord = async (coordination: Coordination, ref: CoordinationRef, copies: CopyCheck): Promise<Checked> => {
   const held = await coordination.read(ref)
   const text = held?.files[ROTATION_FILE]
   if (held === undefined || text === undefined) return { ok: false, reason: `it has no ${ROTATION_FILE}` }
@@ -182,7 +190,58 @@ const readRecord = async (coordination: Coordination, ref: CoordinationRef): Pro
   const expected = [ROTATION_FILE, ...record.members.filter((m) => !record.missing.includes(m)).map((m) => `${m}.age`)].sort()
   const actual = Object.keys(held.files).sort()
   if (!sameList(expected, actual)) return { ok: false, reason: 'its files are not its record plus one copy per member it names' }
+  const unverifiable = await unverifiableCopy(record, held.files, copies, ref)
+  if (unverifiable !== undefined) return { ok: false, reason: unverifiable }
   return { ok: true, record }
+}
+
+/** What a record's copies are held to: the sealing, and each member's keys as the forge serves them now. */
+interface CopyCheck {
+  readonly wrap: KeyWrap
+  readonly recipientsOf: (member: string) => Promise<readonly string[]>
+}
+
+/**
+ * The first member whose copy is not what this fleet would have sealed for them,
+ * and why, or `undefined` when every copy is sealed to its own member's current
+ * keys and to nothing else.
+ *
+ * This is the check decision-3 asked for: the record is a claim anyone with push
+ * can write, so the copies it names are read and held to the keys their members
+ * have now, not to what the record says about them. A copy that is not an age
+ * file, one sealed to a stranger's key, and one sealed to a key its member has
+ * since replaced all fail it, because at the header they are the same thing.
+ *
+ * That last case is the cost of it, and decision-4 (a) took it: a member who
+ * replaced or removed a key stops the rotation rather than causing one, and the
+ * reason says which member and which ref a person has to remove, because the
+ * fleet does not step around a ref it cannot tell from a forgery. Decision-4 (b)
+ * would make an empty or disjoint set stale and rotate instead; this function is
+ * the only place that changes, so it would be a diff and not a rewrite.
+ */
+const unverifiableCopy = async (
+  record: KeyRotation,
+  files: Readonly<Record<string, string>>,
+  copies: CopyCheck,
+  ref: CoordinationRef,
+): Promise<string | undefined> => {
+  const clear = `a person must remove ${ref.name}; this fleet does not rotate over a ref it cannot tell from a forgery`
+  for (const member of record.members) {
+    if (record.missing.includes(member)) continue
+    let usable: readonly string[]
+    try {
+      usable = await copies.recipientsOf(member)
+    } catch (error) {
+      // A member whose keys cannot be read is one whose copy cannot be checked,
+      // and a check that cannot run is not one that passed.
+      return `${member}'s keys cannot be read (${error instanceof Error ? error.message : String(error)}), so their copy cannot be checked; ${clear}`
+    }
+    if (usable.length === 0) return `${member} has no ssh-ed25519 or ssh-rsa key now, so their copy opens for nobody; ${clear}`
+    if (!copies.wrap.sealedOnlyTo(files[`${member}.age`] ?? '', usable)) {
+      return `the copy for ${member} is not sealed to ${member}'s current keys alone; ${clear}`
+    }
+  }
+  return undefined
 }
 
 /** `<ns>/rotate/` of a rotation ref. */

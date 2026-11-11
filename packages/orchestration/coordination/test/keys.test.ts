@@ -29,6 +29,9 @@ const fakeTeam = (members: string[], keys: Record<string, string[]>) => {
   return { state, directory }
 }
 
+/** A copy as the fake `wrap` makes it: the key it holds and who it was sealed to. */
+const fakeCopy = (key: string, to: readonly string[]): string => JSON.stringify({ key, to })
+
 /** "Seals" by naming the key and the recipients, so a test can read who a copy was for. */
 const fakeWrap = (): KeyWrap & { readonly sealed: { key: string; to: readonly string[] }[] } => {
   const sealed: { key: string; to: readonly string[] }[] = []
@@ -37,7 +40,17 @@ const fakeWrap = (): KeyWrap & { readonly sealed: { key: string; to: readonly st
     recipient: (key) => (key.startsWith('ssh-ed25519 ') || key.startsWith('ssh-rsa ') ? key : undefined),
     wrap: async (key, to) => {
       sealed.push({ key, to })
-      return `sealed(${key})->${to.join(',')}`
+      return fakeCopy(key, to)
+    },
+    sealedOnlyTo: (armored, recipients) => {
+      let copy: { to?: readonly string[] }
+      try {
+        copy = JSON.parse(armored) as { to?: readonly string[] }
+      } catch {
+        return false
+      }
+      const to = copy.to ?? []
+      return to.length > 0 && to.every((recipient) => recipients.includes(recipient))
     },
     unwrap: async () => assert.fail('phase 1 never opens a copy'),
   }
@@ -166,8 +179,8 @@ const forgeRotation = (
   const record = { version: 1, rotation: n, members: ['alice', 'bob'], missing: [], by: 'alice', at: '2026-11-01T00:00:00.000Z', ...edit.record }
   coordination.force(`rotate/${n}`, {
     [ROTATION_FILE]: JSON.stringify(record),
-    'alice.age': 'sealed',
-    'bob.age': 'sealed',
+    'alice.age': fakeCopy('forged', [ED('a')]),
+    'bob.age': fakeCopy('forged', [ED('b')]),
     ...edit.files,
   })
 }
@@ -248,6 +261,80 @@ describe('a rotation someone else wrote (revocation must not be blockable by a r
     const outcome = await reconcileKey(options())
     assert.equal(outcome.kind, 'refused')
     assert.match((outcome as { reason: string }).reason, /not valid/)
+  })
+})
+
+describe('a rotation whose copies are not the ones this fleet would have sealed', () => {
+  it('refuses a copy sealed to another member, who could then read it', async () => {
+    const { coordination, options } = setup()
+    forgeRotation(coordination, 1, { files: { 'alice.age': fakeCopy('forged', [ED('b')]) } })
+
+    const outcome = await reconcileKey(options())
+    assert.equal(outcome.kind, 'refused')
+    assert.match((outcome as { reason: string }).reason, /alice/)
+    assert.equal((await coordination.refs('rotate/')).length, 1, 'nothing was rotated over it')
+  })
+
+  it('refuses a copy sealed to a key that is on nobody the record names', async () => {
+    const { coordination, options } = setup()
+    forgeRotation(coordination, 1, { files: { 'bob.age': fakeCopy('forged', [ED('b'), 'ssh-ed25519 AAAAmallory']) } })
+
+    assert.equal((await reconcileKey(options())).kind, 'refused')
+  })
+
+  it('refuses copies that are not copies age made, so nobody could open them', async () => {
+    const { coordination, options } = setup()
+    coordination.force('rotate/1', {
+      [ROTATION_FILE]: JSON.stringify({ version: 1, rotation: 1, members: ['alice', 'bob'], missing: [], by: 'alice', at: '2026-11-01T00:00:00.000Z' }),
+      'alice.age': 'not a copy',
+      'bob.age': 'not a copy either',
+    })
+
+    const outcome = await reconcileKey(options())
+    assert.equal(outcome.kind, 'refused')
+    assert.equal((await coordination.refs('rotate/')).length, 1)
+  })
+
+  it('refuses a copy sealed to a key its member no longer has, and says who must clear the ref (decision-4 a)', async () => {
+    const { coordination, team, options } = setup()
+    await reconcileKey(options())
+    team.state.keys['bob'] = [ED('bob-new')]
+
+    const outcome = await reconcileKey(options())
+    assert.equal(outcome.kind, 'refused', 'bob cannot open the copy that is there, and it cannot be told from a forgery')
+    const reason = (outcome as { reason: string }).reason
+    assert.match(reason, /bob/, 'the log names the member whose key changed')
+    assert.match(reason, /person must remove rotate\/1/, 'and the ref a person has to remove')
+    assert.equal((await coordination.refs('rotate/')).length, 1, 'and nothing was rotated over it')
+  })
+
+  it('refuses a copy for a member the forge cannot read, since it cannot be checked', async () => {
+    const { coordination, options } = setup()
+    forgeRotation(coordination, 1)
+    const blind: KeyReconcileOptions = {
+      ...options(),
+      directory: {
+        members: async () => ['alice', 'bob'],
+        sshKeys: async (user) => {
+          if (user === 'bob') throw new Error('gh api: 404')
+          return [ED('a')]
+        },
+      },
+    }
+
+    const outcome = await reconcileKey(blind)
+    assert.equal(outcome.kind, 'refused')
+    assert.match((outcome as { reason: string }).reason, /bob/)
+  })
+
+  it('accepts a copy sealed to some of the member keys it may be sealed to', async () => {
+    const { coordination, options } = setup(['alice', 'bob'], { alice: [ED('a')], bob: [ED('b1'), ED('b2')] })
+    // A real rotation seals to every usable key a member has; one sealed to an
+    // earlier subset is still a copy that member and nobody else can open, so it
+    // is not a forgery — a member adding a key is a rotation for TASK-113, not here.
+    forgeRotation(coordination, 1, { files: { 'bob.age': fakeCopy('forged', [ED('b1')]) } })
+
+    assert.deepEqual(await reconcileKey(options()), { kind: 'current', rotation: 1 })
   })
 })
 

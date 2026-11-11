@@ -604,6 +604,19 @@ export interface KeyWrap {
    * decides which of a member's keys can hold a copy.
    */
   wrap(plaintext: string, recipients: readonly string[]): Promise<string>
+  /**
+   * Whether `armored` is sealed to `recipients` and to nobody else: it is a copy
+   * `wrap` made, it has at least one recipient, and every recipient it names is
+   * one of theirs. `false` for anything else, a file that is not a copy at all
+   * included — a copy that cannot be read as one is a copy nobody can be sure of.
+   *
+   * Read from the copy's header, which `age` leaves in the clear and binds to the
+   * file key, so writing one that says it is sealed to a key it is not needs that
+   * key. Nothing is decrypted: the identity it is matched on is the tag `age`
+   * itself selects a private key by, so a copy `age` would let an outsider open
+   * is one this refuses (§5.2).
+   */
+  sealedOnlyTo(armored: string, recipients: readonly string[]): boolean
   /** What `wrap` sealed, opened with the SSH private key at `identityFile` (an absolute path). */
   unwrap(armored: string, identityFile: string): Promise<string>
 }
