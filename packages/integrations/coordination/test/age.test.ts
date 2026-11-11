@@ -47,6 +47,10 @@ const recording = (reply: { code?: number; stdout?: string; stderr?: string } = 
 const rejectsWith = (promise: Promise<unknown>, code: string) =>
   assert.rejects(promise, (thrown: unknown) => thrown instanceof FleetError && thrown.code === code)
 
+/** A copy `age` makes to a recipient `wrap` refuses, to show the reader refuses it too. */
+const ageEncrypt = (recipient: string): string =>
+  execFileSync('age', ['--encrypt', '--armor', '--recipient', recipient], { input: 'engagement-key', encoding: 'utf8' })
+
 const ED = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHvKiqk0tzYG0dBpqEzuHf9u9g2oZXQ6eTW6wNy4P1Lh'
 
 describe('a recipient', () => {
@@ -117,5 +121,60 @@ describe('a copy of the key, with the real age', { skip: noAge }, () => {
 
     assert.equal(await wrap.unwrap(copy, laptop.identity), 'engagement-key')
     assert.equal(await wrap.unwrap(copy, desktop.identity), 'engagement-key')
+  })
+})
+
+describe('a copy, read as sealed without decrypting it', { skip: noAge }, () => {
+  it('is sealed to the keys it was wrapped for, ed25519 and RSA, and to no others', async () => {
+    const alice = keyPair('sealed-alice')
+    const aliceDesktop = keyPair('sealed-alice-desktop', 'rsa')
+    const bob = keyPair('sealed-bob')
+    const wrap = createAgeKeyWrap({ cwd: root })
+
+    const copy = await wrap.wrap('engagement-key', [alice.recipient, aliceDesktop.recipient])
+    const older = await wrap.wrap('engagement-key', [alice.recipient])
+
+    assert.equal(wrap.sealedOnlyTo(copy, [alice.recipient, aliceDesktop.recipient]), true)
+    assert.equal(wrap.sealedOnlyTo(copy, [alice.recipient, aliceDesktop.recipient, bob.recipient]), true, 'a member with keys it did not use')
+    assert.equal(wrap.sealedOnlyTo(older, [alice.recipient, aliceDesktop.recipient]), true, 'a copy from before one of the member’s keys existed')
+    assert.equal(wrap.sealedOnlyTo(copy, [alice.recipient]), false, 'a key it was wrapped for is not in the set given')
+    assert.equal(wrap.sealedOnlyTo(copy, [bob.recipient]), false, 'bob holds no key it was wrapped for')
+    assert.equal(wrap.sealedOnlyTo(copy, [alice.recipient, bob.recipient]), false)
+    assert.equal(wrap.sealedOnlyTo(copy, []), false)
+  })
+
+  it('is not sealed only to its member once an outsider’s key is on it too', async () => {
+    const alice = keyPair('together-alice')
+    const mallory = keyPair('together-mallory')
+    const wrap = createAgeKeyWrap({ cwd: root })
+    const copy = await wrap.wrap('engagement-key', [alice.recipient, mallory.recipient])
+
+    assert.equal(wrap.sealedOnlyTo(copy, [alice.recipient]), false)
+    assert.equal(await wrap.unwrap(copy, mallory.identity), 'engagement-key', 'and mallory really can open it')
+  })
+
+  it('is false for anything that is not a copy age made', async () => {
+    const alice = keyPair('garbage-alice')
+    const wrap = createAgeKeyWrap({ cwd: root })
+    const copy = await wrap.wrap('engagement-key', [alice.recipient])
+    const lines = copy.trimEnd().split('\n')
+    const half = [...lines.slice(0, 2), lines.at(-1)!].join('\n')
+
+    assert.equal(wrap.sealedOnlyTo('', [alice.recipient]), false)
+    assert.equal(wrap.sealedOnlyTo('engagement-key', [alice.recipient]), false)
+    assert.equal(wrap.sealedOnlyTo(`${copy}\nand this`, [alice.recipient]), false, 'a copy with something appended')
+    assert.equal(wrap.sealedOnlyTo(half, [alice.recipient]), false, 'a copy with its header cut short')
+  })
+
+  it('is false for a copy sealed to an identity that is not an SSH key', { skip: has('age-keygen') ? false : 'needs age-keygen' }, async () => {
+    const alice = keyPair('x25519-alice')
+    const identity = join(root, 'x25519.txt')
+    execFileSync('age-keygen', ['-o', identity], { stdio: 'ignore' })
+    const native = /^# public key: (age1[a-z0-9]+)$/m.exec(readFileSync(identity, 'utf8'))![1]!
+    const wrap = createAgeKeyWrap({ cwd: root })
+    const copy = await wrap.wrap('engagement-key', [alice.recipient])
+
+    assert.equal(wrap.sealedOnlyTo(copy, [alice.recipient]), true)
+    assert.equal(wrap.sealedOnlyTo(ageEncrypt(native), [alice.recipient]), false, 'an X25519 identity could open it')
   })
 })
