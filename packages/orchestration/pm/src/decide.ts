@@ -78,6 +78,10 @@ const canonicalState = (state: FleetState): unknown => ({
   routines: [...state.routines].sort(byOrder((row) => row.routineId)),
   findings: [...state.findings].sort(byOrder((row) => String(row.findingId))),
   notifications: [...state.notifications].sort(byOrder((row) => String(row.key))),
+  // The ledger the spend cap reads, and the question log the judge rules read (TASK-72): a replay over a different bill
+  // or an answer that arrived since must not hash as the same inputs.
+  tokens: [...state.tokens].sort(byOrder((row) => `${String(row.peerId)}\u0000${String(row.workId ?? '')}`)),
+  judge: [...state.judge].sort(byOrder((row) => String(row.questionId))),
 })
 
 /** The port, closed over a policy: what `apps/daemon` registers and what a test constructs (§5.2). */
