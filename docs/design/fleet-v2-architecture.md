@@ -597,6 +597,166 @@ projection holds `open | confirmed | dismissed | fixed` with the decision that m
 Failure modes: if `codegraph-ensure` fails, the session starts without the guard and `index.failed` is raised as a
 failure notification, since an unindexed peer silently costs more.
 
+## 6.3 MCP servers: remote, scoped per role, secret by reference
+
+**Status: proposed. Not built; security-architect review of "Secret scoping" below gates PR 1.**
+
+What is true today, and why a peer cannot use Figma, Atlassian or Delivery Factory:
+
+- `McpServer` is stdio only: `{id, command, args?, env?}` (`foundation/contracts/src/provider.ts`), and the claude
+  adapter maps every entry to `type: 'stdio'` (`mcpServersOf`). A remote server has nowhere to put a URL or a header.
+- `apps/daemon/src/execution/sessions.ts` builds a `SessionSpec` with no `mcp` at all, so not even §6.2's codegraph server
+  is wired. The cursor adapter refuses any `mcp` (§4), by design.
+- A peer's auth is not the desktop's: the child env is an allowlist (`MCP_*` is never inherited) and `settingSources` is
+  `[]` (§4), so nothing the user logged in to on their machine carries over. That isolation is deliberate and stays.
+
+### Decisions
+
+1. **The contract gains a transport.** `McpServer` becomes a union on `transport: 'stdio' | 'http' | 'sse'`; `stdio`
+   is the default and keeps today's shape, so every existing fixture still decodes. `http` and `sse` carry
+   `{id, url, headers?}`. `url` must be `https`, or `http` on a loopback host; it may carry no userinfo and no query,
+   because a credential in a URL ends up in logs that a header does not. The claude adapter maps the three to the SDK's
+   `stdio`, `http` and `sse` server types; the cursor adapter keeps refusing them until the cursor section below is built.
+2. **A profile declares servers; it never holds a secret.** Same rule as `deepinfra-env.ts` and `jira-env.ts`: a profile
+   is a file in the repo's reach, so it names *where* a secret lives.
+
+   ```yaml
+   mcp:
+     secrets:
+       figma-ro:   { env: FIGMA_MCP_TOKEN, file: ~/.config/fleet/secrets/figma-ro }   # env first, then the file's first line
+     servers:
+       figma:
+         transport: http
+         url: https://<verified in the spike>/mcp
+         headers: { Authorization: { secret: figma-ro, prefix: "Bearer " } }
+         tools: { allow: [get_design_context, get_screenshot, get_metadata, get_variable_defs], deny: ["*"] }
+         required: true
+       codegraph: { transport: stdio, command: codegraph, args: [mcp] }
+   roles:
+     designer:  { mcp: [figma, codegraph] }
+     engineer:  { mcp: [figma, codegraph] }
+     architect: { mcp: [codegraph] }
+   ```
+
+   A role gets **no** server it does not list (default deny). A peer may narrow its role's list, never widen it.
+3. **The daemon resolves at every session start**, including a resume, so a rotated token is picked up without a restart
+   (as `envFor` already does). `SessionSpec.mcp` carries the resolved servers; a new `mcpServersFor(peer)` in
+   `apps/daemon` does the resolving and is the only place a value is read. Codegraph is added here, for every provider
+   that takes MCP, with `CODEGRAPH_ROOT` set to `spec.cwd`. `spec.cwd` was the daemon's `stateDir` for every peer until #142 made it the peer's
+   owned worktree, else the repo's profile checkout, else a refusal; this section assumes #142 and re-reads it at every start.
+4. **What is stored.** `session.started` records `mcp: [{id, transport, host}]` and nothing else. A header value, an env
+   value or a path to a secret file is never in an event, a notification, an error detail or a process argument; the
+   errors name the secret's *name* and the variable or file an operator can act on, and quote neither (as `jira-env.ts`).
+5. **Tool scope is part of the declaration.** `tools.allow/deny` compile into `SessionSpec.toolPolicy` rules for
+   `mcp__<id>__<tool>` (§4: first match wins, default `ask`). A read-only Figma token plus a `deny: ["*"]` tail means a
+   prompt injected through a design file cannot reach a write tool, and cannot park the peer on an approval nobody sees.
+
+### Secret scoping (the part to review)
+
+- A secret has one name, and a server names the secrets it may use; a role names the servers it may use. The reachable
+  set is therefore the explicit product *role × server × secret*, and `fleet up --check` prints that table (names only).
+- One credential per vendor **per access class**, never per fleet: a read-only Figma token for design-reading roles, and
+  no Atlassian write token for `engineer`; a role that must write (the tracker adapters already hold Jira's, §3) gets it
+  through the adapter in the daemon, not through a peer.
+- The secret never enters the peer's process env (`env` stays the allowlist plus `SessionSpec.env`).
+- **Open: does the secret reach the child's argv?** If the SDK passes `mcpServers` as `--mcp-config <json>`, the header is
+  visible in `ps` to every user on the machine. A spike answers it first (PR 0). If it does, either the config goes
+  through a 0600 file that the daemon deletes after `init`, or we take the stronger form below.
+- **Stronger form (decide with security-architect): a daemon-side proxy.** `fleetd` listens on loopback and holds the
+  vendor token; each peer's `url` is `http://127.0.0.1:<port>/<peerId>/<server>` with a per-session capability token that
+  dies with the session. A peer then never holds a vendor credential, revocation is `session.ended`, and every MCP call
+  is an event the fleet can audit. Cost: a proxy that speaks MCP over http/sse, which is L and a new moving part. Direct
+  headers ship first if the spike is clean; the proxy is the answer if it is not.
+- **OAuth-only servers are out of scope for v1.** A headless peer cannot complete an interactive login and the daemon does
+  not refresh tokens. A server is usable only if it accepts a token a person can mint (PAT, API key, or a local server
+  that needs none, such as a desktop app's loopback endpoint). Which of Figma, Atlassian and Delivery Factory qualifies
+  has **not been verified here**; PR 0 settles it per server, and an OAuth-only one waits for `fleet mcp login`, which
+  would be its own reviewed design.
+- Content from these servers is untrusted data in a peer that can write code. The tool scope above and the existing
+  `default` permission mode (§4) are the guard; nothing here relaxes them.
+
+### The login check
+
+`fleet up` runs a preflight for every (peer, server) the profile implies, before it starts a session:
+
+| status | meaning | `required: true` | `required: false` |
+| :- | :- | :- | :- |
+| `ok` | secret present; `initialize` and `tools/list` succeed and the `allow` tools exist | start | start |
+| `missing_secret` | neither the variable nor the file yields a value | refuse the peer | start without it |
+| `unauthorized` | 401 or 403 | refuse the peer | start without it |
+| `unreachable` | DNS, TLS, timeout (5 s) | refuse the peer | start without it |
+| `tool_missing` | server answered but an `allow` tool is absent | refuse the peer | start without it |
+
+All failures are listed at once, one line each, and `fleet up` exits non-zero if any peer was refused. Output names the
+server, the role and the *name* of the secret, never a value. A session that starts without an optional server gets that
+fact in its brief ("figma is unavailable this session"), so it does not guess. The same check runs again at each
+session start, because tokens expire mid-run: a failure appends `mcp.unavailable {peerId, serverId, status}`, which §6.1
+turns into one deduplicated notification asking the user for the credential, never a retry loop. `fleet up --check`
+runs the preflight and stops. A cursor peer whose role lists a server fails the check immediately, with the adapter's
+existing reason, instead of at `start`, until the cursor section below is built.
+
+The probe is network I/O, so it is a port (`McpProbe`) in `foundation/contracts` with its implementation in a new
+`integrations/mcp` package injected by `apps/daemon` (§1.1); the package needs its key in `PACKAGE_ORDER`.
+
+### Cursor
+
+Every fix in this series covers cursor too (decided by Mohammad), so MCP needs an answer for it, and the answer is "yes, by
+a different mechanism, and only for a read-only credential". What is known, from `cursor-agent` 2026.11.05's own help (not
+yet exercised):
+
+- There is **no `--mcp-config` flag**. MCP servers come from a file: `.cursor/mcp.json` in the workspace or
+  `~/.cursor/mcp.json` for the user (`cursor-agent mcp login` names both). `mcp list | list-tools | enable | disable`
+  manage them, `--approve-mcps` approves every configured server in a non-interactive run, and `--workspace <path>` and
+  `--add-dir <path>` choose the workspace and further roots. `-H/--header` is for requests to Cursor's own API, not to an
+  MCP server, so it is not the channel.
+- **Today a cursor peer is not MCP-free, it is MCP-ungoverned.** The adapter spawns `cursor-agent` with
+  `{...process.env, ...spec.env}` (`cursor/src/session.ts`), not the allowlist the claude adapter builds (§4), and the CLI
+  reads the user's own `~/.cursor/mcp.json` (which on this machine already lists servers). Whether a `-p` run loads those
+  servers without `--approve-mcps` is unverified. "Refuses `spec.mcp`" therefore guards one door while the user's
+  config stays open; PR C0 measures it and PR C1 closes it.
+- **Plan mode and MCP tools: unverified.** `--mode plan` is documented as "read-only/planning (analyze, propose plans, no
+  edits)". Whether it lets an MCP tool run, and whether a write-capable MCP tool is blocked in it, decides everything
+  below; PR C0 answers both with one run in a scratch workspace.
+
+What cursor needs, if PR C0 says plan mode permits read tools:
+
+1. **A per-peer workspace the daemon owns**, `~/.fleet/<profile>/peers/<peerId>/cursor/`, holding a `.cursor/mcp.json`
+   written at session start from the same resolved `SessionSpec.mcp` and mode `0600`, with the peer's real checkout
+   passed as `--add-dir`. It is not written into the repo or the worktree (§2, "On disk": nothing the fleet writes at
+   runtime lives there). The file is rewritten at every start and removed on `stop`.
+2. **The adapter spawns with the allowlisted env**, the same `buildChildEnv` rule as claude, so the user's `~/.cursor`
+   servers and the daemon's own tokens are not in reach; `HOME` handling is part of PR C1, because the CLI finds the user
+   file through it.
+3. **Scope is the credential, not the policy.** Cursor has no per-call hook (§4), so a `tools.allow/deny` rule cannot be
+   enforced there. A server is wired to a cursor peer only if its declaration says `readonly: true` and the token behind it
+   is read-only at the vendor; otherwise `fleet up` refuses with the reason. This is the rule the security review should
+   hold hardest, because on cursor nothing stands between the model and every tool the server offers.
+4. **`capabilities.mcp`** (`false | 'config-file'`) so the supervisor and `fleet up --check` ask the provider instead of
+   special-casing its id, and the conformance suite gets one MCP case that each provider either passes or declares absent.
+
+The login that cursor offers (`cursor-agent mcp login`, an OAuth flow stored by the CLI) is the one place a cursor peer
+could use Figma or Atlassian *without* a minted token, and it is exactly what the fleet otherwise avoids: it is the user's
+own, fully privileged session, shared with every cursor peer. It is **not** adopted here; if security-architect wants it,
+it is a separate decision with a scoped account, not a default.
+
+### PR split
+
+| PR | what | size | owner | gate |
+| :- | :- | :- | :- | :- |
+| 0 | spike: how the SDK hands `mcpServers` to the child (argv vs stdin vs file); which of the three servers accept a mintable token | S | engineer | security-architect reads the result |
+| 1 | `McpServer` union + url rules + `McpProbe` port; claude maps http/sse; redacted `session.started`; contract fixtures | M | engineer | **security-architect** |
+| 2 | profile `mcp:`/`roles:`, secret resolver (mirrors `jira-env.ts`), `mcpServersFor`, codegraph wired, `toolPolicy` compile | M | engineer | **security-architect** |
+| 3 | `integrations/mcp` probe, `fleet up` preflight and `--check`, `mcp.unavailable`, notification | M | engineer | architect |
+| 4 | role content: `designer`/`engineer` must read the design through the server and may not work from a screenshot path | S | architect | none |
+| 5 | (only if PR 0 says so) the daemon proxy | L | engineer | **security-architect**, own design |
+| C0 | spike: does a `-p --mode plan` run load `~/.cursor/mcp.json` servers, run an MCP read tool, and block a write tool; does `.cursor/mcp.json` accept an env or secret reference | S | engineer | security-architect reads the result |
+| C1 | cursor adapter: allowlisted env, per-peer workspace and `mcp.json` (0600), `--add-dir`, `capabilities.mcp`, `readonly` rule, a cursor case in the conformance suite and one in the adapter tests | M | engineer | **security-architect** |
+
+### Not decided here
+
+Per-vendor auth for Figma, Atlassian and Delivery Factory (PR 0); whether `http` or `sse` is needed per server; the
+exact `deny` tail for each vendor (it needs the vendor's tool names, which are read from `tools/list` at PR 0).
+
 ## 7. Messaging and identity
 
 - **A peer is an id, not a session.** `engineer-1` is `peerId`; sessions come and go beneath it. Messages are
