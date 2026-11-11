@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import type { Writable } from 'node:stream'
 
 import type { BuildCommand, BuildHost, BuildStatus } from '@fleet/foundation-contracts'
 import type { Repo, Sha } from '@fleet/foundation-core'
@@ -141,6 +142,17 @@ export const spawnToLog: RunProcess = (invocation) => {
       resolved = true
       reject(error)
     }
+    // The outcome is known when the child closes, but the files are not complete until their writes have drained:
+    // resolving at 'close' let a caller read a log that was still being written (TASK-110). A stream that has already
+    // finished or failed is settled; one that has not is waited for.
+    const drained = (stream: Writable): Promise<void> =>
+      new Promise((settle) => {
+        if (stream.destroyed || stream.writableFinished) settle()
+        else {
+          stream.once('close', () => settle())
+          stream.once('error', () => settle())
+        }
+      })
 
     void mkdir(dirname(invocation.logPath), { recursive: true })
       .then(() => {
@@ -185,15 +197,27 @@ export const spawnToLog: RunProcess = (invocation) => {
           }
         }
 
-        // Set up timeout if requested
+        // Set up timeout if requested. A timeout is judged when the child has closed, not when the kill is sent: the
+        // reason has to be in the log before the caller hears of the timeout, and the log is not complete until then.
         let timeoutHandle: NodeJS.Timeout | undefined
+        let timedOut = false
+        // A grandchild that left the process group can hold the pipes open, and then 'close' never comes. The backstop
+        // makes the promise settle regardless; the kill has been sent either way.
+        const BACKSTOP_MS = 5_000
+        const settleAfterKill = (): void => {
+          const backstop = setTimeout(() => {
+            log.end()
+            answer?.end()
+            fail(buildTimeoutError(invocation.timeoutMs as number))
+          }, BACKSTOP_MS)
+          backstop.unref()
+        }
         if (invocation.timeoutMs !== undefined) {
           timeoutHandle = setTimeout(() => {
-            // The log is what a person reads to learn why a build ended; a kill with
-            // no line in it looks like a build that simply stopped.
+            timedOut = true
             log.write(`\nfleet: build timed out after ${invocation.timeoutMs}ms and was killed\n`)
             killTree()
-            fail(buildTimeoutError(invocation.timeoutMs as number))
+            settleAfterKill()
           }, invocation.timeoutMs)
         }
 
@@ -212,7 +236,10 @@ export const spawnToLog: RunProcess = (invocation) => {
           if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
           log.end()
           answer?.end()
-          finish({ code, durationMs: Date.now() - startedAt })
+          void Promise.all([drained(log), answer === undefined ? undefined : drained(answer)]).then(() => {
+            if (timedOut) fail(buildTimeoutError(invocation.timeoutMs as number))
+            else finish({ code, durationMs: Date.now() - startedAt })
+          })
         })
       })
       .catch(fail)
