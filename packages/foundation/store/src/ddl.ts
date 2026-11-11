@@ -519,6 +519,23 @@ export const MIGRATIONS: readonly Migration[] = [
       'ALTER TABLE peer_activity ADD COLUMN context_limit INTEGER;',
     ],
   },
+  {
+    // additive, and backfilled in SQL from the log: a turn with no `costUsd` is one the provider did not price
+    // (TASK-122). The rollup counts every turn of the peer and a Work row its own, so the backfill matches the same
+    // rule the projection applies, and a store upgraded from schema 10 reads the same counts as a fresh one.
+    version: 11,
+    name: 'token_unpriced_turns',
+    statements: [
+      'ALTER TABLE token_report ADD COLUMN unpriced_turns INTEGER NOT NULL DEFAULT 0;',
+      `UPDATE token_report SET unpriced_turns = (
+         SELECT COUNT(*) FROM events e
+          WHERE e.type = 'turn.usage_recorded'
+            AND json_extract(e.data, '$.peerId') = token_report.peer_id
+            AND json_extract(e.data, '$.costUsd') IS NULL
+            AND (token_report.work_id = '' OR json_extract(e.data, '$.workId') = token_report.work_id)
+       );`,
+    ],
+  },
 ]
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

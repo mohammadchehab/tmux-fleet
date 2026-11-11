@@ -777,7 +777,7 @@ test("a store upgraded from schema 8 has this month's spend at once, not after i
   // What a store written by the previous build looks like: the log, and no table.
   const db = new DatabaseSync(path)
   // (Schema 10's two columns did not exist either, and the migrations that follow 8 add them.)
-  db.exec('ALTER TABLE peer_activity DROP COLUMN context_tokens; ALTER TABLE peer_activity DROP COLUMN context_limit;')
+  db.exec('ALTER TABLE peer_activity DROP COLUMN context_tokens; ALTER TABLE peer_activity DROP COLUMN context_limit; ALTER TABLE token_report DROP COLUMN unpriced_turns;')
   db.exec("DROP TABLE spend_by_month; UPDATE store_meta SET value = '8' WHERE key = 'schema_version';")
   db.close()
 
@@ -993,7 +993,7 @@ test('a store upgraded from schema 9 migrates in place, and shows no context for
 
   // What the previous build wrote: the same table without the two columns.
   const db = new DatabaseSync(path)
-  db.exec('ALTER TABLE peer_activity DROP COLUMN context_tokens; ALTER TABLE peer_activity DROP COLUMN context_limit;')
+  db.exec('ALTER TABLE peer_activity DROP COLUMN context_tokens; ALTER TABLE peer_activity DROP COLUMN context_limit; ALTER TABLE token_report DROP COLUMN unpriced_turns;')
   db.exec("UPDATE store_meta SET value = '9' WHERE key = 'schema_version';")
   db.close()
 
@@ -1003,5 +1003,77 @@ test('a store upgraded from schema 9 migrates in place, and shows no context for
   assert.equal(row?.contextTokens, undefined, 'not backfilled: no number, never a zero')
   await after.append([turnAt('engineer-1', 120_000, 200_000, '2026-11-11T09:00:00.000Z')])
   assert.equal((await after.reader().activity.all()).find((candidate) => candidate.peerId === 'engineer-1')?.contextTokens, 120_000)
+  await after.close()
+})
+
+test('a peer rollup and each Work count the turns with no price, so a mixed peer is not reported as an exact total (TASK-122)', async () => {
+  const store = await open()
+  const usage = (ts: string, costUsd: number | undefined): AppendEvent =>
+    event(
+      'turn.usage_recorded',
+      'engineer-1',
+      {
+        peerId: 'engineer-1',
+        workId: 'wrk_7f3a91c2d84b0e56',
+        inputTokens: 1,
+        outputTokens: 1,
+        cachedTokens: 0,
+        toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+        ...(costUsd === undefined ? {} : { costUsd }),
+      },
+      ts,
+    )
+  await store.append([
+    registeredPeer('engineer-1'),
+    usage('2026-11-10T10:00:00.000Z', 0.5),
+    usage('2026-11-10T10:01:00.000Z', undefined),
+    usage('2026-11-10T10:02:00.000Z', undefined),
+  ])
+
+  const rows = await store.reader().tokens.all()
+  const rollup = rows.find((row) => row.workId === undefined && row.peerId === 'engineer-1')
+  const work = rows.find((row) => row.workId === 'wrk_7f3a91c2d84b0e56')
+  assert.equal(rollup?.costUsd, 0.5, 'the priced part of the bill')
+  assert.equal(rollup?.unpricedTurns, 2, 'and how many turns are not in it')
+  assert.equal(work?.unpricedTurns, 2, 'each Work says the same about its own turns')
+
+  await store.close()
+})
+
+test('a store upgraded from schema 10 counts the unpriced turns each peer and Work already had (TASK-122)', async () => {
+  const path = tempStorePath()
+  const usage = (ts: string, costUsd: number | undefined, workId: string | undefined): AppendEvent =>
+    event(
+      'turn.usage_recorded',
+      'engineer-1',
+      {
+        peerId: 'engineer-1',
+        ...(workId === undefined ? {} : { workId }),
+        inputTokens: 1,
+        outputTokens: 1,
+        cachedTokens: 0,
+        toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+        ...(costUsd === undefined ? {} : { costUsd }),
+      },
+      ts,
+    )
+  const before = await openSqliteStore({ path, clock: fixedClock })
+  await before.append([
+    registeredPeer('engineer-1'),
+    usage('2026-11-10T10:00:00.000Z', 0.5, 'wrk_7f3a91c2d84b0e56'),
+    usage('2026-11-10T10:01:00.000Z', undefined, 'wrk_7f3a91c2d84b0e56'),
+    usage('2026-11-10T10:02:00.000Z', undefined, undefined),
+  ])
+  await before.close()
+
+  // What a store written by the previous build looks like: the column did not exist.
+  const db = new DatabaseSync(path)
+  db.exec("ALTER TABLE token_report DROP COLUMN unpriced_turns; UPDATE store_meta SET value = '10' WHERE key = 'schema_version';")
+  db.close()
+
+  const after = await openSqliteStore({ path, clock: fixedClock })
+  const rows = await after.reader().tokens.all()
+  assert.equal(rows.find((row) => row.workId === undefined && row.peerId === 'engineer-1')?.unpricedTurns, 2, 'the rollup: every unpriced turn')
+  assert.equal(rows.find((row) => row.workId === 'wrk_7f3a91c2d84b0e56')?.unpricedTurns, 1, 'the Work: its own')
   await after.close()
 })

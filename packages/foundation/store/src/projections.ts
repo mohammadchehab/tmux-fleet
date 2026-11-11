@@ -928,6 +928,7 @@ interface TokenRow {
   readonly output_tokens: number
   readonly cached_tokens: number
   readonly cost_usd: number
+  readonly unpriced_turns: number
   readonly grep: number
   readonly glob: number
   readonly read: number
@@ -946,6 +947,7 @@ const tokenReportFromRow = (row: TokenRow): TokenReport =>
     outputTokens: Number(row.output_tokens),
     cachedTokens: Number(row.cached_tokens),
     costUsd: Number(row.cost_usd),
+    unpricedTurns: Number(row.unpriced_turns),
     toolCalls: {
       grep: Number(row.grep),
       glob: Number(row.glob),
@@ -969,6 +971,7 @@ const writeTokenReport = (db: Sqlite, report: TokenReport): void =>
       'output_tokens',
       'cached_tokens',
       'cost_usd',
+      'unpriced_turns',
       'grep',
       'glob',
       'read',
@@ -985,6 +988,7 @@ const writeTokenReport = (db: Sqlite, report: TokenReport): void =>
       report.outputTokens,
       report.cachedTokens,
       report.costUsd,
+      report.unpricedTurns ?? 0,
       report.toolCalls.grep,
       report.toolCalls.glob,
       report.toolCalls.read,
@@ -1013,6 +1017,7 @@ const tokenReportFor = (db: Sqlite, peerId: string, role: string, workId: string
           outputTokens: 0,
           cachedTokens: 0,
           costUsd: 0,
+          unpricedTurns: 0,
           toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
           redirects: 0,
           updatedAt: new Date(0).toISOString(),
@@ -1864,6 +1869,8 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
             // A turn that reported no price adds nothing: the rollup stays the
             // sum of what was actually priced (§6.2).
             costUsd: current.costUsd + (costUsd ?? 0),
+            // A turn with no price is counted here, so a mixed peer says how much of its bill is missing (TASK-122).
+            unpricedTurns: (current.unpricedTurns ?? 0) + (costUsd === undefined ? 1 : 0),
             toolCalls: {
               grep: current.toolCalls.grep + toolCalls.grep,
               glob: current.toolCalls.glob + toolCalls.glob,
