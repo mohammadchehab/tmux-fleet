@@ -102,17 +102,40 @@ describe('spawnToLog', () => {
   it('times out and kills a hung process', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
     const logPath = join(dir, 'build.log')
-    const timeoutMs = 100
 
+    // The timer starts at spawn, so no load can make the child finish first: the assertions are on the kill, not on
+    // how long it took. The margin is the only wall-clock number, and it is only a bound for a hang (TASK-110).
     const promise = spawnToLog({
       file: process.execPath,
-      args: ['-e', "setInterval(() => {}, 1000)"],
+      args: ['-e', 'setInterval(() => {}, 1000)'],
       logPath,
-      timeoutMs,
+      timeoutMs: 100,
     })
 
-    // Should reject after timeout, not hang forever
     await assert.rejects(promise, /timeout/)
+    // The kill is in the log, and the log holds it by the time the caller hears of the timeout: a reader who reads the
+    // log right after the rejection must see why the build ended.
+    assert.match(await readFile(logPath, 'utf8'), /timed out after 100ms and was killed/)
+  })
+
+  it('resolves only once the log holds every byte the build wrote, so a reader after the outcome sees all of it (TASK-110)', async () => {
+    // A large write is what makes the race visible: the child exits while the log is still draining, and the outcome used
+    // to arrive before the file did. Under load a small write loses the same race; a large one loses it every time.
+    const dir = await mkdtemp(join(tmpdir(), 'fleet-runner-'))
+    const logPath = join(dir, 'build.log')
+    const stdoutPath = buildStdoutPath(logPath)
+    const bytes = 16 << 20
+
+    const outcome = await spawnToLog({
+      file: process.execPath,
+      args: ['-e', `process.stdout.write('x'.repeat(${bytes}))`],
+      logPath,
+      stdoutPath,
+    })
+
+    assert.equal(outcome.code, 0)
+    assert.equal((await readFile(logPath)).length, bytes, 'the whole log, as soon as the outcome is known')
+    assert.equal((await readFile(stdoutPath)).length, bytes, 'and the whole answer file')
   })
 
   it('rejects with stream write errors instead of throwing uncaught exceptions', async () => {
