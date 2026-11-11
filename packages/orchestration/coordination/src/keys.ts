@@ -30,7 +30,7 @@
  * them (`unverifiableCopy`): a copy that is not one `age` made, or one sealed to
  * a key that is not the member's, is a record that was not made here. That is
  * as far as a header can be read — it names a key by a 32-bit tag, so a key
- * ground to collide with a member's is not caught (decision-5).
+ * ground to collide with a member's is not caught (TASK-121).
  */
 
 import { createHash, randomBytes } from 'node:crypto'
@@ -241,7 +241,7 @@ interface CopyCheck {
  * member has since replaced all fail it, because at the header they are the same
  * thing. The header names a key by a 32-bit tag rather than by the key, so a key
  * ground to carry a member's tag passes: this refuses cheap forgeries, and
- * decision-5 is the card for the expensive one.
+ * TASK-121 is the card for the expensive one.
  *
  * That last case is the cost of it, and decision-4 (a) took it: a member who
  * replaced or removed a key stops the rotation rather than causing one, and the

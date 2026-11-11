@@ -200,7 +200,7 @@ clear and binds it to the file key, so a stanza cannot be added to a member's co
 for. The identity in it is the 4-byte tag `age` itself picks a private key by, which is **all** it is: the full public
 key is not in the header, so the check refuses every forgery except one where an insider bothers to grind a key whose
 tag matches a member's (2³², and the copy is then one only that key opens). Nothing is decrypted and no one signs
-anything, so that residual is the cost; closing it means authenticating the record, which is decision-5.
+anything, so that residual is the cost; closing it means authenticating the record, which is TASK-121.
 
 One case pays otherwise: a member who has since replaced or removed a key leaves a copy that is honest but no longer
 opens, which reads exactly like a forged one, so the look refuses, the log names the member, and a person removes the
