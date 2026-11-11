@@ -87,6 +87,14 @@ export interface ClaudeSessionConfig {
   readonly settingSources: readonly ('user' | 'project' | 'local')[]
   /** How long `start()` waits for `init` before calling the session failed. */
   readonly initTimeoutMs: number
+  /**
+   * How long after a `result` the CLI may stay silent before the turns still in
+   * flight are called folded into it. The CLI runs a message queued behind a
+   * running turn *inside* that turn and answers both with one `result`, so the
+   * second turn never gets a `result` of its own; a turn that is really next
+   * starts (`init`, or its first message) within moments of the last one ending.
+   */
+  readonly foldQuietMs: number
   readonly clock: Clock
   /**
    * The SDK entry point, `query` itself unless a test sets another. A session
@@ -107,6 +115,7 @@ export const defaultSessionConfig: ClaudeSessionConfig = {
   usageCost: true,
   settingSources: [],
   initTimeoutMs: 60_000,
+  foldQuietMs: 2_000,
   clock: systemClock,
 }
 
@@ -315,6 +324,7 @@ export class ClaudeSession {
 
   async stop(): Promise<void> {
     if (this.#state === 'ended') return
+    this.#disarmFold()
     this.#state = 'ended'
     const { questions, approvals } = this.#pending.abandon('ended')
     for (const abandoned of questions) {
@@ -503,7 +513,37 @@ export class ClaudeSession {
     }
   }
 
+  /** Armed after a `result` that left turns in flight; see `foldQuietMs`. */
+  #foldTimer: ReturnType<typeof setTimeout> | undefined
+
+  #disarmFold(): void {
+    if (this.#foldTimer !== undefined) clearTimeout(this.#foldTimer)
+    this.#foldTimer = undefined
+  }
+
+  /**
+   * The CLI answered several queued messages with one `result` (TASK-103): the
+   * turns still in flight after a quiet period are the folded ones. They end
+   * here, as completed, or the supervisor's boundary — and a `hold` waiting on
+   * it — would wait on a turn that has nothing left to say.
+   */
+  #armFold(): void {
+    this.#disarmFold()
+    if (this.#inflight.length === 0) return
+    this.#foldTimer = setTimeout(() => {
+      this.#foldTimer = undefined
+      if (!isLive(this.#state)) return
+      const folded = this.#inflight
+      this.#inflight = []
+      this.#turnState = { interrupted: false }
+      this.#state = 'idle'
+      for (const turnId of folded) this.#emit({ type: 'turn.ended', turnId, at: this.#now(), reason: 'completed' })
+    }, this.#config.foldQuietMs)
+    this.#foldTimer.unref()
+  }
+
   #onMessage(message: unknown): void {
+    this.#disarmFold()
     const record = message as { type?: unknown; subtype?: unknown; session_id?: unknown }
     this.#lastContextTokens = fallbackTokensFrom((record as { usage?: unknown }).usage) ?? this.#lastContextTokens
     if (record.type === 'result') {
@@ -547,6 +587,7 @@ export class ClaudeSession {
       if (event.type === 'error') this.#lastError = event.message
       this.#emit(event)
     }
+    if ((message as { type?: unknown }).type === 'result') this.#armFold()
   }
 
   #canUseTool(toolName: string, input: Record<string, unknown>, options: CanUseOptions): Promise<PermissionResult> {
@@ -712,6 +753,7 @@ export class ClaudeSession {
    */
   #finish(reason: 'exit' | 'crash', error: string | undefined): void {
     if (this.#state === 'ended') return
+    this.#disarmFold()
     this.#state = reason === 'crash' ? 'failed' : 'ended'
     if (error !== undefined) this.#lastError = error
     // Before the events close: `start()` may be waiting on this to read the

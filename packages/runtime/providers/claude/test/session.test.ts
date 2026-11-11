@@ -186,3 +186,42 @@ test('the display carries the peer’s words, its tools and its turn boundaries 
   }
   assert.deepEqual(contract, ['turn.started', 'turn.ended'], 'the deltas added no contract events')
 })
+
+test('a message queued behind a running turn is folded into its result: both turns end, so a hold can reach the boundary (TASK-103)', async () => {
+  // The CLI answers the brief and the queued message with ONE result, then says nothing.
+  const factory = (() => ({
+    [Symbol.asyncIterator]: async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess_fold', model: 'claude-sonnet-5-5', permissionMode: 'default' }
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'both' }
+      await new Promise(() => undefined)
+    },
+    close: () => undefined,
+    interrupt: async () => undefined,
+    setModel: async () => undefined,
+    setPermissionMode: async () => undefined,
+    getContextUsage: async () => ({}),
+  })) as unknown as QueryFactory
+  const provider = new ClaudeProvider({ initTimeoutMs: 5_000, foldQuietMs: 50, query: factory })
+  const holding = setInterval(() => undefined, 1_000)
+  let handle: Awaited<ReturnType<typeof provider.start>> | undefined
+  try {
+    handle = await provider.start(spec())
+    await provider.send(handle, { text: 'one more thing', kind: 'nudge', briefVersion: 1 } as never)
+
+    const started: string[] = []
+    const ended: string[] = []
+    for await (const event of provider.events(handle)) {
+      if (event.type === 'turn.started') started.push(event.turnId)
+      if (event.type === 'turn.ended') {
+        ended.push(event.turnId)
+        if (ended.length === started.length) break
+      }
+    }
+    assert.equal(started.length, 2)
+    assert.deepEqual([...ended].sort(), [...started].sort(), 'every turn that started also ended')
+  } finally {
+    clearInterval(holding)
+    if (handle !== undefined) await provider.stop(handle).catch(() => undefined)
+  }
+})
