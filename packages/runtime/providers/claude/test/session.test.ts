@@ -99,3 +99,31 @@ test('a session that simply never answers is still the timeout (§4)', async () 
     clearInterval(holding)
   }
 })
+
+test('a peer cannot reach another Claude Code session: SendMessage and ListAgents are denied in every permission mode', async () => {
+  const seen: { disallowedTools?: unknown; permissionMode?: unknown }[] = []
+  const capture = ((args: { options: { disallowedTools?: unknown; permissionMode?: unknown } }) => {
+    seen.push(args.options)
+    return {
+      // Ends before init: `start` rejects, and the options it was started with are what is under test.
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'stop here' }
+      },
+      close: () => undefined,
+      interrupt: async () => undefined,
+      setModel: async () => undefined,
+      setPermissionMode: async () => undefined,
+      getContextUsage: async () => ({}),
+    }
+  }) as unknown as QueryFactory
+  const provider = new ClaudeProvider({ initTimeoutMs: 5_000, query: capture })
+  for (const permissionMode of ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const) {
+    await provider.start({ ...spec(), permissionMode }).catch(() => undefined)
+  }
+  assert.equal(seen.length, 4)
+  for (const options of seen) {
+    assert.deepEqual(options.disallowedTools, ['SendMessage', 'ListAgents'], `${String(options.permissionMode)}: the cross-session tools are removed`)
+  }
+  await provider.resume('11111111-1111-1111-1111-111111111111' as never, spec()).catch(() => undefined)
+  assert.deepEqual(seen.at(-1)?.disallowedTools, ['SendMessage', 'ListAgents'], 'a resumed session too')
+})

@@ -109,6 +109,15 @@ export const defaultSessionConfig: ClaudeSessionConfig = {
 }
 
 /**
+ * The tools that reach another Claude Code session on this machine
+ * (`SendMessage`, and `ListAgents` to find one). A peer talks to the fleet only
+ * through its mailbox: found live, a headless peer introduced itself to the
+ * operator's own session over the local peer socket and reported to it. Denied
+ * outright, in every permission mode.
+ */
+export const crossSessionTools: readonly string[] = Object.freeze(['SendMessage', 'ListAgents'])
+
+/**
  * The system prompt a session asks the SDK for: Claude Code's own, plus whatever
  * the spec appends. That is where a peer's standards ride (§12.1) — with
  * `settingSources: []` it reads no `AGENTS.md` or `CLAUDE.md` itself, so this is
@@ -439,6 +448,9 @@ export class ClaudeSession {
       permissionMode: spec.permissionMode,
       settingSources: [...this.#config.settingSources],
       systemPrompt: systemPromptOf(spec),
+      // Removed from the model's context, so it holds in every permission mode —
+      // `bypassPermissions` never consults `canUseTool`.
+      disallowedTools: [...crossSessionTools],
       canUseTool: (toolName, input, canUseOptions) =>
         this.#canUseTool(toolName, input, canUseOptions as CanUseOptions),
       // Without this the SDK refuses a spec that asks for bypassPermissions.
