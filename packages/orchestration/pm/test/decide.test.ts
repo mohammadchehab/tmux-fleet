@@ -881,7 +881,7 @@ test('a Work with no ticket says nothing about one', () => {
 // inbox row `work.blocked` would, because it is the same question about the same Work.
 
 /** An engineer working its own Work, and the note it just wrote. */
-const noted = (over: { phase?: string; body?: string; workId?: string } = {}) => ({
+const noted = (over: { phase?: string; body?: string; workId?: string; seq?: number } = {}) => ({
   snapshot: state({
     peers: [peer({ peerId: 'engineer-1' as never, state: 'working' })],
     work: [work({ state: 'in_progress', assignee: 'engineer-1' as never })],
@@ -891,7 +891,7 @@ const noted = (over: { phase?: string; body?: string; workId?: string } = {}) =>
     peerId: 'engineer-1',
     phase: over.phase ?? 'blocked',
     body: over.body ?? 'the store has no way to replay a partial log',
-  }),
+  }, over.seq),
 })
 
 test('a blocked note becomes one question in the inbox, naming the peer and the words it used', () => {
@@ -930,6 +930,65 @@ test('a blocked note does not open a second row for a Work the user already has 
 test('a heartbeat has no note to read, so a blocked note never asks twice from the clock alone', () => {
   const { snapshot } = noted()
   assert.deepEqual(decide({ state: snapshot, tick: tick() }).actions, [])
+})
+
+test('a second blocker on the same Work asks again once the first has been answered', () => {
+  const first = noted({ seq: 41 })
+  const asked = only(decide({ state: first.snapshot, tick: tick(), event: first.note }).actions, 'request_decision')
+  const answered = state({
+    peers: first.snapshot.peers,
+    work: first.snapshot.work,
+    decisions: [
+      decision({
+        decisionId: asked.decisionId,
+        kind: 'blocked',
+        workId: asked.workId,
+        state: 'answered',
+        text: 'replay from the snapshot',
+        inputsHash: asked.inputsHash,
+      }),
+    ],
+  })
+
+  const second = noted({ body: 'the snapshot is missing the price table', seq: 57 })
+  const again = only(decide({ state: answered, tick: tick(), event: second.note }).actions, 'request_decision')
+  assert.equal(again.workId, asked.workId, 'the same Work')
+  assert.notEqual(again.decisionId, asked.decisionId, 'a new blocker is a new question, not the answered row again')
+  assert.match(again.question, /price table/, 'the question carries the second note, not the first')
+})
+
+test('a second blocker while the first question is still open adds nothing to the inbox', () => {
+  const first = noted({ seq: 41 })
+  const asked = only(decide({ state: first.snapshot, tick: tick(), event: first.note }).actions, 'request_decision')
+  const open = state({
+    peers: first.snapshot.peers,
+    work: first.snapshot.work,
+    decisions: [decision({ decisionId: asked.decisionId, kind: 'blocked', workId: asked.workId })],
+  })
+
+  const second = noted({ body: 'and the price table is missing too', seq: 57 })
+  assert.deepEqual(decide({ state: open, tick: tick(), event: second.note }).actions, [])
+})
+
+test('replaying a blocked note that already asked does not ask again after its answer', () => {
+  const { snapshot, note } = noted({ seq: 41 })
+  const asked = only(decide({ state: snapshot, tick: tick(), event: note }).actions, 'request_decision')
+  const answered = state({
+    peers: snapshot.peers,
+    work: snapshot.work,
+    decisions: [
+      decision({
+        decisionId: asked.decisionId,
+        kind: 'blocked',
+        workId: asked.workId,
+        state: 'answered',
+        text: 'replay from the snapshot',
+        inputsHash: asked.inputsHash,
+      }),
+    ],
+  })
+
+  assert.deepEqual(decide({ state: answered, tick: tick(), event: note }).actions, [], 'the same note is the same question')
 })
 
 test('a note about a Work the fleet does not have is left in the log rather than guessed at', () => {

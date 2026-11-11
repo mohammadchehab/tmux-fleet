@@ -12,16 +12,28 @@
  * `work.noted` is in `dispatch`'s event list in routines/src/config.ts: without it this rule never
  * runs, and the note would be mirrored to the board and answered by nobody.
  *
- * The inbox row is keyed by `blockedDecisionId(work)` — the same id `unblock` uses — so a Work has
- * one blocker question at a time, however it arrived. A second blocked note does not open a second
- * row (the first is still the question), and a `work.blocked` transition racing this one does not
- * either.
+ * The inbox row is keyed by the Work's blocker episode, and episode 0 is the id `unblock` uses, so a
+ * Work has one blocker question at a time, however it arrived: a second blocked note while the first
+ * question is still open does not open a second row, and a `work.blocked` transition racing this one
+ * does not either. Once the user has answered, a further blocked note is a new blocker and asks again.
+ * A note is recognised by its own log seq, so replaying the same note never asks twice.
  */
 
 import type { DecisionId } from '@fleet/foundation-core'
-import { shortHash } from '../digest.ts'
+import type { Decision, Work } from '@fleet/foundation-contracts'
+import { deriveId, shortHash } from '../digest.ts'
 import { draft, type Rule } from './context.ts'
 import { blockedDecisionId } from './unblock.ts'
+
+/**
+ * The inbox row for the `episode`-th blocker on a Work. Episode 0 is `blockedDecisionId` exactly, so the row a
+ * first blocker raises is the row `unblock` and `work.blocked` look for. A later episode is a blocker that came
+ * after the user answered the one before it: a new question, so a new row.
+ */
+const episodeDecisionId = (work: Work, episode: number): DecisionId =>
+  episode === 0
+    ? blockedDecisionId(work)
+    : (deriveId('dec', { kind: 'blocked', workId: work.workId, episode }) as DecisionId)
 
 export const raiseBlockedNotes: Rule = (ctx) => {
   if (ctx.event?.type !== 'work.noted') return []
@@ -33,8 +45,19 @@ export const raiseBlockedNotes: Rule = (ctx) => {
   // with the log. There is nothing to ask about and nothing to guess: the note stays in `events`.
   if (work === undefined) return []
 
-  const decisionId: DecisionId = blockedDecisionId(work)
-  if (ctx.index.decision(decisionId) !== undefined) return []
+  // Replaying this note's seq finds the row it raised; an open row is a question still waiting on the user.
+  const inputsHash = shortHash({ kind: 'blocked', workId: work.workId, seq: String(ctx.event.seq) })
+  let episode = 0
+  let latest: Decision | undefined
+  for (let row = ctx.index.decision(episodeDecisionId(work, episode)); row !== undefined; ) {
+    if (row.inputsHash === inputsHash) return []
+    latest = row
+    episode += 1
+    row = ctx.index.decision(episodeDecisionId(work, episode))
+  }
+  if (latest?.state === 'open') return []
+
+  const decisionId: DecisionId = episodeDecisionId(work, episode)
 
   // The claim is `unblock`'s, on purpose. A peer that reported blocked and a Work the fleet marked
   // blocked are the same question about the same Work, and `decide` keeps the first claim — so two
@@ -49,6 +72,6 @@ export const raiseBlockedNotes: Rule = (ctx) => {
       `Its note: "${note.body}". Decide how it should go on, or cancel the Work.`,
     options: [],
     workId: work.workId,
-    inputsHash: shortHash({ kind: 'blocked', workId: work.workId, note: note.body }),
+    inputsHash,
   })]
 }
