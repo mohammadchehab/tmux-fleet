@@ -565,3 +565,39 @@ export interface Coordination {
    */
   release(ref: string, expected: Sha): Promise<void>
 }
+
+/**
+ * Who is on a shared fleet's engagement, and the keys they sign in with
+ * (shared-fleet.md §5.1). The team is the membership: the same list that grants
+ * the coordination repository, so there is one list and not two. Implemented by
+ * `@fleet/integrations-github` over the authenticated API — the anonymous
+ * `github.com/<user>.keys` returns 404 for an enterprise-managed account.
+ */
+export interface TeamDirectory {
+  /**
+   * The logins of `team` (`<org>/<slug>`), sorted. A team that cannot be read
+   * throws; it is never an empty team, because an empty membership is the one
+   * answer that would rotate every member out of the key.
+   */
+  members(team: string): Promise<readonly string[]>
+  /** `user`'s public SSH keys as the forge serves them, `<type> <base64>`, in its order. */
+  sshKeys(user: string): Promise<readonly string[]>
+}
+
+/**
+ * The engagement key wrapped to a member's SSH keys (shared-fleet.md §5.1).
+ * Implemented over the `age` binary by `@fleet/integrations-coordination`: the
+ * TypeScript implementations have no SSH recipients, and a hand-rolled
+ * ed25519→X25519 conversion is the crypto a review should refuse.
+ */
+export interface KeyWrap {
+  /**
+   * `plaintext` encrypted to every one of `recipients` (`ssh-ed25519` or
+   * `ssh-rsa` public keys), ASCII-armored. Any one of the matching private keys
+   * opens it. A recipient of another type is refused, not dropped: the caller
+   * decides which of a member's keys can hold a copy.
+   */
+  wrap(plaintext: string, recipients: readonly string[]): Promise<string>
+  /** What `wrap` sealed, opened with the SSH private key at `identityFile` (an absolute path). */
+  unwrap(armored: string, identityFile: string): Promise<string>
+}

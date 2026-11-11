@@ -22,32 +22,36 @@ export interface GitCall {
 export type GitRunner = (args: readonly string[], call: GitCall) => Promise<GitResult>
 
 /**
+ * A binary on `PATH`, run with argv and no shell, stdin written and closed.
+ * Resolves on a non-zero exit too — the caller decides what a failure means —
+ * so only a spawn that could not start is reported as a failure code.
+ */
+export const execFileTool =
+  (binary: string, env: Readonly<Record<string, string>> = {}): GitRunner =>
+  (args, call) =>
+    new Promise((resolve) => {
+      const child = execFile(
+        binary,
+        [...args],
+        { cwd: call.cwd, timeout: 60_000, maxBuffer: 4 << 20, env: { ...process.env, ...env } },
+        (error, stdout, stderr) => {
+          if (error === null) {
+            resolve({ code: 0, stdout: String(stdout), stderr: String(stderr) })
+            return
+          }
+          const code = typeof error.code === 'number' ? error.code : 1
+          resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') || error.message })
+        },
+      )
+      // A tool that exits before reading its input (`cat-file -e`, a refused push)
+      // closes the pipe under the write. Its exit code already says what happened,
+      // so the EPIPE is not a second failure — and unhandled it would crash fleetd.
+      child.stdin?.on('error', () => {})
+      child.stdin?.end(call.input)
+    })
+
+/**
  * `git` on `PATH`. Never prompts: a fleet polls unattended, so a missing
  * credential has to be a failed call, not a terminal waiting for a password.
  */
-export const execFileGit: GitRunner = (args, call) =>
-  new Promise((resolve) => {
-    const child = execFile(
-      'git',
-      [...args],
-      {
-        cwd: call.cwd,
-        timeout: 60_000,
-        maxBuffer: 4 << 20,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      },
-      (error, stdout, stderr) => {
-        if (error === null) {
-          resolve({ code: 0, stdout: String(stdout), stderr: String(stderr) })
-          return
-        }
-        const code = typeof error.code === 'number' ? error.code : 1
-        resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') || error.message })
-      },
-    )
-    // A git that exits before reading its input (`cat-file -e`, a refused push)
-    // closes the pipe under the write. Its exit code already says what happened,
-    // so the EPIPE is not a second failure — and unhandled it would crash fleetd.
-    child.stdin?.on('error', () => {})
-    child.stdin?.end(call.input)
-  })
+export const execFileGit: GitRunner = execFileTool('git', { GIT_TERMINAL_PROMPT: '0' })
