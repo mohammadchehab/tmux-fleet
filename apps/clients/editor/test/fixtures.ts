@@ -75,6 +75,7 @@ export const statusOf = (profile = 'tmux-fleet', socketPath = '/home/tester/.fle
   socketPath,
   storePath: '/home/tester/.fleet/tmux-fleet/store.db',
   protocolVersion: daemonProtocolVersion,
+  purgeContextRatio: 0.8,
 })
 
 export interface LsParts {

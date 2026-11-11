@@ -22,6 +22,7 @@
  *   to say and a Refresh away from fixed — never a reason to stop asking.
  */
 
+import { daemonProtocolVersion } from '@fleet/foundation-contracts'
 import type { DaemonStatus, LsResult } from '@fleet/foundation-contracts'
 
 import type { Discovery } from './discovery.ts'
@@ -30,12 +31,12 @@ import { rowsOf, type FleetRows } from './rows.ts'
 /**
  * The protocol this build of the extension speaks (§8).
  *
- * It is a constant, not a read: the extension's contract is the one it was
- * bundled with. The daemon's copy arrives as `status.protocolVersion` with
- * `peer.watch`; until then the check is skipped rather than failed, because
- * "the daemon said nothing" is not "the daemon is old".
+ * Read from the contracts package it was bundled with rather than typed out: the
+ * extension's contract is the one it shipped with, and a number copied into this
+ * file is a number that goes stale one contract change behind — which is exactly
+ * the mismatch this check exists to report honestly.
  */
-export const PROTOCOL_VERSION = 1
+export const PROTOCOL_VERSION = daemonProtocolVersion
 
 /** How often a window asks again (§7: "every few seconds"). */
 export const POLL_MS = 3_000
