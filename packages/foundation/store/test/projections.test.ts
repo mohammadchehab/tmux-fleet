@@ -776,6 +776,8 @@ test("a store upgraded from schema 8 has this month's spend at once, not after i
 
   // What a store written by the previous build looks like: the log, and no table.
   const db = new DatabaseSync(path)
+  // (Schema 10's two columns did not exist either, and the migrations that follow 8 add them.)
+  db.exec('ALTER TABLE peer_activity DROP COLUMN context_tokens; ALTER TABLE peer_activity DROP COLUMN context_limit;')
   db.exec("DROP TABLE spend_by_month; UPDATE store_meta SET value = '8' WHERE key = 'schema_version';")
   db.close()
 
@@ -904,4 +906,72 @@ test('an answer with no question on file is an anomaly, not an invented question
     },
   ])
   await store.close()
+})
+
+const registeredPeer = (peerId: string): AppendEvent =>
+  event('peer.registered', peerId, { peerId, role: 'engineer', providerId: 'claude-code', model: 'claude-sonnet-5-5', permissionMode: 'acceptEdits' })
+
+const toolUsed = (peerId: string, ts: string): AppendEvent =>
+  event('peer.tool_used', peerId, { peerId, sessionId: 'ses_1a2b3c4d5e6f7081', tool: 'Read' }, ts)
+
+const turnAt = (peerId: string, contextTokens: number, contextLimit: number, ts: string): AppendEvent =>
+  event(
+    'turn.usage_recorded',
+    peerId,
+    {
+      peerId,
+      contextTokens,
+      contextLimit,
+      inputTokens: 1,
+      outputTokens: 1,
+      cachedTokens: 0,
+      toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+    },
+    ts,
+  )
+
+test('context used is the last recorded turn’s, a peer with no recorded turn has none rather than zero, and a replay keeps it', async () => {
+  const store = await open()
+  await store.append([
+    registeredPeer('engineer-1'),
+    registeredPeer('engineer-2'),
+    toolUsed('engineer-2', '2026-11-11T08:00:00.000Z'), // active, but no turn has ended
+    turnAt('engineer-1', 50_000, 200_000, '2026-11-11T08:01:00.000Z'),
+    turnAt('engineer-1', 172_400, 200_000, '2026-11-11T08:02:00.000Z'),
+  ])
+  const check = async (): Promise<void> => {
+    const rows = await store.reader().activity.all()
+    const one = rows.find((row) => row.peerId === 'engineer-1')
+    const two = rows.find((row) => row.peerId === 'engineer-2')
+    assert.equal(one?.contextTokens, 172_400, 'the newest turn, not the first')
+    assert.equal(one?.contextLimit, 200_000)
+    assert.equal(two?.lastTool, 'Read')
+    assert.equal(two?.contextTokens, undefined, 'no recorded turn: no number')
+    assert.equal(two?.contextLimit, undefined)
+  }
+  await check()
+  await store.rebuild()
+  await check()
+  await store.close()
+})
+
+test('a store upgraded from schema 9 migrates in place, and shows no context for a peer until its next turn', async () => {
+  const path = tempStorePath()
+  const before = await openSqliteStore({ path, clock: fixedClock })
+  await before.append([registeredPeer('engineer-1'), turnAt('engineer-1', 90_000, 200_000, '2026-11-11T08:00:00.000Z')])
+  await before.close()
+
+  // What the previous build wrote: the same table without the two columns.
+  const db = new DatabaseSync(path)
+  db.exec('ALTER TABLE peer_activity DROP COLUMN context_tokens; ALTER TABLE peer_activity DROP COLUMN context_limit;')
+  db.exec("UPDATE store_meta SET value = '9' WHERE key = 'schema_version';")
+  db.close()
+
+  const after = await openSqliteStore({ path, clock: fixedClock })
+  const row = (await after.reader().activity.all()).find((candidate) => candidate.peerId === 'engineer-1')
+  assert.ok(row, 'the peer’s activity survived the upgrade')
+  assert.equal(row?.contextTokens, undefined, 'not backfilled: no number, never a zero')
+  await after.append([turnAt('engineer-1', 120_000, 200_000, '2026-11-11T09:00:00.000Z')])
+  assert.equal((await after.reader().activity.all()).find((candidate) => candidate.peerId === 'engineer-1')?.contextTokens, 120_000)
+  await after.close()
 })

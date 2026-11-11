@@ -1817,14 +1817,18 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       return
     }
     case 'turn.usage_recorded': {
-      const { peerId, workId, inputTokens, outputTokens, cachedTokens, toolCalls, costUsd } = event.data
+      const { peerId, workId, inputTokens, outputTokens, cachedTokens, toolCalls, costUsd, contextTokens, contextLimit } = event.data
       // The boundary is the only place a turn's end is recorded, so it is also
-      // where "when did this peer last finish a turn" is kept for `fleet ls`.
+      // where "when did this peer last finish a turn" is kept for `fleet ls`, and
+      // how full its context was then, for the watch's peer list.
       db.run(
-        `INSERT INTO peer_activity (peer_id, last_turn_at) VALUES (?, ?)
-         ON CONFLICT (peer_id) DO UPDATE SET last_turn_at = excluded.last_turn_at`,
+        `INSERT INTO peer_activity (peer_id, last_turn_at, context_tokens, context_limit) VALUES (?, ?, ?, ?)
+         ON CONFLICT (peer_id) DO UPDATE SET last_turn_at = excluded.last_turn_at,
+           context_tokens = excluded.context_tokens, context_limit = excluded.context_limit`,
         peerId,
         ts,
+        contextTokens,
+        contextLimit,
       )
       // The month's total, which is what a monthly cap is measured against
       // (shared-fleet.md §3); the rows below never reset a period.
@@ -2239,6 +2243,8 @@ export const readers = (db: Sqlite): ReadModel => {
             last_target: string | null
             last_tool_at: string | null
             last_turn_at: string | null
+            context_tokens: number | null
+            context_limit: number | null
             edits: number
           }>(
             `SELECT p.peer_id,
@@ -2247,6 +2253,8 @@ export const readers = (db: Sqlite): ReadModel => {
                     a.last_target,
                     a.last_tool_at,
                     a.last_turn_at,
+                    a.context_tokens,
+                    a.context_limit,
                     (SELECT COALESCE(SUM(c.count), 0) FROM peer_tool_counts c
                       WHERE c.peer_id = p.peer_id AND c.work_id = w.work_id) AS edits
                FROM peers p
@@ -2267,6 +2275,9 @@ export const readers = (db: Sqlite): ReadModel => {
               ...(row.last_target === null ? {} : { lastTarget: row.last_target }),
               ...(row.last_tool_at === null ? {} : { lastToolAt: row.last_tool_at }),
               ...(row.last_turn_at === null ? {} : { lastTurnAt: row.last_turn_at }),
+              ...(row.context_tokens === null || row.context_limit === null
+                ? {}
+                : { contextTokens: row.context_tokens, contextLimit: row.context_limit }),
               edits: row.edits,
             }),
           ),
