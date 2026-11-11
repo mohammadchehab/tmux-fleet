@@ -85,8 +85,24 @@ const trunkConventions: ReadonlySet<string> = new Set(['main', 'master'])
  * The forge is asked for the default branch, and a forge that will not say is a
  * refusal: guessing it is the fail-open this guard exists to close.
  */
-const protectedBranches = async (deps: BranchCleanupDeps, repo: Repo): Promise<ReadonlySet<string>> =>
-  new Set([...trunkConventions, await deps.pullRequests.defaultBranch(repo)])
+const protectedBranches = async (deps: BranchCleanupDeps, repo: Repo): Promise<BranchGuard> => {
+  const names = new Set([...trunkConventions, await deps.pullRequests.defaultBranch(repo)])
+  return { has: (branch) => names.has(branch) || longLived(branch) }
+}
+
+/** What the guard answers: is this branch one no merge may delete? */
+interface BranchGuard {
+  has(branch: string): boolean
+}
+
+/**
+ * Long-lived integration branches: `develop`, `staging` and `release/*`. A release
+ * PR is cut *from* one of these, so after it merges the branch is the head of a
+ * merged PR whose sha still matches — exactly what the sweep deletes. It is the
+ * line everyone keeps working on, not a topic branch the merge finished (TASK-90).
+ */
+const longLivedBranches: ReadonlySet<string> = new Set(['develop', 'staging'])
+const longLived = (branch: string): boolean => longLivedBranches.has(branch) || branch.startsWith('release/')
 
 /** A PR as every event names it: the repo and the number. */
 const refOf = (pr: PullRequest): PullRequestRef => ({ repo: pr.repo, number: pr.number })
