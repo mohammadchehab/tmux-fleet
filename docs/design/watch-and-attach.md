@@ -1,6 +1,6 @@
 # Watch and attach: see the fleet live, take any peer over
 
-**Status**: design, pending a spike (§10).
+**Status**: design, spiked (§10).
 **Builds on**: [`fleet-v2-architecture.md`](fleet-v2-architecture.md) — headless typed providers (§4), the Mailbox (§7),
 the event store (§3), the tmux view (§2).
 
@@ -93,9 +93,20 @@ start a fresh session over the person.
 
 - `hold(peerId, { now })`: wait for the turn boundary, or call `provider.interrupt` first when `now` is true. Then
   `PeerSession.stop()`, remove the entry from the running map, append `peer.held` with the session ref.
-- `release(peerId)`: build the peer's `SessionSpec` as `startPeer` does, call `provider.resume(ref, spec)`, hand the
-  session to the pump, append `peer.released`. The Mailbox then delivers what queued.
+- The boundary is read from the turn events (`PeerSession`'s open turns), never from `provider.status()`: the Claude
+  session reports `idle` while its opening turn is still in flight, so a hold that polls status would stop a peer
+  mid-brief.
+- A held peer keeps its workdir claim. The shared-checkout guard must still count a checkout a person is writing in.
+- `release(peerId)`: build the peer's `SessionSpec` as `startPeer` does, call `provider.resume(ref, spec)`, construct a
+  new `PeerSession` around the handle as `startPeer` does, append `peer.released`. The session start is recorded with
+  `resumed: true`; today `#recordStart` hardcodes `false`. The Mailbox then delivers what queued.
 - `start()` and recovery skip a held peer.
+
+**What a resume sends.** Today both adapters' `resume()` send the full brief again as a model turn. On release that
+costs a turn and re-briefs over what the person just told the peer. `SessionSpec` gains an optional `opening` that
+replaces the brief for a resume. Release passes a short handback note: a person held this session from when to when,
+carry on from the conversation, and how many messages follow. A first message cannot be dropped entirely, because the
+Claude SDK's streaming input needs one.
 
 **Mailbox.** Mail to a held peer stays pending. Today a stopped session leaves a dead entry in the running map and
 `acquire()` leases it, so delivery fails; removing the entry on hold is what makes the mail queue.
@@ -144,8 +155,13 @@ grow with prose and replay is unaffected.
 - `tool`: tool name and the existing redacted summary.
 - `turn`: started or ended, with the reason.
 
-The Claude adapter emits these from the SDK messages it already iterates; the Cursor adapter from the `stream-json`
-lines it already parses. A provider without `display` shows status only.
+A provider without `display` shows status only.
+
+- Claude: the query runs with `includePartialMessages: true`. That adds `stream_event` messages carrying text deltas and
+  changes nothing else: `assistant`, `result` and `init` arrive as before, so the contract events do not move.
+- Cursor: turns run with `--stream-partial-output`. Deltas are `assistant` lines that carry `timestamp_ms`; the final
+  `assistant` line has none and repeats the whole text. The display takes the delta lines only, or the text shows twice.
+- Thinking deltas are dropped. The view shows what a peer said and did.
 
 **Daemon.** A ring buffer of the last N lines per peer (default 500), in memory. Lines are cut at a fixed width budget
 before buffering, so a peer printing a large file cannot grow the buffer or the socket payload.
@@ -154,7 +170,17 @@ before buffering, so a peer printing a large file cannot grow the buffer or the 
 then pushes new ones until the client disconnects. The stream also carries the rows the view needs from the store —
 peer state changes, mail sent and delivered, judge decisions — so the view does not poll.
 
-A slow or stalled client is dropped, never waited for. The feed must not be able to slow a peer.
+The framing stays newline-delimited JSON on the same socket. What changes:
+
+- A second message kind beside the one response: stream frames `{ id, stream: 'line' | 'end', ... }`.
+- A dispatch path whose handler returns an async iterable.
+- One connection per watch. A stream on a shared connection would block every request queued behind it, and today's
+  clients close the socket on the first line.
+
+A slow or stalled client is dropped, never waited for. Today's server ignores what `write()` returns, and a stalled
+client then buffers without bound (9 MB in 2 seconds in the spike). So: when `write()` returns false, or the socket's
+buffered length passes a cap, the daemon destroys that socket; on `close` it ends the iterator. The feed must not be
+able to slow a peer or grow the daemon.
 
 ## 7. The watch program
 
@@ -185,7 +211,18 @@ Actions for a running peer:
 Actions for a held peer: **Reopen the native session**, **Release back to fleetd**.
 
 Taking over from the menu suspends the watch program, runs the same attach flow as §5 in the same terminal, and
-returns to the watch when the CLI exits. `fleet attach` in a second terminal does the same thing while the watch keeps
+returns to the watch when the CLI exits. Two rules make that handover safe, both proven in tmux, iTerm2 and macOS
+Terminal:
+
+- The watch ignores SIGINT while the child owns the terminal. Otherwise ctrl-c in a child that is not in raw mode kills
+  the watch with it.
+- After the child exits, however it exits, the watch resets the terminal modes a CLI can leave on (mouse reporting,
+  bracketed paste, focus events, keyboard protocol, cursor shape) before it redraws.
+
+The watch is plain ANSI with no TUI library. Key parsing reads byte by byte, because a terminal can deliver several
+keys in one chunk.
+
+`fleet attach` in a second terminal does the same thing while the watch keeps
 running; a held peer's pane shows a banner with the count of waiting messages.
 
 ## 8. Fixes this depends on
@@ -202,16 +239,20 @@ Both are bugs today and ship separately from this design.
 How inbound mail reaches a session while a person holds it. Until decided, it queues and is delivered on release; the
 watch and the attach banner show the count.
 
-## 10. To prove before building
+## 10. Proven, and still to prove
 
-- `peer.watch` as a streaming method on the existing socket envelope: framing, back-pressure, a dropped client.
-- The Claude adapter can emit text chunks as they arrive, not only at the turn boundary, without changing what the
-  contract events carry.
-- The Cursor `stream-json` output carries assistant text incrementally in plan mode.
-- A full-screen terminal program can hand the terminal to a child CLI and take it back cleanly (raw mode, alternate
-  screen, resize), on macOS Terminal, iTerm2 and inside tmux.
-- Hold then release on a real Claude session and a real Cursor chat through the supervisor, with mail queued in between
-  delivered after release.
+A second spike (2026-11-11, `~/dev/fleet-sandbox`, real providers, no daemon) proved:
+
+- The socket can carry `peer.watch` with the changes in §6. A vanished client closes cleanly.
+- Claude and Cursor both give text as it arrives, with the options in §6.
+- A full-screen program hands the terminal to native `claude` and takes it back, through resize, ctrl-c and a killed
+  child, with the two rules in §7.
+- Stop then `provider.resume` keeps the same ref on both providers, and the next turn answers from prior history.
+
+Still to prove, when hold and release exist in the daemon:
+
+- Mail queued during a hold is delivered once after release.
+- ctrl-c during a takeover in macOS Terminal (the spike could not send it there).
 
 ## 11. Order of delivery
 
@@ -222,8 +263,8 @@ watch and the attach banner show the count.
 
 ## 12. Testing
 
-- Supervisor: hold at a boundary, hold with interrupt, release resumes with the same ref, release falls back when resume
-  rejects, a restart with a held peer starts nothing for it, mail queued while held is delivered once after release.
+- Supervisor: hold at a boundary, hold during the opening turn waits for it, hold with interrupt, release resumes with
+  the same ref and sends the handback note and not the brief, release falls back when resume rejects, a restart with a held peer starts nothing for it, mail queued while held is delivered once after release.
 - Provider conformance: a provider that declares `display` emits a `turn` line for every `turn.started` and
   `turn.ended`; the Claude and Cursor adapters are checked against recorded streams.
 - Daemon: `peer.watch` replays the buffer then streams; a stalled client is dropped and the peer's turn is unaffected.
