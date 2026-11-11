@@ -20,20 +20,10 @@
  */
 
 import type { DecisionId } from '@fleet/foundation-core'
-import type { Decision, Work } from '@fleet/foundation-contracts'
-import { deriveId, shortHash } from '../digest.ts'
+import type { Decision } from '@fleet/foundation-contracts'
+import { shortHash } from '../digest.ts'
 import { draft, type Rule } from './context.ts'
-import { blockedDecisionId } from './unblock.ts'
-
-/**
- * The inbox row for the `episode`-th blocker on a Work. Episode 0 is `blockedDecisionId` exactly, so the row a
- * first blocker raises is the row `unblock` and `work.blocked` look for. A later episode is a blocker that came
- * after the user answered the one before it: a new question, so a new row.
- */
-const episodeDecisionId = (work: Work, episode: number): DecisionId =>
-  episode === 0
-    ? blockedDecisionId(work)
-    : (deriveId('dec', { kind: 'blocked', workId: work.workId, episode }) as DecisionId)
+import { episodeDecisionId } from './unblock.ts'
 
 export const raiseBlockedNotes: Rule = (ctx) => {
   if (ctx.event?.type !== 'work.noted') return []

@@ -32,7 +32,7 @@ export {
 export { raiseCapacityGaps } from './idle.ts'
 export { raiseBlockedNotes } from './note.ts'
 export { markReadyWork } from './ready.ts'
-export { blockedDecisionId, unblockWaitingPeers } from './unblock.ts'
+export { blockedDecisionId, episodeDecisionId, reaskBlockedWork, unblockWaitingPeers } from './unblock.ts'
 export { supersedeStaleBriefs } from './stale.ts'
 export { renderStandupDue } from './standup.ts'
 
@@ -43,7 +43,7 @@ import { mergeGreenPrs, retargetDependents } from './gate.ts'
 import { raiseCapacityGaps } from './idle.ts'
 import { raiseBlockedNotes } from './note.ts'
 import { markReadyWork } from './ready.ts'
-import { unblockWaitingPeers } from './unblock.ts'
+import { reaskBlockedWork, unblockWaitingPeers } from './unblock.ts'
 import { supersedeStaleBriefs } from './stale.ts'
 import { renderStandupDue } from './standup.ts'
 import type { Rule } from './context.ts'
@@ -60,6 +60,7 @@ export const pmRules: readonly Rule[] = [
   requestDecisions,
   raiseBlockedNotes,
   unblockWaitingPeers,
+  reaskBlockedWork,
   raiseCapacityGaps,
   renderStandupDue,
 ]
