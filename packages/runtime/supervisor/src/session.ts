@@ -136,6 +136,13 @@ export interface PeerSessionPorts {
    * failure so the caller can record why. A recovery that fails too propagates
    * — a peer with no session must be visible, not silently idle.
    */
+  /**
+   * The first handle continues a session the provider resumed (watch-and-attach
+   * §4: a release after a takeover, or a start after a stop), so its
+   * `session.started` says `resumed: true`. A purge or a recovery after it starts
+   * fresh, and says so.
+   */
+  readonly resumed?: boolean
   readonly recover: (
     from: SessionHandle,
     failure: unknown,
@@ -218,10 +225,58 @@ export class PeerSession {
    * instead of recovering into a fresh session that hides it (§8).
    */
   #faulted = false
+  /**
+   * The session's opening turn — the brief, or a resume's handback note — until
+   * it ends. A provider sends it as part of `start`, and the Claude session
+   * reports `idle` while it is still in flight, so the boundary a hold waits for
+   * is read from here and the turn events, never from `provider.status()`
+   * (watch-and-attach §4).
+   */
+  #openingTurn: TurnId | undefined
+  /** `resumed` applies to the first start only; every later one is a fresh session. */
+  #resumedStart: boolean
+  /** Whoever is waiting for the next turn boundary (watch-and-attach §4's hold). */
+  #boundaryWaiters: (() => void)[] = []
+  /** The pump has finished for good: nothing more will happen, so every boundary wait is over. */
+  #done = false
 
   constructor(ports: PeerSessionPorts) {
     this.#ports = ports
     this.#handle = ports.handle
+    this.#openingTurn = ports.handle.briefTurnId
+    this.#resumedStart = ports.resumed === true
+  }
+
+  /**
+   * Resolves at the next point where nothing is in flight: no open turn, the
+   * opening turn done, no question or approval waiting on a person, no purge
+   * under way — or when the session has ended. What `hold` and `stop` wait for
+   * before they stop the session (watch-and-attach §4, §7.2).
+   */
+  untilBoundary(): Promise<void> {
+    if (this.#atBoundary()) return Promise.resolve()
+    return new Promise((resolve) => {
+      this.#boundaryWaiters.push(resolve)
+    })
+  }
+
+  /** Stop the turn that is running and stay on the session: a hold with `now` (§4). */
+  async interrupt(): Promise<void> {
+    await this.#ports.provider.interrupt(this.#handle)
+  }
+
+  #atBoundary(): boolean {
+    return (
+      this.#done ||
+      (this.#openingTurn === undefined && this.#openTurns.size === 0 && this.#pending.size === 0 && !this.#purging)
+    )
+  }
+
+  #wakeBoundary(): void {
+    if (this.#boundaryWaiters.length === 0 || !this.#atBoundary()) return
+    const waiters = this.#boundaryWaiters
+    this.#boundaryWaiters = []
+    for (const wake of waiters) wake()
   }
 
   /**
@@ -265,6 +320,15 @@ export class PeerSession {
   }
 
   async run(): Promise<void> {
+    try {
+      await this.#run()
+    } finally {
+      this.#done = true
+      this.#wakeBoundary()
+    }
+  }
+
+  async #run(): Promise<void> {
     let handle = this.#handle
     // One recovery, not a restart loop: a peer that is recovered and then fails
     // again has a failure to report, not a session to keep starting. A purge
@@ -283,12 +347,14 @@ export class PeerSession {
         recovered = true
         handle = await this.#ports.recover(handle, failure, restartStateFileOf(failure))
         this.#handle = handle
+        this.#openingTurn = handle.briefTurnId
         this.#purging = false
         continue
       }
       if (purged === undefined || this.#stopped) return
       handle = purged.handle
       this.#handle = handle
+      this.#openingTurn = handle.briefTurnId
       this.#purging = false
       recovered = false
     }
@@ -342,6 +408,8 @@ export class PeerSession {
     try {
       for await (const event of stream) {
         await this.#apply(handle, event, purge !== undefined)
+        if (event.type === 'turn.ended' && event.turnId === this.#openingTurn) this.#openingTurn = undefined
+        this.#wakeBoundary()
 
         if (event.type === 'session.ended') {
           if (event.reason === 'crash' || event.reason === 'exit') endedOnItsOwn = event.reason
@@ -802,10 +870,17 @@ export class PeerSession {
         model: handle.model,
         ...(effort === undefined ? {} : { effort }),
         permissionMode: permissionModeOf(handle),
-        // Every start here is a new session: a purge or a recovery starts a fresh one carrying a state file.
-        resumed: false,
+        // A resumed handle says so once (watch-and-attach §4); a purge or a recovery
+        // after it starts a fresh session carrying a state file.
+        resumed: this.#takeResumed(),
       },
     })
+  }
+
+  #takeResumed(): boolean {
+    const resumed = this.#resumedStart
+    this.#resumedStart = false
+    return resumed
   }
 
   async #recordEnd(handle: SessionHandle, endReason: SessionEndReason, code?: number): Promise<void> {

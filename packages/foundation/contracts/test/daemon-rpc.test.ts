@@ -44,6 +44,7 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
   down: [{}],
   ls: [{}],
   send: [
+    { to: 'peer-1', kind: 'info', body: 'the checks are red', from: 'peer-2' },
     { to: 'peer-1', kind: 'info', body: 'the checks are red' },
     { to: 'peer-1', kind: 'nudge', body: 'still red', briefVersion: 3 },
   ],
@@ -83,6 +84,10 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
       requestedBy: 'peer-1',
     },
   ],
+  'peer.hold': [{ peerId: 'peer-1' }, { peerId: 'peer-1', now: true }],
+  'peer.release': [{ peerId: 'peer-1' }],
+  'peer.stop': [{ peerId: 'peer-1' }, { peerId: 'peer-1', now: false }],
+  'peer.start': [{ peerId: 'peer-1' }],
 }
 
 test('the method set is the one a client builds against, and the usage report a hook sends', () => {
@@ -100,6 +105,10 @@ test('the method set is the one a client builds against, and the usage report a 
     'replay',
     'work',
     'builds',
+    'peer.hold',
+    'peer.release',
+    'peer.stop',
+    'peer.start',
   ])
 })
 
@@ -203,7 +212,7 @@ test('a response without `ok` is neither half', () => {
 test('a result is the method\'s own, so an ok payload is not silently another method\'s', () => {
   // The table is exhaustive by type; this is the runtime half — `ls` does not
   // accept `up`'s answer, so a client that mixed two methods up is told.
-  const asStatusOnly = { profile: 'p', pid: 1, startedAt: '2026-11-10T10:00:00.000Z', socketPath: '/s', storePath: '/t' }
+  const asStatusOnly = { profile: 'p', pid: 1, startedAt: '2026-11-10T10:00:00.000Z', socketPath: '/s', storePath: '/t', protocolVersion: 1 }
   assert.equal(decodeStrict(daemonResultFor('ls'), asStatusOnly).ok, false)
   assert.equal(decodeStrict(daemonResultFor('up'), asStatusOnly).ok, true)
 })
@@ -213,6 +222,7 @@ test('the status is what `up` and `ls` both report', () => {
     profile: 'acme',
     pid: 4242,
     startedAt: '2026-11-10T09:00:00.000Z',
+    protocolVersion: 1,
     socketPath: '/home/u/.fleet/acme/daemon/fleetd.sock',
     storePath: '/home/u/.fleet/acme/store/fleet.db',
   }

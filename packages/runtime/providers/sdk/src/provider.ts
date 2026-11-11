@@ -9,6 +9,8 @@
 
 import type { PeerState, TurnId } from '@fleet/foundation-core'
 import type {
+  AttachCommand,
+  DisplayLine,
   ProviderCapabilities,
   ProviderEvent,
   ProviderHandle,
@@ -24,6 +26,8 @@ import type { QuestionId } from '@fleet/foundation-core'
 export type ApprovalDecision = 'allow' | 'deny'
 
 export type {
+  AttachCommand,
+  DisplayLine,
   ProviderCapabilities,
   ProviderEvent,
   ProviderHandle,
@@ -172,6 +176,21 @@ export interface Provider extends ProviderHandle {
 
   /** Resume a session from a vendor ref. Present when `capabilities.resume` is true. */
   resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle>
+
+  /**
+   * The provider's own CLI on this session, for a person to take it over
+   * (watch-and-attach §5). Absent: the provider has no CLI a person can drive,
+   * and the session cannot be taken over (it can still be stopped and started).
+   */
+  attachCommand?(ref: ProviderSessionRef, spec: SessionSpec): AttachCommand
+
+  /**
+   * What the peer says and does, line by line, for `fleet watch` (watch-and-attach
+   * §6). Display data: it stays out of the store, and thinking is left out.
+   * Absent: the provider shows status only. A provider that has it emits one
+   * `turn` line for every `turn.started` and `turn.ended` its `events()` does.
+   */
+  display?(handle: SessionHandle): AsyncIterable<DisplayLine>
 }
 
 /**

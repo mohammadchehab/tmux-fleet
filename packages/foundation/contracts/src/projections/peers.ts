@@ -4,7 +4,7 @@
  * session ref.
  */
 
-import { boolean, count, object, objectAs, oneOf, optional, string, type Schema } from '@fleet/foundation-core'
+import { boolean, count, object, objectAs, oneOf, optional, positiveInt, string, type Schema } from '@fleet/foundation-core'
 import {
   peerId,
   peerState,
@@ -100,6 +100,14 @@ export interface PeerActivity {
    */
   readonly lastTurnAt?: string
   /**
+   * How full the peer's context was at its last recorded turn, and the model's
+   * window then (`turn.usage_recorded`): the watch shows `contextTokens / contextLimit`
+   * as a percentage. Both absent for a peer with no recorded turn — a missing
+   * number, never a zero that would read as an empty context.
+   */
+  readonly contextTokens?: number
+  readonly contextLimit?: number
+  /**
    * Edit and Write calls this peer has made on `workId`: how much it is
    * rewriting, which is the number that says a peer is thrashing. Reads and
    * searches are deliberately not counted — they are the turn working, not the
@@ -116,6 +124,8 @@ export const peerActivity = (): Schema<PeerActivity> =>
     lastTarget: optional(string({ minLength: 1, maxLength: 200 })),
     lastToolAt: optional(timestamp()),
     lastTurnAt: optional(timestamp()),
+    contextTokens: optional(count()),
+    contextLimit: optional(positiveInt()),
     edits: count(),
   })
 

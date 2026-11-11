@@ -74,6 +74,10 @@ const activityRow = (row: PeerActivity): readonly string[] => [
   row.workId ?? '-',
   `edits ${String(row.edits)}`,
   row.lastTurnAt ?? 'no turn yet',
+  // From the last recorded turn; a peer with none shows no number, never 0%.
+  row.contextTokens === undefined || row.contextLimit === undefined
+    ? 'ctx -'
+    : `ctx ${String(Math.round((row.contextTokens / row.contextLimit) * 100))}%`,
 ]
 
 const shorten = (value: string, max: number): string =>

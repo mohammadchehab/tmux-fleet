@@ -15,6 +15,9 @@
 import type { SessionSpec, Turn } from '@fleet/runtime-provider-sdk'
 
 export const openingMessage = (spec: SessionSpec): Turn => {
+  // A resume after a takeover or a stop opens with the handback note, not the brief
+  // (watch-and-attach §4): the conversation already holds the brief.
+  if (spec.opening !== undefined) return { text: spec.opening, kind: 'info', briefVersion: spec.brief.version }
   const lines: string[] = [`You are the ${spec.role} peer on the ${spec.peerId} account.`, '']
 
   const contracts = spec.brief.contractVersions

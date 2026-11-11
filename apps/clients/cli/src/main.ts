@@ -12,10 +12,12 @@ import { callerFor } from './client.ts'
 import { spawnFleetd } from './daemon.ts'
 import { writeStarter } from './init.ts'
 import { run } from './run.ts'
+import { runTakeover } from './takeover.ts'
 
 process.exitCode = await run(process.argv, {
   call: (socketPath) => callerFor({ socketPath }),
   startFleetd: (profile) => spawnFleetd({ profile, env: process.env }),
   initProfile: (profile) => writeStarter(profile),
+  takeover: runTakeover,
   env: process.env,
 })

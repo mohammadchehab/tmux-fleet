@@ -57,6 +57,20 @@ const context = (snapshot: FleetState): RuleContext => ({
 
 // --------------------------------------------------------------------- assign
 
+test('a held or stopped peer is given no Work, and no idle nudge (watch-and-attach §4, §7.2)', () => {
+  for (const parked of ['held', 'stopped'] as const) {
+    const { actions } = decide({
+      state: state({
+        peers: [peer({ peerId: 'engineer-1' as never, state: parked })],
+        work: [work({ title: 'Ship the store', role: 'engineer', body: 'Make the append-only store pass its tests.' })],
+      }),
+      tick: tick(),
+    })
+    assert.ok(!kinds(actions).includes('assign'), `${parked}: no assign`)
+    assert.ok(!actions.some((action) => 'peerId' in action && action.peerId === 'engineer-1'), `${parked}: nothing aimed at it`)
+  }
+})
+
 test('a peer takes the next ready Work for its role, with a v1 brief', () => {
   const request: DecideRequest = {
     state: state({

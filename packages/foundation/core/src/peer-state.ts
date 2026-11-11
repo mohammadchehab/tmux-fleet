@@ -9,7 +9,12 @@
 
 import { oneOf, type Schema } from './schema.ts'
 
-export const peerStates = ['starting', 'working', 'waiting_input', 'idle', 'ended', 'failed'] as const
+/**
+ * `held` and `stopped` are a peer deliberately not running (watch-and-attach §4,
+ * §7.2): a person has its session, or a person stopped it. Neither is live,
+ * terminal or assignable; only a release or a start ends them.
+ */
+export const peerStates = ['starting', 'working', 'waiting_input', 'idle', 'ended', 'failed', 'held', 'stopped'] as const
 
 export type PeerState = (typeof peerStates)[number]
 
@@ -21,6 +26,9 @@ export const isLive = (state: PeerState): boolean =>
 
 /** Nothing more will happen without a new `start` (or a `resume`). */
 export const isTerminal = (state: PeerState): boolean => state === 'ended' || state === 'failed'
+
+/** Deliberately not running: a person holds it or stopped it (watch-and-attach §4, §7.2). */
+export const isParked = (state: PeerState): boolean => state === 'held' || state === 'stopped'
 
 /** Free to be given work: idle, and only idle (§5.2 `assign`, `keep-busy`). */
 export const isAssignable = (state: PeerState): boolean => state === 'idle'

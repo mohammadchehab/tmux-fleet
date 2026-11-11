@@ -507,6 +507,18 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'spend_by_month',
     statements: [SPEND_BY_MONTH],
   },
+  {
+    // additive: how full the peer's context was at its last recorded turn, for the
+    // peer list of `fleet watch` (watch-and-attach §6). Not backfilled: an upgraded
+    // store shows none for a peer until its next turn, which is what "no recorded
+    // turn" already means there — a missing number, never a zero.
+    version: 10,
+    name: 'peer_context_used',
+    statements: [
+      'ALTER TABLE peer_activity ADD COLUMN context_tokens INTEGER;',
+      'ALTER TABLE peer_activity ADD COLUMN context_limit INTEGER;',
+    ],
+  },
 ]
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

@@ -43,8 +43,19 @@ export const deliverOnSessionStart = (mailbox: Pick<Mailbox, 'deliver'>): Commit
   const delivering = new Set<PeerId>()
 
   return async (event) => {
-    if (event.type !== 'session.started') return
-    const peerId = event.data.peerId
+    // A session coming up, or a peer going idle: the two moments a message that
+    // could not be handed over can be. The second is for a provider that takes one
+    // turn at a time (cursor): a delivery that arrived while the handback or opening
+    // turn was still running failed, and nothing else would retry it until the next
+    // send. Delivering with nothing pending is a read, so an idle that follows a
+    // delivery ends the chain.
+    const peerId =
+      event.type === 'session.started'
+        ? event.data.peerId
+        : event.type === 'peer.state_changed' && event.data.state === 'idle'
+          ? event.data.peerId
+          : undefined
+    if (peerId === undefined) return
     if (delivering.has(peerId)) return
     delivering.add(peerId)
     try {

@@ -116,6 +116,18 @@ const fakeSupervisor = (
     running() {
       return [] as readonly PeerId[]
     },
+    async hold() {
+      throw new Error('this fake does not hold')
+    },
+    async release() {
+      throw new Error('this fake does not release')
+    },
+    async stopPeer() {
+      throw new Error('this fake does not stop one peer')
+    },
+    async startPeer() {
+      throw new Error('this fake does not start one peer')
+    },
   }
 }
 
@@ -444,6 +456,22 @@ test('peek with limit 0 returns nothing from the history fallback either', async
 
   const { messages } = await daemon.peek({ peer: 'engineer-1' as PeerId, limit: 0 })
   assert.deepEqual(messages, [])
+  await daemon.down()
+})
+
+test('a send that names its sender is recorded as that peer, and an unknown sender is refused (§8)', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+
+  await daemon.send({ to: 'engineer-1' as PeerId, kind: 'info', body: 'from the architect', from: 'architect' as PeerId })
+  const sent = (await store.read(1)).filter((event) => event.type === 'message.sent')
+  assert.equal(sent.at(-1)?.actor, 'peer:architect')
+  assert.equal(sent.at(-1)?.type === 'message.sent' ? sent.at(-1)?.data.from : undefined, 'peer:architect')
+
+  await assert.rejects(
+    daemon.send({ to: 'engineer-1' as PeerId, kind: 'info', body: 'hi', from: 'ghost' as PeerId }),
+    (error: FleetError) => error.code === 'not_found' && /ghost/.test(error.message),
+  )
   await daemon.down()
 })
 

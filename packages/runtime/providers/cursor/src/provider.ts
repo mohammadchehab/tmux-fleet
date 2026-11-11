@@ -32,6 +32,8 @@ import { spawnSync } from 'node:child_process'
 import { fleetError, systemClock, type Clock, type PeerState, type QuestionId, type TurnId } from '@fleet/foundation-core'
 import type {
   ApprovalDecision,
+  AttachCommand,
+  DisplayLine,
   Provider,
   ProviderCapabilities,
   ProviderEvent,
@@ -126,6 +128,19 @@ export class CursorProvider implements Provider {
     return session.handle()
   }
 
+  /**
+   * The person's side of a takeover (watch-and-attach §5): interactive
+   * `cursor-agent` on the same chat, in plan mode and on the peer's model —
+   * left to itself it opens on its own default model. No `--trust`: a person is
+   * there to answer the prompt.
+   */
+  attachCommand(ref: ProviderSessionRef, spec: SessionSpec): AttachCommand {
+    return {
+      executable: this.#executable,
+      args: [...this.#executableArgs, '--resume', ref, '--mode', CURSOR_PERMISSION_MODE, '--model', spec.model],
+    }
+  }
+
   /** Continue an existing chat. The ref is the chat id a previous handle carried. */
   async resume(ref: ProviderSessionRef, spec: SessionSpec): Promise<SessionHandle> {
     this.#check(spec)
@@ -181,6 +196,10 @@ export class CursorProvider implements Provider {
 
   events(handle: SessionHandle): AsyncIterable<ProviderEvent> {
     return this.#session(handle).events()
+  }
+
+  display(handle: SessionHandle): AsyncIterable<DisplayLine> {
+    return this.#session(handle).display()
   }
 
   /** The next turn runs on `model`; confirmation is that turn, so nothing is awaited here. */

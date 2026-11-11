@@ -260,7 +260,28 @@ export interface SessionSpec {
   readonly systemPromptAppend?: string
   /** Which tool calls run without asking; absent means `defaultToolPolicy` (§4). */
   readonly toolPolicy?: ToolPolicy
+  /**
+   * The first message of a resumed session, in place of the brief
+   * (watch-and-attach §4). A release after a takeover, or a start after a stop,
+   * carries a short handback note: re-sending the brief would cost a turn and
+   * re-brief the peer over what the person just told it. A first message cannot
+   * be dropped, because the Claude SDK's streaming input needs one.
+   */
+  readonly opening?: string
 }
+
+/**
+ * How a person opens a session in the provider's own CLI (watch-and-attach §5):
+ * the executable and its arguments, built by the provider that knows them, so a
+ * client never needs to.
+ */
+export interface AttachCommand {
+  readonly executable: string
+  readonly args: readonly string[]
+}
+
+export const attachCommand = (): Schema<AttachCommand> =>
+  objectAs<AttachCommand>()({ executable: string({ minLength: 1, maxLength: 500 }), args: array(string({ maxLength: 2000 })) })
 
 export const sessionSpec = (): Schema<SessionSpec> =>
   objectAs<SessionSpec>()({
@@ -277,6 +298,7 @@ export const sessionSpec = (): Schema<SessionSpec> =>
     resumeRef: optional(providerSessionRef()),
     systemPromptAppend: optional(text()),
     toolPolicy: optional(toolPolicy()),
+    opening: optional(text()),
   })
 
 /** The kinds of message a turn can carry; they match `Message.kind` (§3, §7). */
@@ -447,6 +469,36 @@ const providerQuestion = (): Schema<ProviderQuestion> =>
     multiSelect: optional(boolean()),
     options: optional(array(object({ label: string({ minLength: 1, maxLength: 200 }), description: optional(text()) }))),
   })
+
+/**
+ * One line of what a peer said or did, for a person watching (watch-and-attach §6).
+ *
+ * Display data, not a fact: it is never stored, and nothing decides on it. A
+ * `text` line is a chunk of what the peer said, a `tool` line carries the same
+ * redacted summary `tool.use` does, and a `turn` line marks a boundary.
+ */
+export type DisplayLine =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'tool'; readonly tool: string; readonly summary?: string }
+  | { readonly kind: 'turn'; readonly phase: 'started' | 'ended'; readonly reason?: TurnEndReason }
+
+/** The longest `text` or `summary` a display line carries; the feed cuts to this before it buffers (§6). */
+export const displayLineMaxChars = 400
+
+export const displayLine = (): Schema<DisplayLine> =>
+  unionAs<DisplayLine>()([
+    object({ kind: literal('text'), text: string({ maxLength: displayLineMaxChars + 1 }) }),
+    object({
+      kind: literal('tool'),
+      tool: string({ minLength: 1 }),
+      summary: optional(string({ maxLength: displayLineMaxChars + 1 })),
+    }),
+    object({
+      kind: literal('turn'),
+      phase: oneOf(['started', 'ended'] as const),
+      reason: optional(oneOf(turnEndReasons)),
+    }),
+  ])
 
 export const providerEvent = (): Schema<ProviderEvent> =>
   unionAs<ProviderEvent>()([

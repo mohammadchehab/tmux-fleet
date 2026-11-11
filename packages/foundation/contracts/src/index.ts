@@ -7,6 +7,7 @@
 
 // provider-facing types (§4, §7, §8)
 export * from './provider.ts'
+export * from './watch.ts'
 
 // the domain vocabulary the events and projections share
 export * from './work-state.ts'

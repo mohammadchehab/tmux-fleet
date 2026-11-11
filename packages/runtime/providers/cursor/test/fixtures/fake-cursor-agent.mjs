@@ -43,7 +43,7 @@ const flag = (name) => {
 // with `-` before a `--` is an option, and one it does not know is an error. So a prompt
 // like "- list item" only reaches the model when the adapter put `--` in front of it.
 const WITH_VALUE = new Set(['--output-format', '--mode', '--model', '--resume'])
-const FLAGS = new Set(['-p', '--yolo', '--force'])
+const FLAGS = new Set(['-p', '--trust', '--yolo', '--force', '--stream-partial-output'])
 const positional = []
 for (let at = 0; at < args.length; at += 1) {
   const arg = args[at]
@@ -61,6 +61,14 @@ for (let at = 0; at < args.length; at += 1) {
 const prompt = positional[0] ?? ''
 const model = flag('--model')
 const sessionId = 'chat-session-1'
+
+// A recorded stream, played back as it came: what the real CLI printed with
+// `--stream-partial-output`, so the adapter is checked against the real shape.
+if (process.env.FAKE_CURSOR_REPLAY && args.includes('--stream-partial-output')) {
+  const { readFileSync } = await import('node:fs')
+  process.stdout.write(readFileSync(process.env.FAKE_CURSOR_REPLAY, 'utf8'))
+  process.exit(0)
+}
 
 emit({ type: 'system', subtype: 'init', session_id: sessionId, model: 'Composer 2.5', permissionMode: 'default' })
 emit({ type: 'user', message: prompt, session_id: sessionId })

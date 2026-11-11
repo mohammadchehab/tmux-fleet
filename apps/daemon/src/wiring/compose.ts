@@ -88,6 +88,7 @@ import { createSupervisor, type Supervisor } from '../execution/sessions.ts'
 import { createStandingBriefs } from '../execution/standards.ts'
 import { createTrackerSyncFactory } from '../routines/tracker-sync.ts'
 import { createWorktreeGcFactory } from '../routines/worktree-gc.ts'
+import { createDisplayFeed, rowOf } from '../execution/display.ts'
 import { createWakingSink, deliverOnSessionStart } from '../execution/wake.ts'
 import { syncWork } from '../execution/work-sync.ts'
 
@@ -403,8 +404,11 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // it is built first and the Mailbox reaches peers through it (§7). It appends
   // through the waking sink, because `session.started` is the event that wakes
   // the delivery of whatever is waiting for that peer.
+  // What `fleet watch` reads (watch-and-attach §6): in memory, never stored.
+  const display = createDisplayFeed({ now: () => clock.now() })
   const supervisor = createSupervisor({
     profile,
+    display,
     paths,
     read: store.reader(),
     worktrees: deps.worktreeProvisioner ?? createWorktreeProvisioner(),
@@ -439,6 +443,13 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
   // the one a resume produces — is what retries it. See `deliverOnSessionStart` for
   // why a delivery already in flight for that peer is left alone.
   wake.listen(deliverOnSessionStart(mailbox))
+
+  // §6: the rows a watch needs from the store — state changes, mail, decisions — go
+  // out on the same stream as the lines, so the view does not poll.
+  wake.listen(async (event) => {
+    const row = rowOf(event)
+    if (row !== undefined) display.row(row)
+  })
 
   // §5.1: the Work state machine advances on the events the fleet already writes.
   // Registered after delivery so the brief reaches the peer before the Work is said
@@ -652,8 +663,10 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     api: daemon,
     socketPath: paths.socketPath,
     pidPath: paths.pidPath,
+    watch: (params) => display.watch(params),
     onDown: () => {
       void (async () => {
+        display.closeAll('shutdown')
         await daemon.down()
         await server.close()
         await store.close()

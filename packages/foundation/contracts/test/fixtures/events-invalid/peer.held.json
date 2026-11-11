@@ -1,0 +1,15 @@
+{
+  "input": {
+    "seq": 2,
+    "ts": "2026-11-11T09:00:00.000Z",
+    "type": "peer.held",
+    "subject": "engineer-1",
+    "actor": "user",
+    "data": {
+      "peerId": "engineer-1",
+      "sessionRef": 42,
+      "by": "user"
+    }
+  },
+  "path": "data.sessionRef"
+}

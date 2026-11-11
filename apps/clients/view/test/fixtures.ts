@@ -56,7 +56,7 @@ export const lsFixture = (peers: readonly Peer[]): LsResult => ({
     pid: 4242,
     startedAt: '2026-11-10T08:00:00.000Z',
     socketPath: '/home/someone/.fleet/firstrun/daemon/fleetd.sock',
-    storePath: '/home/someone/.fleet/firstrun/store.db',
+    storePath: '/home/someone/.fleet/firstrun/store.db', protocolVersion: 1,
   },
   peers,
   routines: [],

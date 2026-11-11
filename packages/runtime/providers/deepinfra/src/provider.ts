@@ -39,6 +39,7 @@ import {
 import { fleetError, toFleetError, type FleetError, type PeerState, type TurnId } from '@fleet/foundation-core'
 import type {
   ApprovalDecision,
+  AttachCommand,
   Provider,
   ProviderCapabilities,
   ProviderEvent,
@@ -258,6 +259,15 @@ export class DeepInfraProvider implements Provider {
 
   async send(handle: SessionHandle, turn: Turn): Promise<TurnId> {
     return this.#inner.send(handle, turn)
+  }
+
+  /**
+   * The Claude CLI on the same session, on the pinned model (watch-and-attach §5).
+   * The endpoint and key reach it through the env the daemon hands the takeover,
+   * which is the same env this provider's headless session runs on.
+   */
+  attachCommand(ref: ProviderSessionRef, spec: SessionSpec): AttachCommand {
+    return this.#inner.attachCommand(ref, this.#pinned(spec))
   }
 
   async interrupt(handle: SessionHandle, turn?: TurnId): Promise<void> {
