@@ -175,8 +175,10 @@ const spendCap = (ctx: RuleContext): readonly Draft[] => {
       decisionKind: 'budget',
       question:
         `The fleet has spent ${spent} of its ${money(budgetUsd)} budget${unpricedNote}. ` +
-        `Keep going, or raise the cap?`,
-      options: ['continue', 'raise budget'],
+        `Say continue to carry on; for a higher cap, raise budget.usd in the profile.`,
+      // 'continue' is the only answer: the PM cannot edit the profile, so an option that promised to raise the cap would
+      // silence this question and change nothing (TASK-73).
+      options: ['continue'],
       inputsHash: shortHash({ kind: 'budget', budgetUsd, usd, unpriced }),
     }),
   ]
