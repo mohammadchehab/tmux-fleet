@@ -20,7 +20,7 @@ import type { LsResult } from '@fleet/foundation-contracts'
 import type { DaemonCaller } from '../client.ts'
 import { attachPeer } from '../run.ts'
 import { TERMINAL_RESET, type Takeover } from '../takeover.ts'
-import { createKeyParser } from './keys.ts'
+import { createKeyParser, type Key } from './keys.ts'
 import { initialState, reduce, type Action, type Effect, type Input, type WatchState } from './model.ts'
 import { render } from './render.ts'
 import { openWatch as defaultOpenWatch, type OpenWatch, type WatchHandle } from './stream.ts'
@@ -120,20 +120,42 @@ export const runWatch = async (deps: InteractiveDeps): Promise<void> => {
             dispatch({ type: 'notice', text: 'this build cannot hand a terminal over' })
             return
           }
-          suspended = true
-          stdin.setRawMode?.(false)
-          stdin.pause()
-          stdout.write(`${LEAVE_SCREEN}${TERMINAL_RESET}`)
+          // The wait for the peer's turn keeps the terminal and its keys: Esc or q
+          // cancels it. The terminal is given away only once the peer is held (see
+          // beforeTakeover), because that is when the CLI needs it.
+          const hold = new AbortController()
+          holding = hold
           try {
-            await attachPeer(call, deps.takeover, deps.env, action.peer, action.now, (line) => {
-              stdout.write(`${line}\n`)
-            })
-            state = { ...state, notice: `${action.peer} handed back` }
+            await attachPeer(
+              call,
+              deps.takeover,
+              deps.env,
+              action.peer,
+              action.now,
+              (line) => dispatch({ type: 'notice', text: line }),
+              {
+                signal: hold.signal,
+                beforeTakeover: () => {
+                  suspended = true
+                  stdin.setRawMode?.(false)
+                  stdin.pause()
+                  stdout.write(`${LEAVE_SCREEN}${TERMINAL_RESET}`)
+                },
+              },
+            )
+            dispatch({ type: 'notice', text: `${action.peer} handed back` })
+          } catch (thrown) {
+            // Only a cancel is an answer here; any other failure is reported below.
+            if (!hold.signal.aborted) throw thrown
+            dispatch({ type: 'notice', text: `cancelled, ${action.peer} keeps running` })
           } finally {
-            stdout.write(ENTER_SCREEN)
-            stdin.setRawMode?.(true)
-            stdin.resume()
-            suspended = false
+            holding = undefined
+            if (suspended) {
+              stdout.write(ENTER_SCREEN)
+              stdin.setRawMode?.(true)
+              stdin.resume()
+              suspended = false
+            }
             // Whatever happened while the screen was given away, paint what is true now.
             paint()
           }
@@ -217,14 +239,24 @@ export const runWatch = async (deps: InteractiveDeps): Promise<void> => {
 
   const parser = createKeyParser()
   let escapeTimer: NodeJS.Timeout | undefined
+  /** A hold that is waiting: its cancel, while the watch keeps the keys. */
+  let holding: AbortController | undefined
+  const handleKey = (key: Key): void => {
+    if (holding !== undefined) {
+      // Raw mode turns Ctrl-C into a key rather than a signal, so it must cancel too.
+      if (key.kind === 'escape' || key.kind === 'ctrl-c' || (key.kind === 'char' && key.char === 'q')) holding.abort()
+      return
+    }
+    dispatch({ type: 'key', key })
+  }
   const onData = (chunk: Buffer | string): void => {
     if (suspended) return
     if (escapeTimer !== undefined) clearTimeout(escapeTimer)
-    for (const key of parser.feed(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)) dispatch({ type: 'key', key })
+    for (const key of parser.feed(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)) handleKey(key)
     // A lone ESC is the escape key only if nothing follows it straight away.
     if (parser.pending) {
       escapeTimer = setTimeout(() => {
-        for (const key of parser.flush()) dispatch({ type: 'key', key })
+        for (const key of parser.flush()) handleKey(key)
       }, 30)
       escapeTimer.unref()
     }

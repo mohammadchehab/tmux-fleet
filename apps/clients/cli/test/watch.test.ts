@@ -471,6 +471,123 @@ describe('the terminal loop', () => {
     await done
   })
 
+  describe('attach while the hold waits (TASK-116)', () => {
+    const held = {
+      peerId: 'a',
+      providerId: 'claude',
+      sessionRef: 'r',
+      cwd: '/w',
+      model: 'm',
+      env: {},
+      command: { executable: 'claude', args: ['--resume', 'r'] },
+      pendingMessages: 0,
+    }
+
+    /** A watch on a peer whose turn does not end until the test says so, logging raw-mode changes and calls in order. */
+    const waiting = () => {
+      const log: string[] = []
+      const stdin = Object.assign(new PassThrough(), {
+        isTTY: true,
+        setRawMode: (mode: boolean) => {
+          log.push(`raw:${String(mode)}`)
+          return stdin
+        },
+      })
+      const originalPause = stdin.pause.bind(stdin)
+      stdin.pause = () => {
+        log.push('pause')
+        return originalPause()
+      }
+      const h = harness(ls([peer('a', { state: 'working' })]))
+      let release: (() => void) | undefined
+      let holdSignal: AbortSignal | undefined
+      const call = (async (method: DaemonMethod, params: unknown, options?: { signal?: AbortSignal }) => {
+        if (method === 'peer.hold') {
+          log.push('hold')
+          holdSignal = options?.signal
+          await new Promise<void>((resolve, reject) => {
+            release = resolve
+            options?.signal?.addEventListener('abort', () => reject(options.signal?.reason ?? new Error('aborted')))
+          })
+          return held
+        }
+        if (method === 'peer.release') {
+          log.push('release')
+          return { peerId: 'a', resumed: true }
+        }
+        return h.call(method, params as never)
+      }) as DaemonCaller
+      const takeover = async (): Promise<{ code: number | null; signal: string | null }> => {
+        log.push('takeover')
+        return { code: 0, signal: null }
+      }
+      const done = runWatch({ socketPath: '/s', call, takeover, env: {}, stdin, stdout: h.stdout, openWatch: h.openWatch, refreshMs: 60_000 })
+      // A watch that does not quit fails the test instead of hanging the run.
+      const quits = Promise.race([done, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the watch did not quit')), 500))])
+      return { h, stdin, log, done: quits, release: () => release?.(), signal: () => holdSignal }
+    }
+
+    const attach = async (w: ReturnType<typeof waiting>) => {
+      await settle()
+      w.stdin.write('\r') // the menu
+      w.stdin.write('\r') // the first item: attach
+      await settle()
+    }
+
+    it('keeps the terminal raw and reading keys while the hold waits', async () => {
+      const w = waiting()
+      await attach(w)
+
+      assert.ok(w.log.includes('hold'), 'the hold is waiting')
+      assert.equal(w.log.filter((entry) => entry === 'raw:false' || entry === 'pause').length, 0, 'raw mode and the reader are kept for the wait')
+      w.release()
+      await settle()
+      w.stdin.write('q')
+      await w.done
+    })
+
+    it('cancels the wait on Esc, aborts the request, and says the peer keeps running', async () => {
+      const w = waiting()
+      await attach(w)
+
+      w.stdin.write('\u001b')
+      await settle()
+      await settle()
+
+      assert.equal(w.signal()?.aborted, true, 'the hold request was dropped')
+      assert.ok(!w.log.includes('takeover') && !w.log.includes('release'), 'nothing was taken over or released')
+      assert.match(w.h.written.join(''), /cancelled, a keeps running/)
+      w.stdin.write('q')
+      await w.done
+    })
+
+    it('cancels on q too, and does not quit the watch', async () => {
+      const w = waiting()
+      await attach(w)
+
+      w.stdin.write('q')
+      await settle()
+      await settle()
+
+      assert.equal(w.signal()?.aborted, true)
+      assert.match(w.h.written.join(''), /cancelled, a keeps running/)
+      w.stdin.write('q') // the watch is back and this one quits it
+      await w.done
+    })
+
+    it('drops raw mode only right before the takeover, once the hold has answered', async () => {
+      const w = waiting()
+      await attach(w)
+      w.log.length = 0
+      w.release()
+      await settle()
+
+      assert.deepEqual(w.log.filter((entry) => entry !== 'raw:true'), ['raw:false', 'pause', 'takeover', 'release'])
+      w.stdin.write('q')
+      await w.done
+    })
+  })
+
   it('reconnects a lost stream from the newest seq it saw', async () => {
     const h = harness(ls([peer('a')]))
     const done = runWatch({ socketPath: '/s', call: h.call, takeover: undefined, env: {}, stdin: h.stdin, stdout: h.stdout, openWatch: h.openWatch, reconnectMs: 5, refreshMs: 60_000 })
