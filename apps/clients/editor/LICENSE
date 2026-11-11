@@ -1,0 +1,6 @@
+Copyright (c) 2026 Mohammad Chehab. All rights reserved.
+
+The Fleet editor extension is part of the tmux-fleet project. It is built and
+installed from this repository and is not licensed for redistribution: the
+`UNLICENSED` field in its manifest says exactly that. See the repository for the
+project's own terms.

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- A fleet in a line: the lead peer, and the ones behind it. -->
+  <circle cx="5" cy="12" r="2.4"/>
+  <circle cx="12" cy="6.5" r="1.9"/>
+  <circle cx="12" cy="17.5" r="1.9"/>
+  <circle cx="19" cy="12" r="1.9"/>
+  <path d="M7.2 10.9 10.3 7.7M7.2 13.1 10.3 16.3M13.7 7.7 16.8 10.9M13.7 16.3 16.8 13.1"/>
+</svg>

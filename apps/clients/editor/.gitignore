@@ -1,0 +1,2 @@
+# The packaged extension: built, never committed (§8 — CI builds it and attaches it to the release).
+dist/
