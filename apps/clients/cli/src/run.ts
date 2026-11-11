@@ -599,7 +599,11 @@ const execute = async (
     }
     case 'send': {
       const to = asArgument(peerId(), command.to, 'peer')
-      const result = await call('send', { to, kind: command.turn, body: command.body })
+      // A peer's own `fleet send` says who it is from: the daemon put `FLEET_PEER`
+      // in its env, and a takeover builds the same env. A person's shell has none.
+      const sender = deps.env?.['FLEET_PEER']
+      const from = sender === undefined || sender === '' ? undefined : asArgument(peerId(), sender, 'FLEET_PEER')
+      const result = await call('send', { to, kind: command.turn, body: command.body, ...(from === undefined ? {} : { from }) })
       return { text: formatSend(result, command.to), value: result }
     }
     case 'peek': {

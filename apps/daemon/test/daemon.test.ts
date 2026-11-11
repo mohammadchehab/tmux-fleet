@@ -447,6 +447,22 @@ test('peek with limit 0 returns nothing from the history fallback either', async
   await daemon.down()
 })
 
+test('a send that names its sender is recorded as that peer, and an unknown sender is refused (§8)', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+
+  await daemon.send({ to: 'engineer-1' as PeerId, kind: 'info', body: 'from the architect', from: 'architect' as PeerId })
+  const sent = (await store.read(1)).filter((event) => event.type === 'message.sent')
+  assert.equal(sent.at(-1)?.actor, 'peer:architect')
+  assert.equal(sent.at(-1)?.type === 'message.sent' ? sent.at(-1)?.data.from : undefined, 'peer:architect')
+
+  await assert.rejects(
+    daemon.send({ to: 'engineer-1' as PeerId, kind: 'info', body: 'hi', from: 'ghost' as PeerId }),
+    (error: FleetError) => error.code === 'not_found' && /ghost/.test(error.message),
+  )
+  await daemon.down()
+})
+
 test('a send to a registered peer with no session queues, and stays pending until one is there', async () => {
   // The queue rule: an unanswered session is not an error the sender must fix —
   // the message waits in the box and the Mailbox replays it on resume (§7).

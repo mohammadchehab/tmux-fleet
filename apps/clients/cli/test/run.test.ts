@@ -252,6 +252,24 @@ describe('run: send', () => {
     assert.equal(out[0], 'sent msg_0123456789abcdef to engineer-1')
   })
 
+  it('says who it is from when FLEET_PEER is set, so a peer\'s mail is attributed to it (§8)', async () => {
+    const { deps, calls } = harness(
+      { send: () => ({ msgId: 'msg_0123456789abcdef' }) },
+      { env: { FLEET_PROFILE: 'squad', FLEET_PEER: 'architect' } },
+    )
+    assert.equal(await run(argv('send', 'engineer-1', 'info', 'hi'), deps), 0)
+    assert.deepEqual(calls, [
+      { method: 'send', params: { to: 'engineer-1', kind: 'info', body: 'hi', from: 'architect' } },
+    ])
+  })
+
+  it('refuses a FLEET_PEER that is not a peer id rather than sending it on', async () => {
+    const { deps, err, calls } = harness({}, { env: { FLEET_PROFILE: 'squad', FLEET_PEER: '../etc' } })
+    assert.equal(await run(argv('send', 'engineer-1', 'info', 'hi'), deps), 2)
+    assert.match(err[0] ?? '', /FLEET_PEER/)
+    assert.deepEqual(calls, [])
+  })
+
   it('refuses a kind that is not one of §7\'s four', async () => {
     const { deps, err, calls } = harness({})
     assert.equal(await run(argv('send', 'engineer-1', 'shout', 'hi'), deps), 2)

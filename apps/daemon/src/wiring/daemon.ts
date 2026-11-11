@@ -295,9 +295,16 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
           details: { peerId: String(input.to) },
         })
       }
+      // A sender that is not a peer of this fleet is refused rather than recorded:
+      // `peer:<typo>` on a message would read as a peer that never existed (§7).
+      if (input.from !== undefined && (await read.peers.get(input.from)) === undefined) {
+        throw fleetError('not_found', `no peer ${String(input.from)} in this fleet to send from`, {
+          details: { peerId: String(input.from) },
+        })
+      }
       const result = await deps.mailbox.send({
         to: input.to,
-        from: ACTOR,
+        from: input.from === undefined ? ACTOR : peerActor(input.from),
         kind: input.kind,
         briefVersion,
         body: input.body,

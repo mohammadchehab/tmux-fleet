@@ -226,6 +226,13 @@ export interface SendParams {
    * from the peer's current version rather than trusting the client's copy (§7).
    */
   readonly briefVersion?: number
+  /**
+   * The peer sending it. Absent means a person at a terminal, which the daemon
+   * records as `user`. The CLI fills it from `FLEET_PEER`, which the daemon sets
+   * for every session it starts and which a takeover sets too, so mail a peer
+   * writes — headless or while a person drives it — is attributed to that peer.
+   */
+  readonly from?: PeerId
 }
 
 export const sendParams = (): Schema<SendParams> =>
@@ -234,6 +241,7 @@ export const sendParams = (): Schema<SendParams> =>
     kind: oneOf(turnKinds),
     body: text(100_000),
     briefVersion: optional(positiveInt()),
+    from: optional(peerId()),
   })
 
 /** `peek`: a peer's messages, oldest first — the last `limit`, defaulting to the whole box. */
