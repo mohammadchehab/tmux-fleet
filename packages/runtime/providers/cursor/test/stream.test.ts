@@ -44,6 +44,12 @@ test('with --stream-partial-output a delta carries timestamp_ms and the closing 
   const closing = parseLine(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'one' }] } }))
   assert.deepEqual(delta, { kind: 'assistant', text: 'one', delta: true })
   assert.deepEqual(closing, { kind: 'assistant', text: 'one', delta: false })
+  // Found live: where a text segment ends at a tool call the CLI prints the whole segment again, with a
+  // timestamp like a delta and a model_call_id a delta never has. It is a repeat, not a delta.
+  const segment = parseLine(
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'one' }] }, timestamp_ms: 1794387735800, model_call_id: 'mc_1' }),
+  )
+  assert.deepEqual(segment, { kind: 'assistant', text: 'one', delta: false })
 })
 
 test('a tool call names the tool from the key the CLI keys it by', () => {

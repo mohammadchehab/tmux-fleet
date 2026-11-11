@@ -182,8 +182,10 @@ A provider without `display` shows status only.
 
 - Claude: the query runs with `includePartialMessages: true`. That adds `stream_event` messages carrying text deltas and
   changes nothing else: `assistant`, `result` and `init` arrive as before, so the contract events do not move.
-- Cursor: turns run with `--stream-partial-output`. Deltas are `assistant` lines that carry `timestamp_ms`; the final
-  `assistant` line has none and repeats the whole text. The display takes the delta lines only, or the text shows twice.
+- Cursor: turns run with `--stream-partial-output`. Deltas are `assistant` lines that carry `timestamp_ms`. Two other
+  `assistant` lines repeat text a delta already carried: the final one has no `timestamp_ms`, and the one printed where a
+  text segment ends at a tool call has one but also a `model_call_id` (found live — the spike saw only the first). The
+  display takes the delta lines only, or the text shows twice.
 - Thinking deltas are dropped. The view shows what a peer said and did.
 
 **Daemon.** A ring buffer of the last N lines per peer (default 500), in memory. Lines are cut at a fixed width budget

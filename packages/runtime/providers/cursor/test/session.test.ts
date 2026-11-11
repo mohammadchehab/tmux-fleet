@@ -442,11 +442,15 @@ test('the display takes the delta lines of a recorded stream, once; thinking is 
   await reading
 
   const said = lines.flatMap((line) => (line.kind === 'text' ? [line.text] : [])).join('')
-  assert.equal(said, 'one\ntwo\nthree\n\nRepo root (`ls -la`):\n\n```\ntotal 16', 'the deltas, joined, are the text — the closing line that repeats it is not added')
+  assert.equal(
+    said,
+    'Checking the root now.\none\ntwo\nthree\n\nRepo root (`ls -la`):\n\n```\ntotal 16',
+    'the deltas, joined, are the text — neither the segment repeat before a tool call nor the closing line is added',
+  )
   assert.ok(!JSON.stringify(lines).includes('SECRET'), 'thinking never reaches the display')
   assert.deepEqual(
     lines.map((line) => (line.kind === 'text' ? 'text' : line.kind === 'tool' ? `tool:${line.tool}` : `turn:${line.phase}`)).filter((kind, at, all) => kind !== 'text' || all[at - 1] !== 'text'),
-    ['turn:started', 'tool:shellToolCall', 'text', 'turn:ended'],
+    ['turn:started', 'text', 'tool:shellToolCall', 'text', 'turn:ended'],
     'a turn line for each boundary, one tool line for the call (not its completion)',
   )
   // Conformance (§12): a `turn` line for every turn.started and turn.ended the contract carries.

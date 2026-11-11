@@ -50,9 +50,11 @@ export type CursorLine =
       readonly kind: 'assistant'
       readonly text: string
       /**
-       * With `--stream-partial-output`, a delta carries `timestamp_ms` and the closing
-       * line, which repeats the whole text, does not (§6). The display takes the
-       * deltas only, or the text would show twice.
+       * With `--stream-partial-output`, a delta carries `timestamp_ms`. Two lines repeat
+       * text a delta already carried, and the display must not show it twice: the closing
+       * line, which has no `timestamp_ms`, and the line printed where a text segment ends
+       * at a tool call, which has one but also a `model_call_id` no delta has (found live;
+       * the spike saw only the first).
        */
       readonly delta: boolean
     }
@@ -134,7 +136,7 @@ const assistantLine = (value: Record<string, unknown>): CursorLine => {
     .filter((part): part is Record<string, unknown> => isRecord(part) && part.type === 'text')
     .map((part) => (typeof part.text === 'string' ? part.text : ''))
     .join('')
-  return { kind: 'assistant', text, delta: typeof value.timestamp_ms === 'number' }
+  return { kind: 'assistant', text, delta: typeof value.timestamp_ms === 'number' && value.model_call_id === undefined }
 }
 
 /**
