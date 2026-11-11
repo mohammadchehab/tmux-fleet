@@ -31,7 +31,7 @@
  * copy `age` made, is a record that was not made here.
  */
 
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { decodeStrict, type Clock } from '@fleet/foundation-core'
 import {
   keyRotation,
@@ -78,6 +78,10 @@ const rotationsOf = (refs: readonly CoordinationRef[], prefix: string): { readon
     .map(({ ref, tail }) => ({ n: Number(tail), ref }))
     .sort((a, b) => b.n - a.n)
 
+/** What a rotation records of the keys a copy was sealed to: the sha256 (hex) of each recipient, sorted. */
+export const recipientFingerprints = (recipients: readonly string[]): string[] =>
+  [...new Set(recipients.map((recipient) => createHash('sha256').update(recipient).digest('hex')))].sort()
+
 const sameList = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((value, i) => value === b[i])
 
@@ -123,10 +127,26 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
     if (!checked.ok) return { kind: 'refused', reason: `rotation ${current.n} is not one this fleet's rule would make: ${checked.reason}` }
     const record = checked.record
     if (sameList(record.members, members)) {
-      // The same team; the only other change is a member who had no key adding one.
-      let gained = false
-      for (const member of record.missing) if ((await recipientsOf(member)).length > 0) gained = true
-      if (!gained) return { kind: 'current', rotation: current.n }
+      // The same team. What else can have changed is a member's keys. A key *added*
+      // (or a member with no key getting one) is a new rotation: the copy is still
+      // sealed to every key it was. A key *replaced or removed* is not, because the
+      // key they dropped can still open the copy sealed to it and the fleet cannot
+      // tell a rotated key from a stolen one: it refuses and a person clears the ref
+      // (decision-4). A record with no fingerprints says nothing about the keys its
+      // copies were sealed to, so it is rotated over, once.
+      let changed = record.recipients === undefined
+      for (const member of record.missing) if ((await recipientsOf(member)).length > 0) changed = true
+      for (const [member, sealedTo] of Object.entries(record.recipients ?? {})) {
+        const now = recipientFingerprints(await recipientsOf(member))
+        if (!sealedTo.every((fingerprint) => now.includes(fingerprint))) {
+          return {
+            kind: 'refused',
+            reason: `${member} no longer has every key rotation ${current.n} was sealed to (one was replaced or removed); the old key still opens their copy, so a person must clear ${current.ref.name} and decide`,
+          }
+        }
+        if (now.length !== sealedTo.length) changed = true
+      }
+      if (!changed) return { kind: 'current', rotation: current.n }
     }
   }
 
@@ -134,6 +154,7 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
   const key = (options.newKey ?? (() => randomBytes(32).toString('base64')))()
   const files: Record<string, string> = {}
   const missing: string[] = []
+  const sealedTo: Record<string, string[]> = {}
   for (const member of members) {
     const usable = await recipientsOf(member)
     if (usable.length === 0) {
@@ -141,12 +162,13 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
       continue
     }
     files[`${member}.age`] = await options.wrap.wrap(key, usable)
+    sealedTo[member] = recipientFingerprints(usable)
   }
   if (missing.length === members.length) {
     return { kind: 'refused', reason: `no member of ${options.team} has an ssh-ed25519 or ssh-rsa key on GitHub` }
   }
 
-  const record: KeyRotation = { version: 1, rotation, members, missing, by: options.self, at: options.clock.now() }
+  const record: KeyRotation = { version: 1, rotation, members, missing, recipients: sealedTo, by: options.self, at: options.clock.now() }
   files[ROTATION_FILE] = `${JSON.stringify(record, null, 2)}\n`
   const created = await options.coordination.create({
     ref: `${prefix}${rotation}`,
@@ -189,6 +211,10 @@ const readRecord = async (coordination: Coordination, ref: CoordinationRef, copi
   if (record.missing.length >= record.members.length) return { ok: false, reason: 'it gives no member a copy' }
   const expected = [ROTATION_FILE, ...record.members.filter((m) => !record.missing.includes(m)).map((m) => `${m}.age`)].sort()
   const actual = Object.keys(held.files).sort()
+  if (record.recipients !== undefined) {
+    const withCopy = record.members.filter((m) => !record.missing.includes(m)).sort()
+    if (!sameList(withCopy, Object.keys(record.recipients).sort())) return { ok: false, reason: 'its fingerprints are not for exactly the members who have a copy' }
+  }
   if (!sameList(expected, actual)) return { ok: false, reason: 'its files are not its record plus one copy per member it names' }
   const unverifiable = await unverifiableCopy(record, held.files, copies, ref)
   if (unverifiable !== undefined) return { ok: false, reason: unverifiable }
