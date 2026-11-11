@@ -5,10 +5,10 @@
  * than on its state, because that is what the person decides against: a working
  * peer and a waiting one are both running, and both take over the same way.
  *
- * `held` is a standing `ls` does not produce yet — watch-and-attach adds it —
- * but it is in the table because leaving it out would mean the day the state
- * appears the menu silently loses its two entries. `standingOf` is the one
- * place that will learn the new states.
+ * `held` and `stopped` are the states watch-and-attach adds to `ls` (§4, §7.2):
+ * a person has the session, or a person stopped it. `ended` and `failed` stay
+ * in the table beside them, because a peer that died on its own is offered the
+ * same `start` as one a person stopped.
  *
  * Two kinds of action, and the difference is deliberate:
  *
@@ -35,8 +35,13 @@ export const standingOf = (state: PeerState): PeerStanding => {
     case 'waiting_input':
     case 'idle':
       return 'running'
+    case 'held':
+      return 'held'
+    case 'stopped':
+      return 'stopped'
     case 'ended':
     case 'failed':
+      // A peer that died on its own is as free to start again as one a person stopped.
       return 'stopped'
   }
 }

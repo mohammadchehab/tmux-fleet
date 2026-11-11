@@ -26,7 +26,7 @@ import type { PeerId, PeerState } from '@fleet/foundation-core'
 import { actionsFor, standingOf, type PeerAction } from './actions.ts'
 
 /** The themed icon a row asks for; the editor layer turns it into a `ThemeIcon`. */
-export type PeerMark = 'working' | 'waiting' | 'idle' | 'starting' | 'ended' | 'failed'
+export type PeerMark = 'working' | 'waiting' | 'idle' | 'starting' | 'ended' | 'failed' | 'held' | 'stopped'
 
 export interface PeerRow {
   /** The element identity: stable across polls, which is what single-row refresh needs (§4). */
@@ -70,6 +70,10 @@ const markOf = (state: PeerState): PeerMark => {
       return 'ended'
     case 'failed':
       return 'failed'
+    case 'held':
+      return 'held'
+    case 'stopped':
+      return 'stopped'
   }
 }
 
@@ -114,6 +118,10 @@ const doingNow = (state: PeerState, activity: PeerActivity | undefined): string 
       return 'ended'
     case 'failed':
       return 'failed'
+    case 'held':
+      return 'held'
+    case 'stopped':
+      return 'stopped'
     case 'working':
       return 'working'
   }

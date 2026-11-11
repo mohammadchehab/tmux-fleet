@@ -89,6 +89,26 @@ test('the actions a row offers follow its standing, not its exact state', () => 
   assert.deepEqual(gone?.actions, ['start'])
 })
 
+test('a held peer is marked held and offered Reopen and Release; a stopped one is offered Start', () => {
+  const rows = rowsOf(lsOf({ peers: [peerOf('mine', 'held'), peerOf('parked', 'stopped'), peerOf('crashed', 'failed')] }))
+  const mine = rows.peers.find((row) => row.peerId === 'mine')
+  const parked = rows.peers.find((row) => row.peerId === 'parked')
+  const crashed = rows.peers.find((row) => row.peerId === 'crashed')
+
+  assert.equal(mine?.mark, 'held')
+  assert.equal(mine?.description, 'held')
+  assert.deepEqual(mine?.actions, ['reopen', 'release'])
+  assert.equal(parked?.mark, 'stopped')
+  assert.equal(parked?.description, 'stopped')
+  assert.deepEqual(parked?.actions, ['start'])
+  assert.deepEqual(crashed?.actions, ['start'], 'a peer that died on its own starts the same way as one a person stopped')
+  assert.equal(
+    rows.needsYou.filter((row) => row.peerId === 'mine' || row.peerId === 'parked').length,
+    0,
+    'a parked peer is a person\'s decision, not something that needs them now',
+  )
+})
+
 test('the tooltip carries the tokens and cost the row has no room for', () => {
   const rows = rowsOf(lsOf({ peers: [peerOf('engineer-1')], tokens: [{ ...tokensOf('engineer-1', 2), costUsd: 1.5 }] }))
   const tooltip = rows.peers[0]?.tooltip ?? ''

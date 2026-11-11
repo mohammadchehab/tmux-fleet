@@ -21,6 +21,8 @@ const ICONS: Readonly<Record<string, string>> = {
   starting: 'play-circle',
   ended: 'check',
   failed: 'error',
+  held: 'lock',
+  stopped: 'debug-pause',
 }
 
 const SEVERITY: Readonly<Record<Severity, (message: string) => Thenable<unknown>>> = {

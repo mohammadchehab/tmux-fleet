@@ -4,6 +4,7 @@
  * decision" and see the rows that follow.
  */
 
+import { daemonProtocolVersion } from '@fleet/foundation-contracts'
 import type {
   DaemonStatus,
   Decision,
@@ -73,6 +74,7 @@ export const statusOf = (profile = 'tmux-fleet', socketPath = '/home/tester/.fle
   startedAt: at,
   socketPath,
   storePath: '/home/tester/.fleet/tmux-fleet/store.db',
+  protocolVersion: daemonProtocolVersion,
 })
 
 export interface LsParts {
