@@ -12,7 +12,7 @@ import type { PeerState } from '@fleet/foundation-core'
 
 import { needsYou, type Need } from './needs.ts'
 import { focusedPeer, selectables, type Menu, type TimelineItem, type WatchState } from './model.ts'
-import { fit, wrap } from './text.ts'
+import { fit, stripControl, wrap } from './text.ts'
 
 const marks: Readonly<Record<PeerState, string>> = {
   starting: '…',
@@ -165,20 +165,31 @@ export const render = (state: WatchState, nowMs: number): readonly string[] => {
 /**
  * `fleet watch --once`: the strip and the table, with no selection, no detail
  * and no escapes — what a script or a transcript can read.
+ *
+ * It lays out no colours of its own, so it never passes through `fit`, and a
+ * line of it is exactly the peer's words with nothing added: every line is
+ * stripped whole rather than field by field, which is the one place a field
+ * could be missed (TASK-105).
  */
 export const renderOnce = (ls: LsResult, nowMs: number): readonly string[] => {
   const needs = needsYou(ls)
   const out: string[] = [`NEEDS YOU (${String(needs.length)})`]
   if (needs.length === 0) out.push('  nothing waits on you')
-  for (const need of needs) out.push(`  ${needLine(need, nowMs)}`)
+  for (const need of needs) out.push(stripControl(`  ${needLine(need, nowMs)}`))
   out.push(`PEERS (${String(ls.peers.length)})`)
-  const width = Math.max(0, ...ls.peers.map((peer) => peer.peerId.length))
+  // The column is as wide as the id *looks*, not as wide as the bytes it took,
+  // or one peer's escapes would misalign every row under it.
+  const names = new Map(ls.peers.map((peer) => [peer.peerId, stripControl(peer.peerId)]))
+  const width = Math.max(0, ...[...names.values()].map((name) => name.length))
   for (const peer of ls.peers) {
     const activity = activityOf(ls, peer)
     const percent = contextPercent(activity)
     const hot = percent !== undefined && percent / 100 >= ls.status.purgeContextRatio
+    const id = names.get(peer.peerId) ?? ''
     out.push(
-      `  ${markOf(peer.state)} ${peer.peerId.padEnd(width)}  ${peer.state.padEnd(13)}  ${percent === undefined ? '-' : `${String(percent)}%${hot ? '!' : ''}`}  ${doingNow(peer, activity)}`.trimEnd(),
+      stripControl(
+        `  ${markOf(peer.state)} ${id.padEnd(width)}  ${peer.state.padEnd(13)}  ${percent === undefined ? '-' : `${String(percent)}%${hot ? '!' : ''}`}  ${doingNow(peer, activity)}`.trimEnd(),
+      ),
     )
   }
   return out
