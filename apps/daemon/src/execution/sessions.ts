@@ -24,6 +24,7 @@ import {
   ok,
   systemClock,
   type Clock,
+  type DecisionId,
   type FleetError,
   type ProfilePaths,
   type PeerId,
@@ -176,7 +177,7 @@ export interface Supervisor extends PeerSessions {
    * Answer a tool_approval decision by calling the peer's session's answerApproval method.
    * Returns false if the session no longer has the approval open (answered, abandoned, or session gone).
    */
-  answerApproval(decisionId: string, peerId: PeerId, decision: 'allow' | 'deny'): Promise<boolean>
+  answerApproval(decisionId: DecisionId, peerId: PeerId, decision: 'allow' | 'deny'): Promise<boolean>
 }
 
 /** Wait for `until`, or reject when `signal` aborts first; the waited-for promise is left running. */
@@ -930,7 +931,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       return true
     },
 
-    async answerApproval(decisionId, peerId, decision) {
+    async answerApproval(decisionId: DecisionId, peerId: PeerId, decision: 'allow' | 'deny') {
       const running = sessions.get(peerId)
       if (running === undefined) return false
       return await running.session.answerApproval(decisionId, decision)

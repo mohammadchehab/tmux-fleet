@@ -904,7 +904,7 @@ test("§6.1: a tool_approval decision answered by `decide allow` routes to the p
   await daemon.up()
 
   // Create a tool_approval decision
-  const decisionId = newDecisionId('allow')
+  const decisionId = newDecisionId()
   const peerId = 'engineer-1' as PeerId
   const ts = '2026-11-10T10:00:00.000Z'
   await store.append([
@@ -940,27 +940,12 @@ test("§6.1: a tool_approval decision answered by `decide allow` routes to the p
 })
 
 test("§6.1: a tool_approval decision that cannot be answered (session gone) still records the answer (TASK-115)", async () => {
-  const supervisor = fakeSupervisor()
-  supervisor.answerApproval = async () => false // Simulate session gone
-  const paths = pathsFor()
-  for (const dir of persistentDirs(paths)) await mkdir(dir, { recursive: true })
-  const store: EventStore = await openSqliteStore({ path: paths.storePath })
-  await store.migrate()
-  const scheduler = fakeScheduler()
-
-  const daemon = createDaemon({
-    profile: profile(),
-    paths,
-    store,
-    supervisor: supervisor as any,
-    mailbox: createMailbox({ store, supervisor: supervisor as any }),
-    scheduler,
-  })
-
+  // Harness provides all the real deps; we override supervisor.answerApproval to simulate session gone
+  const { daemon, store } = await harness()
   await daemon.up()
 
   // Create a tool_approval decision
-  const decisionId = newDecisionId('deny')
+  const decisionId = newDecisionId()
   const peerId = 'engineer-1' as PeerId
   const ts = '2026-11-10T10:00:00.000Z'
   await store.append([
@@ -981,7 +966,7 @@ test("§6.1: a tool_approval decision that cannot be answered (session gone) sti
     },
   ])
 
-  // Answer the decision — should not fail even though answerApproval returns false
+  // Answer the decision — should not fail even though the approval was already answered/abandoned
   const result = await daemon.decide({ id: decisionId, decision: 'deny', note: undefined })
   assert.equal(result.state, 'answered')
   assert.equal(result.option, 'deny')
