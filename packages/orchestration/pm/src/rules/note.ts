@@ -52,7 +52,7 @@ export const raiseBlockedNotes: Rule = (ctx) => {
   // The claim is `unblock`'s, on purpose. A peer that reported blocked and a Work the fleet marked
   // blocked are the same question about the same Work, and `decide` keeps the first claim — so two
   // rules cannot put two asks about one blocker in front of the user in one tick.
-  return [draft(`unblock:${String(work.workId)}`, {
+  const asked = draft(`unblock:${String(work.workId)}`, {
     kind: 'request_decision',
     causedBy: ctx.causedBy,
     decisionId,
@@ -63,5 +63,18 @@ export const raiseBlockedNotes: Rule = (ctx) => {
     options: [],
     workId: work.workId,
     inputsHash,
-  })]
+  })
+
+  // The note is also the transition (TASK-126): a Work that is not blocked yet becomes blocked, and that
+  // `work.blocked` is what the rest of the fleet keys on. Only the question is asked for a Work already blocked.
+  if (work.state === 'blocked') return [asked]
+  const block = draft(`block:${String(work.workId)}`, {
+    kind: 'block_work',
+    causedBy: ctx.causedBy,
+    workId: work.workId,
+    reason: `${String(note.peerId)} says it is blocked: "${note.body}"`,
+    // A note does not say who can clear it, so it is the user's question until a peer says otherwise.
+    blockedOn: 'user',
+  })
+  return [asked, block]
 }

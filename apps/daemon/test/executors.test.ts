@@ -46,6 +46,7 @@ import {
 import type { JudgeService } from '@fleet/orchestration-judge'
 
 import {
+  createBlockWorkExecutor,
   createCapacityExecutor,
   createDaemonExecutors,
   createDecisionExecutor,
@@ -517,12 +518,57 @@ const deps = () => {
   }
 }
 
-test('the daemon owns exactly the seven kinds it can carry out (§5.2)', () => {
+/** A Work the peer holds, in the state the test names. */
+const heldWork = (state: string): Work => row<Work>({ workId: 'wrk_0123456789abcdef', title: 'a Work', state, assignee: 'engineer-1', dependsOn: [], prs: [], createdAt: '2026-11-10T09:00:00.000Z', updatedAt: '2026-11-10T09:00:00.000Z' })
+
+const blockAction = (): Extract<PmAction, { kind: 'block_work' }> =>
+  action({ kind: 'block_work', workId: 'wrk_0123456789abcdef' as never, reason: 'peer engineer-1 says: no replay', blockedOn: 'user' }) as Extract<PmAction, { kind: 'block_work' }>
+
+test('block_work writes work.blocked for a Work the peer holds, the transition the PM decided (TASK-126)', async () => {
+  const read = readModel({ work: { all: async () => [], get: async () => heldWork('in_progress') } })
+  const store = sink()
+  const outcome = await outcomeOf(createBlockWorkExecutor({ store, read, clock }), blockAction())
+
+  assert.equal(outcome.ok, true)
+  const written = only(store.appended)
+  assert.equal(written.type, 'work.blocked')
+  assert.equal(written.subject, 'wrk_0123456789abcdef')
+  assert.deepEqual(written.data, { workId: 'wrk_0123456789abcdef', reason: 'peer engineer-1 says: no replay', blockedOn: 'user' })
+})
+
+test('block_work on a Work already blocked writes nothing: the second transition would be a guess (TASK-126)', async () => {
+  const store = sink()
+  const read = readModel({ work: { all: async () => [], get: async () => heldWork('blocked') } })
+  const outcome = await outcomeOf(createBlockWorkExecutor({ store, read, clock }), blockAction())
+
+  assert.equal(outcome.ok, true)
+  assert.deepEqual(store.appended, [])
+})
+
+test('block_work on a Work that is over writes nothing: a merged or cancelled Work is not blocked (TASK-126)', async () => {
+  for (const state of ['merged', 'cleaned', 'cancelled']) {
+    const store = sink()
+    const read = readModel({ work: { all: async () => [], get: async () => heldWork(state) } })
+    const outcome = await outcomeOf(createBlockWorkExecutor({ store, read, clock }), blockAction())
+    assert.equal(outcome.ok, true, state)
+    assert.deepEqual(store.appended, [], state)
+  }
+})
+
+test('block_work for a Work the fleet does not have is a failed action, not a silent blocking of nothing (TASK-126)', async () => {
+  const store = sink()
+  const outcome = await outcomeOf(createBlockWorkExecutor({ store, read: readModel(), clock }), blockAction())
+  assert.equal(outcome.ok, false)
+  assert.deepEqual(store.appended, [])
+})
+
+test('the daemon owns exactly the eight kinds it can carry out (§5.2)', () => {
   const wiring = deps()
   const kinds = createDaemonExecutors(wiring)
     .flatMap((entry) => entry.kinds)
     .sort()
   assert.deepEqual(kinds, [
+    'block_work',
     'flag_capacity',
     'mark_ready',
     'raise_no_work',
@@ -537,7 +583,7 @@ test('the gate stays the only home of merge and retarget, so a kind cannot be ca
   const router = createExecutorRouter({ executors: createDaemonExecutors(deps()) })
   assert.equal(router.kinds.has('merge'), false)
   assert.equal(router.kinds.has('retarget'), false)
-  assert.equal(router.kinds.size, 7)
+  assert.equal(router.kinds.size, 8)
 })
 
 test('an executor called with a kind it does not own says so rather than guessing (§5.2)', async () => {
