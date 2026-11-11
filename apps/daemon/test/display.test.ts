@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import type { PeerId } from '@fleet/foundation-core'
 import { daemonProtocolVersion, displayLineMaxChars, type WatchFrame } from '@fleet/foundation-contracts'
 
-import { createDisplayFeed } from '../src/execution/display.ts'
+import { createDisplayFeed, rowOf } from '../src/execution/display.ts'
 
 const a = 'engineer-1' as PeerId
 const b = 'architect-1' as PeerId
@@ -166,4 +166,28 @@ test('a client that stops reading unsubscribes, and later pushes cost it nothing
   await iterator.return?.()
   for (let i = 0; i < 100; i += 1) feed.push(a, { kind: 'tool', tool: 'x' })
   assert.equal((await iterator.next()).done, true)
+})
+
+test('only the store facts a view shows become rows, and a long question is cut', () => {
+  const at = '2026-11-11T08:00:00.000Z'
+  const event = (type: string, data: Record<string, unknown>) => ({ seq: 1, ts: at, type, subject: 'x', actor: 'user', data }) as never
+  assert.deepEqual(rowOf(event('peer.state_changed', { peerId: a, state: 'idle', sessionId: 'ses_0123456789abcdef' })), { kind: 'state', peerId: a, state: 'idle' })
+  assert.deepEqual(rowOf(event('message.sent', { msgId: 'msg_0123456789abcdef', to: a, from: 'pm', kind: 'info', briefVersion: 1, body: 'the body is not shown' })), {
+    kind: 'mail',
+    phase: 'sent',
+    msgId: 'msg_0123456789abcdef',
+    to: a,
+    from: 'pm',
+  })
+  assert.deepEqual(rowOf(event('message.delivered', { msgId: 'msg_0123456789abcdef', to: a, sessionId: 'ses_0123456789abcdef' })), {
+    kind: 'mail',
+    phase: 'delivered',
+    msgId: 'msg_0123456789abcdef',
+    to: a,
+  })
+  const long = rowOf(event('decision.requested', { decisionId: 'dec_0123456789abcdef', question: 'q'.repeat(2_000) }))
+  assert.equal(long?.kind === 'decision' ? long.question?.length : 0, displayLineMaxChars + 1)
+  assert.deepEqual(rowOf(event('decision.answered', { decisionId: 'dec_0123456789abcdef', source: 'user' })), { kind: 'decision', phase: 'answered', decisionId: 'dec_0123456789abcdef' })
+  assert.equal(rowOf(event('peer.tool_used', { peerId: a, tool: 'Bash' })), undefined)
+  assert.equal(rowOf(event('routine.started', {})), undefined)
 })

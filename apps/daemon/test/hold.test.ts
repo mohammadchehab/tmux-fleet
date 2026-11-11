@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { profilePaths, systemClock, type PeerId, type ProviderSessionRef, type TurnId } from '@fleet/foundation-core'
-import type { AppendEvent, FleetEvent, ProviderEvent, SessionSpec, Turn } from '@fleet/foundation-contracts'
+import type { AppendEvent, DisplayLine, FleetEvent, ProviderEvent, SessionSpec, Turn } from '@fleet/foundation-contracts'
 import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import { createMailbox } from '@fleet/runtime-mailbox'
 import type { Provider, SessionHandle } from '@fleet/runtime-provider-sdk'
@@ -24,11 +24,11 @@ const reviewer = 'reviewer-1' as PeerId
 const checkout = '/work/widgets'
 
 /** A stream a test writes into. */
-class Feed {
-  readonly #queue: ProviderEvent[] = []
+class Feed<T = ProviderEvent> {
+  readonly #queue: T[] = []
   #wake: (() => void) | undefined
   #closed = false
-  push(...events: ProviderEvent[]): void {
+  push(...events: T[]): void {
     this.#queue.push(...events)
     this.#wake?.()
   }
@@ -36,7 +36,7 @@ class Feed {
     this.#closed = true
     this.#wake?.()
   }
-  [Symbol.asyncIterator](): AsyncIterator<ProviderEvent> {
+  [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: async () => {
         for (;;) {
@@ -74,9 +74,12 @@ const fakeProvider = (
     resumeFails?: boolean
     /** A provider that takes one turn at a time (cursor): `send` while a turn runs is refused. */
     rejectWhileBusy?: boolean
+    /** Give the provider a `display` stream per session. */
+    display?: boolean | 'throws'
   } = {},
 ) => {
   const busy = new Set<string>()
+  const displays = new Map<string, Feed<DisplayLine>>()
   const feeds = new Map<string, Feed>()
   const opened: Opened[] = []
   const sent: { sessionId: string; text: string }[] = []
@@ -88,6 +91,7 @@ const fakeProvider = (
     const briefTurnId = `trn_${String(n).padStart(16, '0')}` as TurnId
     const feed = new Feed()
     feeds.set(sessionId, feed)
+    displays.set(sessionId, new Feed<DisplayLine>())
     opened.push({ sessionId, peerId: spec.peerId, how, ref, spec })
     feed.push({ type: 'turn.started', turnId: briefTurnId, at: at() })
     const auto = typeof options.autoOpen === 'function' ? options.autoOpen(how) : options.autoOpen !== false
@@ -104,6 +108,18 @@ const fakeProvider = (
       return open(spec, 'resume', ref)
     },
     events: (handle: SessionHandle) => feeds.get(handle.sessionId) as Feed,
+    ...(options.display === undefined || options.display === false
+      ? {}
+      : {
+          display: (handle: SessionHandle) => {
+            if (options.display === 'throws') {
+              return {
+                [Symbol.asyncIterator]: () => ({ next: async () => Promise.reject(new Error('the display broke')) }),
+              }
+            }
+            return displays.get(handle.sessionId) as Feed<DisplayLine>
+          },
+        }),
     send: async (handle: SessionHandle, turn: Turn) => {
       if (options.rejectWhileBusy === true && busy.has(handle.sessionId)) {
         throw new Error(`session ${handle.sessionId} is still running a turn; the message was not sent`)
@@ -121,6 +137,7 @@ const fakeProvider = (
       const feed = feeds.get(handle.sessionId)
       feed?.push({ type: 'session.ended', reason: 'stopped' })
       feed?.close()
+      displays.get(handle.sessionId)?.close()
     },
     status: async () => 'idle',
     usage: async () => ({ contextTokens: 10, contextLimit: 200_000 }),
@@ -137,7 +154,9 @@ const fakeProvider = (
   const startTurn = (sessionId: string) => busy.add(sessionId) && feeds.get(sessionId)?.push({ type: 'turn.started', turnId: 'trn_000000000000feed' as TurnId, at: at() })
   const endTurn = (sessionId: string, reason: 'completed' | 'interrupted' = 'completed') =>
     busy.delete(sessionId) && feeds.get(sessionId)?.push({ type: 'turn.ended', turnId: 'trn_000000000000feed' as TurnId, at: at(), reason })
-  return { provider, opened, sent, calls, endOpening, startTurn, endTurn }
+  /** Say something on a session's display stream. */
+  const say = (sessionId: string, ...lines: DisplayLine[]) => displays.get(sessionId)?.push(...lines)
+  return { provider, opened, sent, calls, endOpening, startTurn, endTurn, say }
 }
 
 const profile = decodeProfile({
@@ -154,7 +173,7 @@ const registered = (peerId: PeerId, role: string): AppendEvent =>
   ({ ts: at(), type: 'peer.registered', subject: peerId, actor: 'user', data: { peerId, role, providerId: 'claude', model: 'claude-opus-5-5', permissionMode: 'default' } }) as unknown as AppendEvent
 
 /** A supervisor on a store, with the Mailbox and the delivery-on-start wake wired as compose.ts wires them. */
-const fleet = async (fake: ReturnType<typeof fakeProvider>, store?: EventStore) => {
+const fleet = async (fake: ReturnType<typeof fakeProvider>, store?: EventStore, display?: { push(peerId: PeerId, line: DisplayLine): void }) => {
   const stateDir = await mkdtemp(join(tmpdir(), 'fleet-hold-'))
   const opened = store ?? (await openSqliteStore({ path: join(stateDir, 'store.sqlite') }))
   if (store === undefined) await opened.append([registered(engineer, 'engineer'), registered(reviewer, 'reviewer')])
@@ -171,6 +190,7 @@ const fleet = async (fake: ReturnType<typeof fakeProvider>, store?: EventStore) 
     store: wake,
     providers: new Map([['claude', fake.provider]]),
     providerEnv: async () => ({ ANTHROPIC_BASE_URL: 'https://endpoint.example' }),
+    ...(display === undefined ? {} : { display }),
   })
   const mailbox = createMailbox({
     store: { append: wake.append, messages: opened.reader().messages },
@@ -488,4 +508,45 @@ test('mail queued during a hold is delivered when the handback turn ends, on a p
   assert.equal(deliveries[0]?.sessionId, resumed.sessionId)
   assert.equal((await f.events()).filter((e) => e.type === 'message.delivered').length, 1, 'and recorded as delivered once')
   await f.supervisor.stop()
+})
+
+test('a session’s display lines reach the feed under its peer, across a release, and end with the session', async () => {
+  const fake = fakeProvider({ display: true })
+  const seen: { peerId: PeerId; line: DisplayLine }[] = []
+  const f = await fleet(fake, undefined, { push: (peerId, line) => void seen.push({ peerId, line }) })
+  await f.supervisor.start()
+  await settle()
+  const first = sessionOf(fake, engineer)
+  fake.say(first.sessionId, { kind: 'turn', phase: 'started' }, { kind: 'text', text: 'looking' })
+  fake.say(sessionOf(fake, reviewer).sessionId, { kind: 'tool', tool: 'Read' })
+  await settle()
+  const by = (peerId: PeerId) => seen.filter((row) => row.peerId === peerId).map((row) => row.line.kind)
+  assert.deepEqual(by(engineer), ['turn', 'text'], 'in the order the session said them')
+  assert.deepEqual(by(reviewer), ['tool'], 'each peer’s lines are its own')
+
+  await f.supervisor.hold(engineer, { by: 'user' })
+  await f.supervisor.release(engineer)
+  await settle()
+  const resumed = sessionOf(fake, engineer)
+  assert.notEqual(resumed.sessionId, first.sessionId)
+  fake.say(resumed.sessionId, { kind: 'text', text: 'back' })
+  await settle()
+  assert.deepEqual(seen.at(-1), { peerId: engineer, line: { kind: 'text', text: 'back' } }, 'the resumed session is tapped too')
+  await f.supervisor.stop()
+})
+
+test('a display that fails, and a provider with no display, leave the session and its mail exactly as they were', async () => {
+  for (const display of [false, 'throws'] as const) {
+    const fake = fakeProvider({ display })
+    const seen: unknown[] = []
+    const f = await fleet(fake, undefined, { push: (...args) => void seen.push(args) })
+    await f.supervisor.start()
+    await settle()
+    assert.ok(f.supervisor.running().includes(engineer))
+    assert.ok((await f.mailbox.send({ to: engineer, from: 'user', kind: 'info', briefVersion: 1, body: 'still works' })).ok)
+    await f.mailbox.deliver(engineer)
+    assert.equal(fake.sent.filter((row) => row.text === 'still works').length, 1)
+    assert.deepEqual(seen, [])
+    await f.supervisor.stop()
+  }
 })

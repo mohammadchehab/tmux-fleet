@@ -36,6 +36,7 @@ import {
 } from '@fleet/foundation-core'
 import type {
   BriefHandoff,
+  DisplayLine,
   EventSink,
   PeerHoldResult,
   PeerResumeResult,
@@ -48,7 +49,7 @@ import type {
   WorktreeProvisioner,
   Turn,
 } from '@fleet/foundation-contracts'
-import { buildChildEnv, type Provider } from '@fleet/runtime-provider-sdk'
+import { buildChildEnv, type Provider, type SessionHandle } from '@fleet/runtime-provider-sdk'
 import {
   PeerSession,
   mechanicalStateFile,
@@ -105,6 +106,12 @@ export interface SupervisorDeps {
    * inherits its credentials can run on.
    */
   readonly providerEnv?: (peer: PeerProfile) => Promise<Readonly<Record<string, string>>>
+  /**
+   * Where a provider's display lines go (watch-and-attach §6): `fleet watch` reads
+   * them back out. Absent, or for a provider with no `display`, a peer shows status
+   * only. Display data is never stored, and nothing in the session depends on it.
+   */
+  readonly display?: { push(peerId: PeerId, line: DisplayLine): void }
   /** Where the page reports what it cannot do, so a failed session is visible rather than silent. */
   readonly onError?: (peer: PeerId, error: unknown) => void
   /**
@@ -362,6 +369,24 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     return path
   }
 
+  /**
+   * Copy one session's display lines into the feed, for as long as the session
+   * lives. A display that fails is a view that stops, never a session that does:
+   * nothing here is awaited by the peer, and an error is dropped.
+   */
+  const tapDisplay = (peerId: PeerId, provider: Provider, handle: SessionHandle): void => {
+    const sink = deps.display
+    if (sink === undefined || provider.display === undefined) return
+    const lines = provider.display(handle)
+    void (async () => {
+      try {
+        for await (const line of lines) sink.push(peerId, line)
+      } catch {
+        // The view loses this session's lines; the session is unaffected.
+      }
+    })()
+  }
+
   /** Start one session from the profile and hand it to the supervisor's pump. */
   const startPeer = async (
     peer: PeerProfile,
@@ -420,6 +445,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       await from.before(reason === undefined ? { resumed } : { resumed, reason })
     }
 
+    tapDisplay(peer.id, provider, handle)
     const session = new PeerSession({
       resumed,
       provider,
@@ -462,6 +488,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
             // measured here either — this reports zero because it replayed zero,
             // not because there was nothing to replay.
             const fresh = await provider.start({ ...spec, cwd: await workdirFor(peer), stateFile })
+            tapDisplay(peer.id, provider, fresh)
             return { handle: fresh, replayedMessages: 0 }
           },
           facts: (): MechanicalFacts => ({

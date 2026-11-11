@@ -25,6 +25,7 @@ import {
   daemonProtocolVersion,
   displayLineMaxChars,
   type DisplayLine,
+  type FleetEvent,
   type WatchEndReason,
   type WatchFrame,
   type WatchParams,
@@ -268,4 +269,26 @@ export const createDisplayFeed = (options: DisplayFeedOptions = {}): DisplayFeed
     },
   }
   return feed
+}
+
+/**
+ * The store facts a watch shows, cut down to a row: a peer's state changing, mail
+ * sent and delivered, a decision opened and answered. Everything else the store
+ * records is not the view's business, and prose never comes through here.
+ */
+export const rowOf = (event: FleetEvent): WatchRow | undefined => {
+  switch (event.type) {
+    case 'peer.state_changed':
+      return { kind: 'state', peerId: event.data.peerId, state: event.data.state }
+    case 'message.sent':
+      return { kind: 'mail', phase: 'sent', msgId: event.data.msgId, to: event.data.to, from: event.data.from }
+    case 'message.delivered':
+      return { kind: 'mail', phase: 'delivered', msgId: event.data.msgId, to: event.data.to }
+    case 'decision.requested':
+      return { kind: 'decision', phase: 'requested', decisionId: event.data.decisionId, question: cut(event.data.question) }
+    case 'decision.answered':
+      return { kind: 'decision', phase: 'answered', decisionId: event.data.decisionId }
+    default:
+      return undefined
+  }
 }
