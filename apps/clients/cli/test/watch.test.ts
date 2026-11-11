@@ -139,6 +139,14 @@ describe('text', () => {
     assert.deepEqual(wrap('hello brave world', 11), ['hello brave', 'world'])
     assert.deepEqual(wrap('a\n\nb', 5), ['a', '', 'b'])
   })
+  it('fits and wraps away terminal control characters rather than passing them on', () => {
+    // A width is columns on the screen, so a control character that is not a
+    // column must not be counted as one either.
+    assert.equal(fit('a\u001b[2Jb', 2), 'ab')
+    assert.deepEqual(wrap('a\u001b]0;x\u0007b c', 3), ['ab', 'c'])
+    // A tab is a column, but not a width this can measure: it becomes a space.
+    assert.equal(fit('a\tb', 3), 'a b')
+  })
 })
 
 describe('the model', () => {
@@ -289,6 +297,71 @@ describe('render', () => {
     assert.equal(lines[0], 'NEEDS YOU (1)')
     assert.ok(lines.every((line) => !line.includes('\u001b')))
     assert.match(lines.join('\n'), /● engineer-1/)
+  })
+})
+
+describe('a peer cannot paint the terminal (TASK-105)', () => {
+  const now = Date.parse('2026-11-10T13:00:00.000Z')
+  const state = (snapshot: LsResult, cols = 100, rows = 24): WatchState =>
+    feed(initialState({ cols, rows }), { type: 'snapshot', ls: snapshot }).state
+
+  /**
+   * What a peer would send to take the screen: wipe it, home the cursor, set the
+   * window title (OSC 0), and set the clipboard (OSC 52). None of these are text.
+   */
+  const PAYLOAD = '\u001b[2J\u001b[1;1H\u001b]0;pwned\u0007\u001b]52;c;cGF5bG9hZA==\u0007evil'
+
+  /**
+   * Everything on a line that is not this view's own SGR colour. The view paints
+   * with `\u001b[<digits>m` and nothing else, so anything left over here is a
+   * sequence the peer chose — which is the whole of what this checks.
+   */
+  const foreign = (line: string): readonly string[] => line.replace(/\u001b\[[0-9;]*m/g, '').match(/[\u0000-\u001f\u007f-\u009f]/g) ?? []
+
+  it('strips an escape payload from the activity the peer reports about itself', () => {
+    // `lastTarget` is a path the peer's own tool call named — the most direct
+    // route from a peer to this screen, and the one TASK-100 found in `view`.
+    const activity: PeerActivity = { peerId: 'a' as PeerId, lastTool: 'Read', lastTarget: PAYLOAD, edits: 1 }
+    const lines = render(state(ls([peer('a', { state: 'working' })], [], [activity])), now)
+    assert.deepEqual(lines.flatMap(foreign), [])
+    assert.match(lines.map(strip).join('\n'), /Read evil/)
+  })
+
+  it('strips it from the timeline, the tool summary, and the mail it was sent', () => {
+    const filled = feed(
+      state(ls([peer('a', { state: 'working' })])),
+      { type: 'frame', frame: { stream: 'line', seq: 1, at: 't', peerId: 'a' as PeerId, line: { kind: 'text', text: PAYLOAD } } },
+      { type: 'frame', frame: { stream: 'line', seq: 2, at: 't', peerId: 'a' as PeerId, line: { kind: 'tool', tool: 'Read', summary: PAYLOAD } } },
+      { type: 'frame', frame: { stream: 'line', seq: 3, at: 't', peerId: 'a' as PeerId, line: { kind: 'turn', phase: 'ended', reason: PAYLOAD as never } } },
+      { type: 'frame', frame: { stream: 'row', seq: 4, at: 't', row: { kind: 'mail', phase: 'delivered', msgId: 'm-1' as never, to: 'a' as PeerId, from: PAYLOAD } } },
+    ).state
+    assert.deepEqual(render(filled, now).flatMap(foreign), [])
+  })
+
+  it('strips it from the question and the options a peer asks with', () => {
+    const asked: Decision = { ...decision('x', '2026-11-10T12:00:00.000Z', [PAYLOAD, 'hold']), question: PAYLOAD }
+    const lines = render(state(ls([peer('a')], [asked])), now)
+    assert.deepEqual(lines.flatMap(foreign), [])
+    assert.match(lines.map(strip).join('\n'), /evil/)
+  })
+
+  it('strips it from a peer id, which arrives from the profile and the peer both', () => {
+    const lines = render(state(ls([peer(`a${PAYLOAD}`)])), now)
+    assert.deepEqual(lines.flatMap(foreign), [])
+  })
+
+  it('strips it from the detail header, which repeats role, provider and model', () => {
+    const lines = render(state(ls([peer('a', { role: PAYLOAD as never, providerId: PAYLOAD as never, model: PAYLOAD as never })])), now)
+    assert.deepEqual(lines.flatMap(foreign), [])
+  })
+
+  it('strips it from --once too, which is the path that reaches a transcript', () => {
+    // `--once` prints no escapes of its own, so its lines can be held to the
+    // stricter rule: nothing control at all, and no sequence to strip first.
+    const activity: PeerActivity = { peerId: 'a' as PeerId, lastTool: PAYLOAD, lastTarget: PAYLOAD, edits: 1 }
+    const lines = renderOnce(ls([peer(`a${PAYLOAD}`, { state: 'working' })], [{ ...decision('x', '2026-11-10T12:00:00.000Z'), question: PAYLOAD }], [activity]), now)
+    assert.deepEqual(lines.flatMap(foreign), [])
+    for (const line of lines) assert.doesNotMatch(line, /\u001b/, line)
   })
 })
 
