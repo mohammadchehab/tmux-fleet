@@ -52,6 +52,8 @@ export type { SessionRecord } from './records.ts'
  */
 const TOOL_MAX = 64
 const TARGET_MAX = 200
+/** `peer.failed.message`'s own bound: a provider's sentence, cut where the store would refuse it. */
+const FAILURE_MESSAGE_MAX = 1000
 
 /**
  * The one kind of target this fleet stores: the path an edit-family call names.
@@ -584,6 +586,28 @@ export class PeerSession {
         // before the caller judges the boundary, so the purge can fire at it.
         for (const [id, owner] of this.#pending) {
           if (owner.turnId === event.turnId) this.#pending.delete(id)
+        }
+        // A failed turn carries the one sentence that explains the `failed`
+        // state — a CLI's exit reason, the provider's own message — and
+        // `peer.state_changed` has nowhere to put it: its `reason` says why the
+        // *state* moved, and a 500-character summary is not a provider's error.
+        // Recorded as the failure it is (§6.1), which is also what tells a
+        // person: without this row a peer read `failed` with no reason anywhere,
+        // and the only way to learn one was to run the provider by hand.
+        if (event.reason === 'failed' && event.error !== undefined) {
+          await record({
+            type: 'peer.failed',
+            ts: clock.now(),
+            subject: peerId,
+            actor: peerActor(peerId),
+            data: {
+              peerId,
+              sessionId,
+              reason: 'provider_error',
+              message: bounded(event.error, FAILURE_MESSAGE_MAX),
+              retryable: true,
+            },
+          })
         }
         break
       case 'question.asked':
