@@ -811,6 +811,41 @@ test('a routed peer block is not re-sent either', () => {
   assert.deepEqual(decide({ state: snapshot, tick: tick() }).actions, [])
 })
 
+// -------------------------------------------------- a second block routes to the architect (TASK-127)
+// The architect route used to mark a routed block per Work, so a later block on the same Work was never routed. A
+// block is an episode: the Work's `updatedAt` is when it was last blocked, so a message sent before that is about an
+// earlier block, and a message sent after it is this one.
+
+test('a second block on the same Work reaches the architect again, after the first was sent (TASK-127)', () => {
+  const workId = snapshotWorkId()
+  const LATER = '2026-11-11T12:00:00.000Z'
+  const first = decide({
+    state: state({ ...stuck({ blockedOn: 'peer' }), peers: [peer({ state: 'waiting_input' }), architect()] }),
+    tick: tick(),
+  })
+  const sent = only(first.actions, 'send_message')
+
+  // The architect was told about the first block, and the Work was blocked again later.
+  const again = state({
+    peers: [peer({ state: 'waiting_input' }), architect()],
+    work: [work({ state: 'blocked', assignee: 'engineer-1' as never, blockedOn: 'peer', blockedReason: 'the contract moved', updatedAt: LATER })],
+    messages: [message({ to: architect().peerId, body: sent.body, sentAt: '2026-11-10T09:00:00.000Z' })],
+  })
+  const resent = only(decide({ state: again, tick: tick() }).actions, 'send_message')
+  assert.equal(resent.to, 'architect-1')
+  assert.match(resent.body, /the contract moved/, 'the architect is told the new reason, not the old one')
+  assert.match(resent.body, new RegExp(String(workId)))
+})
+
+test('a block the architect was already told about is not re-sent on the heartbeat (TASK-127)', () => {
+  const told = state({
+    ...stuck({ blockedOn: 'peer' }),
+    peers: [peer({ state: 'waiting_input' }), architect()],
+    messages: [message({ to: architect().peerId, body: `engineer-1 is waiting on Work ${String(snapshotWorkId())}`, sentAt: '2026-11-11T12:00:00.000Z' })],
+  })
+  assert.deepEqual(decide({ state: told, tick: tick() }).actions, [])
+})
+
 test('a waiting peer with no blocked Work is the provider s business, not the PM s', () => {
   // a peer mid-turn asking its own question: there is no Work field to route by, so nothing is invented
   const snapshot = state({
