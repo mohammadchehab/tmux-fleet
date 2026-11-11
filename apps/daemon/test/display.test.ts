@@ -16,6 +16,40 @@ const clock = () => {
   return () => `2026-11-11T08:00:${String(n++ % 60).padStart(2, '0')}.000Z`
 }
 
+/**
+ * The quiet timer, driven by the test instead of by the machine (TASK-124): `tick`
+ * is the only thing that lets a scheduled flush run, so "the line was not cut
+ * mid-word" is a fact about the feed and not about how busy the box was.
+ */
+const fakeQuiet = () => {
+  let now = 0
+  let nextId = 0
+  let due: { readonly at: number; readonly id: number; readonly run: () => void }[] = []
+  return {
+    later: (run: () => void, ms: number): (() => void) => {
+      const id = (nextId += 1)
+      due.push({ at: now + ms, id, run })
+      return () => {
+        due = due.filter((entry) => entry.id !== id)
+      }
+    },
+    /** Move time on, running every flush that comes due — in the order they would have. */
+    tick: (ms: number): void => {
+      now += ms
+      for (;;) {
+        const ready = due.filter((entry) => entry.at <= now).sort((left, right) => left.at - right.at)[0]
+        if (ready === undefined) return
+        due = due.filter((entry) => entry.id !== ready.id)
+        ready.run()
+      }
+    },
+    /** How many flushes are waiting: one push cancels the one before it. */
+    get waiting(): number {
+      return due.length
+    },
+  }
+}
+
 /** Everything a watcher holds right now, read without waiting for more. */
 const drain = async (iterator: AsyncIterator<WatchFrame>, count: number): Promise<WatchFrame[]> => {
   const out: WatchFrame[] = []
@@ -75,21 +109,24 @@ test('gathered text flushes by itself after the flush interval', async () => {
 })
 
 test('a line still being written is not cut mid-word: the flush timer is quiet time, not a deadline', async () => {
-  const holding = setInterval(() => undefined, 1_000)
-  try {
-    const feed = createDisplayFeed({ flushMs: 40 })
-    const iterator = feed.watch({})[Symbol.asyncIterator]()
-    assert.equal((await iterator.next()).value?.stream, 'ready')
-    // Six deltas 15 ms apart run 75 ms in all: past one flush interval, inside each gap.
-    for (const piece of ['I will ', 'start by ', 'rea', 'ding ', 'the ', 'file']) {
-      feed.push(a, { kind: 'text', text: piece })
-      await new Promise((resolve) => setTimeout(resolve, 15))
-    }
-    const next = await iterator.next()
-    assert.deepEqual(texts([next.value as WatchFrame]), ['I will start by reading the file'])
-  } finally {
-    clearInterval(holding)
+  // Six deltas 15 ms apart run 75 ms in all: past one flush interval, inside each gap.
+  // The quiet timer is the test's own, so the gaps are the test's too — with a real
+  // one a starved event loop made the gap longer than the window and the feed cut the
+  // line, which is a test failing on how busy the machine was, not on what it asserts.
+  const quiet = fakeQuiet()
+  const feed = createDisplayFeed({ flushMs: 40, later: quiet.later })
+  const iterator = feed.watch({})[Symbol.asyncIterator]()
+  assert.equal((await iterator.next()).value?.stream, 'ready')
+  for (const piece of ['I will ', 'start by ', 'rea', 'ding ', 'the ', 'file']) {
+    feed.push(a, { kind: 'text', text: piece })
+    quiet.tick(15)
+    assert.equal(quiet.waiting, 1, 'one quiet timer, the one the latest delta set')
   }
+  quiet.tick(40)
+  assert.equal(quiet.waiting, 0, 'and it ran once the writing stopped')
+
+  const next = await iterator.next()
+  assert.deepEqual(texts([next.value as WatchFrame]), ['I will start by reading the file'])
 })
 
 test('a line is cut to the width budget before it is buffered, and a flood is counted rather than shown', async () => {

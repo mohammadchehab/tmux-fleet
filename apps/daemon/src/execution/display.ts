@@ -47,6 +47,16 @@ export interface DisplayFeedOptions {
   readonly maxQueued?: number
   readonly flushMs?: number
   readonly now?: () => string
+  /**
+   * The quiet timer: `later(run, ms)` calls `run` after `ms` of quiet and returns
+   * the way to call it off. The default is `setTimeout(...).unref()` — the daemon
+   * has its own reasons to stay alive, and a gathered line is not one of them.
+   *
+   * A test passes its own so the flush is a fact rather than a race with the wall
+   * clock: a quiet window that is a real duration is a test that passes or fails
+   * on how busy the machine was (TASK-124).
+   */
+  readonly later?: (run: () => void, ms: number) => () => void
 }
 
 export interface Watcher extends AsyncIterable<WatchFrame> {
@@ -89,11 +99,17 @@ export const createDisplayFeed = (options: DisplayFeedOptions = {}): DisplayFeed
   const maxQueued = options.maxQueued ?? defaultMaxQueued
   const flushMs = options.flushMs ?? defaultFlushMs
   const now = options.now ?? (() => new Date().toISOString())
+  const later =
+    options.later ??
+    ((run: () => void, ms: number): (() => void) => {
+      const timer = setTimeout(run, ms).unref()
+      return () => clearTimeout(timer)
+    })
 
   let seq = 0
   const rings = new Map<PeerId, LineFrame[]>()
   const rows: RowFrame[] = []
-  const gathered = new Map<PeerId, { text: string; timer: NodeJS.Timeout | undefined }>()
+  const gathered = new Map<PeerId, { text: string; cancel: (() => void) | undefined }>()
   const watchers = new Set<{ readonly peerId: PeerId | undefined; readonly offer: (entry: Entry) => void; readonly close: (reason: WatchEndReason) => void }>()
 
   const oldest = (): number => {
@@ -121,7 +137,7 @@ export const createDisplayFeed = (options: DisplayFeedOptions = {}): DisplayFeed
     const pending = gathered.get(peerId)
     if (pending === undefined) return
     gathered.delete(peerId)
-    if (pending.timer !== undefined) clearTimeout(pending.timer)
+    pending.cancel?.()
     if (pending.text.length > 0) store(peerId, { kind: 'text', text: pending.text })
   }
 
@@ -130,7 +146,7 @@ export const createDisplayFeed = (options: DisplayFeedOptions = {}): DisplayFeed
 
   const gather = (peerId: PeerId, text: string): void => {
     let pending = gathered.get(peerId)
-    if (pending === undefined) gathered.set(peerId, (pending = { text: '', timer: undefined }))
+    if (pending === undefined) gathered.set(peerId, (pending = { text: '', cancel: undefined }))
     pending.text += text
     let emitted = 0
     // Whole lines go out at once; what is left waits for its newline, its budget or its timer.
@@ -153,14 +169,14 @@ export const createDisplayFeed = (options: DisplayFeedOptions = {}): DisplayFeed
       }
     }
     if (pending.text.length === 0) {
-      if (pending.timer !== undefined) clearTimeout(pending.timer)
+      pending.cancel?.()
       gathered.delete(peerId)
       return
     }
     // A quiet timer, not a deadline: each delta pushes it back, so a line still being written is not cut
     // mid-word; only a peer that has stopped mid-line (no newline yet) has it flushed.
-    if (pending.timer !== undefined) clearTimeout(pending.timer)
-    pending.timer = setTimeout(() => flushPeer(peerId), flushMs).unref()
+    pending.cancel?.()
+    pending.cancel = later(() => flushPeer(peerId), flushMs)
   }
 
   const feed: DisplayFeed = {
