@@ -620,7 +620,11 @@ export class ClaudeSession {
         this.#state = this.#inflight.length > 0 ? 'working' : 'idle'
         resultEnd = { reason: event.reason, error: event.error }
         this.#emit(event)
-        // The other turns this result consumed end the way it did.
+        // The other turns this result consumed end the way it did. Each gets its own
+        // `turn.ended`, and `turnSpend()` returns the same `#spent` for all of them.
+        // That does not double-count: the supervisor's `#recordUsage` runs only at a
+        // boundary where its `#openTurns` is empty (`supervisor/src/session.ts`, the
+        // `#openTurns.size > 0` check before it), so a folded group is billed once, at its last.
         for (const id of consumed) {
           if (id !== event.turnId) this.#emit({ ...event, turnId: id })
         }
