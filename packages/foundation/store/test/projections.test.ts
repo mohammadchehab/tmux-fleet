@@ -930,6 +930,36 @@ const turnAt = (peerId: string, contextTokens: number, contextLimit: number, ts:
     ts,
   )
 
+test('a turn whose usage was not measured keeps the last measured context figures (TASK-71)', async () => {
+  const store = await open()
+  const unmeasured = event(
+    'turn.usage_recorded',
+    'engineer-1',
+    {
+      peerId: 'engineer-1',
+      inputTokens: 1,
+      outputTokens: 1,
+      cachedTokens: 0,
+      toolCalls: { grep: 0, glob: 0, read: 0, codegraph: 0 },
+      costUsd: 0.02,
+    },
+    '2026-11-11T08:03:00.000Z',
+  )
+  await store.append([
+    registeredPeer('engineer-1'),
+    turnAt('engineer-1', 172_400, 200_000, '2026-11-11T08:02:00.000Z'),
+    unmeasured,
+  ])
+
+  const one = (await store.reader().activity.all()).find((row) => row.peerId === 'engineer-1')
+  assert.equal(one?.contextTokens, 172_400, 'a null is not a measurement, so the last one stands')
+  assert.equal(one?.contextLimit, 200_000)
+  const spend = (await store.reader().tokens.all()).find((row) => row.workId === undefined && row.peerId === 'engineer-1')
+  assert.equal(spend?.costUsd, 0.02, 'and the spend of that turn is still billed')
+
+  await store.close()
+})
+
 test('context used is the last recorded turn’s, a peer with no recorded turn has none rather than zero, and a replay keeps it', async () => {
   const store = await open()
   await store.append([

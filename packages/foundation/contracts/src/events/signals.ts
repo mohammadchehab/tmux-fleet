@@ -142,8 +142,12 @@ export const turnUsage = event(
     peerId: peerId(),
     sessionId: optional(sessionId()),
     workId: optional(workId()),
-    contextTokens: count(),
-    contextLimit: positiveInt(),
+    /**
+     * Absent when `usage()` could not answer at this turn's end (TASK-71): the spend is still
+     * recorded, and an absent context figure says the measurement was not taken, never zero.
+     */
+    contextTokens: optional(count()),
+    contextLimit: optional(positiveInt()),
     inputTokens: count(),
     outputTokens: count(),
     cachedTokens: count(),
