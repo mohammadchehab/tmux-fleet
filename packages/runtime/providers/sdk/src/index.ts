@@ -7,3 +7,4 @@
 export * from './provider.ts'
 export * from './conformance.ts'
 export * from './env.ts'
+export * from './display.ts'

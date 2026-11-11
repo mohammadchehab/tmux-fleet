@@ -33,6 +33,7 @@ import { fleetError, toFleetError, type PeerState, type TurnId } from '@fleet/fo
 import type {
   ApprovalDecision,
   AttachCommand,
+  DisplayLine,
   Provider,
   ProviderCapabilities,
   ProviderEvent,
@@ -207,6 +208,10 @@ export class ClaudeProvider implements Provider {
 
   events(handle: SessionHandle): AsyncIterable<ProviderEvent> {
     return this.#session(handle).events()
+  }
+
+  display(handle: SessionHandle): AsyncIterable<DisplayLine> {
+    return this.#session(handle).display()
   }
 
   /**

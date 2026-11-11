@@ -127,3 +127,62 @@ test('a peer cannot reach another Claude Code session: SendMessage and ListAgent
   await provider.resume('11111111-1111-1111-1111-111111111111' as never, spec()).catch(() => undefined)
   assert.deepEqual(seen.at(-1)?.disallowedTools, ['SendMessage', 'ListAgents'], 'a resumed session too')
 })
+
+const delta = (text: string, kind: 'text_delta' | 'thinking_delta' = 'text_delta', parent: string | null = null) => ({
+  type: 'stream_event',
+  parent_tool_use_id: parent,
+  event: { type: 'content_block_delta', index: 0, delta: kind === 'text_delta' ? { type: 'text_delta', text } : { type: 'thinking_delta', thinking: text } },
+})
+
+/** One brief turn as the SDK streams it with `includePartialMessages`: deltas, then the whole assistant message, then the result. */
+async function* briefTurn(): AsyncGenerator<unknown> {
+  yield { type: 'system', subtype: 'init', session_id: 'sess_display', model: 'claude-sonnet-5-5', permissionMode: 'default' }
+  yield delta('Hel')
+  yield delta('SECRET reasoning that must not reach the view', 'thinking_delta')
+  yield delta('lo')
+  yield delta('a subagent talking', 'text_delta', 'toolu_subagent')
+  yield {
+    type: 'assistant',
+    message: {
+      model: 'claude-sonnet-5-5',
+      content: [
+        { type: 'text', text: 'Hello' },
+        { type: 'tool_use', name: 'Bash', input: { command: 'ls', description: 'list the files' } },
+      ],
+    },
+  }
+  yield { type: 'result', subtype: 'success', is_error: false, result: 'Hello', total_cost_usd: 0.01, usage: { input_tokens: 10, output_tokens: 5 } }
+}
+
+test('the display carries the peer’s words, its tools and its turn boundaries — not its thinking, not a subagent — and the contract events do not move', async () => {
+  const seen: { includePartialMessages?: unknown }[] = []
+  const factory = ((args: { options: { includePartialMessages?: unknown } }) => {
+    seen.push(args.options)
+    return {
+      [Symbol.asyncIterator]: briefTurn,
+      close: () => undefined,
+      interrupt: async () => undefined,
+      setModel: async () => undefined,
+      setPermissionMode: async () => undefined,
+      getContextUsage: async () => ({}),
+    }
+  }) as unknown as QueryFactory
+  const provider = new ClaudeProvider({ initTimeoutMs: 5_000, query: factory })
+  const handle = await provider.start(spec())
+  assert.equal(seen[0]?.includePartialMessages, true, 'the SDK is asked for deltas')
+
+  const lines: string[] = []
+  for await (const line of provider.display(handle)) {
+    lines.push(line.kind === 'text' ? `text:${line.text}` : line.kind === 'tool' ? `tool:${line.tool}:${line.summary ?? ''}` : `turn:${line.phase}${line.reason === undefined ? '' : `:${line.reason}`}`)
+  }
+  assert.deepEqual(lines, ['turn:started', 'text:Hel', 'text:lo', 'tool:Bash:', 'turn:ended:completed'])
+  // A Bash command is never summarised (the redaction `tool.use` already applies): the display adds no second path to it.
+  assert.ok(!lines.some((line) => /SECRET|subagent/.test(line)))
+
+  // Conformance (§12): the display says a turn started and ended exactly when the contract events do.
+  const contract: string[] = []
+  for await (const event of provider.events(handle)) {
+    if (event.type === 'turn.started' || event.type === 'turn.ended') contract.push(event.type)
+  }
+  assert.deepEqual(contract, ['turn.started', 'turn.ended'], 'the deltas added no contract events')
+})

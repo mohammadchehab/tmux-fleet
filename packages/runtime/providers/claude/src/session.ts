@@ -46,8 +46,10 @@ import {
   type TurnId,
 } from '@fleet/foundation-core'
 import { providerModels } from '@fleet/foundation-contracts'
+import { DisplayQueue, displayLineOf } from '@fleet/runtime-provider-sdk'
 import type {
   ApprovalDecision,
+  DisplayLine,
   ProviderEvent,
   ProviderSessionRef,
   QuestionAnswer,
@@ -109,6 +111,20 @@ export const defaultSessionConfig: ClaudeSessionConfig = {
 }
 
 /**
+ * The text a `stream_event` carries, when it carries any (§6): a top-level
+ * `text_delta`. Thinking deltas are dropped, and so is everything a subagent says —
+ * the view shows what the peer said and did.
+ */
+export const textDeltaOf = (message: unknown): string | undefined => {
+  if (typeof message !== 'object' || message === null) return undefined
+  const record = message as { type?: unknown; parent_tool_use_id?: unknown; event?: unknown }
+  if (record.type !== 'stream_event' || (record.parent_tool_use_id !== undefined && record.parent_tool_use_id !== null)) return undefined
+  const event = record.event as { type?: unknown; delta?: { type?: unknown; text?: unknown } } | undefined
+  if (event?.type !== 'content_block_delta' || event.delta?.type !== 'text_delta') return undefined
+  return typeof event.delta.text === 'string' && event.delta.text.length > 0 ? event.delta.text : undefined
+}
+
+/**
  * The tools that reach another Claude Code session on this machine
  * (`SendMessage`, and `ListAgents` to find one). A peer talks to the fleet only
  * through its mailbox: found live, a headless peer introduced itself to the
@@ -156,6 +172,7 @@ export class ClaudeSession {
   readonly #config: ClaudeSessionConfig
   readonly #input: InputQueue
   readonly #events = new EventQueue()
+  readonly #display = new DisplayQueue()
   readonly #pending: PendingRequests
   /** Compiled at construction: an invalid pattern is a start failure, not a mid-turn one (§4). */
   readonly #policy: CompiledToolPolicy
@@ -312,6 +329,7 @@ export class ClaudeSession {
       this.#query.close()
     } finally {
       this.#events.close()
+      this.#display.close()
     }
   }
 
@@ -429,6 +447,15 @@ export class ClaudeSession {
   }
 
   /**
+   * What the peer says and does, for `fleet watch` (watch-and-attach §6): text from
+   * the partial-message deltas, a line per tool use, a `turn` line per boundary.
+   * Thinking is left out. Display data only — the contract events are unchanged.
+   */
+  display(): AsyncIterable<DisplayLine> {
+    return this.#display
+  }
+
+  /**
    * The contract's event stream: question ids, approvals, the turn's end
    * reason, and the synthesised `session.ended`. The two internal events the
    * contract has no member for yet — `session.started` and `tool.denied` — are
@@ -451,6 +478,9 @@ export class ClaudeSession {
       // Removed from the model's context, so it holds in every permission mode —
       // `bypassPermissions` never consults `canUseTool`.
       disallowedTools: [...crossSessionTools],
+      // Adds `stream_event` messages carrying text deltas for the display feed and
+      // changes nothing else: `assistant`, `result` and `init` arrive as before.
+      includePartialMessages: true,
       canUseTool: (toolName, input, canUseOptions) =>
         this.#canUseTool(toolName, input, canUseOptions as CanUseOptions),
       // Without this the SDK refuses a spec that asks for bypassPermissions.
@@ -486,6 +516,9 @@ export class ClaudeSession {
       this.#reported = measured.totals
       this.#spent = measured.spend
     }
+
+    const delta = textDeltaOf(message)
+    if (delta !== undefined) this.#display.push({ kind: 'text', text: delta })
 
     const turnId = this.#inflight[0]
     for (const event of mapMessage(message, turnId, this.#turnState, this.#now())) {
@@ -694,6 +727,7 @@ export class ClaudeSession {
     if (error !== undefined) this.#emit({ type: 'error', message: error, retryable: reason === 'crash' })
     this.#emit({ type: 'session.ended', reason })
     this.#events.close()
+    this.#display.close()
   }
 
   #assertLive(): void {
@@ -704,6 +738,8 @@ export class ClaudeSession {
 
   #emit(event: AdapterEvent): void {
     this.#events.push(event)
+    const line = displayLineOf(event)
+    if (line !== undefined) this.#display.push(line)
   }
 
   #now(): Timestamp {
