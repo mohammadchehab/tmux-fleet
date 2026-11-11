@@ -272,6 +272,21 @@ export class PeerSession {
     await this.#ports.provider.interrupt(this.#handle)
   }
 
+  /**
+   * The opening turn stopping to ask a person is the end of it as far as a
+   * boundary is concerned: from here what a hold waits on is the answer, which
+   * `#pending` holds, not the turn. The SDK does not always send `turn.ended`
+   * for the opening turn once a person has answered (it may carry on in a turn
+   * of its own), and waiting for one that will not come held a hold forever
+   * (TASK-120). Only the opening turn: any other is still running, and a hold
+   * still waits for it to end.
+   */
+  #openingTurnWaitsOnPerson(turnId: TurnId): void {
+    if (this.#openingTurn !== turnId) return
+    this.#openingTurn = undefined
+    this.#openTurns.delete(turnId)
+  }
+
   #atBoundary(): boolean {
     return (
       this.#done ||
@@ -611,9 +626,11 @@ export class PeerSession {
         }
         break
       case 'question.asked':
+        this.#openingTurnWaitsOnPerson(event.turnId)
         this.#pending.set(event.questionId, { turnId: event.turnId, sessionId })
         break
       case 'approval.requested':
+        this.#openingTurnWaitsOnPerson(event.turnId)
         this.#pending.set(event.requestId, { turnId: event.turnId, sessionId })
         break
       case 'question.abandoned':
