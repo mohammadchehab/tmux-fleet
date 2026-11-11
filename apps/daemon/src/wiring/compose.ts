@@ -666,15 +666,28 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     watch: (params) => display.watch(params),
     onDown: () => {
       void (async () => {
-        display.closeAll('shutdown')
-        await daemon.down()
-        await server.close()
-        await store.close()
-        await lock.release()
-        // The last step, and the reason `down` means what it says: every port
-        // is closed, so nothing is left to drain and the process can end here
-        // rather than wait for a signal that will never come.
-        stop()
+        try {
+          display.closeAll('shutdown')
+          await daemon.down()
+          await server.close()
+          await store.close()
+          await lock.release()
+          // The last step, and the reason `down` means what it says: every port
+          // is closed, so nothing is left to drain and the process can end here
+          // rather than wait for a signal that will never come.
+          stop()
+        } catch (error) {
+          // If cleanup fails after down has answered ok, log it and still release
+          // resources so the next fleet can start on the same store (§2).
+          console.error(`fleetd: failed to shut down cleanly: ${String(error)}`)
+          try {
+            await store.close()
+            await lock.release()
+          } catch {
+            // Suppress secondary errors during cleanup; the primary one is logged.
+          }
+          stop()
+        }
       })()
     },
     onError: (line, response) => {
