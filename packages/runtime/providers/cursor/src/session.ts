@@ -238,6 +238,10 @@ export class CursorSession {
     const args = [
       ...this.#config.executableArgs,
       '-p',
+      // The peer's cwd is a checkout fleetd chose, not one a person opened. Without
+      // this a headless turn in a directory cursor has not been told to trust stops
+      // at the workspace-trust prompt with no one to answer it (watch-and-attach §8).
+      '--trust',
       '--output-format',
       'stream-json',
       ...MODE_ARGUMENTS,

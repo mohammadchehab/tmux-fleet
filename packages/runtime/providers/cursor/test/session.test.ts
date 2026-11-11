@@ -106,8 +106,9 @@ test('start() creates a chat and delivers the brief as its opening turn', async 
 
   const [createChat, opening] = calls()
   assert.deepEqual(createChat, ['create-chat'], 'the chat is created before anything is spent')
-  assert.deepEqual(opening?.slice(0, 8), [
+  assert.deepEqual(opening?.slice(0, 9), [
     '-p',
+    '--trust',
     '--output-format',
     'stream-json',
     '--mode',
@@ -116,10 +117,10 @@ test('start() creates a chat and delivers the brief as its opening turn', async 
     MODEL,
     '--resume',
   ])
-  assert.equal(opening?.[8], handle.sessionRef, 'the turn continues the chat the handle names')
-  assert.equal(opening?.[9], '--', 'the prompt follows the end of options, so its own words are never read as flags')
-  assert.match(String(opening?.[10]), /You are the engineer peer on the peer-1 account\./)
-  assert.match(String(opening?.[10]), /You are running read-only, in plan mode/, 'the peer is told what it can do')
+  assert.equal(opening?.[9], handle.sessionRef, 'the turn continues the chat the handle names')
+  assert.equal(opening?.[10], '--', 'the prompt follows the end of options, so its own words are never read as flags')
+  assert.match(String(opening?.[11]), /You are the engineer peer on the peer-1 account\./)
+  assert.match(String(opening?.[11]), /You are running read-only, in plan mode/, 'the peer is told what it can do')
   await provider.stop(handle)
 })
 
