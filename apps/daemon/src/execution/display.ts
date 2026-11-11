@@ -16,7 +16,7 @@
  *
  * Text arrives as deltas of a few characters. They are gathered per peer and
  * flushed as one line at a newline, at the width budget, at the next tool or turn
- * line, or after `flushMs` — so a ring slot is a line a person would read, and a
+ * line, or after `flushMs` of quiet — so a ring slot is a line a person would read, and a
  * delta does not cost a frame.
  */
 
@@ -35,7 +35,7 @@ import {
 export const defaultPerPeer = 500
 export const defaultRowRing = 200
 export const defaultMaxQueued = 2_000
-export const defaultFlushMs = 100
+export const defaultFlushMs = 400
 
 type LineFrame = Extract<WatchFrame, { stream: 'line' }>
 type RowFrame = Extract<WatchFrame, { stream: 'row' }>
@@ -157,7 +157,10 @@ export const createDisplayFeed = (options: DisplayFeedOptions = {}): DisplayFeed
       gathered.delete(peerId)
       return
     }
-    pending.timer ??= setTimeout(() => flushPeer(peerId), flushMs).unref()
+    // A quiet timer, not a deadline: each delta pushes it back, so a line still being written is not cut
+    // mid-word; only a peer that has stopped mid-line (no newline yet) has it flushed.
+    if (pending.timer !== undefined) clearTimeout(pending.timer)
+    pending.timer = setTimeout(() => flushPeer(peerId), flushMs).unref()
   }
 
   const feed: DisplayFeed = {

@@ -74,6 +74,24 @@ test('gathered text flushes by itself after the flush interval', async () => {
   }
 })
 
+test('a line still being written is not cut mid-word: the flush timer is quiet time, not a deadline', async () => {
+  const holding = setInterval(() => undefined, 1_000)
+  try {
+    const feed = createDisplayFeed({ flushMs: 40 })
+    const iterator = feed.watch({})[Symbol.asyncIterator]()
+    assert.equal((await iterator.next()).value?.stream, 'ready')
+    // Six deltas 15 ms apart run 75 ms in all: past one flush interval, inside each gap.
+    for (const piece of ['I will ', 'start by ', 'rea', 'ding ', 'the ', 'file']) {
+      feed.push(a, { kind: 'text', text: piece })
+      await new Promise((resolve) => setTimeout(resolve, 15))
+    }
+    const next = await iterator.next()
+    assert.deepEqual(texts([next.value as WatchFrame]), ['I will start by reading the file'])
+  } finally {
+    clearInterval(holding)
+  }
+})
+
 test('a line is cut to the width budget before it is buffered, and a flood is counted rather than shown', async () => {
   const feed = createDisplayFeed({})
   feed.push(a, { kind: 'text', text: `${'x'.repeat(displayLineMaxChars + 300)}\n` })

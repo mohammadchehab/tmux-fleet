@@ -20,6 +20,7 @@ import {
   evalRunId,
   fleetError,
   peerId,
+  type PeerId,
   profilePaths,
   repo as repoSchema,
   sha as shaSchema,
@@ -58,6 +59,7 @@ import {
   formatUp,
 } from './render.ts'
 import { socketPathOf } from './socket.ts'
+import { renderOnce } from './watch/render.ts'
 import { takeoverEnv, type Takeover } from './takeover.ts'
 
 /** Both eval verbs, so a wrong one names every one that exists. */
@@ -75,6 +77,7 @@ const usage = (): string =>
     '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first (--limit keeps the newest N)',
     '  fleet decide <id> [answer]          show an open decision, or answer it',
     '  fleet note <phase> <text>           tell the fleet where you are, from a peer session',
+    '  fleet watch [--once]                the whole fleet live: who is doing what, what waits on you, take a peer over',
     '  fleet attach <peer> [--now]         take a peer over in its own CLI; exiting hands it back',
     '  fleet release <peer>                hand back a peer whose attach ended without doing so',
     '  fleet stop <peer> [--now]           stop one peer; the others keep running',
@@ -105,6 +108,9 @@ const usage = (): string =>
     '',
     'options, on `attach` and `stop`:',
     '  --now              interrupt the turn instead of waiting for it to end',
+    '',
+    'options, on `watch`:',
+    '  --once             print the needs-you strip and the peer table once, and exit (no terminal needed)',
     '',
     'options, on `replay`:',
     '  --from <seq>       read the log from this seq instead of rebuilding the projections',
@@ -138,6 +144,7 @@ export type Command =
   | { readonly kind: 'release'; readonly peer: string }
   | { readonly kind: 'stop'; readonly peer: string; readonly now: boolean }
   | { readonly kind: 'start'; readonly peer: string }
+  | { readonly kind: 'watch'; readonly once: boolean }
   | {
       readonly kind: 'evals-run'
       readonly suite: string
@@ -206,6 +213,7 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
   let saveBaseline = false
   let json = false
   let now = false
+  let once = false
 
   // `--` ends the CLI's own words and starts a command's (§11: a build's argv is
   // passed through untouched, so `-c` in it is the build's flag, not ours).
@@ -225,6 +233,10 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       }
       if (arg === '--now') {
         now = true
+        continue
+      }
+      if (arg === '--once') {
+        once = true
         continue
       }
       if (arg === '--save-baseline') {
@@ -392,6 +404,10 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       arity(name, rest, '<peer> [--now]', (count) => count === 1)
       return { command: { kind: name, peer: rest[0] ?? '', now }, how: how() }
     }
+    case 'watch': {
+      arity('watch', rest, '[--once]', (count) => count === 0)
+      return { command: { kind: 'watch', once }, how: how() }
+    }
     case 'release':
     case 'start': {
       arity(name, rest, '<peer>', (count) => count === 1)
@@ -510,6 +526,11 @@ export interface RunDeps {
    * and attach says so before it holds anything.
    */
   readonly takeover?: Takeover
+  /**
+   * `fleet watch` with no `--once`: the terminal program (watch-and-attach §7).
+   * Absent means this build has no terminal to paint, and watch says so.
+   */
+  readonly watch?: (context: { readonly socketPath: string; readonly call: DaemonCaller }) => Promise<void>
 }
 
 interface Answer {
@@ -619,6 +640,11 @@ const execute = async (
         return { text: `${profile ?? 'the fleet'} is not running`, value: { stopped: false } }
       }
     }
+    case 'watch': {
+      // Only `--once` reaches here: the live watch owns the terminal and is run before `execute`.
+      const result = await call('ls', {})
+      return { text: renderOnce(result, Date.now()).join('\n'), value: result }
+    }
     case 'ls': {
       try {
         const result = await call('ls', {})
@@ -674,45 +700,8 @@ const execute = async (
       if (takeover === undefined) {
         throw fleetError('external_failed', 'this build of the CLI cannot hand a terminal over; run it from a fleet checkout')
       }
-      const peer = asArgument(peerId(), command.peer, 'peer')
-      // Say what the hold is waiting for before it waits: a turn can take minutes,
-      // and a silent prompt reads as a hang (§5 step 1).
-      const row = (await call('ls', {})).peers.find((candidate) => candidate.peerId === peer)
-      if (row?.state === 'held') say(`${peer} is already held; reopening its session`)
-      else if (row?.state === 'working' || row?.state === 'waiting_input') {
-        say(
-          command.now
-            ? `${peer} is mid-turn; interrupting it`
-            : `${peer} is mid-turn; waiting for the turn to end (fleet attach ${peer} --now interrupts it)`,
-        )
-      }
-      const held = await call('peer.hold', { peerId: peer, ...(command.now ? { now: true } : {}) })
-      for (const line of attachBanner(held)) say(line)
-      let exit: { readonly code: number | null; readonly signal: string | null } | undefined
-      let failure: unknown
-      try {
-        exit = await takeover(held.command, { cwd: held.cwd, env: takeoverEnv(held.env, deps.env ?? {}) })
-      } catch (thrown) {
-        // The CLI did not run, but the peer is held: it is handed back all the same.
-        failure = thrown
-      }
-      // §5 step 4: whatever happened to the CLI, the peer goes back.
-      let released
-      try {
-        released = await call('peer.release', { peerId: peer })
-      } catch (thrown) {
-        throw fleetError(
-          'external_failed',
-          `${peer} is still held: the release failed (${toFleetError(thrown).message}); fleet release ${peer} hands it back`,
-          { cause: thrown },
-        )
-      }
-      if (failure !== undefined) {
-        throw fleetError('external_failed', `could not run ${held.command.executable}: ${toFleetError(failure).message}; ${peer} was handed back`, {
-          cause: failure,
-        })
-      }
-      return { text: formatReleased(released, 'handed back'), value: { held, exit, released } }
+      const done = await attachPeer(call, takeover, deps.env ?? {}, asArgument(peerId(), command.peer, 'peer'), command.now, say)
+      return { text: formatReleased(done.released, 'handed back'), value: done }
     }
     case 'release': {
       const result = await call('peer.release', { peerId: asArgument(peerId(), command.peer, 'peer') })
@@ -891,6 +880,13 @@ export const run = async (argv: readonly string[], deps: RunDeps): Promise<numbe
         )
       }
     }
+    if (parsed.command.kind === 'watch' && !parsed.command.once) {
+      if (deps.watch === undefined) {
+        throw fleetError('external_failed', 'this build of the CLI has no terminal to watch in; `fleet watch --once` prints a snapshot')
+      }
+      await deps.watch({ socketPath: choice.socketPath, call: deps.call(choice.socketPath) })
+      return 0
+    }
     const answer = await execute(parsed.command, deps.call(choice.socketPath), deps, choice.profile, err)
     out(parsed.how.json ? JSON.stringify(answer.value, null, 2) : answer.text)
     return answer.exitCode ?? 0
@@ -900,6 +896,59 @@ export const run = async (argv: readonly string[], deps: RunDeps): Promise<numbe
     if (error.code === 'invalid_input') err("fleet: run 'fleet --help' for the commands")
     return error.code === 'invalid_input' ? 2 : 1
   }
+}
+
+/**
+ * Take one peer over (watch-and-attach §5): hold it, run its CLI in this
+ * terminal until it exits, hand it back. Whatever happened to the CLI, the peer
+ * goes back; `fleet attach` and `fleet watch`'s menu are the same flow.
+ */
+export const attachPeer = async (
+  call: DaemonCaller,
+  takeover: Takeover,
+  env: Readonly<Record<string, string | undefined>>,
+  peer: PeerId,
+  now: boolean,
+  say: (line: string) => void,
+): Promise<{ readonly held: PeerHoldResult; readonly exit: { readonly code: number | null; readonly signal: string | null } | undefined; readonly released: PeerResumeResult }> => {
+  // Say what the hold is waiting for before it waits: a turn can take minutes,
+  // and a silent prompt reads as a hang (§5 step 1).
+  const row = (await call('ls', {})).peers.find((candidate) => candidate.peerId === peer)
+  if (row?.state === 'held') say(`${peer} is already held; reopening its session`)
+  else if (row?.state === 'working' || row?.state === 'waiting_input') {
+    say(
+      now
+        ? `${peer} is mid-turn; interrupting it`
+        : `${peer} is mid-turn; waiting for the turn to end (fleet attach ${peer} --now interrupts it)`,
+    )
+  }
+  const held = await call('peer.hold', { peerId: peer, ...(now ? { now: true } : {}) })
+  for (const line of attachBanner(held)) say(line)
+  let exit: { readonly code: number | null; readonly signal: string | null } | undefined
+  let failure: unknown
+  try {
+    exit = await takeover(held.command, { cwd: held.cwd, env: takeoverEnv(held.env, env) })
+  } catch (thrown) {
+    // The CLI did not run, but the peer is held: it is handed back all the same.
+    failure = thrown
+  }
+  // §5 step 4: whatever happened to the CLI, the peer goes back.
+  let released
+  try {
+    released = await call('peer.release', { peerId: peer })
+  } catch (thrown) {
+    throw fleetError(
+      'external_failed',
+      `${peer} is still held: the release failed (${toFleetError(thrown).message}); fleet release ${peer} hands it back`,
+      { cause: thrown },
+    )
+  }
+  if (failure !== undefined) {
+    throw fleetError('external_failed', `could not run ${held.command.executable}: ${toFleetError(failure).message}; ${peer} was handed back`, {
+      cause: failure,
+    })
+  }
+  return { held, exit, released }
 }
 
 /** What a person reads before the provider's CLI takes the screen (§5, §9). */

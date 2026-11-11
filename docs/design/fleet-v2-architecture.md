@@ -76,7 +76,6 @@ tmux-fleet/
 │  ├─ clients/
 │  │  ├─ board/                   # `fleet-board`: a read-only web board of Work items, from `ls` and `work` (§2, §3)
 │  │  ├─ cli/                     # `fleet`: thin API client: up, down, ls, send, peek, decide, replay (§2, §6.1)
-│  │  └─ view/                    # `fleet-view`: a read-only pane per peer, from the daemon API (§2)
 │  └─ hooks/
 │     ├─ tool-guard/              # PreToolUse entry: redirects broad Grep/Glob/Read sweeps (§6.2)
 │     └─ usage-report/            # Stop/usage entry: reports per-turn usage; tiny import graph (§6.2, §8)
@@ -213,20 +212,16 @@ The security routine can start earlier than phase 2 on the interim fleet; phase 
 - **Supervisor**: restarts dead sessions, enforces the permission mode, maps provider events to peer state.
 - **PM state machine, Scheduler, Judge**: §5 and §6.
 - **Worktree manager, PR gate, Build ledger**: §9, §10, §11.
-- **tmux view** (optional): `fleet-view` opens a session named after the profile with one read-only pane per peer,
-  each redrawn from `ls` on an interval — the peer, its state, its role, provider, session and brief. It is a second
-  client of the API, not a pane onto the provider: a transcript is the provider's business and the daemon already
-  holds what the view shows. No key it receives does anything either: the panes have no shell behind them, and inside
-  a pane the only byte read is ctrl-c. `--once` prints the same view without tmux, which is how it is tested and how
-  it runs over ssh; a pane that loses the daemon draws why instead of exiting, so the view survives a restart of the
-  thing it is watching. The command is `fleet-view` and not `fleet view` because §1.1 puts the view in its own app
-  and apps never import each other — the CLI could not reach it to expose it as a subcommand, and moving the view
-  into the CLI would make the CLI two things.
+- **`fleet watch`** (in the CLI): one terminal program over the daemon API — a needs-you strip, the peer list, a
+  detail pane fed by `peer.watch`, and the actions a person can take on a peer (take over, interrupt, stop, start,
+  message, answer a decision). It replaced `fleet-view`, the read-only tmux pane per peer. Design:
+  [`watch-and-attach.md`](watch-and-attach.md). `fleet watch --once` prints the strip and the table without a
+  terminal, which is how it runs over ssh.
 - **web board** (optional): `fleet-board` serves one page at `/` and is a read of two methods — `ls` for the header,
   `work` for the rows — re-asked on every request, with no cache, no script on the page and nothing written anywhere.
   Each row is the projection's own `Work`, in the projection's order; the page groups them by state to be readable and
   never filters them, because a board that decided which items exist would be a second opinion about the fleet (§2).
-  It is a separate app from the tmux view for the reason the view is separate from the CLI (§1.1), and `--once` prints
+  It is a separate app from the CLI (§1.1), and `--once` prints
   the same page without a socket listener, which is how it is tested.
 
 ## 3. Data model

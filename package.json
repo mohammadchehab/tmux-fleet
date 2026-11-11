@@ -11,7 +11,6 @@
   "scripts": {
     "fleet": "node apps/clients/cli/src/main.ts",
     "fleet-board": "node apps/clients/board/src/main.ts",
-    "fleet-view": "node apps/clients/view/src/main.ts",
     "test": "node --test 'packages/**/test/**/*.test.ts' 'apps/**/test/**/*.test.ts' 'tests/**/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
