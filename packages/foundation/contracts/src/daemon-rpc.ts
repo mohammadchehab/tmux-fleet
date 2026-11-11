@@ -59,10 +59,14 @@ import {
   type EvalRunId,
   type MessageId,
   type PeerId,
+  type ProviderSessionRef,
   type Repo,
   type Schema,
   type Sha,
+  providerSessionRef,
+  record,
 } from '@fleet/foundation-core'
+import { attachCommand, type AttachCommand } from './provider.ts'
 import { appendIssues, fleetEvent } from './events/registry.ts'
 import type { AppendEvent, FleetEvent } from './events/registry.ts'
 import { evalRunWithCases } from './projections/evals.ts'
@@ -110,6 +114,11 @@ export const daemonMethods = [
   'work',
 
   'builds',
+  // watch-and-attach §4, §7.2: one peer held for a person, or stopped, and back.
+  'peer.hold',
+  'peer.release',
+  'peer.stop',
+  'peer.start',
 ] as const
 export type DaemonMethod = (typeof daemonMethods)[number]
 
@@ -441,6 +450,31 @@ export const buildsParams = (): Schema<BuildsParams> =>
     requestedBy: optional(peerId()),
   })
 
+/**
+ * `peer.hold` (watch-and-attach §4): stop one peer at its next turn boundary —
+ * or at once, interrupting the turn, when `now` — and hand its session to a
+ * person. Held again, it answers the same, so reopening a session whose terminal
+ * died is the same call.
+ */
+export interface PeerHoldParams {
+  readonly peerId: PeerId
+  readonly now?: boolean
+}
+
+export const peerHoldParams = (): Schema<PeerHoldParams> =>
+  objectAs<PeerHoldParams>()({ peerId: peerId(), now: optional(boolean()) })
+
+/** `peer.release` and `peer.start`: the peer, and nothing else — the daemon knows its ref. */
+export interface PeerParams {
+  readonly peerId: PeerId
+}
+
+export const peerParams = (): Schema<PeerParams> => objectAs<PeerParams>()({ peerId: peerId() })
+
+/** `peer.stop` (§7.2): as `peer.hold`, but nobody owns the session afterwards. */
+export type PeerStopParams = PeerHoldParams
+export const peerStopParams = peerHoldParams
+
 /** Method → its params. The single place the two closed sets are tied together. */
 export interface DaemonParams {
   readonly up: NoParams
@@ -456,6 +490,10 @@ export interface DaemonParams {
   readonly replay: ReplayParams
   readonly work: NoParams
   readonly builds: BuildsParams
+  readonly 'peer.hold': PeerHoldParams
+  readonly 'peer.release': PeerParams
+  readonly 'peer.stop': PeerStopParams
+  readonly 'peer.start': PeerParams
 }
 
 export type DaemonParamsOf<M extends DaemonMethod> = DaemonParams[M]
@@ -477,6 +515,10 @@ const paramsSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonParamsOf
   replay: replayParams,
   work: noParams,
   builds: buildsParams,
+  'peer.hold': peerHoldParams,
+  'peer.release': peerParams,
+  'peer.stop': peerStopParams,
+  'peer.start': peerParams,
 }
 
 /** The schema for one method's params; what both the daemon and the CLI validate against. */
@@ -672,7 +714,62 @@ export interface DaemonResults {
   readonly replay: ReplayResult
   readonly work: WorkResult
   readonly builds: BuildsResult
+  readonly 'peer.hold': PeerHoldResult
+  readonly 'peer.release': PeerResumeResult
+  readonly 'peer.stop': PeerStopResult
+  readonly 'peer.start': PeerResumeResult
 }
+
+/**
+ * What a takeover needs (watch-and-attach §4, §5): the session, where it runs,
+ * the env the headless session got (keys included, which is why the socket is
+ * its owner's alone), and the provider's own command for it. `pendingMessages`
+ * is the mail that will wait until the release (§9).
+ */
+export interface PeerHoldResult {
+  readonly peerId: PeerId
+  readonly providerId: string
+  readonly sessionRef: ProviderSessionRef
+  readonly cwd: string
+  readonly model: string
+  readonly env: Readonly<Record<string, string>>
+  readonly command: AttachCommand
+  readonly pendingMessages: number
+}
+
+export const peerHoldResult = (): Schema<PeerHoldResult> =>
+  objectAs<PeerHoldResult>()({
+    peerId: peerId(),
+    providerId: string({ minLength: 1 }),
+    sessionRef: providerSessionRef(),
+    cwd: string({ minLength: 1 }),
+    model: string({ minLength: 1 }),
+    env: record(string()),
+    command: attachCommand(),
+    pendingMessages: count(),
+  })
+
+/**
+ * `peer.release` and `peer.start`: whether the parked session was resumed, and
+ * when it was not, why the fresh start was taken instead (§4 "Resume failing").
+ */
+export interface PeerResumeResult {
+  readonly peerId: PeerId
+  readonly resumed: boolean
+  readonly reason?: string
+}
+
+export const peerResumeResult = (): Schema<PeerResumeResult> =>
+  objectAs<PeerResumeResult>()({ peerId: peerId(), resumed: boolean(), reason: optional(text(500)) })
+
+/** `peer.stop`: the ref the peer will resume from, absent when it had no session to stop. */
+export interface PeerStopResult {
+  readonly peerId: PeerId
+  readonly sessionRef?: ProviderSessionRef
+}
+
+export const peerStopResult = (): Schema<PeerStopResult> =>
+  objectAs<PeerStopResult>()({ peerId: peerId(), sessionRef: optional(providerSessionRef()) })
 
 export type DaemonResultOf<M extends DaemonMethod> = DaemonResults[M]
 
@@ -690,6 +787,10 @@ const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[
   replay: replayResult,
   work: workResult,
   builds: buildsResult,
+  'peer.hold': peerHoldResult,
+  'peer.release': peerResumeResult,
+  'peer.stop': peerStopResult,
+  'peer.start': peerResumeResult,
 }
 
 /** The schema for one method's result. The exhaustive key type is what makes a new method a compile error. */
@@ -749,4 +850,12 @@ export interface DaemonApi {
    * starting a second build.
    */
   builds(params: BuildsParams): Promise<BuildsResult>
+  /** Hold one peer for a person, at the next turn boundary or now (watch-and-attach §4). */
+  peerHold(params: PeerHoldParams): Promise<PeerHoldResult>
+  /** Give a held peer back to fleetd: resume its session with a handback note. */
+  peerRelease(params: PeerParams): Promise<PeerResumeResult>
+  /** Stop one peer, with nobody holding it (§7.2). */
+  peerStop(params: PeerStopParams): Promise<PeerStopResult>
+  /** Start one stopped peer, from its ref when it has one (§7.2). */
+  peerStart(params: PeerParams): Promise<PeerResumeResult>
 }

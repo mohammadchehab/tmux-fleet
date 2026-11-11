@@ -15,7 +15,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import type { MessageId, PeerId, Seq, Sha } from '@fleet/foundation-core'
-import type { DaemonApi, Decision } from '@fleet/foundation-contracts'
+import type { DaemonApi, Decision, PeerHoldResult } from '@fleet/foundation-contracts'
 import { decodeRequest, dispatch, encodeLine, handleLine } from '../src/api/rpc.ts'
 
 const SHA = 'ffcd0091a2b3c4d5' as Sha
@@ -106,6 +106,31 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
         answeredAt: '2026-11-10T10:01:00.000Z',
       }
       return answered
+    },
+    async peerHold(input) {
+      calls.push(`peer.hold:${input.peerId}:${String(input.now ?? false)}`)
+      return {
+        peerId: input.peerId,
+        providerId: 'claude',
+        sessionRef: '1d61f8ce-5fe5-45cf-8273-3f06cab62c86' as PeerHoldResult['sessionRef'],
+        cwd: '/work/engineer-1',
+        model: 'claude-opus-5-5',
+        env: { FLEET_PEER: input.peerId },
+        command: { executable: 'claude', args: ['--resume', '1d61f8ce-5fe5-45cf-8273-3f06cab62c86'] },
+        pendingMessages: 2,
+      }
+    },
+    async peerRelease(input) {
+      calls.push(`peer.release:${input.peerId}`)
+      return { peerId: input.peerId, resumed: true }
+    },
+    async peerStop(input) {
+      calls.push(`peer.stop:${input.peerId}`)
+      return { peerId: input.peerId }
+    },
+    async peerStart(input) {
+      calls.push(`peer.start:${input.peerId}`)
+      return { peerId: input.peerId, resumed: false, reason: 'no session to resume' }
     },
     async builds(input) {
       calls.push(`builds:${input.task}`)

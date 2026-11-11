@@ -114,6 +114,15 @@ const ACTOR: Actor = 'user'
 const heldWorkStates: ReadonlySet<WorkState> = new Set(['assigned', 'in_progress', 'in_review', 'mergeable', 'blocked'])
 
 export const createDaemon = (deps: DaemonDeps): Daemon => {
+  /** A peer the fleet has, or `not_found` naming it: the same answer `peek` gives a typo. */
+  const requirePeer = async (peerId: PeerId): Promise<void> => {
+    if ((await deps.store.reader().peers.get(peerId)) === undefined) {
+      throw fleetError('not_found', `no peer ${String(peerId)} in this fleet; 'fleet ls' lists the peers`, {
+        details: { peerId: String(peerId) },
+      })
+    }
+  }
+
   const clock = deps.clock ?? systemClock
   const store = deps.store
   const read = store.reader()
@@ -450,6 +459,28 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       const events: FleetEvent[] = []
       for await (const event of store.iterate(input.from, input.to)) events.push(event)
       return { mode: 'window', events }
+    },
+
+    // watch-and-attach §4, §7.2. The person at the socket is the actor: a hold
+    // is a person's decision, and the attach client is how they make it.
+    async peerHold(input) {
+      await requirePeer(input.peerId)
+      return deps.supervisor.hold(input.peerId, { ...(input.now === undefined ? {} : { now: input.now }), by: ACTOR })
+    },
+
+    async peerRelease(input) {
+      await requirePeer(input.peerId)
+      return deps.supervisor.release(input.peerId)
+    },
+
+    async peerStop(input) {
+      await requirePeer(input.peerId)
+      return deps.supervisor.stopPeer(input.peerId, { ...(input.now === undefined ? {} : { now: input.now }), by: ACTOR })
+    },
+
+    async peerStart(input) {
+      await requirePeer(input.peerId)
+      return deps.supervisor.startPeer(input.peerId)
     },
 
     async eventsAppend(input) {

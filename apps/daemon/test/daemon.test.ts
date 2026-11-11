@@ -116,6 +116,18 @@ const fakeSupervisor = (
     running() {
       return [] as readonly PeerId[]
     },
+    async hold() {
+      throw new Error('this fake does not hold')
+    },
+    async release() {
+      throw new Error('this fake does not release')
+    },
+    async stopPeer() {
+      throw new Error('this fake does not stop one peer')
+    },
+    async startPeer() {
+      throw new Error('this fake does not start one peer')
+    },
   }
 }
 

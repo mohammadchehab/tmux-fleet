@@ -44,6 +44,7 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
   down: [{}],
   ls: [{}],
   send: [
+    { to: 'peer-1', kind: 'info', body: 'the checks are red', from: 'peer-2' },
     { to: 'peer-1', kind: 'info', body: 'the checks are red' },
     { to: 'peer-1', kind: 'nudge', body: 'still red', briefVersion: 3 },
   ],
@@ -83,6 +84,10 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
       requestedBy: 'peer-1',
     },
   ],
+  'peer.hold': [{ peerId: 'peer-1' }, { peerId: 'peer-1', now: true }],
+  'peer.release': [{ peerId: 'peer-1' }],
+  'peer.stop': [{ peerId: 'peer-1' }, { peerId: 'peer-1', now: false }],
+  'peer.start': [{ peerId: 'peer-1' }],
 }
 
 test('the method set is the one a client builds against, and the usage report a hook sends', () => {
@@ -100,6 +105,10 @@ test('the method set is the one a client builds against, and the usage report a 
     'replay',
     'work',
     'builds',
+    'peer.hold',
+    'peer.release',
+    'peer.stop',
+    'peer.start',
   ])
 })
 

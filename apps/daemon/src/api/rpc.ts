@@ -94,6 +94,14 @@ export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<
       return api.work()
     case 'builds':
       return api.builds(decode(daemonParamsFor('builds'), params))
+    case 'peer.hold':
+      return api.peerHold(decode(daemonParamsFor('peer.hold'), params))
+    case 'peer.release':
+      return api.peerRelease(decode(daemonParamsFor('peer.release'), params))
+    case 'peer.stop':
+      return api.peerStop(decode(daemonParamsFor('peer.stop'), params))
+    case 'peer.start':
+      return api.peerStart(decode(daemonParamsFor('peer.start'), params))
   }
 }
 
