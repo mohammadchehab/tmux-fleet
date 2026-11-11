@@ -167,6 +167,11 @@ export interface Supervisor extends PeerSessions {
   stopPeer(peerId: PeerId, options: { readonly now?: boolean; readonly by: Actor; readonly signal?: AbortSignal }): Promise<PeerStopResult>
   /** Start a stopped peer: resumed from its ref when it has one, fresh otherwise (§7.2). */
   startPeer(peerId: PeerId): Promise<PeerResumeResult>
+  /**
+   * Stop the turn a running peer is in and leave its session in place (§7). `false` when
+   * there was nothing to stop: no running session, or none mid-turn.
+   */
+  interrupt(peerId: PeerId): Promise<boolean>
 }
 
 /** Wait for `until`, or reject when `signal` aborts first; the waited-for promise is left running. */
@@ -900,6 +905,13 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
         const ref = await park(peer, 'stopped', { ...options, signal })
         return { peerId, ...(ref === undefined ? {} : { sessionRef: ref }) }
       })
+    },
+
+    async interrupt(peerId) {
+      const running = sessions.get(peerId)
+      if (running === undefined || running.session.isAtBoundary()) return false
+      await running.session.interrupt()
+      return true
     },
 
     async startPeer(peerId) {

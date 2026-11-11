@@ -260,6 +260,11 @@ export class PeerSession {
     })
   }
 
+  /** True when no turn is running or pending: the moment a hold, a stop or a purge may act. */
+  isAtBoundary(): boolean {
+    return this.#atBoundary()
+  }
+
   /** Stop the turn that is running and stay on the session: a hold with `now` (§4). */
   async interrupt(): Promise<void> {
     await this.#ports.provider.interrupt(this.#handle)

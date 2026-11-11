@@ -44,8 +44,10 @@ import { displayLine, type DisplayLine } from './provider.ts'
  * The version of this wire protocol, as `DaemonStatus.protocolVersion` reports it.
  * Bumped whenever a stream frame or an RPC changes shape, so a client that reads
  * it on connect knows whether it can speak to this daemon.
+ *
+ * 1: `peer.watch` and its frames. 2: `peer.interrupt`, and `DaemonStatus.purgeContextRatio`.
  */
-export const daemonProtocolVersion = 1
+export const daemonProtocolVersion = 2
 
 export interface WatchParams {
   /** One peer's lines (the rows still say what the fleet did); absent: every peer. */
