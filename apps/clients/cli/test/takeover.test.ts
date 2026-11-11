@@ -1,11 +1,24 @@
 /** The real takeover against real child processes (watch-and-attach §5, §7). */
 
 import assert from 'node:assert/strict'
+import { existsSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { runTakeover } from '../src/takeover.ts'
 
 const env = { PATH: process.env['PATH'] ?? '' }
+
+/** A path the child creates once its signal handlers are installed: readiness, not a guess at how long that takes. */
+const readyMarker = (): string => join(mkdtempSync(join(tmpdir(), 'fleet-takeover-')), 'ready')
+const untilReady = async (marker: string): Promise<void> => {
+  const deadline = Date.now() + 15_000
+  while (!existsSync(marker)) {
+    if (Date.now() > deadline) throw new Error('the child never became ready')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
 
 test('it runs the command in the cwd it is given, with only the env it is given, and reports how it exited', async () => {
   const exit = await runTakeover(
@@ -41,12 +54,15 @@ test('a command that does not exist rejects, and leaves no SIGINT handler behind
 test('a SIGHUP or SIGTERM to this process is forwarded to the child and waited out, so the release can follow', async () => {
   for (const signal of ['SIGHUP', 'SIGTERM'] as const) {
     const before = process.listenerCount(signal)
+    const marker = readyMarker()
     const running = runTakeover(
-      { executable: process.execPath, args: ['-e', "process.on('SIGHUP', () => process.exit(7)); process.on('SIGTERM', () => process.exit(8)); setInterval(() => undefined, 1000)"] },
-      { cwd: '/', env },
+      {
+        executable: process.execPath,
+        args: ['-e', "process.on('SIGHUP', () => process.exit(7)); process.on('SIGTERM', () => process.exit(8)); require('fs').writeFileSync(process.env.READY, '1'); setInterval(() => undefined, 1000)"],
+      },
+      { cwd: '/', env: { ...env, READY: marker } },
     )
-    // Give the child time to install its handlers, then hang this process up.
-    await new Promise((resolve) => setTimeout(resolve, 400))
+    await untilReady(marker)
     process.kill(process.pid, signal)
     const exit = await running
     assert.deepEqual(exit, { code: signal === 'SIGHUP' ? 7 : 8, signal: null })
@@ -55,11 +71,15 @@ test('a SIGHUP or SIGTERM to this process is forwarded to the child and waited o
 })
 
 test('a child that ignores the hangup is escalated, so it cannot keep a peer held', async () => {
+  const marker = readyMarker()
   const running = runTakeover(
-    { executable: process.execPath, args: ['-e', "process.on('SIGHUP', () => undefined); process.on('SIGTERM', () => undefined); setInterval(() => undefined, 1000)"] },
-    { cwd: '/', env, graceMs: 200 },
+    {
+      executable: process.execPath,
+      args: ['-e', "process.on('SIGHUP', () => undefined); process.on('SIGTERM', () => undefined); require('fs').writeFileSync(process.env.READY, '1'); setInterval(() => undefined, 1000)"],
+    },
+    { cwd: '/', env: { ...env, READY: marker }, graceMs: 200 },
   )
-  await new Promise((resolve) => setTimeout(resolve, 400))
+  await untilReady(marker)
   process.kill(process.pid, 'SIGHUP')
   const exit = await running
   assert.equal(exit.signal, 'SIGKILL')
