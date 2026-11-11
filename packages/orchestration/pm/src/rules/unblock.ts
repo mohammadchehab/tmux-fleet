@@ -42,6 +42,11 @@ export const episodeDecisionId = (work: Work, episode: number): DecisionId =>
  * blocker. It is asked on the event that carries the transition, never on the heartbeat, so a Work that stays blocked
  * after its answer is not asked again from the clock. It does not wait on the answer's delivery: route 1 still
  * delivers the answered decision once (deduped by its id), and the new question sits in the inbox until it is answered.
+ *
+ * Overlap, on purpose: a peer's blocked note (`raiseBlockedNotes`, note.ts) also asks a second block itself, so on the
+ * note path this rule finds the latest question still open and adds nothing. It fires only for a `work.blocked` that
+ * arrives with its latest question already answered, which the note route never produces. The guard stays because it
+ * is correct and cheap, and merging the two paths would change no behaviour (TASK-125/126).
  */
 export const reaskBlockedWork: Rule = (ctx) => {
   if (ctx.event?.type !== 'work.blocked') return []
