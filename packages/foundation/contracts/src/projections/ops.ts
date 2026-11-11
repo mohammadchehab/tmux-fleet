@@ -211,6 +211,12 @@ export interface TokenReport {
    * which it is by the provider, not by this number alone.
    */
   readonly costUsd: number
+  /**
+   * How many of those turns reported no price (TASK-122). `costUsd` is then a floor, not the bill: a row with some
+   * priced turns and some unpriced ones is a mixed peer, and an all-unpriced one has a `costUsd` of 0 that is not free.
+   * Absent on a row written before the column existed; the store backfills every row it has.
+   */
+  readonly unpricedTurns?: number
   readonly toolCalls: {
     readonly grep: number
     readonly glob: number
@@ -231,6 +237,7 @@ export const tokenReport = (): Schema<TokenReport> =>
     outputTokens: count(),
     cachedTokens: count(),
     costUsd: number({ min: 0 }),
+    unpricedTurns: optional(count()),
     toolCalls: object({ grep: count(), glob: count(), read: count(), codegraph: count() }),
     redirects: count(),
     updatedAt: timestamp(),

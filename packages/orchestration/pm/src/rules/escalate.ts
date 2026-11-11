@@ -134,7 +134,7 @@ export const budgetDecisionId = (budgetUsd: number): DecisionId =>
 /** What the fleet has spent, and whether that is the whole bill (§6.2: a provider that reports no price leaves 0). */
 interface Spend {
   readonly usd: number
-  /** Peers that ran turns but reported no cost, so `usd` is a floor rather than a total. */
+  /** Turns that ran and reported no cost, so `usd` is a floor rather than a total (TASK-122). */
   readonly unpriced: number
 }
 
@@ -146,7 +146,9 @@ const fleetSpend = (ctx: RuleContext): Spend => {
     // the same turn twice.
     if (row.workId !== undefined) continue
     usd += row.costUsd
-    if (row.turns > 0 && row.costUsd === 0) unpriced++
+    // A peer that priced some turns and not others has a total that is a floor too: the count is the ledger's own, not
+    // inferred from a zero total (TASK-122).
+    unpriced += row.unpricedTurns ?? 0
   }
   return { usd, unpriced }
 }
@@ -165,7 +167,7 @@ const spendCap = (ctx: RuleContext): readonly Draft[] => {
   // "at least" is not hedging: a peer that reports turns and no price (§6.2) spent money this number does not count.
   const spent = unpriced === 0 ? money(usd) : `at least ${money(usd)}`
   const unpricedNote =
-    unpriced === 0 ? '' : ` (${String(unpriced)} ${unpriced === 1 ? 'peer reports' : 'peers report'} turns with no price)`
+    unpriced === 0 ? '' : ` (${String(unpriced)} ${unpriced === 1 ? 'turn has' : 'turns have'} no price)`
 
   return [
     draft(`decision:${decisionId}`, {

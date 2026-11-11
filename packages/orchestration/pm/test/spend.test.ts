@@ -71,7 +71,7 @@ test("per-Work rows are the rollup's breakdown, never billed on top of it", () =
 
 test('a turn that reported no price makes the total a floor, and the question says so', () => {
   // cursor reports turns with no cost (§6.2): the number is real but it is not the whole bill.
-  const rows = [rollup(12), rollup(0, { peerId: 'engineer-2' as TokenReport['peerId'], turns: 4 })]
+  const rows = [rollup(12), rollup(0, { peerId: 'engineer-2' as TokenReport['peerId'], turns: 4, unpricedTurns: 4 })]
   const asked = only(decide(request(rows), { budgetUsd: 10 }).actions)
 
   assert.match(asked.question, /at least \$12\.00/)
@@ -123,4 +123,12 @@ test('a budget that is not a finite number above zero is refused, not read as a 
   }
   assert.equal(resolveOptions({ budgetUsd: 10 }).budgetUsd, 10)
   assert.equal(resolveOptions({}).budgetUsd, undefined)
+})
+
+test('a peer with some priced turns and some unpriced ones is a floor too, and the question counts the turns (TASK-122)', () => {
+  // The rollup's price is the sum of its priced turns, so a mixed peer's total is not the bill: the question must say so.
+  const asked = only(decide(request([rollup(12, { unpricedTurns: 3 })]), { budgetUsd: 10 }).actions)
+
+  assert.match(asked.question, /at least \$12\.00/)
+  assert.match(asked.question, /3 turns/)
 })
