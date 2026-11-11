@@ -105,6 +105,17 @@ export const unblockWaitingPeers: Rule = (ctx) => {
 const alreadyTold = (to: Peer['peerId'], marker: string, ctx: RuleContext): boolean =>
   ctx.state.messages.some((row) => row.to === to && row.body.includes(marker))
 
+/**
+ * Has the architect been told about this block of the Work? A block is an episode: `updatedAt` is when the Work was
+ * last blocked, so a message sent before it is about an earlier block and does not count (TASK-127). A message
+ * sent after it is this block, and a heartbeat does not resend it. The cost of this key: a Work updated while
+ * still blocked is routed once more, which is a duplicate and not a silent block.
+ */
+const toldAboutThisBlock = (to: Peer['peerId'], work: Work, ctx: RuleContext): boolean =>
+  ctx.state.messages.some(
+    (row) => row.to === to && row.body.includes(String(work.workId)) && row.sentAt >= work.updatedAt,
+  )
+
 /** The Work a waiting peer is blocked on: its own, in creation order, when it has more than one. */
 const blockedWorkOf = (peer: Peer, ctx: RuleContext): Work | undefined =>
   ctx.state.work
@@ -160,7 +171,7 @@ const routeBlock = (peer: Peer, work: Work, ctx: RuleContext): Draft | undefined
 
 /** Route 2: `peer`/`contract` blocks are the reviewer role's to clear (§10, §12). */
 const askArchitect = (peer: Peer, work: Work, architect: Peer, ctx: RuleContext): Draft | undefined => {
-  if (alreadyTold(architect.peerId, String(work.workId), ctx)) return undefined
+  if (toldAboutThisBlock(architect.peerId, work, ctx)) return undefined
 
   const body = [
     `${String(peer.peerId)} (${peer.role}) is waiting on Work ${String(work.workId)}: ${work.title}`,
