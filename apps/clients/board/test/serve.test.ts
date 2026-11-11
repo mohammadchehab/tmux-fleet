@@ -179,6 +179,33 @@ describe('board over http: it answers for its own host and no other', () => {
     assert.equal((await send(board, { host: 'LOCALHOST' })).status, 200)
   })
 
+  it('allows a literal v4 address: a LAN or tailnet board is reached by address', async () => {
+    const board = await serve()
+    const port = new URL(board.url).port
+
+    assert.equal((await send(board, { host: `192.168.1.5:${port}` })).status, 200)
+    assert.equal((await send(board, { host: '100.101.102.103' })).status, 200)
+  })
+
+  it('allows a bracketed v6 literal, with and without a port', async () => {
+    const board = await serve()
+    const port = new URL(board.url).port
+
+    assert.equal((await send(board, { host: `[2001:db8::1]:${port}` })).status, 200)
+    assert.equal((await send(board, { host: '[2001:db8::1]' })).status, 200)
+  })
+
+  it('refuses a name that only looks like an address', async () => {
+    const board = await serve()
+    const port = new URL(board.url).port
+
+    // the literal rule must not become "starts with something dotted": these
+    // are names, and a name is exactly what rebinding needs
+    assert.equal((await send(board, { host: '1.2.3.4.evil.com' })).status, 403)
+    assert.equal((await send(board, { host: `1.2.3.4.evil.com:${port}` })).status, 403)
+    assert.equal((await send(board, { host: '[1.2.3.4.evil.com]' })).status, 403)
+  })
+
   it('allows the configured host when it is not loopback', async () => {
     // binding every interface is the one configuration where the address a
     // browser uses is not one of the loopback names

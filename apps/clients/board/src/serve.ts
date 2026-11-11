@@ -12,12 +12,13 @@
  * how to reach it and how to stop it. It never reads the environment and never
  * exits the process: `main.ts` does both.
  *
- * It answers only under the names it was asked to serve — loopback and its
- * configured host — because a page the board does not know has no business
- * reading a fleet's Work (§2, DNS rebinding).
+ * It answers only under the names it was asked to serve — loopback, its
+ * configured host — and under literal addresses, because a page the board does
+ * not know has no business reading a fleet's Work (§2, DNS rebinding).
  */
 
 import { createServer } from 'node:http'
+import { isIP } from 'node:net'
 import type { AddressInfo, Server } from 'node:net'
 
 import { toFleetError } from '@fleet/foundation-core'
@@ -54,6 +55,22 @@ export interface RunningBoard {
  */
 const allowedHosts = (configured: string): ReadonlySet<string> =>
   new Set(['localhost', '127.0.0.1', '::1', configured.toLowerCase()])
+
+/**
+ * A literal address, v4 or v6 — bracketed or not — is answered whatever it is,
+ * in addition to the names above.
+ *
+ * Rebinding needs a *name*: one the attacker owns and can re-point from their
+ * own server to loopback while the browser keeps calling it the same origin. A
+ * literal cannot be re-pointed, so `Host: 192.168.1.5` says the page was
+ * loaded from that address and bought nothing. It is allowed because a fleet on
+ * a LAN or a Tailscale tailnet is reached by address, and refusing those would
+ * make `--host 0.0.0.0` useless.
+ *
+ * `isIP` is strict about the whole string, which is what keeps a name that
+ * merely *starts* like an address — `1.2.3.4.evil.com` — out.
+ */
+const isIpLiteral = (name: string): boolean => isIP(name) !== 0
 
 /** The name half of `Host: name`, `name:port`, `[::1]` or `[::1]:port`; undefined when the line carries none. */
 const hostNameOf = (header: string | undefined): string | undefined => {
@@ -109,9 +126,12 @@ export const serveBoard = async (options: ServeOptions): Promise<RunningBoard> =
     // board does not answer to is refused, not served — and a refusal must not
     // depend on a read having happened
     const host = hostNameOf(request.headers.host)
-    if (host === undefined || !allowed.has(host)) {
+    if (host === undefined || !(allowed.has(host) || isIpLiteral(host))) {
       response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
-      response.end('the board answers only for 127.0.0.1, localhost, [::1] and its configured host\n')
+      response.end(
+        'the board answers only for loopback, its configured host and literal IP addresses; ' +
+          'a page loaded from any other name cannot read it\n',
+      )
       return
     }
 
