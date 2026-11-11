@@ -1,6 +1,6 @@
 # Editor extension: the fleet inside VS Code and Cursor
 
-**Status**: design.
+**Status**: design, spiked (§10).
 **Builds on**: [`watch-and-attach.md`](watch-and-attach.md) — `peer.watch`, hold and release, stop and start, the
 needs-you list. This document adds a client and nothing to the daemon.
 
@@ -93,6 +93,11 @@ and sends through the Mailbox as the person.
 
 A status bar item shows `Fleet: 4 peers · 2 need you` and opens the side bar.
 
+The tree provider keeps one stable element object per row and refreshes a changed row with
+`onDidChangeTreeData.fire(element)`. The editor matches that element by identity against what `getChildren` returned,
+so a provider that hands back fresh copies on each update refreshes nothing, silently. The view model can stay
+immutable; the extension maps it onto stable elements keyed by peer id and decision id.
+
 ## 5. Live output
 
 One output channel per peer, created when first opened, fed from the shared view model. It is the editor's read-only
@@ -117,6 +122,8 @@ peer stays held and the tree shows it as held with Reopen and Release, as the wa
 The extension uses the rule the other clients use (`socketPathOf`): an explicit setting, then the environment, then the
 profile layout.
 
+- A socket path setting is absolute; editor settings do not expand `~`, so the extension expands a leading `~` itself
+  against the extension host's home.
 - Setting `fleet.profile` (workspace scope) names the profile. With it unset, the extension lists the profiles that
   have a running daemon and whose repo is the workspace folder; one match is used, several ask once and the choice is
   saved to the workspace.
@@ -136,9 +143,17 @@ machine.
 - Build: the extension host needs bundled JavaScript. One bundle step produces `fleet-editor-<version>.vsix`; this is
   the first app in the repo with a build artefact, and the artefact is built in CI and attached to the release, not
   committed.
-- Install: `fleet editor install` finds `code` and `cursor` on the path and runs `--install-extension <vsix>` for each
-  one present, and says which it installed into. `fleet up` prints one line when an editor is present without the
-  extension. `fleet editor uninstall` reverses it.
+- Install is per host, because the extension runs where fleetd runs. `fleet editor install` runs on the machine that
+  hosts the fleet and installs into every editor host it finds there:
+  - locally, `code` and `cursor` on the path, with `--install-extension <vsix>`;
+  - on a machine reached over Remote-SSH, the editor servers under `~/.vscode-server` and `~/.cursor-server`, through
+    each server's own CLI (`code-server` / `cursor-server --install-extension <vsix>`). A local `code --install-extension`
+    never carries a file-installed package to a remote host, so running the command on the fleet's host is the only way
+    that works.
+  A server appears the first time an editor connects to that host, so `fleet up` prints one line when it finds an
+  editor or editor server without the extension, naming the command to run. `fleet editor uninstall` reverses it.
+- Packaging is `vsce package` on the bundled output. The manifest carries a repository field and a licence file, so
+  packaging needs no flags that skip checks.
 - Version: the extension reads the daemon's protocol version on connect. On a mismatch it shows "update the extension:
   run `fleet editor install`" and does nothing else, so an old extension cannot misread a new stream.
 
@@ -147,17 +162,28 @@ machine.
 - A stalled extension host is dropped by the daemon like any slow watch client (watch-and-attach §6); the extension
   reconnects and replays the buffer.
 - Several windows on the same repo each hold their own watch connection. That is one connection per window, which the
-  daemon's per-watch design allows.
+  daemon's per-watch design allows. Several hosts each need their own install (§8).
 - An untrusted workspace: the extension stays inactive. It runs a CLI in the workspace, which is what workspace trust
   exists to gate.
 
-## 10. To prove before building
+## 10. Proven, and still to prove
 
-- A workspace extension can reach a unix socket under the user's home in Remote-SSH and in a dev container, in both
-  VS Code and Cursor.
-- `cursor --install-extension <vsix>` installs a local package in the current Cursor build, and the extension loads.
-- The tree view stays smooth with the peer rows updating a few times a second, by refreshing single items and not the
-  whole tree.
+A spike (2026-11-11, VS Code 1.145 and Cursor 3.29, a fake daemon socket) proved:
+
+- A workspace extension reaches the fleet socket under the extension host's home, locally and over Remote-SSH, in
+  both editors.
+- `code` and `cursor --install-extension <vsix>` install a local package and it activates. Over Remote-SSH it reaches
+  the remote host only through that host's editor-server CLI (§8).
+- Eight peers updating five times a second cost about 2% of one core in the extension host with no dropped updates,
+  either way of refreshing. Single-row refresh is still the rule (§4), because it scales and it is no harder.
+
+Still to prove:
+
+- The same in a dev container.
+- `fleet editor install` finding a remote host's editor servers by itself.
+
+Tests that launch an editor do so with a throwaway `--user-data-dir` and `--extensions-dir`, off the person's screen
+where the platform allows, and never against their own editor profile.
 
 ## 11. Delivery
 
