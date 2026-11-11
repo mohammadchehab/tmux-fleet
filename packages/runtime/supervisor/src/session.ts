@@ -496,6 +496,15 @@ export class PeerSession {
         }
         if (event.type !== 'turn.ended') continue
 
+        // Every turn's spend is the store's, whatever the turn's end (TASK-71). The provider's spend is a
+        // delta it advances at every result, so a turn the gates below skip has already used up its own
+        // cost: a failed or interrupted turn, the purge's ask, a turn that ended while the peer was busy,
+        // and a turn whose usage() could not answer are all recorded here, before any gate can skip them.
+        const measured = await this.#usageOrUndefined(handle)
+        await this.#recordUsage(handle, event.turnId, measured).catch((error: unknown) =>
+          this.#reportBookkeepingFailure(event.turnId, error),
+        )
+
         // A turn boundary reached *during* a purge is the peer answering the ask.
         if (askWaiter !== undefined) {
           const waiter = askWaiter
@@ -519,28 +528,13 @@ export class PeerSession {
         if (this.#state !== 'idle' || this.#pending.size > 0 || this.#openTurns.size > 0) continue
 
         turns += 1
-        const usage = await this.#usageOrUndefined(handle)
         // No measurement, no trigger: the purge is judged against these numbers,
         // and a boundary that cannot be measured is one that is not judged. The
         // turn still counts above, because the counter is what the next boundary
-        // is judged against.
-        if (usage === undefined) continue
-        // §6.2's measurement, at the boundary the fleet already owns: the same
-        // `usage()` the purge reads, plus what the turn spent. Recorded before
-        // the trigger is judged, so a turn that causes a purge has still been
-        // counted — the handoff costs tokens too.
-        //
-        // A rejected row is bookkeeping, not the session: the `try` around this
-        // loop is for the stream, and a store that refuses this one append used to
-        // end a healthy session as `crashed` and hand it to `recover` — the peer
-        // replaced because a measurement could not be filed. The sink that would
-        // carry the complaint is the store that just refused it, and a session is
-        // the wrong thing to sacrifice to make it visible: the failure goes to
-        // `onBookkeepingFailure` instead, which under fleetd is the daemon log
-        // (TASK-4, TASK-57).
-        await this.#recordUsage(handle, event.turnId, usage).catch((error: unknown) =>
-          this.#reportBookkeepingFailure(event.turnId, error),
-        )
+        // is judged against. The spend was recorded above, before this gate, so a
+        // turn that causes a purge has still been counted — the handoff costs tokens too.
+        if (measured === undefined) continue
+        const usage = measured
         const trigger = purgeTrigger({
           usage,
           usageTokens: provider.capabilities.usageTokens,
@@ -905,7 +899,7 @@ export class PeerSession {
    * from a transcript: under fleetd there is no hook to read one, and the same
    * source works for every provider.
    */
-  async #recordUsage(handle: SessionHandle, turnId: TurnId, usage: Usage): Promise<void> {
+  async #recordUsage(handle: SessionHandle, turnId: TurnId, usage: Usage | undefined): Promise<void> {
     const { clock, peerId, provider, record } = this.#ports
     const spend = provider.turnSpend?.(handle)
     if (spend === undefined) return
@@ -918,8 +912,7 @@ export class PeerSession {
       data: {
         peerId,
         sessionId: sessionIdOf(handle),
-        contextTokens: usage.contextTokens,
-        contextLimit: usage.contextLimit,
+        ...(usage === undefined ? {} : { contextTokens: usage.contextTokens, contextLimit: usage.contextLimit }),
         inputTokens: spend.inputTokens,
         outputTokens: spend.outputTokens,
         cachedTokens: spend.cachedTokens,

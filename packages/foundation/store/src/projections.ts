@@ -1822,15 +1822,17 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       const { peerId, workId, inputTokens, outputTokens, cachedTokens, toolCalls, costUsd, contextTokens, contextLimit } = event.data
       // The boundary is the only place a turn's end is recorded, so it is also
       // where "when did this peer last finish a turn" is kept for `fleet ls`, and
-      // how full its context was then, for the watch's peer list.
+      // how full its context was then, for the watch's peer list. A turn whose usage was not measured (TASK-71)
+      // leaves the last measured figures in place: null here means "not measured", not "empty".
       db.run(
         `INSERT INTO peer_activity (peer_id, last_turn_at, context_tokens, context_limit) VALUES (?, ?, ?, ?)
          ON CONFLICT (peer_id) DO UPDATE SET last_turn_at = excluded.last_turn_at,
-           context_tokens = excluded.context_tokens, context_limit = excluded.context_limit`,
+           context_tokens = COALESCE(excluded.context_tokens, peer_activity.context_tokens),
+           context_limit = COALESCE(excluded.context_limit, peer_activity.context_limit)`,
         peerId,
         ts,
-        contextTokens,
-        contextLimit,
+        contextTokens ?? null,
+        contextLimit ?? null,
       )
       // The month's total, which is what a monthly cap is measured against
       // (shared-fleet.md §3); the rows below never reset a period.

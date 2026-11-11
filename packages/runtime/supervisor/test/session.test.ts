@@ -1547,3 +1547,84 @@ test('an approval the provider no longer holds is not answered, and says so', as
   r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
 })
+
+// -------------------------------------------------- every turn's spend (TASK-71)
+// The provider's spend is a delta it advances at every result, so a turn that the boundary gates skip has already
+// consumed its own cost. A turn that failed, was interrupted, was a purge's ask, ended while the peer was busy, or ended
+// with `usage()` unavailable must still be recorded, or the §6.1 cap undercounts. The context fields are measured only
+// when `usage()` answered.
+
+const spendOf = { inputTokens: 900, outputTokens: 120, cachedTokens: 0, costUsd: 0.02 }
+
+const usageRows = (r: Rig) => r.records.filter((record) => record.type === 'turn.usage_recorded')
+
+const runSession = async (r: Rig, feed: ProviderEvent[]) => {
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+  })
+  const run = session.run()
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(...feed)
+  await wait()
+  await session.stop()
+  await run
+}
+
+test('a failed turn is recorded: its spend is not lost to the baseline it advanced (TASK-71)', async () => {
+  const r = rig(() => ({ contextTokens: 4_096, contextLimit: 200_000 }), { spend: spendOf })
+  await runSession(r, [started(), { type: 'tool.use', turnId, tool: 'Grep' }, ended('failed')])
+
+  const rows = usageRows(r)
+  assert.equal(rows.length, 1, 'the failed turn has its own row')
+  assert.equal((rows[0]?.data as { costUsd?: number }).costUsd, 0.02)
+  assert.equal((rows[0]?.data as { toolCalls?: { grep?: number } }).toolCalls?.grep, 1)
+})
+
+test('an interrupted turn is recorded too (TASK-71)', async () => {
+  const r = rig(() => ({ contextTokens: 4_096, contextLimit: 200_000 }), { spend: spendOf })
+  await runSession(r, [started(), ended('interrupted')])
+
+  assert.equal(usageRows(r).length, 1)
+})
+
+test('a boundary where usage() is unavailable still records the spend, without inventing context numbers (TASK-71)', async () => {
+  const r = rig(
+    () => {
+      throw new Error('the CLI has already exited')
+    },
+    { spend: spendOf },
+  )
+  await runSession(r, [started(), ended()])
+
+  const rows = usageRows(r)
+  assert.equal(rows.length, 1, 'the spend is recorded')
+  const data = rows[0]?.data as { costUsd?: number; contextTokens?: number; contextLimit?: number }
+  assert.equal(data.costUsd, 0.02)
+  assert.equal(data.contextTokens, undefined, 'a context figure is measured or absent, never a guess')
+  assert.equal(data.contextLimit, undefined)
+})
+
+test('a turn that ends while another is still open is recorded at its own end (TASK-71)', async () => {
+  const r = rig(() => ({ contextTokens: 4_096, contextLimit: 200_000 }), { spend: spendOf })
+  const other = 'trn_fedcba9876543210' as TurnId
+  await runSession(r, [
+    started(),
+    { type: 'turn.started', turnId: other, at: '2026-11-10T09:00:00.000Z' },
+    ended(),
+    { type: 'turn.ended', turnId: other, at: '2026-11-10T09:00:02.000Z', reason: 'completed' },
+  ])
+
+  // Two turns end, and each has its own spend to account for; the first ended while the peer was not idle.
+  assert.equal(usageRows(r).length, 2)
+})

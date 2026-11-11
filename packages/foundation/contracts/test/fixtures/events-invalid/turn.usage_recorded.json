@@ -15,10 +15,16 @@
       "contextTokens": 172400,
       "contextLimit": 200000,
       "inputTokens": 61200,
-      "outputTokens": 4180,
+      "outputTokens": "not-a-number",
       "cachedTokens": 148000,
+      "toolCalls": {
+        "grep": 2,
+        "glob": 1,
+        "read": 6,
+        "codegraph": 9
+      },
       "costUsd": 0.42
     }
   },
-  "path": "data.toolCalls"
+  "path": "data.outputTokens"
 }
