@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { fixedClock, profilePaths, type PeerId, type Seq, type TurnId } from '@fleet/foundation-core'
-import type { AppendEvent, EventSink, ProviderEvent, SessionSpec, Turn, Worktree, WorktreeProvisioner } from '@fleet/foundation-contracts'
+import type { AppendEvent, EventSink, ProviderEvent, SessionSpec, Turn, Work, Worktree, WorktreeProvisioner } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle, TurnSpend } from '@fleet/runtime-provider-sdk'
 import type { BookkeepingFailure } from '@fleet/runtime-supervisor'
 
@@ -96,6 +96,8 @@ const rig = async (
     readonly standing?: StandingBriefs
     /** What the provider reports a finished turn spent (§6.2); without one no usage row is written. */
     readonly spend?: TurnSpend
+    /** The Works the store would project, for the Work a turn's usage is recorded against. */
+    readonly work?: readonly Work[]
     /** Make the store refuse `turn.usage_recorded`, the way a locked or full ledger would. */
     readonly rejectUsage?: boolean
     /** Where the daemon reports a bookkeeping failure it did not turn into a session failure. */
@@ -178,6 +180,7 @@ const rig = async (
     // What the store would project: the rows a test seeded, plus every
     // `worktree.created` the supervisor itself appended.
     read: {
+      work: { all: async () => options.work ?? [], get: async () => undefined },
       worktrees: {
         all: async () => [
           ...(options.worktrees ?? []),
@@ -330,6 +333,44 @@ const twoPeers = (second: Record<string, unknown>, extra: Record<string, unknown
     ],
     ...extra,
   })
+
+/** A Work as the read model projects it: only the fields the supervisor reads are meaningful. */
+const workRow = (workId: string, state: string, assignee: PeerId): Work =>
+  ({ workId, state, assignee, title: 'a Work', dependsOn: [] }) as unknown as Work
+
+const usageOf = (r: Rig): Record<string, unknown>[] =>
+  r.records
+    .filter((record) => record.type === 'turn.usage_recorded')
+    .map((record) => record.data as Record<string, unknown>)
+
+test('a turn’s usage is recorded against the Work the peer holds, so the per-Work cost view fills (TASK-78)', async (t) => {
+  const WORK = 'wrk_7f3a91c2d84b0e56'
+  const r = await rig(profileWith(undefined), {
+    spend: { inputTokens: 900, outputTokens: 120, cachedTokens: 0 },
+    work: [workRow(WORK, 'in_progress', peerId)],
+  })
+  t.after(() => r.supervisor.stop())
+  await oneTurn(r)
+
+  await until(() => usageOf(r).length > 0, 'the turn’s usage row')
+  assert.equal(usageOf(r)[0]?.workId, WORK)
+})
+
+test('a turn with no held Work is recorded without one: a merged Work, or another peer’s, is not this peer’s', async (t) => {
+  const r = await rig(profileWith(undefined), {
+    spend: { inputTokens: 900, outputTokens: 120, cachedTokens: 0 },
+    work: [
+      workRow('wrk_0000000000000001', 'merged', peerId),
+      workRow('wrk_0000000000000002', 'in_progress', 'architect-1' as PeerId),
+    ],
+  })
+  t.after(() => r.supervisor.stop())
+  await oneTurn(r)
+
+  await until(() => usageOf(r).length > 0, 'the turn’s usage row')
+  assert.equal(usageOf(r)[0]?.peerId, peerId)
+  assert.equal(usageOf(r)[0]?.workId, undefined, 'the turn is still recorded, just not against a Work')
+})
 
 test('a peer’s session starts in its repo’s checkout, never the fleet’s state directory', async (t) => {
   const r = await rig(profileWith(undefined))

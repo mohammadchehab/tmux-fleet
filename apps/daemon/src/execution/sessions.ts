@@ -46,6 +46,7 @@ import type {
   PeerSessions,
   ReadModel,
   SessionSpec,
+  Work,
   StateFile,
   WorktreeProvisioner,
   Turn,
@@ -63,6 +64,7 @@ import {
 } from '@fleet/runtime-supervisor'
 
 import { effortFor, modelFor, purgeLimitsOf, type PeerProfile, type Profile } from '../config/profile.ts'
+import { heldWorksOf } from './held-work.ts'
 import { roleStatement, type StandingBriefs } from './standards.ts'
 
 /** What the pump needs that only the composition root can supply. */
@@ -73,7 +75,7 @@ export interface SupervisorDeps {
    * Read side of the store, for the Worktree rows: a peer starts in the active
    * worktree it owns (§9). Absent, a peer starts in its repo's profile checkout.
    */
-  readonly read?: Pick<ReadModel, 'worktrees'> & Partial<Pick<ReadModel, 'peers' | 'sessions' | 'messages'>>
+  readonly read?: Pick<ReadModel, 'worktrees'> & Partial<Pick<ReadModel, 'peers' | 'sessions' | 'messages' | 'work'>>
   /**
    * §9's creator. A peer that can write and owns no worktree is given one, under
    * its repo's checkout, so engineers each work in their own tree and the
@@ -298,8 +300,28 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
 
   const stateFilePath = (peerId: PeerId): string => deps.paths.peersDir + '/' + String(peerId) + '/state.md'
 
+  /**
+   * One session record, as the store hears it. A turn's usage is recorded against the Work the peer is holding
+   * (TASK-78): the provider reports the spend and not the Work, and the projection writes a per-Work row only
+   * when a Work is named, so an unattributed turn leaves the Work-level cost view empty. A failed lookup records
+   * the turn without one; the spend is what must not be lost.
+   */
   const record = async (event: SessionRecord): Promise<void> => {
-    await deps.store.append([event])
+    await deps.store.append([event.type === 'turn.usage_recorded' ? await attributed(event) : event])
+  }
+
+  const attributed = async (
+    event: Extract<SessionRecord, { type: 'turn.usage_recorded' }>,
+  ): Promise<Extract<SessionRecord, { type: 'turn.usage_recorded' }>> => {
+    if (event.data.workId !== undefined || deps.read?.work === undefined) return event
+    let works: readonly Work[]
+    try {
+      works = await deps.read.work.all()
+    } catch {
+      return event
+    }
+    const [held] = heldWorksOf(works, event.data.peerId)
+    return held === undefined ? event : { ...event, data: { ...event.data, workId: held.workId } }
   }
 
   /**

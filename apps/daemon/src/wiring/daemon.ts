@@ -58,6 +58,7 @@ import { effortWarnings, modelFor, purgeLimitsOf, type Profile, type ProfileProv
 import type { Scheduler } from '@fleet/orchestration-routines'
 import type { Supervisor } from '../execution/sessions.ts'
 import { catchUpWork } from '../execution/work-sync.ts'
+import { heldWorksOf } from '../execution/held-work.ts'
 
 export interface DaemonDeps {
   readonly profile: Profile
@@ -104,15 +105,6 @@ export interface Daemon extends DaemonApi {
 
 const ACTOR: Actor = 'user'
 
-/**
- * The states in which a Work is still the assignee's (§5.1). `assigned` and
- * `in_progress` are the obvious two; `in_review`, `mergeable` and `blocked` are
- * in the list because the peer has not let go of the Work at any of them — a
- * peer that opened a PR is still the one answering questions about it, and a
- * blocked peer is the one that says what it is blocked on. `merged`, `cleaned`
- * and `cancelled` are over, and `proposed`/`ready` have no assignee at all.
- */
-const heldWorkStates: ReadonlySet<WorkState> = new Set(['assigned', 'in_progress', 'in_review', 'mergeable', 'blocked'])
 
 export const createDaemon = (deps: DaemonDeps): Daemon => {
   /** A peer the fleet has, or `not_found` naming it: the same answer `peek` gives a typo. */
@@ -460,9 +452,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       // the PM's decision, so the daemon reads it off the Work rather than
       // trusting the caller to name it. That is also why the answer carries the
       // workId — a peer that did not name one learns which Work it spoke about.
-      const held: Work[] = (await read.work.all()).filter(
-        (row) => row.assignee === input.peerId && heldWorkStates.has(row.state),
-      )
+      const held: Work[] = [...heldWorksOf(await read.work.all(), input.peerId)]
       const [work, ...rest] = held
       if (work === undefined) {
         throw fleetError('not_found', `peer ${String(input.peerId)} has no Work to note on`, {
