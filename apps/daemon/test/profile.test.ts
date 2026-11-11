@@ -628,18 +628,16 @@ describe('a role’s model and effort (TASK-12)', () => {
 
 describe('the coord block (shared-fleet.md §6)', () => {
   const coord = (overrides: Record<string, unknown> = {}) => ({
-    engagement: 'eng-07',
-    team: 'backbase-se/eng-07',
-    repo: 'backbase-se/fleet-coord',
+    repo: 'backbase-se/fleet-project',
+    team: 'backbase-se/project',
     ...overrides,
   })
 
-  it('reads an engagement, and no block as a fleet on its own', () => {
+  it('reads a project, and no block as a fleet on its own', () => {
     assert.equal(decodeProfile(minimal()).coord, undefined)
     assert.deepEqual(decodeProfile(minimal({ budget: { usd: 300 }, coord: coord({ user: 'mohammads_backbase' }) })).coord, {
-      engagement: 'eng-07',
-      team: 'backbase-se/eng-07',
-      repo: 'backbase-se/fleet-coord',
+      repo: 'backbase-se/fleet-project',
+      team: 'backbase-se/project',
       user: 'mohammads_backbase',
     })
   })
@@ -649,22 +647,24 @@ describe('the coord block (shared-fleet.md §6)', () => {
     assert.throws(() => decodeProfile(minimal({ coord: coord({ taskData: true }) })), /taskData/)
   })
 
-  it('refuses a code name that is not a short lower-case slug, and an org without a name', () => {
-    for (const engagement of ['Eng-07', 'eng/07', '-eng', 'e', 'a-customer-name-that-runs-on-and-on-and-on']) {
-      assert.throws(() => decodeProfile(minimal({ coord: coord({ engagement }) })), /engagement/, engagement)
-    }
-    assert.throws(() => decodeProfile(minimal({ coord: coord({ repo: 'fleet-coord' }) })), /repo/)
+  it('refuses a repo or a team that is not <org>/<name>', () => {
+    assert.throws(() => decodeProfile(minimal({ coord: coord({ repo: 'fleet-project' }) })), /repo/)
     assert.throws(() => decodeProfile(minimal({ coord: coord({ team: 'backbase-se/' }) })), /team/)
+    assert.throws(() => decodeProfile(minimal({ coord: { repo: 'backbase-se/fleet-project' } })), /team/)
   })
 
-  it('refuses an engagement with no budget, because a fleet with no cap has no pace', async () => {
+  it('refuses the namespace a shared repository once needed, now that a repository is one project', () => {
+    assert.throws(() => decodeProfile(minimal({ coord: coord({ engagement: 'eng-07' }) })), /engagement/)
+  })
+
+  it('refuses a project with no budget, because a fleet with no cap has no pace', async () => {
     const file = await tempProfile(
       'engineer',
       `profile: engineer
 repos: [backbase/me-services-fleet]
 peers:
   - { id: engineer-1, role: engineer, provider: claude, model: claude-sonnet-5-5 }
-coord: { engagement: eng-07, team: backbase-se/eng-07, repo: backbase-se/fleet-coord }
+coord: { repo: backbase-se/fleet-project, team: backbase-se/project }
 `,
     )
     await assert.rejects(loadProfile(file, 'engineer'), /no `budget`/)

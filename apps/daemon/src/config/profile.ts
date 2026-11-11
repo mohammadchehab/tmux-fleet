@@ -487,24 +487,23 @@ export interface Profile {
   /** §10: the user's choice, so the daemon never deletes a branch on its own initiative. */
   readonly deleteMergedBranches?: boolean
   /**
-   * shared-fleet.md §6: the engagement this fleet pools its budget with. Absent,
+   * shared-fleet.md §6: the project this fleet pools its budget with. Absent,
    * the fleet is on its own and talks to no coordination repository.
    */
   readonly coord?: CoordProfile
 }
 
 /**
- * A shared fleet's engagement (shared-fleet.md §2, §6, §9). The namespace is a
- * code name, never the customer's: the repository is the company's, and every ref
- * a fleet writes carries it.
+ * A shared fleet's project (shared-fleet.md §2, §6, §9): one private repository
+ * per project, because GitHub grants access per repository and not per ref — a
+ * repository two projects shared would show each one's team the other's fleets.
+ * So the repository is the boundary, and nothing inside it needs a namespace.
  */
 export interface CoordProfile {
-  /** The engagement's code name, `eng-07`: the namespace of every ref this fleet writes. */
-  readonly engagement: string
-  /** `<org>/<team>`: the GitHub team that is the engagement's membership. */
-  readonly team: string
-  /** `<org>/<repo>`: the private coordination repository. */
+  /** `<org>/<repo>`: the project's private coordination repository. */
   readonly repo: string
+  /** `<org>/<team>`: the GitHub team that is the project's membership, and its access to `repo`. */
+  readonly team: string
   /**
    * This fleet's GitHub login, which names its branch. Absent, it is read from
    * `gh` at `fleet up`, so nobody types it — but a machine with two accounts says
@@ -611,11 +610,8 @@ const ORG_SLASH_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$
 
 const coordBlock = (): Schema<CoordProfile> =>
   objectAs<CoordProfile>()({
-    // A ref segment as the transport accepts one, kept to lower case and short so a
-    // code name cannot smuggle a customer's name in by length alone.
-    engagement: string({ pattern: /^[a-z0-9][a-z0-9-]{1,31}$/ }),
-    team: string({ pattern: ORG_SLASH_NAME, maxLength: 200 }),
     repo: string({ pattern: ORG_SLASH_NAME, maxLength: 200 }),
+    team: string({ pattern: ORG_SLASH_NAME, maxLength: 200 }),
     user: optional(string({ pattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/ })),
     taskData: optional(literal(false)),
   })

@@ -10,7 +10,7 @@ import { FLEET_PACE_FILE } from '@fleet/foundation-contracts'
 import { createPacePublisher, encodePace, fleetPaceOf, HEARTBEAT_MS, readFleetPaces } from '../src/index.ts'
 import { fakeCoordination, fakeRead, manualClock, peerRow } from './support/fakes.ts'
 
-const REF = 'eng-07/fleet/alice'
+const REF = 'fleet/alice'
 const START = '2026-11-16T00:00:00.000Z'
 
 const setup = (spentUsd = 150) => {
@@ -122,19 +122,18 @@ describe('publishing a pace', () => {
 })
 
 describe('reading the other fleets', () => {
-  it('reads every other fleet in the engagement, and not itself, another engagement or a non-fleet ref', async () => {
+  it('reads every other fleet in the repository, and not itself or a ref that is not a fleet branch', async () => {
     const { coordination, clock } = setup()
     const doc = (spent: number) =>
       encodePace(
         fleetPaceOf({ capUsd: 300, spend: { month: '2026-11', costUsd: spent, turns: 1, unpricedTurns: 0 }, peers: [], at: clock.now() }),
       )
-    coordination.force('eng-07/fleet/bob', { [FLEET_PACE_FILE]: doc(30) })
-    coordination.force('eng-07/fleet/alice', { [FLEET_PACE_FILE]: doc(150) })
-    coordination.force('eng-08/fleet/carol', { [FLEET_PACE_FILE]: doc(30) })
-    coordination.force('eng-07/claim/7f3a9c', { by: 'bob' })
-    coordination.force('eng-07/fleet/dave/extra', { [FLEET_PACE_FILE]: doc(30) })
+    coordination.force('fleet/bob', { [FLEET_PACE_FILE]: doc(30) })
+    coordination.force('fleet/alice', { [FLEET_PACE_FILE]: doc(150) })
+    coordination.force('claim/7f3a9c', { by: 'bob' })
+    coordination.force('fleet/dave/extra', { [FLEET_PACE_FILE]: doc(30) })
 
-    const fleets = await readFleetPaces({ coordination, namespace: 'eng-07', self: 'alice', clock })
+    const fleets = await readFleetPaces({ coordination, self: 'alice', clock })
 
     assert.deepEqual(
       fleets.map((fleet) => ('pace' in fleet ? [fleet.user, fleet.pace.pace, fleet.offline] : [fleet.user, fleet.problem])),
@@ -144,10 +143,10 @@ describe('reading the other fleets', () => {
 
   it('reads a fleet whose heartbeat is half an hour old as offline', async () => {
     const { coordination, clock, advance } = setup()
-    await createPacePublisher({ coordination, read: fakeRead({ spentUsd: 10 }).read, ref: 'eng-07/fleet/bob', capUsd: 300, clock }).tick()
+    await createPacePublisher({ coordination, read: fakeRead({ spentUsd: 10 }).read, ref: 'fleet/bob', capUsd: 300, clock }).tick()
     advance(30 * 60_000 + 1)
 
-    const [bob] = await readFleetPaces({ coordination, namespace: 'eng-07', self: 'alice', clock })
+    const [bob] = await readFleetPaces({ coordination, self: 'alice', clock })
     assert.ok(bob !== undefined && 'pace' in bob && bob.offline)
   })
 
@@ -156,13 +155,13 @@ describe('reading the other fleets', () => {
     const good = encodePace(
       fleetPaceOf({ capUsd: 300, spend: { month: '2026-11', costUsd: 30, turns: 1, unpricedTurns: 0 }, peers: [], at: clock.now() }),
     )
-    coordination.force('eng-07/fleet/bob', { [FLEET_PACE_FILE]: good })
-    coordination.force('eng-07/fleet/carol', { [FLEET_PACE_FILE]: '{not json' })
-    coordination.force('eng-07/fleet/dave', { [FLEET_PACE_FILE]: JSON.stringify({ ...JSON.parse(good), pace: -1 }) })
-    coordination.force('eng-07/fleet/erin', { [FLEET_PACE_FILE]: JSON.stringify({ ...JSON.parse(good), taskIds: ['PROJ-412'] }) })
-    coordination.force('eng-07/fleet/frank', { 'other.json': '{}' })
+    coordination.force('fleet/bob', { [FLEET_PACE_FILE]: good })
+    coordination.force('fleet/carol', { [FLEET_PACE_FILE]: '{not json' })
+    coordination.force('fleet/dave', { [FLEET_PACE_FILE]: JSON.stringify({ ...JSON.parse(good), pace: -1 }) })
+    coordination.force('fleet/erin', { [FLEET_PACE_FILE]: JSON.stringify({ ...JSON.parse(good), taskIds: ['PROJ-412'] }) })
+    coordination.force('fleet/frank', { 'other.json': '{}' })
 
-    const fleets = await readFleetPaces({ coordination, namespace: 'eng-07', self: 'alice', clock })
+    const fleets = await readFleetPaces({ coordination, self: 'alice', clock })
 
     assert.deepEqual(
       fleets.map((fleet) => [fleet.user, 'pace' in fleet]),

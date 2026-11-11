@@ -39,15 +39,15 @@ One **private repository in the company's GitHub org** (`fleet-coord`), readable
 Fleets never talk to each other. They read and write the repo.
 
 ```
-fleet-coord  (private; nobody pushes to main)
-  <ns>/fleet/<github-user>     only that person's fleet writes here: heartbeat, pace, bids, outgoing messages
-  <ns>/claim/<masked-task-id>  a claim; whoever created the ref holds the task
-  <ns>/rotate/<n>              a key rotation; whoever created the ref performed it. It holds rotation.json
+fleet-coord  (one private repository per project; nobody pushes to main)
+  fleet/<github-user>          only that person's fleet writes here: heartbeat, pace, bids, outgoing messages
+  claim/<masked-task-id>       a claim; whoever created the ref holds the task
+  rotate/<n>                   a key rotation; whoever created the ref performed it. It holds rotation.json
                                and <github-user>.age: the key, encrypted to that member's GitHub SSH keys (§5)
 ```
 
-`<ns>` is an **engagement code name** (`eng-07`), mapped to the customer only in each person's local profile, so even
-the namespace says nothing about who the customer is.
+There is no namespace: GitHub grants access per repository, not per ref, so a repository two projects shared would show
+each one's team the other's fleets. The repository is the project boundary.
 
 ### 2.1 Single writer per ref
 
@@ -152,7 +152,7 @@ One random 32-byte key per engagement, **encrypted separately to each team membe
 - **Members** are the engagement's GitHub team — the same list that grants repo access, so there is one list, not two.
 - **Public keys** come from the authenticated API (`gh api users/<user>/keys`). The anonymous `github.com/<user>.keys`
   URL returns 404 for enterprise-managed accounts, so it is not used.
-- **Where it lives**: in the rotation that made it. `<ns>/rotate/<n>` is created once and never edited; it holds
+- **Where it lives**: in the rotation that made it. `rotate/<n>` is created once and never edited; it holds
   `rotation.json` (the members it was made for, the members with no usable key, who made it, when) and one
   `<user>.age` per member. The highest `n` is the current key.
 - **Reading**: each fleet decrypts its own `<user>.age` from the current rotation with the owner's SSH private key and
@@ -213,7 +213,7 @@ Everyone adds the engagement to their profile, and `fleet up` does the rest — 
 (§5.2), so there is no `init`:
 
 ```yaml
-coord: { engagement: eng-07, team: <org>/<team>, repo: <org>/fleet-coord, taskData: false }
+coord: { repo: <org>/<project>-coord, team: <org>/<team>, taskData: false }
 ```
 
 `fleet coord status` (members, who holds a copy, the current rotation) and `fleet coord rotate` (an emergency rotation
@@ -253,7 +253,7 @@ Everything ships as **one release**, built as a series of small PRs (one package
 security approved works on day one; what needs Legal is already built and is turned on by one profile setting:
 
 ```yaml
-coord: { engagement: eng-07, team: <org>/<team>, repo: <org>/fleet-coord, taskData: false }
+coord: { repo: <org>/<project>-coord, team: <org>/<team>, taskData: false }
 ```
 
 | `taskData` | what runs | gate |
