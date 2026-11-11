@@ -16,6 +16,8 @@ Success looks like this:
 - From that view, arrow keys and Enter take a peer over. The real `claude` or `cursor-agent` opens on the peer's own
   session with its full history.
 - When the person exits, fleetd carries on from the same session, including everything the person did.
+- The view says what is waiting on the person, and they answer it there. An answer reaches the PM program as an event.
+- Any one peer can be stopped and started without touching the others.
 - No message is ever typed into a terminal by a program.
 
 ### Constraints
@@ -44,6 +46,15 @@ Success looks like this:
 - The `Supervisor` starts and stops all peers together. Nothing in the daemon calls `provider.resume`; recovery and
   `startPeer` always start a fresh session.
 - There is no held state. Peer states are `starting | working | waiting_input | idle | ended | failed`.
+
+- Decisions are events with states `open` and `answered`. `decide` is the only way to answer one, and only the `fleet`
+  CLI calls it. `ls` returns the decisions.
+- `turn.usage_recorded` carries context tokens and the limit, but no projection keeps the latest value per peer.
+
+A team workshop on v1 (2026-11-11) showed what people need from this: messages sat unsent in a Cursor input three times
+in forty minutes; seeing the peers work was what made the fleet make sense to them; they could not find what was waiting
+on them without asking the PM agent; an approval made on the board went unnoticed by the PM; and the context percentage
+per peer was the number they were told to watch.
 
 A spike in `~/dev/fleet-sandbox` (2026-11-11) established:
 
@@ -188,18 +199,30 @@ able to slow a peer or grow the daemon.
 `fleet watch --once` prints the table and exits, as `fleet-view --once` does today.
 
 ```
- fleet watch ── profile ── 4 peers                         ↑↓ select  ⏎ actions  q quit
-┌──────────────────┬──────────────────────────────────────────────────────────────────┐
-│ PEERS            │ engineer-1 ── working ── claude/opus ── TASK-142                 │
-│                  │──────────────────────────────────────────────────────────────────│
-│ ▶ engineer-1  ●  │ ✉ in  pm: "refactor Mailbox.acquire"                             │
-│   engineer-2  ○  │ Reading the lease code first.                                    │
-│   architect   ✋  │ ● Read  src/mailbox.ts                                           │
-│   pm          ◆  │ ● Edit  src/mailbox.ts                                           │
-└──────────────────┴──────────────────────────────────────────────────────────────────┘
+ fleet watch ── profile ── 4 peers                              ↑↓ select  ⏎ actions  q quit
+┌─ NEEDS YOU (2) ────────────────────────────────────────────────────────────────────────┐
+│ ? decision  Approve the login plan for SMB-113?            3 options     asked 10:41   │
+│ ? architect is waiting for input                                         since 10:44   │
+├─ PEERS ──────────────────────────────┬─────────────────────────────────────────────────┤
+│ ▶ engineer-1 ● 17%  Edit mailbox.ts  │ engineer-1 ── working ── claude/opus ── TASK-142│
+│   engineer-2 ○ 11%  idle since 10:41 │─────────────────────────────────────────────────│
+│   architect  ? 64%  waiting for you  │ ✉ in  pm: "refactor Mailbox.acquire"            │
+│   reviewer   ■  —   stopped          │ Reading the lease code first.                   │
+│   pm         ◆  —   assigned TASK-142│ ● Read  src/mailbox.ts                          │
+│                                      │ ● Edit  src/mailbox.ts                          │
+└──────────────────────────────────────┴─────────────────────────────────────────────────┘
 ```
 
-Keys: up and down move the selection, Enter opens the actions for the selected peer, `q` quits. No key reaches a peer.
+The whole fleet stays visible while one peer is in detail. Each row in the peer list carries:
+
+- the state mark (working, idle, waiting for a person, held, stopped, program);
+- **context used**, as a percentage of the model's window, from the last `turn.usage_recorded`. It is the number a
+  person watches because it is money; a row at or past the self-purge threshold is marked;
+- **what the peer is doing now**, in one line: the tool and its target while working, otherwise the state and since
+  when.
+
+Keys: up and down move the selection through the needs-you rows and the peers, Enter opens the actions for the selected
+row, `q` quits. No key reaches a peer.
 
 Actions for a running peer:
 
@@ -207,8 +230,54 @@ Actions for a running peer:
 - **Take over now** — `peer.hold { now: true }`.
 - **Interrupt the turn, stay headless** — the existing interrupt.
 - **Send a message** — an ordinary Mailbox message from the person.
+- **Stop this peer** — §7.2.
 
 Actions for a held peer: **Reopen the native session**, **Release back to fleetd**.
+
+Actions for a stopped peer: **Start this peer**.
+
+### 7.1 Needs you
+
+In v1 a person asked the project-manager agent "what is waiting on me?". In v2 the PM is a program with no session to
+ask, so the watch answers that question itself, at the top, always.
+
+The strip lists, oldest first:
+
+- every `open` decision (§6.1 of the architecture), with its question and how many options it has;
+- every peer in `waiting_input`.
+
+Enter on a decision opens its options; choosing one calls the existing `decide` method. `decide` appends the answer as
+an event and the append wakes the routines, so the PM program acts on it in the same tick. Nobody has to tell the PM
+that something was approved.
+
+Enter on a waiting peer opens the peer's actions, with take over first.
+
+`fleet watch --once` prints the same strip above the table, so "what is waiting on me" is also one command in a script
+or over ssh.
+
+### 7.2 Stop and start one peer
+
+A person must be able to drop a peer that is costing more than it is worth, and bring it back, without touching the
+others.
+
+- Add peer state `stopped` and events `peer.stopped { peerId, sessionRef, at, by }` and `peer.started`.
+- `Supervisor.stopPeer(peerId)`: as `hold`, but nobody owns the session afterwards. `Supervisor.startPeer(peerId)`
+  resumes from the recorded ref with the handback note of §4, and starts fresh when there is no ref or resume rejects.
+- A stopped peer is skipped by `start()`, recovery, assignment and self-purge, and survives a daemon restart, exactly as
+  a held peer does. Its mail stays pending. Work it holds stays assigned to it; the watch shows that on its row so the
+  person can see what stopping it has parked.
+- RPC: `peer.stop { peerId, now? }`, `peer.start { peerId }`. CLI: `fleet stop <peer>`, `fleet start <peer>`.
+
+Held and stopped share one mechanism in the supervisor: a peer that is deliberately not running, with a recorded ref and
+a reason. They differ in who ends it: a held peer is released by the attach client exiting, a stopped peer by a person
+asking.
+
+### 7.3 Answering from the board
+
+The web board (`fleet-board`) reads only. A person who sees a decision there has to leave it for a terminal to answer.
+The board gains an answer control on each open decision: a POST that calls `decide`, under the same host rule that
+already limits who the board answers to. It writes nothing else. With §7.1 this makes every place a decision is shown a
+place it can be answered, and every answer the same event.
 
 Taking over from the menu suspends the watch program, runs the same attach flow as §5 in the same terminal, and
 returns to the watch when the CLI exits. Two rules make that handover safe, both proven in tmux, iTerm2 and macOS
@@ -254,12 +323,15 @@ Still to prove, when hold and release exist in the daemon:
 - Mail queued during a hold is delivered once after release.
 - ctrl-c during a takeover in macOS Terminal (the spike could not send it there).
 
-## 11. Order of delivery
+## 11. Delivery
+
+One batch, on one branch, built in this order so each step is usable before the next starts:
 
 1. §8 fixes.
-2. Hold and release, with `fleet attach` and `fleet release` (§4, §5). Usable on its own.
-3. Display feed and `peer.watch` (§6).
-4. `fleet watch` with the action menu (§7). `fleet-view` is removed when this lands.
+2. Hold and release, stop and start, with `fleet attach`, `fleet release`, `fleet stop`, `fleet start` (§4, §5, §7.2).
+3. Display feed and `peer.watch`, with context used on the peer's activity row (§6).
+4. `fleet watch`: peer list, detail pane, needs-you strip, action menus (§7, §7.1). `fleet-view` is removed here.
+5. The board's answer control (§7.3).
 
 ## 12. Testing
 
@@ -270,5 +342,10 @@ Still to prove, when hold and release exist in the daemon:
 - Daemon: `peer.watch` replays the buffer then streams; a stalled client is dropped and the peer's turn is unaffected.
 - Watch: the render and the key handling are pure functions over a state, tested without a terminal, as `fleet-view`'s
   render is today.
+- Stop and start: a stopped peer is skipped by start, recovery and assignment and survives a restart; start resumes
+  from the ref; the other peers' sessions are untouched throughout.
+- Needs you: an open decision and a `waiting_input` peer both appear; answering from the watch and from the board each
+  append one answered event, and the PM's next tick sees it with no other signal.
+- Peer list: context used comes from the last recorded turn, and a peer with no recorded turn shows none, not zero.
 - End to end in a sandbox repo: start a fleet, hold a peer, type one turn in the native CLI, release, and assert the
   next headless turn sees it.
