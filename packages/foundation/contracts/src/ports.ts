@@ -592,6 +592,12 @@ export interface TeamDirectory {
  */
 export interface KeyWrap {
   /**
+   * The recipient a public key is, as `wrap` takes it — `undefined` for a key
+   * type the implementation cannot seal to (`age` has no ecdsa or `sk-` keys).
+   * Pure, so the rotation can decide who gets a copy before it seals anything.
+   */
+  recipient(publicKey: string): string | undefined
+  /**
    * `plaintext` encrypted to every one of `recipients` (`ssh-ed25519` or
    * `ssh-rsa` public keys), ASCII-armored. Any one of the matching private keys
    * opens it. A recipient of another type is refused, not dropped: the caller

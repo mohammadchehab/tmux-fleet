@@ -43,6 +43,8 @@ export const createAgeKeyWrap = (options: { readonly age?: GitRunner; readonly c
   }
 
   return {
+    recipient: ageRecipient,
+
     async wrap(plaintext, recipients) {
       if (recipients.length === 0) throw fleetError('invalid_input', 'a key wrapped to nobody is a key nobody can open')
       for (const recipient of recipients) {

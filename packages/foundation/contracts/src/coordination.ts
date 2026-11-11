@@ -58,3 +58,36 @@ export const fleetPace = (): Schema<FleetPace> =>
     ),
     heartbeat: timestamp(),
   })
+
+/**
+ * The record a key rotation carries beside the copies (shared-fleet.md §5): who
+ * the key was sealed for, who of them had no key it could be sealed to, and who
+ * made it. A rotation is `<ns>/rotate/<n>`, created once; its files are this
+ * document and one `<login>.age` per member who could receive a copy. The
+ * highest `n` is the current key.
+ */
+export const ROTATION_FILE = 'rotation.json'
+
+export interface KeyRotation {
+  readonly version: 1
+  readonly rotation: number
+  /** The team as it was read when the key was made, sorted. */
+  readonly members: readonly string[]
+  /** Members with no `ssh-ed25519` or `ssh-rsa` key on GitHub, so no copy. */
+  readonly missing: readonly string[]
+  /** The login of the fleet that made this rotation. */
+  readonly by: string
+  readonly at: Timestamp
+}
+
+const login = (): Schema<string> => string({ pattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/ })
+
+export const keyRotation = (): Schema<KeyRotation> =>
+  objectAs<KeyRotation>()({
+    version: literal(1),
+    rotation: number({ int: true, min: 1, max: 999_999_999 }),
+    members: array(login(), { maxItems: 500 }),
+    missing: array(login(), { maxItems: 500 }),
+    by: login(),
+    at: timestamp(),
+  })

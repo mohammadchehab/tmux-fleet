@@ -6,16 +6,16 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
 import { FleetError, type Clock, type PeerId, type Timestamp } from '@fleet/foundation-core'
-import { FLEET_PACE_FILE, type MonthSpend, type Peer, type ReadModel } from '@fleet/foundation-contracts'
+import { FLEET_PACE_FILE, ROTATION_FILE, type MonthSpend, type Peer, type ReadModel, type TeamDirectory } from '@fleet/foundation-contracts'
 import { createGh, type GhRunner } from '@fleet/integrations-github'
-import { createGitCoordination } from '@fleet/integrations-coordination'
+import { ageRecipient, createAgeKeyWrap, createGitCoordination } from '@fleet/integrations-coordination'
 import type { PacePublisher } from '@fleet/orchestration-coordination'
-import { coordinationFor, createCoordinationLoop, githubLogin } from '../src/routines/coordination.ts'
+import { coordinationFor, createCoordinationLoop, githubLogin, keyOutcomeLine } from '../src/routines/coordination.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'fleet-coord-daemon-'))
 after(() => rmSync(root, { recursive: true, force: true }))
@@ -175,5 +175,97 @@ describe('the loop', () => {
     await Promise.all([first, second])
 
     assert.equal(p.calls, 1)
+  })
+})
+
+const has = (binary: string): boolean => {
+  try {
+    execFileSync('which', [binary], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+describe('the engagement key, as the daemon runs it', () => {
+  it('is made at start for the team, and the member’s copy opens with their own SSH key', { skip: has('age') ? false : 'needs age' }, async () => {
+    const remote = join(root, 'keys.git')
+    execFileSync('git', ['init', '--bare', '--quiet', remote])
+    const identity = join(root, 'id_alice')
+    execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', '', '-f', identity])
+    const directory: TeamDirectory = {
+      members: async () => ['alice'],
+      sshKeys: async () => [readFileSync(`${identity}.pub`, 'utf8').trim()],
+    }
+    const coordination = createGitCoordination({
+      remote,
+      cache: join(root, 'keys-cache.git'),
+      author: { name: 'alice', email: 'alice@users.noreply.github.com' },
+      version: 'test',
+    })
+    const loop = await coordinationFor({
+      coord: { engagement: 'eng-07', team: 'backbase-se/eng-07', repo: 'backbase-se/fleet-coord', user: 'alice' },
+      capUsd: 300,
+      paths: { stateDir: root },
+      read: read(0),
+      clock,
+      coordination,
+      directory,
+    })
+
+    await loop.checkKey()
+
+    const show = (path: string) => execFileSync('git', ['--git-dir', remote, 'show', `refs/heads/eng-07/rotate/1:${path}`], { encoding: 'utf8' })
+    assert.deepEqual(JSON.parse(show(ROTATION_FILE)).members, ['alice'])
+    const key = await createAgeKeyWrap({ cwd: root }).unwrap(show('alice.age'), identity)
+    assert.equal(Buffer.from(key, 'base64').length, 32, 'a 32-byte key, base64, opened with the SSH key alice signs in with')
+    assert.ok(ageRecipient(readFileSync(`${identity}.pub`, 'utf8')) !== undefined)
+
+    await loop.checkKey()
+    assert.equal(
+      execFileSync('git', ['--git-dir', remote, 'for-each-ref', '--format=%(refname)', 'refs/heads/eng-07/rotate/'], { encoding: 'utf8' }).trim(),
+      'refs/heads/eng-07/rotate/1',
+      'the same team is the same key',
+    )
+  })
+
+  it('looks at the key once at start and on its own interval, and reports a failure without stopping', async () => {
+    const outcomes: string[] = []
+    const errors: unknown[] = []
+    let fail = false
+    const { callbacks, timers } = manualTimers()
+    const loop = createCoordinationLoop({
+      ref: 'eng-07/fleet/alice',
+      publisher: { tick: async () => ({ pace: {} as never, published: false, sha: '0'.repeat(40) as never }) },
+      timers,
+      onError: (e) => errors.push(e),
+      keys: {
+        reconcile: async () => {
+          if (fail) throw new Error('gh: HTTP 502')
+          return { kind: 'current', rotation: 3 }
+        },
+        onOutcome: (o) => outcomes.push(o.kind),
+      },
+    })
+
+    loop.start()
+    await loop.checkKey()
+    assert.deepEqual(outcomes, ['current'])
+    assert.equal(callbacks.size, 2, 'the pace and the key each have a timer')
+
+    fail = true
+    await loop.checkKey()
+    assert.equal(errors.length, 1)
+
+    loop.stop()
+    assert.equal(callbacks.size, 0)
+  })
+
+  it('logs a rotation and a refusal, and stays quiet when nothing changed', () => {
+    const ref = 'eng-07/fleet/alice'
+    assert.equal(keyOutcomeLine(ref, { kind: 'current', rotation: 2 }), undefined)
+    assert.equal(keyOutcomeLine(ref, { kind: 'lost_race', rotation: 2 }), undefined)
+    assert.match(keyOutcomeLine(ref, { kind: 'rotated', rotation: 2, members: ['alice', 'bob'], missing: ['bob'] })!, /rotation 2 for 2 member\(s\); no copy for bob, who has no ssh-ed25519/)
+    assert.match(keyOutcomeLine(ref, { kind: 'refused', reason: 'backbase-se/eng-07 reads as empty' })!, /not rotated: backbase-se\/eng-07 reads as empty/)
   })
 })

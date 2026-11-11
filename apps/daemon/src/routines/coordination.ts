@@ -8,6 +8,10 @@
  * changed" would write ~2,900 of them a day saying so. The tick reads the local
  * projections; only a push leaves the machine, and the publisher decides when.
  *
+ * Every ten minutes, and once at start, it also compares the engagement's team
+ * with the current key and rotates it on any change (§5.2) — on a timer of its
+ * own, because that look is a GitHub API call and the pace's is not.
+ *
  * In phase 1 nothing is ever *pending* — there are no bids or claims behind
  * `taskData: false` — so the loop runs at the idle cadence the design names, and
  * the 30 s pending cadence arrives with claims (§9 PR 4). A laptop asleep runs no
@@ -21,15 +25,28 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fleetError, type Clock, type ProfilePaths } from '@fleet/foundation-core'
-import type { Coordination, ReadModel } from '@fleet/foundation-contracts'
-import { createGh, type Gh } from '@fleet/integrations-github'
-import { createGitCoordination } from '@fleet/integrations-coordination'
-import { createPacePublisher, type PacePublisher, type PaceTick } from '@fleet/orchestration-coordination'
+import type { Coordination, KeyWrap, ReadModel, TeamDirectory } from '@fleet/foundation-contracts'
+import { createGh, createGitHubTeamDirectory, type Gh } from '@fleet/integrations-github'
+import { createAgeKeyWrap, createGitCoordination } from '@fleet/integrations-coordination'
+import {
+  createPacePublisher,
+  reconcileKey,
+  type KeyOutcome,
+  type PacePublisher,
+  type PaceTick,
+} from '@fleet/orchestration-coordination'
 import { systemTimers, type Timers } from '@fleet/orchestration-routines'
 import type { CoordProfile } from '../config/profile.ts'
 
 /** How often the publisher looks: the idle cadence (§2.2). Pushes are rarer — see the publisher. */
 export const COORDINATION_TICK_MS = 60_000
+
+/**
+ * How often the team is compared with the current key (§5.2). A leaver has lost
+ * the repository the moment they leave the team, so this bounds how long the
+ * pool keeps using a key they held — not how long they can read it.
+ */
+export const KEY_CHECK_MS = 10 * 60_000
 
 export interface CoordinationLoop {
   /** The branch this fleet publishes on: `<engagement>/fleet/<user>`. */
@@ -38,6 +55,8 @@ export interface CoordinationLoop {
   stop(): void
   /** One look; the timer calls this, and so does a test. Never throws. */
   tick(): Promise<void>
+  /** One comparison of the team with the key, when the loop has one. Never throws. */
+  checkKey(): Promise<void>
 }
 
 export const createCoordinationLoop = (deps: {
@@ -47,10 +66,34 @@ export const createCoordinationLoop = (deps: {
   readonly everyMs?: number
   readonly onError?: (error: unknown) => void
   readonly onTick?: (tick: PaceTick) => void
+  /** §5.2: the engagement key's rotation, on its own slower timer. */
+  readonly keys?: {
+    readonly reconcile: () => Promise<KeyOutcome>
+    readonly everyMs?: number
+    readonly onOutcome?: (outcome: KeyOutcome) => void
+  }
 }): CoordinationLoop => {
   const timers = deps.timers ?? systemTimers
   let timer: unknown
+  let keyTimer: unknown
   let inflight: Promise<void> | undefined
+  let keyInflight: Promise<void> | undefined
+
+  const checkKey = (): Promise<void> => {
+    const keys = deps.keys
+    if (keys === undefined) return Promise.resolve()
+    // Single-flight for the same reason as the pace: two looks racing would race
+    // each other to the same rotation and log a lost race against themselves.
+    return (keyInflight ??= (async () => {
+      try {
+        keys.onOutcome?.(await keys.reconcile())
+      } catch (error) {
+        deps.onError?.(error)
+      } finally {
+        keyInflight = undefined
+      }
+    })())
+  }
 
   const tick = (): Promise<void> =>
     // A push slower than the interval must not be overtaken by the next tick:
@@ -72,13 +115,19 @@ export const createCoordinationLoop = (deps: {
       if (timer !== undefined) return
       void tick()
       timer = timers.setInterval(() => void tick(), deps.everyMs ?? COORDINATION_TICK_MS)
+      if (deps.keys !== undefined) {
+        void checkKey()
+        keyTimer = timers.setInterval(() => void checkKey(), deps.keys.everyMs ?? KEY_CHECK_MS)
+      }
     },
     stop() {
-      if (timer === undefined) return
-      timers.clearInterval(timer)
+      if (timer !== undefined) timers.clearInterval(timer)
+      if (keyTimer !== undefined) timers.clearInterval(keyTimer)
       timer = undefined
+      keyTimer = undefined
     },
     tick,
+    checkKey,
   }
 }
 
@@ -117,7 +166,29 @@ export interface CoordinationWiring {
   readonly coordination?: Coordination
   /** Who this fleet is when `coord.user` is absent; defaults to asking `gh`. */
   readonly login?: () => Promise<string>
+  /** §5.1's team; defaults to `gh api` against GitHub. */
+  readonly directory?: TeamDirectory
+  /** §5.1's sealing; defaults to the `age` binary. */
+  readonly wrap?: KeyWrap
   readonly timers?: Timers
+}
+
+/** The log's one line for a look at the key; silent when nothing changed. */
+export const keyOutcomeLine = (ref: string, outcome: KeyOutcome): string | undefined => {
+  switch (outcome.kind) {
+    case 'current':
+    case 'lost_race':
+      return undefined
+    case 'rotated': {
+      const missing =
+        outcome.missing.length === 0
+          ? ''
+          : `; no copy for ${outcome.missing.join(', ')}, who ha${outcome.missing.length === 1 ? 's' : 've'} no ssh-ed25519 or ssh-rsa key on GitHub`
+      return `fleetd: shared fleet ${ref}: made key rotation ${outcome.rotation} for ${outcome.members.length} member(s)${missing}`
+    }
+    case 'refused':
+      return `fleetd: shared fleet ${ref}: the key was not rotated: ${outcome.reason}`
+  }
 }
 
 export const coordinationFor = async (wiring: CoordinationWiring): Promise<CoordinationLoop> => {
@@ -132,9 +203,27 @@ export const coordinationFor = async (wiring: CoordinationWiring): Promise<Coord
       version: fleetVersion(),
     })
   const publisher = createPacePublisher({ coordination, read: wiring.read, ref, capUsd: wiring.capUsd, clock: wiring.clock })
+  const directory = wiring.directory ?? createGitHubTeamDirectory()
+  const wrap = wiring.wrap ?? createAgeKeyWrap({ cwd: wiring.paths.stateDir })
   return createCoordinationLoop({
     ref,
     publisher,
+    keys: {
+      reconcile: () =>
+        reconcileKey({
+          coordination,
+          directory,
+          wrap,
+          namespace: wiring.coord.engagement,
+          team: wiring.coord.team,
+          self: user,
+          clock: wiring.clock,
+        }),
+      onOutcome: (outcome) => {
+        const line = keyOutcomeLine(ref, outcome)
+        if (line !== undefined) console.error(line)
+      },
+    },
     ...(wiring.timers === undefined ? {} : { timers: wiring.timers }),
     onError: (error) => {
       // A pace that did not go out is a fleet the others see as quiet, not a fleet
