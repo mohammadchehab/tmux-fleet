@@ -204,6 +204,12 @@ export interface DaemonStatus {
   readonly socketPath: string
   readonly storePath: string
   /**
+   * The wire protocol this daemon speaks (`daemonProtocolVersion`): bumped when a
+   * stream frame or an RPC changes shape, so a client reads it on connect and
+   * knows whether it can talk to this daemon.
+   */
+  readonly protocolVersion: number
+  /**
    * Things the fleet started despite, in the user's words (TASK-12). The fleet is
    * up — a warning is not a refusal — but the profile asked for something the
    * provider cannot honour, and silence would let it look honoured. Omitted when
@@ -219,6 +225,7 @@ export const daemonStatus = (): Schema<DaemonStatus> =>
     startedAt: string({ minLength: 1, maxLength: 40 }),
     socketPath: string({ minLength: 1, maxLength: 500 }),
     storePath: string({ minLength: 1, maxLength: 500 }),
+    protocolVersion: positiveInt(),
     warnings: optional(array(string({ minLength: 1, maxLength: 500 }), { maxItems: 50 })),
   })
 

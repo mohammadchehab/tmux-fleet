@@ -25,7 +25,7 @@ const status = {
   pid: 4242,
   startedAt: '2026-11-10T10:00:00.000Z',
   socketPath: '/tmp/fleetd.sock',
-  storePath: '/tmp/store.sqlite',
+  storePath: '/tmp/store.sqlite', protocolVersion: 1,
 }
 
 /** A DaemonApi that records what it was asked and answers with fixed rows. */

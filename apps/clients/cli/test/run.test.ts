@@ -23,7 +23,7 @@ import { run, type RunDeps } from '../src/run.ts'
 const now = '2026-11-10T09:00:00.000Z'
 const socketPath = '/home/tester/.fleet/squad/daemon/fleetd.sock'
 
-const status = { profile: 'squad', pid: 4242, startedAt: now, socketPath: '/home/tester/.fleet/squad/daemon/fleetd.sock', storePath: '/home/tester/.fleet/squad/store/store.sqlite' }
+const status = { profile: 'squad', pid: 4242, startedAt: now, socketPath: '/home/tester/.fleet/squad/daemon/fleetd.sock', storePath: '/home/tester/.fleet/squad/store/store.sqlite', protocolVersion: 1 }
 
 const peer = {
   peerId: 'engineer-1' as PeerId,

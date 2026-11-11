@@ -470,6 +470,36 @@ const providerQuestion = (): Schema<ProviderQuestion> =>
     options: optional(array(object({ label: string({ minLength: 1, maxLength: 200 }), description: optional(text()) }))),
   })
 
+/**
+ * One line of what a peer said or did, for a person watching (watch-and-attach §6).
+ *
+ * Display data, not a fact: it is never stored, and nothing decides on it. A
+ * `text` line is a chunk of what the peer said, a `tool` line carries the same
+ * redacted summary `tool.use` does, and a `turn` line marks a boundary.
+ */
+export type DisplayLine =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'tool'; readonly tool: string; readonly summary?: string }
+  | { readonly kind: 'turn'; readonly phase: 'started' | 'ended'; readonly reason?: TurnEndReason }
+
+/** The longest `text` or `summary` a display line carries; the feed cuts to this before it buffers (§6). */
+export const displayLineMaxChars = 400
+
+export const displayLine = (): Schema<DisplayLine> =>
+  unionAs<DisplayLine>()([
+    object({ kind: literal('text'), text: string({ maxLength: displayLineMaxChars + 1 }) }),
+    object({
+      kind: literal('tool'),
+      tool: string({ minLength: 1 }),
+      summary: optional(string({ maxLength: displayLineMaxChars + 1 })),
+    }),
+    object({
+      kind: literal('turn'),
+      phase: oneOf(['started', 'ended'] as const),
+      reason: optional(oneOf(turnEndReasons)),
+    }),
+  ])
+
 export const providerEvent = (): Schema<ProviderEvent> =>
   unionAs<ProviderEvent>()([
     object({ type: literal('turn.started'), turnId: turnId(), at: isoInstant() }),

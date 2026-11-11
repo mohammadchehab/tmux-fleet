@@ -51,6 +51,7 @@ import type {
   Work,
   WorkState,
 } from '@fleet/foundation-contracts'
+import { daemonProtocolVersion } from '@fleet/foundation-contracts'
 import type { EventStore } from '@fleet/foundation-store'
 import type { BuildLedger } from '@fleet/orchestration-ledger'
 import { effortWarnings, modelFor, type Profile, type ProfileProvider, type PeerProfile } from '../config/profile.ts'
@@ -138,6 +139,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     startedAt: clock.now(),
     socketPath: deps.paths.socketPath,
     storePath: deps.paths.storePath,
+    protocolVersion: daemonProtocolVersion,
     ...(warnings.length === 0 ? {} : { warnings }),
   }
   let running = false
