@@ -977,6 +977,7 @@ export const attachPeer = async (
   peer: PeerId,
   now: boolean,
   say: (line: string) => void,
+  options: AttachOptions = {},
 ): Promise<{ readonly held: PeerHoldResult; readonly exit: { readonly code: number | null; readonly signal: string | null } | undefined; readonly released: PeerResumeResult }> => {
   // Say what the hold is waiting for before it waits: a turn can take minutes,
   // and a silent prompt reads as a hang (§5 step 1).
@@ -989,11 +990,18 @@ export const attachPeer = async (
         : `${peer} is mid-turn; waiting for the turn to end (fleet attach ${peer} --now interrupts it)`,
     )
   }
-  const held = await call('peer.hold', { peerId: peer, ...(now ? { now: true } : {}) })
+  // A wait the person can cancel: its signal drops the request, and the peer is not held.
+  const held = await call(
+    'peer.hold',
+    { peerId: peer, ...(now ? { now: true } : {}) },
+    options.signal === undefined ? {} : { signal: options.signal },
+  )
   for (const line of attachBanner(held)) say(line)
   let exit: { readonly code: number | null; readonly signal: string | null } | undefined
   let failure: unknown
   try {
+    // The caller gives the terminal away here, and not before: while the hold waits, it keeps it.
+    options.beforeTakeover?.()
     exit = await takeover(held.command, { cwd: held.cwd, env: takeoverEnv(held.env, env) })
   } catch (thrown) {
     // The CLI did not run, but the peer is held: it is handed back all the same.
@@ -1016,6 +1024,12 @@ export const attachPeer = async (
     })
   }
   return { held, exit, released }
+}
+
+/** How `attachPeer` is cancelled while it waits, and when the caller gives up the terminal. */
+export interface AttachOptions {
+  readonly signal?: AbortSignal
+  readonly beforeTakeover?: () => void
 }
 
 /** What a person reads before the provider's CLI takes the screen (§5, §9). */

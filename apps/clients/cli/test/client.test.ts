@@ -111,6 +111,30 @@ describe('callDaemon', () => {
     }
   })
 
+  it('drops a cancelled request, so the daemon drops the wait with it (TASK-116)', async () => {
+    // A daemon that never answers a hold: only the cancel can end the call.
+    const daemon = await serve(() => ({}))
+    try {
+      const controller = new AbortController()
+      const pending = callDaemon({ socketPath: daemon.socketPath }, 'peer.hold', { peerId: 'a' as PeerId }, { signal: controller.signal })
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      controller.abort()
+
+      await assert.rejects(pending, (error: unknown) => error instanceof FleetError && /cancelled/.test(error.message))
+      assert.equal(daemon.requests.length, 1, 'the request reached the daemon before it was cancelled')
+    } finally {
+      await daemon.close()
+    }
+  })
+
+  it('refuses to send a request whose signal is already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await assert.rejects(callDaemon({ socketPath: '/nonexistent/fleetd.sock' }, 'ls', {}, { signal: controller.signal }), (error: unknown) =>
+      error instanceof FleetError && /cancelled/.test(error.message),
+    )
+  })
+
   it('checks the params before it opens a socket', async () => {
     // No daemon at this path at all: if the call reached the socket the error
     // would be `external_failed`, so `invalid_input` proves it never did.

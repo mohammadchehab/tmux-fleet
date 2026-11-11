@@ -41,7 +41,12 @@ export interface CallOptions {
 }
 
 /** The CLI's whole view of the daemon: one typed call per method of the port. */
-export type DaemonCaller = <M extends DaemonMethod>(method: M, params: DaemonParamsOf<M>) => Promise<DaemonResults[M]>
+/** Per-request options: a signal drops the request's connection, which is how a caller cancels a wait such as a hold. */
+export interface CallRequest {
+  readonly signal?: AbortSignal
+}
+
+export type DaemonCaller = <M extends DaemonMethod>(method: M, params: DaemonParamsOf<M>, request?: CallRequest) => Promise<DaemonResults[M]>
 
 /**
  * True for "there is nobody at that socket" — the one failure `fleet up` may
@@ -115,6 +120,7 @@ export const callDaemon = async <M extends DaemonMethod>(
   options: CallOptions,
   method: M,
   params: DaemonParamsOf<M>,
+  request: CallRequest = {},
 ): Promise<DaemonResults[M]> => {
   // Checked before connecting: a bad argument is the CLI's own fault and should
   // not need a daemon to notice it.
@@ -205,12 +211,20 @@ export const callDaemon = async <M extends DaemonMethod>(
         fail(thrown instanceof FleetError ? thrown : fleetError('internal', String(thrown), { cause: thrown }))
       }
     })
+
+    // A cancelled request drops its connection, so the daemon drops the request with it.
+    const signal = request.signal
+    const cancel = (): void => fail(fleetError('external_failed', `${method} was cancelled`))
+    if (signal !== undefined) {
+      if (signal.aborted) cancel()
+      else signal.addEventListener('abort', cancel, { once: true })
+    }
   })
 }
 
 /** A caller bound to one socket, which is what `run` hands each command. */
 export const callerFor = (options: CallOptions): DaemonCaller => {
-  const call = <M extends DaemonMethod>(method: M, params: DaemonParamsOf<M>): Promise<DaemonResults[M]> =>
-    callDaemon(options, method, params)
+  const call = <M extends DaemonMethod>(method: M, params: DaemonParamsOf<M>, request?: CallRequest): Promise<DaemonResults[M]> =>
+    callDaemon(options, method, params, request)
   return call
 }
