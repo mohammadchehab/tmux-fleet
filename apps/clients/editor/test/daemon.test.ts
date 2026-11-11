@@ -15,6 +15,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
+import type { DecisionId } from '@fleet/foundation-core'
+
 import { daemonAt } from '../src/daemon.ts'
 import { decisionOf, lsOf, peerOf } from './fixtures.ts'
 
@@ -74,7 +76,7 @@ test('decide sends the id and the option, and nothing else', async () => {
   const answered = { ...decisionOf('dec_0123456789abcdef'), state: 'answered' as const, option: 'Yes' }
   const daemon = await fakeFleetd(() => ({ ok: true, result: answered }))
   try {
-    await daemonAt(daemon.socketPath).decide({ id: 'dec_0123456789abcdef', decision: 'Yes' })
+    await daemonAt(daemon.socketPath).decide({ id: 'dec_0123456789abcdef' as DecisionId, decision: 'Yes' })
     assert.deepEqual(daemon.requests, [
       { id: 'decide', method: 'decide', params: { id: 'dec_0123456789abcdef', decision: 'Yes' } },
     ])
