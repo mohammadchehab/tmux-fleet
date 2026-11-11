@@ -61,10 +61,23 @@ const profile = (): Profile => ({
 })
 
 const fakeSupervisor = (
-  options: { readonly reachable?: boolean } = {},
+  options: {
+    readonly reachable?: boolean
+    /** The nth `start()` rejects: a supervisor that half-started is the 3b case. */
+    readonly failStartAt?: number
+    /** The nth `stop()` rejects: a stop that did not happen is the 3a case. */
+    readonly failStopAt?: number
+    /**
+     * A `start()` that does not finish until this settles, so a `down` can arrive
+     * while an `up` is still in flight (3c).
+     */
+    readonly startGate?: Promise<void>
+  } = {},
 ): Supervisor & {
   readonly log: readonly string[]
   readonly sent: readonly string[]
+  /** Settles the moment `start()` is entered, before it does any work: "the up is in flight". */
+  readonly entered: Promise<void>
   /** Bring the session up (or take it away) mid-test, so "queued, then delivered on resume" is one scenario. */
   online(value: boolean): void
 } => {
@@ -72,16 +85,34 @@ const fakeSupervisor = (
   const sent: string[] = []
   let reachable = options.reachable !== false
   let sessions = 0
+  let starts = 0
+  let stops = 0
+  let entered: () => void = () => undefined
+  const enteredPromise = new Promise<void>((resolve) => {
+    entered = resolve
+  })
   return {
     log,
     sent,
+    get entered() {
+      return enteredPromise
+    },
     online(value: boolean) {
       reachable = value
     },
     async start() {
+      starts += 1
+      entered()
+      // The gate is inside the call, so the log line lands when the start has
+      // actually happened rather than when it was asked for: that is what makes
+      // "stop, then start" visible instead of "start, stop" in the wrong order.
+      if (options.startGate !== undefined) await options.startGate
+      if (starts === options.failStartAt) throw new Error('supervisor.start failed')
       log.push('supervisor.start')
     },
     async stop() {
+      stops += 1
+      if (stops === options.failStopAt) throw new Error('supervisor.stop failed')
       log.push('supervisor.stop')
     },
     async acquire(peer: PeerId) {
@@ -131,12 +162,20 @@ const fakeSupervisor = (
   }
 }
 
-const fakeScheduler = (order: string[] = []): Scheduler & { readonly log: readonly string[] } => {
+const fakeScheduler = (
+  order: string[] = [],
+  options: { readonly failStartAt?: number } = {},
+): Scheduler & { readonly log: readonly string[] } => {
   const log: string[] = []
+  let starts = 0
   return {
     log,
     plan: { routines: [], installed: [], unimplemented: [] },
     async start() {
+      starts += 1
+      // A `start` that throws here comes *after* the supervisor is up, which is the
+      // 3b shape: an up that failed with peers already started.
+      if (starts === options.failStartAt) throw new Error('scheduler.start failed')
       log.push('scheduler.start')
       order.push('scheduler.start')
       return []
@@ -199,6 +238,12 @@ const harness = async (
     readonly providerCapabilities?: (provider: string) => { readonly effort: boolean } | undefined
     /** The shared fleet's loop, when the profile is in an engagement (shared-fleet.md §2.2). */
     readonly coordination?: { start(): void; stop(): void }
+    /** The nth `supervisor.stop()` rejects (TASK-68 3a). */
+    readonly failStopAt?: number
+    /** The nth `scheduler.start()` rejects, which is an up that failed with peers started (3b). */
+    readonly schedulerFailStartAt?: number
+    /** A `supervisor.start()` held open, so a `down` can arrive while the `up` is in flight (3c). */
+    readonly startGate?: Promise<void>
   } = {},
 ) => {
   const declared = options.profile ?? profile()
@@ -208,7 +253,10 @@ const harness = async (
   await store.migrate()
   if (options.seed !== undefined && options.seed.length > 0) await store.append(options.seed)
   const supervisor = fakeSupervisor(options)
-  const scheduler = fakeScheduler(options.order)
+  const scheduler = fakeScheduler(
+    options.order,
+    options.schedulerFailStartAt === undefined ? {} : { failStartAt: options.schedulerFailStartAt },
+  )
   // The daemon writes through this, the way `compose.ts` hands it the waking sink:
   // what it records is what the daemon actually appended, and when.
   const append = (batch: readonly AppendEvent[]): Promise<readonly Seq[]> => {
@@ -302,6 +350,76 @@ test('two up calls in flight start the supervisor and the scheduler once', async
   assert.deepEqual(scheduler.log, ['scheduler.start'])
   assert.deepEqual(second, first)
   await daemon.down()
+})
+
+test('a down whose stop threw tries again instead of replaying the failure (TASK-68 3a)', async () => {
+  // `stop()` memoised its promise and kept it even when the promise rejected, so
+  // the retry the user typed re-threw the first failure without calling `stop`
+  // again — and `running` stayed true with peers still up behind it.
+  const { daemon, supervisor } = await harness({ failStopAt: 1 })
+  await daemon.up()
+
+  await assert.rejects(() => daemon.down(), /supervisor\.stop failed/)
+  assert.equal(daemon.running, true, 'a stop that did not happen is not a fleet that is down')
+
+  const retried = await daemon.down()
+  assert.deepEqual(retried, { stopped: true })
+  assert.deepEqual(
+    supervisor.log,
+    ['supervisor.start', 'supervisor.stop'],
+    'the retry must stop the peers, not rethrow the memo of the failed attempt',
+  )
+  assert.equal(daemon.running, false)
+})
+
+test('an up that failed after the supervisor started does not make the next down a no-op (TASK-68 3b)', async () => {
+  // The memo was cleared only on a *successful* start, so the failure left the
+  // previous stop's resolved promise in place: the next `down` awaited it, resolved
+  // at once, and the peers this up had already started kept running.
+  const { daemon, supervisor } = await harness({ schedulerFailStartAt: 2 })
+  await daemon.up()
+  await daemon.down()
+
+  await assert.rejects(() => daemon.up(), /scheduler\.start failed/)
+  assert.equal(daemon.running, false, 'a failed up is not a running fleet')
+
+  const down = await daemon.down()
+  assert.deepEqual(down, { stopped: true })
+  assert.deepEqual(
+    supervisor.log,
+    ['supervisor.start', 'supervisor.stop', 'supervisor.start', 'supervisor.stop'],
+    'the sessions the failed up started must still be stopped',
+  )
+})
+
+test('a down that arrives while an up is in flight stops what the up started (TASK-68 3c)', async () => {
+  // The two ran concurrently: the stop finished, then `startOnce` set `running = true`
+  // and cleared the memo, so `down` had returned "stopped" for a fleet that was up —
+  // and the next `up` short-circuited on `running`.
+  let open: () => void = () => undefined
+  const gate = new Promise<void>((resolve) => {
+    open = resolve
+  })
+  const { daemon, supervisor } = await harness({ startGate: gate })
+
+  const up = daemon.up()
+  // The `down` has to arrive while the `up` is genuinely in flight, not on a guess
+  // at how many microtasks that takes: `entered` settles inside `supervisor.start`.
+  await supervisor.entered
+  const down = daemon.down()
+  await Promise.resolve()
+
+  open()
+  await up
+  const result = await down
+
+  assert.deepEqual(result, { stopped: true })
+  assert.deepEqual(
+    supervisor.log,
+    ['supervisor.start', 'supervisor.stop'],
+    'the stop waits for the start to finish, so it stops what the start started',
+  )
+  assert.equal(daemon.running, false, 'down returned stopped, so the daemon must not be running')
 })
 
 test('up catches up a Work whose PR merged while fleetd was down, after the scheduler starts', async () => {

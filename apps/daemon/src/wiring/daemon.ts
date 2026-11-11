@@ -175,13 +175,6 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     const caughtUp = await catchUpWork({ read, append, clock })
     deps.coordination?.start()
     running = true
-    // An `up` after a `down` is a new daemon, and a new daemon has another stop
-    // in front of it. The memo from the previous `down` describes a state that
-    // no longer exists: left in place, the next `down` would await it, resolve
-    // at once, and stop nothing — reporting a fleet that is down while its
-    // sessions keep running. Cleared where `running` is set, so a plain second
-    // `down` still joins the first stop instead of stopping twice.
-    stopping = undefined
     if (ran.length > 0) {
       // The scheduler's own events say what ran; this line is for the log a human reads.
       console.error(`fleetd: caught up ${ran.length} routine run(s) on start`)
@@ -196,22 +189,61 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
    * A second `up` while the first is still coming up joins it: `running` only
    * flips once catch-up is done, so without this both calls would start every
    * peer's session. A failed start clears the slot, so the next `up` retries.
+   *
+   * An `up` begins by forgetting the last stop, which is the moment that memo
+   * starts describing a state that no longer exists (TASK-46). It is cleared
+   * here, before the first await, and not beside `running = true` where it used
+   * to be: an `up` that failed half-way — after `supervisor.start()`, say — left
+   * the previous, already-resolved memo in place, so the `down` that followed
+   * awaited it, resolved at once, stopped nothing, and left the peers that up
+   * had started running (TASK-68 3b). A plain second `down` still joins the
+   * first stop, because only an `up` clears this.
    */
   const start = async (): Promise<DaemonStatus> => {
     if (running) return status
-    starting ??= startOnce().finally(() => {
-      starting = undefined
-    })
-    return starting
+    if (starting !== undefined) return starting
+
+    const downInFlight = stopping
+    stopping = undefined
+
+    const attempt = (async () => {
+      // A `down` that is still stopping finishes first: the sessions this start
+      // creates must not be the ones that stop is about to take away.
+      if (downInFlight !== undefined) await downInFlight.catch(() => undefined)
+      return startOnce()
+    })()
+    starting = attempt
+    try {
+      return await attempt
+    } finally {
+      if (starting === attempt) starting = undefined
+    }
   }
 
   /**
-   * A second `down` while the first is still stopping joins it. The slot is
-   * cleared by the `up` that follows, not by the stop settling — see the clear
-   * in `startOnce`.
+   * A second `down` while the first is still stopping joins it.
+   *
+   * A `down` that arrives while an `up` is still starting waits for that `up` to
+   * finish and then stops what it started (TASK-68 3c). The two used to run
+   * concurrently: the stop finished first, `startOnce` then set `running = true`
+   * and cleared the memo, so `down` had returned "stopped" for a fleet whose
+   * peers were up — and the next `up` short-circuited on `running` and started
+   * nothing.
+   *
+   * A stop that throws is not a stop: the slot is cleared so the next `down`
+   * tries again rather than replaying the failure, which is what a memoised
+   * rejected promise did (TASK-68 3a). A stop that worked stays memoised.
    */
   const stop = async (): Promise<void> => {
-    await (stopping ??= (async () => {
+    if (stopping !== undefined) return stopping
+
+    // Read once, at the moment this stop begins: a later `up` queues behind *this*
+    // stop, so capturing it again later would put the two in each other's way.
+    const upInFlight = starting
+    const attempt = (async () => {
+      // An `up` that is still starting is stopped afterwards whatever it did: if it
+      // failed part-way, the sessions it did start are exactly what this stops.
+      if (upInFlight !== undefined) await upInFlight.catch(() => undefined)
       // The pool first: a fleet going down must not publish its peers as idle
       // while the supervisor stops them (shared-fleet.md §3). Then the scheduler:
       // a routine that is mid-decide must not be handed a peer the supervisor has
@@ -220,7 +252,14 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       deps.scheduler.stop()
       await deps.supervisor.stop()
       running = false
-    })())
+    })()
+    stopping = attempt
+    // Registered before the caller awaits `attempt`, so the slot is clear by the
+    // time a rejection reaches it.
+    attempt.catch(() => {
+      if (stopping === attempt) stopping = undefined
+    })
+    return attempt
   }
 
   /**
