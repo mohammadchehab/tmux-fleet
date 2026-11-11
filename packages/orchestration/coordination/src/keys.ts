@@ -64,6 +64,8 @@ export type KeyOutcome =
   | { readonly kind: 'refused'; readonly reason: string }
 
 const ROTATION_NUMBER = /^[1-9][0-9]{0,8}$/
+/** The highest rotation the record's schema (and so the ref name) allows. */
+const MAX_ROTATION = 999_999_999
 
 /** The rotations under `<ns>/rotate/`, highest first. A ref that is not one is ignored. */
 const rotationsOf = (refs: readonly CoordinationRef[], prefix: string): { readonly n: number; readonly ref: CoordinationRef }[] =>
@@ -86,7 +88,8 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
   }
 
   const prefix = `${options.namespace}/rotate/`
-  const [current] = rotationsOf(await options.coordination.refs(prefix), prefix)
+  const rotations = rotationsOf(await options.coordination.refs(prefix), prefix)
+  const [current] = rotations
 
   /** Each member's usable recipients, read once per look. */
   const recipients = new Map<string, readonly string[]>()
@@ -101,8 +104,21 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
   }
 
   if (current !== undefined) {
-    const record = await readRecord(options.coordination, current.ref)
-    if (record !== undefined && sameList(record.members, members)) {
+    // Rotation refs are written by anyone with push on the coordination
+    // repository, so a revocation that trusts one as found can be blocked by it.
+    // The numbers must run 1..n with no gap, and the winner must be what
+    // `reconcileKey` makes; otherwise nothing is rotated and the log says why.
+    const gap = rotations.findIndex((r, i) => r.n !== current.n - i) !== -1 || rotations.at(-1)?.n !== 1
+    if (gap) {
+      return { kind: 'refused', reason: `the rotations under ${prefix} are not 1..${current.n} without a gap; someone wrote a ref that reconcileKey did not` }
+    }
+    if (current.n >= MAX_ROTATION) {
+      return { kind: 'refused', reason: `rotation ${current.n} is the last number a rotation can have` }
+    }
+    const checked = await readRecord(options.coordination, current.ref)
+    if (!checked.ok) return { kind: 'refused', reason: `rotation ${current.n} is not one this fleet's rule would make: ${checked.reason}` }
+    const record = checked.record
+    if (sameList(record.members, members)) {
       // The same team; the only other change is a member who had no key adding one.
       let gained = false
       for (const member of record.missing) if ((await recipientsOf(member)).length > 0) gained = true
@@ -133,18 +149,43 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
     files,
     message: `rotation ${rotation}: ${members.length} member(s)${missing.length > 0 ? `, ${missing.length} without a key` : ''}`,
   })
-  return created.created ? { kind: 'rotated', rotation, members, missing } : { kind: 'lost_race', rotation }
+  if (created.created) return { kind: 'rotated', rotation, members, missing }
+  // Someone else made this number. A fleet's own lose is a valid rotation; an
+  // attacker's ref that got there first is not, and must not read as a lost race.
+  const winner = await readRecord(options.coordination, { name: `${prefix}${rotation}`, sha: created.sha })
+  if (!winner.ok) return { kind: 'refused', reason: `rotation ${rotation} was made by someone else and is not valid: ${winner.reason}` }
+  return { kind: 'lost_race', rotation }
 }
 
-/** A rotation's record, or `undefined` for one that is gone or does not decode — which then reads as stale. */
-const readRecord = async (coordination: Coordination, ref: CoordinationRef): Promise<KeyRotation | undefined> => {
+type Checked = { readonly ok: true; readonly record: KeyRotation } | { readonly ok: false; readonly reason: string }
+
+/**
+ * A rotation's record, accepted only if it is what `reconcileKey` writes: it
+ * decodes, names its own number, was made by one of its members, leaves at least
+ * one member a copy, and its files are exactly the record plus one `<login>.age`
+ * per member that has a copy.
+ */
+const readRecord = async (coordination: Coordination, ref: CoordinationRef): Promise<Checked> => {
   const held = await coordination.read(ref)
   const text = held?.files[ROTATION_FILE]
-  if (text === undefined) return undefined
+  if (held === undefined || text === undefined) return { ok: false, reason: `it has no ${ROTATION_FILE}` }
+  let record: KeyRotation
   try {
     const decoded = decodeStrict(keyRotation(), JSON.parse(text))
-    return decoded.ok ? decoded.value : undefined
+    if (!decoded.ok) return { ok: false, reason: `its ${ROTATION_FILE} does not decode` }
+    record = decoded.value
   } catch {
-    return undefined
+    return { ok: false, reason: `its ${ROTATION_FILE} is not JSON` }
   }
+  if (`${prefixOf(ref)}${record.rotation}` !== ref.name) return { ok: false, reason: `its record says rotation ${record.rotation}` }
+  if (!record.members.includes(record.by)) return { ok: false, reason: `${record.by} made it and is not one of its members` }
+  if (!record.missing.every((login) => record.members.includes(login))) return { ok: false, reason: 'it lists a missing member who is not a member' }
+  if (record.missing.length >= record.members.length) return { ok: false, reason: 'it gives no member a copy' }
+  const expected = [ROTATION_FILE, ...record.members.filter((m) => !record.missing.includes(m)).map((m) => `${m}.age`)].sort()
+  const actual = Object.keys(held.files).sort()
+  if (!sameList(expected, actual)) return { ok: false, reason: 'its files are not its record plus one copy per member it names' }
+  return { ok: true, record }
 }
+
+/** `<ns>/rotate/` of a rotation ref. */
+const prefixOf = (ref: CoordinationRef): string => ref.name.slice(0, ref.name.lastIndexOf('/') + 1)

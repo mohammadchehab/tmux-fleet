@@ -149,24 +149,106 @@ describe('a change in the team', () => {
     assert.equal((await coordination.refs('eng-07/rotate/')).length, 2)
   })
 
-  it('reads a rotation whose record does not decode as stale, and supersedes it', async () => {
-    const { coordination, options } = setup()
-    coordination.force('eng-07/rotate/1', { [ROTATION_FILE]: '{"version":2}' })
-
-    assert.equal((await reconcileKey(options())).kind, 'rotated')
-    assert.equal(JSON.parse((await filesOf(coordination, 2))[ROTATION_FILE]!).rotation, 2)
-  })
-
   it('takes the highest rotation as current, by number and not by name', async () => {
     const { coordination, options } = setup()
-    for (const n of [1, 2, 10]) {
-      coordination.force(`eng-07/rotate/${n}`, {
-        [ROTATION_FILE]: JSON.stringify({ version: 1, rotation: n, members: ['alice', 'bob'], missing: [], by: 'alice', at: '2026-11-01T00:00:00.000Z' }),
-      })
-    }
+    for (let n = 1; n <= 10; n++) forgeRotation(coordination, n)
     coordination.force('eng-07/rotate/007', { [ROTATION_FILE]: 'not a rotation number' })
 
     assert.deepEqual(await reconcileKey(options()), { kind: 'current', rotation: 10 })
+  })
+})
+
+/** A rotation as `reconcileKey` would have written it, for a test to plant or to break. */
+const forgeRotation = (
+  coordination: ReturnType<typeof fakeCoordination>,
+  n: number,
+  edit: { record?: Record<string, unknown>; files?: Record<string, string> } = {},
+) => {
+  const record = { version: 1, rotation: n, members: ['alice', 'bob'], missing: [], by: 'alice', at: '2026-11-01T00:00:00.000Z', ...edit.record }
+  coordination.force(`eng-07/rotate/${n}`, {
+    [ROTATION_FILE]: JSON.stringify(record),
+    'alice.age': 'sealed',
+    'bob.age': 'sealed',
+    ...edit.files,
+  })
+}
+
+describe('a rotation someone else wrote (revocation must not be blockable by a ref)', () => {
+  it('refuses when a ref jumps to the cap, instead of reading it as the current key', async () => {
+    const { coordination, options } = setup()
+    await reconcileKey(options())
+    forgeRotation(coordination, 999_999_999)
+
+    const outcome = await reconcileKey(options())
+    assert.equal(outcome.kind, 'refused')
+    assert.match((outcome as { reason: string }).reason, /gap/)
+  })
+
+  it('refuses a gap in the numbers', async () => {
+    const { coordination, options } = setup()
+    forgeRotation(coordination, 1)
+    forgeRotation(coordination, 3)
+
+    assert.equal((await reconcileKey(options())).kind, 'refused')
+  })
+
+  it('refuses a forged record that names the team but has no copies', async () => {
+    const { coordination, options } = setup()
+    coordination.force('eng-07/rotate/1', {
+      [ROTATION_FILE]: JSON.stringify({ version: 1, rotation: 1, members: ['alice', 'bob'], missing: [], by: 'alice', at: '2026-11-01T00:00:00.000Z' }),
+    })
+
+    const outcome = await reconcileKey(options())
+    assert.equal(outcome.kind, 'refused')
+    assert.equal((await coordination.refs('eng-07/rotate/')).length, 1, 'nothing was rotated over it')
+  })
+
+  it('refuses a forged record that says every member has no key', async () => {
+    const { coordination, options } = setup()
+    coordination.force('eng-07/rotate/1', {
+      [ROTATION_FILE]: JSON.stringify({ version: 1, rotation: 1, members: ['alice', 'bob'], missing: ['alice', 'bob'], by: 'alice', at: '2026-11-01T00:00:00.000Z' }),
+    })
+
+    assert.equal((await reconcileKey(options())).kind, 'refused')
+  })
+
+  it('refuses a record made by someone who is not one of its members', async () => {
+    const { coordination, options } = setup()
+    forgeRotation(coordination, 1, { record: { by: 'mallory' } })
+
+    assert.equal((await reconcileKey(options())).kind, 'refused')
+  })
+
+  it('refuses a record whose number is not its ref', async () => {
+    const { coordination, options } = setup()
+    forgeRotation(coordination, 1, { record: { rotation: 2 } })
+
+    assert.equal((await reconcileKey(options())).kind, 'refused')
+  })
+
+  it('refuses a record that does not decode, and does not supersede it silently', async () => {
+    const { coordination, options } = setup()
+    coordination.force('eng-07/rotate/1', { [ROTATION_FILE]: '{"version":2}' })
+
+    assert.equal((await reconcileKey(options())).kind, 'refused')
+    assert.equal((await coordination.refs('eng-07/rotate/')).length, 1)
+  })
+
+  it('does not call a lost race when the ref that won is not a valid rotation', async () => {
+    const { coordination, team, options } = setup()
+    await reconcileKey(options())
+    team.state.members = ['alice']
+    // The planted ref lands between this fleet's read of the refs and its create.
+    const real = coordination.refs.bind(coordination)
+    coordination.refs = async (prefix) => {
+      const seen = await real(prefix)
+      coordination.force('eng-07/rotate/2', { [ROTATION_FILE]: '{"version":1}' })
+      return seen
+    }
+
+    const outcome = await reconcileKey(options())
+    assert.equal(outcome.kind, 'refused')
+    assert.match((outcome as { reason: string }).reason, /not valid/)
   })
 })
 

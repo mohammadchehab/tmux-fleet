@@ -181,6 +181,12 @@ difference is a **new rotation**, for the team as it now stands:
 - **A member had no usable key and added one**: they are listed in the rotation's `missing`, and the look that finds a
   key for them makes the rotation that includes them.
 
+Anyone with push on the repository can write a `rotate/` ref, so the rotations are not trusted as found. The numbers
+must run `1..n` with no gap; the current rotation must decode, name its own number, be made by one of its members,
+give at least one member a copy, and hold exactly its record plus one `<login>.age` per member it names; and a lost
+race re-reads the winner and holds it to the same rule. Anything else is `refused` and logged, and nothing is rotated
+over it: a ref that blocks a revocation is for a person to remove, not for the fleet to step around.
+
 Of the fleets that see the same change, the first to create `rotate/<n+1>` wins (§2.1); the others' keys were never
 published. If no fleet is online, the rotation happens at the next `fleet up`; nothing leaks in between, because the
 leaver can no longer read the repo. The first fleet up in an engagement makes rotation 1, so nobody runs an `init`.
