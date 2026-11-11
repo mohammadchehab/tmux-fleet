@@ -611,10 +611,11 @@ export interface KeyWrap {
    * included — a copy that cannot be read as one is a copy nobody can be sure of.
    *
    * Read from the copy's header, which `age` leaves in the clear and binds to the
-   * file key, so writing one that says it is sealed to a key it is not needs that
-   * key. Nothing is decrypted: the identity it is matched on is the tag `age`
-   * itself selects a private key by, so a copy `age` would let an outsider open
-   * is one this refuses (§5.2).
+   * file key, so a stanza cannot be added to someone else's copy without the key
+   * that copy was sealed for. Nothing is decrypted — which is also the limit: the
+   * identity in the header is the 32-bit tag `age` itself selects a private key
+   * by, not the key, so a key ground to carry a member's tag defeats this. It
+   * refuses every forgery that is not such a collision, and nothing more (§5.2).
    */
   sealedOnlyTo(armored: string, recipients: readonly string[]): boolean
   /** What `wrap` sealed, opened with the SSH private key at `identityFile` (an absolute path). */
