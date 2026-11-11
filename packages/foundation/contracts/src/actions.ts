@@ -40,6 +40,8 @@ import { briefHandoff, turnKinds } from './provider.ts'
 import type { TurnKind } from './provider.ts'
 import { branchName, line, pullRequestRef } from './shapes.ts'
 import type { PullRequestRef } from './shapes.ts'
+import { blockReason } from './work-state.ts'
+import type { BlockReason } from './work-state.ts'
 
 /** The closed list of things a tick may decide. A sixth rule is a new variant, not a wider field. */
 export const pmActionKinds = [
@@ -54,6 +56,7 @@ export const pmActionKinds = [
   'raise_no_work',
   'render_standup',
   'mark_ready',
+  'block_work',
 ] as const
 export type PmActionKind = (typeof pmActionKinds)[number]
 
@@ -152,6 +155,18 @@ export interface MarkReadyAction extends PmActionBase {
 }
 
 /**
+ * §5.1's transition into `blocked`, as the PM's decision: a peer said it is stuck (`work.noted`, phase `blocked`) and
+ * the PM records it. The executor writes `work.blocked` only for a Work the peer holds, and not one already blocked,
+ * so a block is recorded once per transition (TASK-126).
+ */
+export interface BlockWorkAction extends PmActionBase {
+  readonly kind: 'block_work'
+  readonly workId: WorkId
+  readonly reason: string
+  readonly blockedOn: BlockReason
+}
+
+/**
  * Something blocks on the user (§6.1): a product or scope call, an approval, a
  * Judge question that escalated. It becomes an open row in the decision inbox
  * and a "needs your decision" notification, and the Work it names stays put.
@@ -238,6 +253,7 @@ export type PmAction =
   | RaiseNoWorkAction
   | RenderStandupAction
   | MarkReadyAction
+  | BlockWorkAction
 
 // -------------------------------------------------------------------- schemas
 
@@ -349,6 +365,15 @@ const markReadyAction = (): Schema<MarkReadyAction> =>
     reason: optional(text(500)),
   })
 
+const blockWorkAction = (): Schema<BlockWorkAction> =>
+  objectAs<BlockWorkAction>()({
+    kind: oneOf(['block_work'] as const),
+    causedBy: causedBy(),
+    workId: workId(),
+    reason: text(1000),
+    blockedOn: blockReason(),
+  })
+
 const actionSchemas: { readonly [K in PmActionKind]: () => Schema<Extract<PmAction, { readonly kind: K }>> } = {
   assign: assignAction,
   supersede_brief: supersedeBriefAction,
@@ -358,6 +383,7 @@ const actionSchemas: { readonly [K in PmActionKind]: () => Schema<Extract<PmActi
   merge: mergeAction,
   retarget: retargetAction,
   mark_ready: markReadyAction,
+  block_work: blockWorkAction,
   flag_capacity: flagCapacityAction,
   raise_no_work: raiseNoWorkAction,
   render_standup: renderStandupAction,
@@ -384,6 +410,7 @@ export const pmAction = (): Schema<PmAction> =>
     flagCapacityAction(),
     raiseNoWorkAction(),
     renderStandupAction(),
+    blockWorkAction(),
     markReadyAction(),
   ])
 

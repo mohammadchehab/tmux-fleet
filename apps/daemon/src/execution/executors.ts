@@ -33,6 +33,7 @@ import type {
   ExecutionReport,
   FlagCapacityAction,
   Mailbox,
+  BlockWorkAction,
   MarkReadyAction,
   MessageAckState,
   PmAction,
@@ -427,6 +428,50 @@ export const createReadyExecutor = (deps: ReadyExecutorDeps): Executor => {
   })
 }
 
+/**
+ * `block_work`: the transition half of a peer's `blocked` note (§5.1, TASK-126); this writes `work.blocked`.
+ *
+ * Only a Work the peer still holds can be blocked, and only once: a Work that is already `blocked`, or is over, is
+ * left alone, because the transition has happened or the Work has moved past the point a peer could be stuck on it.
+ * A Work the fleet does not have is a failed action, since the note named a Work that does not exist.
+ */
+export interface BlockWorkExecutorDeps {
+  readonly store: EventSink
+  readonly read: ReadModel
+  readonly clock?: Clock
+}
+
+const blockableStates: ReadonlySet<string> = new Set(['assigned', 'in_progress', 'in_review', 'mergeable'])
+
+export const createBlockWorkExecutor = (deps: BlockWorkExecutorDeps): Executor => {
+  const clock = deps.clock ?? systemClock
+
+  return executor(['block_work'], async (action) => {
+    const block = action as BlockWorkAction
+    let current
+    try {
+      current = await deps.read.work.get(block.workId)
+    } catch (thrown) {
+      return failed(action, toFleetError(thrown, 'store_failed').message)
+    }
+    if (current === undefined) return failed(action, `no Work ${String(block.workId)} to block`)
+    if (!blockableStates.has(current.state)) return done(action, [])
+
+    const written = await append(deps.store, [
+      {
+        type: 'work.blocked',
+        ts: clock.now(),
+        subject: block.workId,
+        actor: 'pm',
+        causedBy: block.causedBy,
+        data: { workId: block.workId, reason: block.reason, blockedOn: block.blockedOn },
+      } as AppendEvent,
+    ])
+    if ('error' in written) return failed(action, written.error)
+    return done(action, written.seqs)
+  })
+}
+
 // -------------------------------------------------------------- the wiring
 
 export interface DaemonExecutorDeps {
@@ -456,5 +501,9 @@ export const createDaemonExecutors = (deps: DaemonExecutorDeps): readonly KindEx
   {
     kinds: ['mark_ready'],
     executor: createReadyExecutor({ store: deps.store, read: deps.read, ...(deps.clock === undefined ? {} : { clock: deps.clock }) }),
+  },
+  {
+    kinds: ['block_work'],
+    executor: createBlockWorkExecutor({ store: deps.store, read: deps.read, ...(deps.clock === undefined ? {} : { clock: deps.clock }) }),
   },
 ]

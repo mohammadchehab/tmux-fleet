@@ -991,6 +991,66 @@ test('replaying a blocked note that already asked does not ask again after its a
   assert.deepEqual(decide({ state: answered, tick: tick(), event: note }).actions, [], 'the same note is the same question')
 })
 
+// The note is also the transition: a blocked note on a Work that is not blocked yet makes the PM record the block
+// (`block_work`, which lands as `work.blocked`), so the Work's state says what the question says (TASK-126).
+
+test('a blocked note asks and records the block on the Work the peer holds (TASK-126)', () => {
+  const { snapshot, note } = noted({ body: 'the store has no way to replay a partial log' })
+  const actions = decide({ state: snapshot, tick: tick(), event: note }).actions
+
+  const block = only(actions, 'block_work')
+  assert.equal(block.workId, snapshot.work[0]!.workId)
+  assert.equal(block.blockedOn, 'user', 'a note does not say who can clear it, so the user is asked')
+  assert.match(block.reason, /engineer-1 says/)
+  assert.match(block.reason, /no way to replay a partial log/)
+  assert.deepEqual(block.causedBy, [note.seq])
+  only(actions, 'request_decision')
+})
+
+test('a note on a Work already blocked asks but records no second transition', () => {
+  const { snapshot, note } = noted()
+  const blocked = state({ peers: snapshot.peers, work: [{ ...snapshot.work[0]!, state: 'blocked' }] })
+  const actions = decide({ state: blocked, tick: tick(), event: note }).actions
+
+  assert.deepEqual(kinds(actions).filter((kind) => kind === 'block_work'), [])
+  only(actions, 'request_decision')
+})
+
+test('end to end: a second block after the answer asks again and records a second transition; the event it writes asks nothing more', () => {
+  const { snapshot, note } = noted({ body: 'first' , seq: 41 })
+  const first = decide({ state: snapshot, tick: tick(), event: note }).actions
+  const asked = only(first, 'request_decision')
+  only(first, 'block_work')
+
+  // The answer is in, delivered, and the peer has resumed: the Work is in progress again.
+  const resumed = state({
+    peers: [peer({ peerId: 'engineer-1' as never, state: 'working' })],
+    work: [work({ state: 'in_progress', assignee: 'engineer-1' as never })],
+    decisions: [
+      decision({ decisionId: asked.decisionId, kind: 'blocked', workId: asked.workId, state: 'answered', text: 'use the ECB feed', answeredAt: T0, inputsHash: asked.inputsHash }),
+    ],
+    messages: [message({ to: 'engineer-1' as never, body: String(asked.decisionId) })],
+  })
+  const second = noted({ body: 'second', seq: 57 })
+  const again = decide({ state: resumed, tick: tick(), event: second.note }).actions
+  const reasked = only(again, 'request_decision')
+  assert.notEqual(reasked.decisionId, asked.decisionId)
+  only(again, 'block_work')
+
+  // The PM's own `work.blocked` comes back on the next tick, with the new question already open: nothing more.
+  const openNow = state({
+    peers: [peer({ peerId: 'engineer-1' as never, state: 'waiting_input' })],
+    work: [work({ state: 'blocked', assignee: 'engineer-1' as never, blockedOn: 'user', blockedReason: 'second' })],
+    decisions: [
+      decision({ decisionId: asked.decisionId, kind: 'blocked', workId: asked.workId, state: 'answered', text: 'use the ECB feed', answeredAt: T0, inputsHash: asked.inputsHash }),
+      decision({ decisionId: reasked.decisionId, kind: 'blocked', workId: reasked.workId, state: 'open', inputsHash: reasked.inputsHash }),
+    ],
+    messages: [message({ to: 'engineer-1' as never, body: String(asked.decisionId) })],
+  })
+  const workBlocked = event('work.blocked', 'wrk_0000000000000001', { workId: 'wrk_0000000000000001', reason: 'second', blockedOn: 'user' }, 58)
+  assert.deepEqual(decide({ state: openNow, tick: tick(), event: workBlocked }).actions, [])
+})
+
 test('a note about a Work the fleet does not have is left in the log rather than guessed at', () => {
   const { snapshot, note } = noted({ workId: 'wrk_00000000000000ff' })
   assert.deepEqual(decide({ state: snapshot, tick: tick(), event: note }).actions, [])
