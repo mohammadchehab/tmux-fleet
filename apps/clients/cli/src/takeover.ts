@@ -11,6 +11,13 @@
  *   that must follow — down with it.
  * - After the child exits, however it exits, the terminal modes a full-screen
  *   CLI can leave on are reset: a child that was killed never got to.
+ *
+ * A third, found by killing the terminal under a live attach: SIGHUP (the
+ * terminal closed) and SIGTERM (someone killed this process) are forwarded to the
+ * child and waited out, so the release that follows still runs. Left to default,
+ * they ended this process first and the peer stayed held until `fleet release`.
+ * A child that ignores the signal is escalated, so a hung CLI cannot keep a peer
+ * held either.
  */
 
 import { spawn } from 'node:child_process'
@@ -28,7 +35,7 @@ export interface TakeoverExit {
 
 export type Takeover = (
   command: AttachCommand,
-  options: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
+  options: { readonly cwd: string; readonly env: Readonly<Record<string, string>>; readonly graceMs?: number },
 ) => Promise<TakeoverExit>
 
 /** The variables the person's terminal brings to the takeover, on top of the peer's env (§5 step 3). */
@@ -47,20 +54,44 @@ export const takeoverEnv = (
   return env
 }
 
+/** How long a child gets to leave after a hangup or a kill before it is told harder, then killed. */
+export const defaultGraceMs = 5_000
+
+const FORWARDED = ['SIGHUP', 'SIGTERM'] as const
+
 export const runTakeover: Takeover = (command, options) =>
   new Promise((resolve, reject) => {
     const ignore = (): void => undefined
     process.on('SIGINT', ignore)
-    let child
+    let child: ReturnType<typeof spawn>
+    const timers: NodeJS.Timeout[] = []
+    const grace = options.graceMs ?? defaultGraceMs
+    const forward = (signal: NodeJS.Signals): void => {
+      // The terminal's hangup reaches the child on its own when it shares the
+      // tty; this covers the child that does not, and a kill aimed at this process.
+      child.kill(signal)
+      if (timers.length > 0) return
+      timers.push(
+        setTimeout(() => {
+          child.kill('SIGTERM')
+          timers.push(setTimeout(() => child.kill('SIGKILL'), grace).unref())
+        }, grace).unref(),
+      )
+    }
+    const forwarders = FORWARDED.map((signal) => [signal, () => forward(signal)] as const)
+    for (const [signal, handler] of forwarders) process.on(signal, handler)
     try {
       child = spawn(command.executable, [...command.args], { cwd: options.cwd, env: { ...options.env }, stdio: 'inherit' })
     } catch (thrown) {
       process.off('SIGINT', ignore)
+      for (const [signal, handler] of forwarders) process.off(signal, handler)
       reject(thrown instanceof Error ? thrown : new Error(String(thrown)))
       return
     }
     const done = (): void => {
       process.off('SIGINT', ignore)
+      for (const [signal, handler] of forwarders) process.off(signal, handler)
+      for (const timer of timers) clearTimeout(timer)
       if (process.stdout.isTTY) process.stdout.write(TERMINAL_RESET)
       if (process.stdin.isTTY) process.stdin.setRawMode(false)
     }

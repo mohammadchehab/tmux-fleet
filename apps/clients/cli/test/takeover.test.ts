@@ -37,3 +37,30 @@ test('a command that does not exist rejects, and leaves no SIGINT handler behind
   await assert.rejects(runTakeover({ executable: '/no/such/cli', args: [] }, { cwd: '/', env }), /ENOENT/)
   assert.equal(process.listenerCount('SIGINT'), before)
 })
+
+test('a SIGHUP or SIGTERM to this process is forwarded to the child and waited out, so the release can follow', async () => {
+  for (const signal of ['SIGHUP', 'SIGTERM'] as const) {
+    const before = process.listenerCount(signal)
+    const running = runTakeover(
+      { executable: process.execPath, args: ['-e', "process.on('SIGHUP', () => process.exit(7)); process.on('SIGTERM', () => process.exit(8)); setInterval(() => undefined, 1000)"] },
+      { cwd: '/', env },
+    )
+    // Give the child time to install its handlers, then hang this process up.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    process.kill(process.pid, signal)
+    const exit = await running
+    assert.deepEqual(exit, { code: signal === 'SIGHUP' ? 7 : 8, signal: null })
+    assert.equal(process.listenerCount(signal), before)
+  }
+})
+
+test('a child that ignores the hangup is escalated, so it cannot keep a peer held', async () => {
+  const running = runTakeover(
+    { executable: process.execPath, args: ['-e', "process.on('SIGHUP', () => undefined); process.on('SIGTERM', () => undefined); setInterval(() => undefined, 1000)"] },
+    { cwd: '/', env, graceMs: 200 },
+  )
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  process.kill(process.pid, 'SIGHUP')
+  const exit = await running
+  assert.equal(exit.signal, 'SIGKILL')
+})
