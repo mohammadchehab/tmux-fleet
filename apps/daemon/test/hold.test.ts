@@ -369,3 +369,82 @@ test('the handback note counts the waiting mail', () => {
   assert.match(handbackNote('held', 'a', 'b', 0), /No messages arrived/)
   assert.match(handbackNote('held', 'a', 'b', 2), /2 messages arrived for you meanwhile and follow this one/)
 })
+
+/** Fail the test, not the run, when `promise` has not settled by `ms`: a hang is a failure that names itself. */
+const within = async <T>(promise: Promise<T>, ms: number, what: string): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what}: still pending after ${String(ms)} ms`)), ms)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+test('a hold whose client goes away while the turn never ends is dropped, and the peer runs as it was', async () => {
+  const fake = fakeProvider()
+  const f = await fleet(fake)
+  await f.supervisor.start()
+  await settle()
+  const first = sessionOf(fake, engineer)
+  fake.startTurn(first.sessionId) // never ended: a turn parked on an approval nobody answers
+  await settle()
+
+  const client = new AbortController()
+  const hold = f.supervisor.hold(engineer, { by: 'user', signal: client.signal })
+  const refused = assert.rejects(hold, /cancelled/)
+  await settle()
+  assert.ok(!f.supervisor.running().includes(engineer), 'while it waits, the peer is out of the running map')
+
+  client.abort() // the attach client's terminal was killed
+  await within(refused, 1_000, 'the dropped hold')
+  assert.ok(f.supervisor.running().includes(engineer), 'the session is back in the running map')
+  assert.ok(!fake.calls.includes(`stop:${first.sessionId}`), 'and it was never stopped')
+  assert.notEqual((await f.store.reader().peers.get(engineer))?.state, 'held')
+
+  // Not stuck: a new hold is accepted (no "already being held"), and completes at the boundary.
+  const again = f.supervisor.hold(engineer, { by: 'user' })
+  await settle()
+  fake.endTurn(first.sessionId)
+  assert.equal((await within(again, 1_000, 'the second hold')).sessionRef, first.ref)
+  await f.supervisor.stop()
+})
+
+test('a hold that was already cancelled when it started waits for nothing and changes nothing', async () => {
+  const fake = fakeProvider()
+  const f = await fleet(fake)
+  await f.supervisor.start()
+  await settle()
+  const first = sessionOf(fake, engineer)
+  fake.startTurn(first.sessionId)
+  await settle()
+  const client = new AbortController()
+  client.abort()
+  await within(assert.rejects(f.supervisor.hold(engineer, { by: 'user', signal: client.signal }), /cancelled/), 1_000, 'the hold')
+  assert.ok(f.supervisor.running().includes(engineer))
+  fake.endTurn(first.sessionId)
+  await f.supervisor.stop()
+})
+
+test('stopping the daemon with a hold still waiting for a turn does not hang, and stops that peer too', async () => {
+  const fake = fakeProvider()
+  const f = await fleet(fake)
+  await f.supervisor.start()
+  await settle()
+  const first = sessionOf(fake, engineer)
+  fake.startTurn(first.sessionId) // never ended
+  await settle()
+
+  const hold = f.supervisor.hold(engineer, { by: 'user' }) // its client is still connected
+  const refused = assert.rejects(hold, /cancelled/)
+  await settle()
+
+  await within(f.supervisor.stop(), 2_000, 'supervisor.stop() with a pending hold')
+  await within(refused, 1_000, 'the pending hold')
+  assert.ok(fake.calls.includes(`stop:${first.sessionId}`), 'the held-up peer was stopped with the rest')
+  assert.ok(fake.calls.includes(`stop:${sessionOf(fake, reviewer).sessionId}`))
+})

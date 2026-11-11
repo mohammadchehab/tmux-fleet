@@ -851,11 +851,12 @@ export interface DaemonApi {
    */
   builds(params: BuildsParams): Promise<BuildsResult>
   /** Hold one peer for a person, at the next turn boundary or now (watch-and-attach §4). */
-  peerHold(params: PeerHoldParams): Promise<PeerHoldResult>
+  /** `signal` aborts when the client's connection closes, so a hold waiting for a turn is dropped with it. */
+  peerHold(params: PeerHoldParams, signal?: AbortSignal): Promise<PeerHoldResult>
   /** Give a held peer back to fleetd: resume its session with a handback note. */
   peerRelease(params: PeerParams): Promise<PeerResumeResult>
   /** Stop one peer, with nobody holding it (§7.2). */
-  peerStop(params: PeerStopParams): Promise<PeerStopResult>
+  peerStop(params: PeerStopParams, signal?: AbortSignal): Promise<PeerStopResult>
   /** Start one stopped peer, from its ref when it has one (§7.2). */
   peerStart(params: PeerParams): Promise<PeerResumeResult>
 }

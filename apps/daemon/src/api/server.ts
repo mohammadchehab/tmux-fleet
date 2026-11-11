@@ -67,6 +67,9 @@ export const createDaemonServer = async (deps: ServerDeps): Promise<DaemonServer
   const sockets = new Set<Socket>()
   const server: Server = createServer((socket) => {
     sockets.add(socket)
+    // Aborts when the client goes away, so a request waiting on something that
+    // outlives it (a hold waiting for a turn) is dropped with it.
+    const gone = new AbortController()
     socket.setEncoding('utf8')
     let buffer = ''
     let chain: Promise<void> = Promise.resolve()
@@ -80,7 +83,7 @@ export const createDaemonServer = async (deps: ServerDeps): Promise<DaemonServer
         // Requests on one connection are answered in order, because a client
         // that sends `send` then `peek` expects the second to see the first.
         chain = chain.then(async () => {
-          const response = await handleLine(deps.api, line)
+          const response = await handleLine(deps.api, line, gone.signal)
           if (!response.ok) deps.onError?.(line, response)
           if (socket.writable) socket.write(encodeLine(response))
           if (response.ok && isDown(line)) {
@@ -92,8 +95,14 @@ export const createDaemonServer = async (deps: ServerDeps): Promise<DaemonServer
       }
     })
 
-    socket.on('close', () => sockets.delete(socket))
-    socket.on('error', () => sockets.delete(socket))
+    socket.on('close', () => {
+      sockets.delete(socket)
+      gone.abort()
+    })
+    socket.on('error', () => {
+      sockets.delete(socket)
+      gone.abort()
+    })
   })
 
   // The socket is the owner's alone: `peer.hold` hands the takeover the env the

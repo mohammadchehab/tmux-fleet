@@ -463,9 +463,13 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
 
     // watch-and-attach §4, §7.2. The person at the socket is the actor: a hold
     // is a person's decision, and the attach client is how they make it.
-    async peerHold(input) {
+    async peerHold(input, signal) {
       await requirePeer(input.peerId)
-      return deps.supervisor.hold(input.peerId, { ...(input.now === undefined ? {} : { now: input.now }), by: ACTOR })
+      return deps.supervisor.hold(input.peerId, {
+        ...(input.now === undefined ? {} : { now: input.now }),
+        by: ACTOR,
+        ...(signal === undefined ? {} : { signal }),
+      })
     },
 
     async peerRelease(input) {
@@ -473,9 +477,13 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       return deps.supervisor.release(input.peerId)
     },
 
-    async peerStop(input) {
+    async peerStop(input, signal) {
       await requirePeer(input.peerId)
-      return deps.supervisor.stopPeer(input.peerId, { ...(input.now === undefined ? {} : { now: input.now }), by: ACTOR })
+      return deps.supervisor.stopPeer(input.peerId, {
+        ...(input.now === undefined ? {} : { now: input.now }),
+        by: ACTOR,
+        ...(signal === undefined ? {} : { signal }),
+      })
     },
 
     async peerStart(input) {

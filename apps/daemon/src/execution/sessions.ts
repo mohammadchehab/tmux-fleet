@@ -148,15 +148,42 @@ export interface Supervisor extends PeerSessions {
    * next turn boundary — interrupting the turn first when `now` — and record it
    * held. A held peer is not run, delivered to, recovered or assigned. Asked
    * again while held, it answers the same.
+   *
+   * `signal` is the request's: when it aborts while the hold waits for the turn to
+   * end, the hold is dropped and the session goes back to running as it was, so a
+   * client that died cannot leave a peer half-taken (and `down` cannot hang on it).
    */
-  hold(peerId: PeerId, options: { readonly now?: boolean; readonly by: Actor }): Promise<PeerHoldResult>
+  hold(peerId: PeerId, options: { readonly now?: boolean; readonly by: Actor; readonly signal?: AbortSignal }): Promise<PeerHoldResult>
   /** Resume a held peer's session with a handback note, or start it fresh when that fails (§4). */
   release(peerId: PeerId): Promise<PeerResumeResult>
   /** As `hold`, but nobody owns the session afterwards (§7.2). */
-  stopPeer(peerId: PeerId, options: { readonly now?: boolean; readonly by: Actor }): Promise<PeerStopResult>
+  stopPeer(peerId: PeerId, options: { readonly now?: boolean; readonly by: Actor; readonly signal?: AbortSignal }): Promise<PeerStopResult>
   /** Start a stopped peer: resumed from its ref when it has one, fresh otherwise (§7.2). */
   startPeer(peerId: PeerId): Promise<PeerResumeResult>
 }
+
+/** Wait for `until`, or reject when `signal` aborts first; the waited-for promise is left running. */
+const untilOrAbort = (until: Promise<void>, signal: AbortSignal | undefined): Promise<void> => {
+  if (signal === undefined) return until
+  if (signal.aborted) return Promise.reject(cancelled())
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => reject(cancelled())
+    signal.addEventListener('abort', onAbort, { once: true })
+    until.then(
+      () => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
+const cancelled = (): Error =>
+  fleetError('conflict', 'cancelled: the request that asked for this ended before the turn did')
 
 /** Held by a person, or stopped by one: a peer deliberately not running (§4, §7.2). */
 interface Parked {
@@ -512,6 +539,9 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
   const parked = new Map<PeerId, Parked>()
   /** Peers a hold, stop, release or start is moving right now: a second one waits its turn by being refused. */
   const moving = new Set<PeerId>()
+  /** The move each peer is in the middle of, so `stop()` can end the ones still waiting for a turn. */
+  const aborts = new Map<PeerId, AbortController>()
+  const inflight = new Set<Promise<void>>()
   let restored = false
 
   const profileOf = (peerId: PeerId): PeerProfile => {
@@ -552,6 +582,33 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     }
   }
 
+  /**
+   * Run a hold or a stop as the one move the peer is in. The request's own signal
+   * (its connection closing) and the supervisor's (`stop()`) both abort it.
+   */
+  const move = async <T>(peerId: PeerId, external: AbortSignal | undefined, run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    begin(peerId)
+    const controller = new AbortController()
+    const relay = (): void => controller.abort()
+    if (external?.aborted === true) controller.abort()
+    else external?.addEventListener('abort', relay, { once: true })
+    aborts.set(peerId, controller)
+    const running = run(controller.signal)
+    const settled = running.then(
+      () => undefined,
+      () => undefined,
+    )
+    inflight.add(settled)
+    try {
+      return await running
+    } finally {
+      external?.removeEventListener('abort', relay)
+      aborts.delete(peerId)
+      moving.delete(peerId)
+      inflight.delete(settled)
+    }
+  }
+
   const begin = (peerId: PeerId): void => {
     if (moving.has(peerId)) {
       throw fleetError('conflict', `peer ${String(peerId)} is already being held, stopped, released or started`, {
@@ -569,7 +626,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
   const park = async (
     peer: PeerProfile,
     kind: 'held' | 'stopped',
-    options: { readonly now?: boolean; readonly by: Actor },
+    options: { readonly now?: boolean; readonly by: Actor; readonly signal?: AbortSignal },
   ): Promise<ProviderSessionRef | undefined> => {
     const running = sessions.get(peer.id)
     let ref: ProviderSessionRef | undefined
@@ -581,7 +638,14 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     } else {
       sessions.delete(peer.id)
       if (options.now === true) await running.session.interrupt().catch((error: unknown) => onError(peer.id, error))
-      await running.session.untilBoundary()
+      try {
+        await untilOrAbort(running.session.untilBoundary(), options.signal)
+      } catch (thrown) {
+        // Nobody is waiting for the hold any more: the session was never stopped,
+        // so it goes back to running exactly as it was.
+        sessions.set(peer.id, running)
+        throw thrown
+      }
       // Read after the boundary: a purge on the way to it replaces the session.
       ref = running.session.handle.sessionRef
       await running.session.stop().catch((error: unknown) => onError(peer.id, error))
@@ -741,6 +805,11 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     },
 
     async stop() {
+      // A hold still waiting for a turn would leave its session outside the map, so
+      // nothing below would stop it and the pump would never end: end the waits
+      // first, and let each put its session back.
+      for (const controller of aborts.values()) controller.abort()
+      await Promise.all([...inflight])
       const running = [...sessions.values()]
       sessions.clear()
       workdirs.clear()
@@ -773,13 +842,10 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
         })
       }
       if (was?.kind === 'held' && was.ref !== undefined) return holdAnswer(peer, provider, was.ref)
-      begin(peerId)
-      try {
-        const ref = await park(peer, 'held', options)
-        return await holdAnswer(peer, provider, ref as ProviderSessionRef)
-      } finally {
-        moving.delete(peerId)
-      }
+      return move(peerId, options.signal, async (signal) => {
+        const ref = await park(peer, 'held', { ...options, signal })
+        return holdAnswer(peer, provider, ref as ProviderSessionRef)
+      })
     },
 
     async release(peerId) {
@@ -803,13 +869,10 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
         })
       }
       if (was?.kind === 'stopped') return { peerId, ...(was.ref === undefined ? {} : { sessionRef: was.ref }) }
-      begin(peerId)
-      try {
-        const ref = await park(peer, 'stopped', options)
+      return move(peerId, options.signal, async (signal) => {
+        const ref = await park(peer, 'stopped', { ...options, signal })
         return { peerId, ...(ref === undefined ? {} : { sessionRef: ref }) }
-      } finally {
-        moving.delete(peerId)
-      }
+      })
     },
 
     async startPeer(peerId) {

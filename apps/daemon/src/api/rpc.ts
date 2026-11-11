@@ -61,7 +61,7 @@ export const decodeRequest = (line: string): DaemonRequest => {
  * invalid"; `?? {}` is what makes an absent `params` the same request as `{}` for
  * the methods that take nothing.
  */
-export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<unknown> => {
+export const dispatch = async (api: DaemonApi, request: DaemonRequest, signal?: AbortSignal): Promise<unknown> => {
   const params = request.params ?? {}
   switch (request.method) {
     case 'up':
@@ -95,11 +95,11 @@ export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<
     case 'builds':
       return api.builds(decode(daemonParamsFor('builds'), params))
     case 'peer.hold':
-      return api.peerHold(decode(daemonParamsFor('peer.hold'), params))
+      return api.peerHold(decode(daemonParamsFor('peer.hold'), params), signal)
     case 'peer.release':
       return api.peerRelease(decode(daemonParamsFor('peer.release'), params))
     case 'peer.stop':
-      return api.peerStop(decode(daemonParamsFor('peer.stop'), params))
+      return api.peerStop(decode(daemonParamsFor('peer.stop'), params), signal)
     case 'peer.start':
       return api.peerStart(decode(daemonParamsFor('peer.start'), params))
   }
@@ -114,12 +114,12 @@ export const dispatch = async (api: DaemonApi, request: DaemonRequest): Promise<
  * with several requests in flight matches on it, and `daemonRequest` decoded the
  * envelope before any params failed.
  */
-export const handleLine = async (api: DaemonApi, line: string): Promise<DaemonResponse> => {
+export const handleLine = async (api: DaemonApi, line: string, signal?: AbortSignal): Promise<DaemonResponse> => {
   let id: string | undefined
   try {
     const request = decodeRequest(line)
     id = request.id
-    return { ...(id === undefined ? {} : { id }), ok: true, result: await dispatch(api, request) }
+    return { ...(id === undefined ? {} : { id }), ok: true, result: await dispatch(api, request, signal) }
   } catch (thrown) {
     const error = toFleetError(thrown, 'internal')
     return { ...(id === undefined ? {} : { id }), ok: false, error: errorBody(error) }
