@@ -119,6 +119,8 @@ export const daemonMethods = [
   'peer.release',
   'peer.stop',
   'peer.start',
+  // watch-and-attach §7: stop the running turn and stay headless.
+  'peer.interrupt',
 ] as const
 export type DaemonMethod = (typeof daemonMethods)[number]
 
@@ -210,6 +212,11 @@ export interface DaemonStatus {
    */
   readonly protocolVersion: number
   /**
+   * The fraction of a model's window at which a peer self-purges (§8): the watch marks a
+   * row at or past it, so the number a person watches is the one the fleet acts on.
+   */
+  readonly purgeContextRatio: number
+  /**
    * Things the fleet started despite, in the user's words (TASK-12). The fleet is
    * up — a warning is not a refusal — but the profile asked for something the
    * provider cannot honour, and silence would let it look honoured. Omitted when
@@ -226,6 +233,7 @@ export const daemonStatus = (): Schema<DaemonStatus> =>
     socketPath: string({ minLength: 1, maxLength: 500 }),
     storePath: string({ minLength: 1, maxLength: 500 }),
     protocolVersion: positiveInt(),
+    purgeContextRatio: number({ min: 0, max: 1 }),
     warnings: optional(array(string({ minLength: 1, maxLength: 500 }), { maxItems: 50 })),
   })
 
@@ -501,6 +509,7 @@ export interface DaemonParams {
   readonly 'peer.release': PeerParams
   readonly 'peer.stop': PeerStopParams
   readonly 'peer.start': PeerParams
+  readonly 'peer.interrupt': PeerParams
 }
 
 export type DaemonParamsOf<M extends DaemonMethod> = DaemonParams[M]
@@ -526,6 +535,7 @@ const paramsSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonParamsOf
   'peer.release': peerParams,
   'peer.stop': peerStopParams,
   'peer.start': peerParams,
+  'peer.interrupt': peerParams,
 }
 
 /** The schema for one method's params; what both the daemon and the CLI validate against. */
@@ -724,6 +734,7 @@ export interface DaemonResults {
   readonly 'peer.hold': PeerHoldResult
   readonly 'peer.release': PeerResumeResult
   readonly 'peer.stop': PeerStopResult
+  readonly 'peer.interrupt': PeerInterruptResult
   readonly 'peer.start': PeerResumeResult
 }
 
@@ -778,6 +789,19 @@ export interface PeerStopResult {
 export const peerStopResult = (): Schema<PeerStopResult> =>
   objectAs<PeerStopResult>()({ peerId: peerId(), sessionRef: optional(providerSessionRef()) })
 
+/**
+ * `peer.interrupt`: whether there was a turn to stop. A peer with no running
+ * session, or none mid-turn, is `interrupted: false` — an answer, not an error,
+ * because the person asked for the peer to be at rest and it is.
+ */
+export interface PeerInterruptResult {
+  readonly peerId: PeerId
+  readonly interrupted: boolean
+}
+
+export const peerInterruptResult = (): Schema<PeerInterruptResult> =>
+  objectAs<PeerInterruptResult>()({ peerId: peerId(), interrupted: boolean() })
+
 export type DaemonResultOf<M extends DaemonMethod> = DaemonResults[M]
 
 const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[M]> } = {
@@ -797,6 +821,7 @@ const resultSchemas: { readonly [M in DaemonMethod]: () => Schema<DaemonResults[
   'peer.hold': peerHoldResult,
   'peer.release': peerResumeResult,
   'peer.stop': peerStopResult,
+  'peer.interrupt': peerInterruptResult,
   'peer.start': peerResumeResult,
 }
 
@@ -864,6 +889,8 @@ export interface DaemonApi {
   peerRelease(params: PeerParams): Promise<PeerResumeResult>
   /** Stop one peer, with nobody holding it (§7.2). */
   peerStop(params: PeerStopParams, signal?: AbortSignal): Promise<PeerStopResult>
+  /** Stop the turn a peer is running and leave its session in place (§7). */
+  peerInterrupt(params: PeerParams): Promise<PeerInterruptResult>
   /** Start one stopped peer, from its ref when it has one (§7.2). */
   peerStart(params: PeerParams): Promise<PeerResumeResult>
 }

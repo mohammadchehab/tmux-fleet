@@ -19,7 +19,7 @@ pnpm fleet up me        # starts fleetd
 
 # In another terminal, see what the fleet is doing
 pnpm fleet ls           # list peers and their Work
-pnpm fleet-view me      # tmux dashboard of all peers
+pnpm fleet watch me     # live: who is doing what, what waits on you, take a peer over
 pnpm fleet-board me     # web board of Work items at http://127.0.0.1:7777
 ```
 

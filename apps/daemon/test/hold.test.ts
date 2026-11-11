@@ -550,3 +550,27 @@ test('a display that fails, and a provider with no display, leave the session an
     await f.supervisor.stop()
   }
 })
+
+test('interrupt stops a running turn and leaves the session in place; at rest or with no session it says there was nothing to stop', async () => {
+  const fake = fakeProvider()
+  const f = await fleet(fake)
+  await f.supervisor.start()
+  await settle()
+  const first = sessionOf(fake, engineer)
+
+  assert.equal(await f.supervisor.interrupt(engineer), false, 'idle: nothing to stop')
+  assert.ok(!fake.calls.includes(`interrupt:${first.sessionId}`))
+
+  fake.startTurn(first.sessionId)
+  await settle()
+  assert.equal(await f.supervisor.interrupt(engineer), true)
+  assert.ok(fake.calls.includes(`interrupt:${first.sessionId}`), 'the provider was asked to stop the turn')
+  assert.ok(f.supervisor.running().includes(engineer), 'and the session is still the fleet’s')
+  assert.ok(!fake.calls.includes(`stop:${first.sessionId}`))
+
+  fake.endTurn(first.sessionId, 'interrupted')
+  await settle()
+  assert.equal(await f.supervisor.interrupt(engineer), false, 'the turn ended: nothing left to stop')
+  await f.supervisor.stop()
+  assert.equal(await f.supervisor.interrupt(engineer), false, 'no running session: nothing to stop')
+})

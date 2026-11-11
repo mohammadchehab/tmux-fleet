@@ -25,7 +25,7 @@ const status = {
   pid: 4242,
   startedAt: '2026-11-10T10:00:00.000Z',
   socketPath: '/tmp/fleetd.sock',
-  storePath: '/tmp/store.sqlite', protocolVersion: 1,
+  storePath: '/tmp/store.sqlite', protocolVersion: 2, purgeContextRatio: 0.6,
 }
 
 /** A DaemonApi that records what it was asked and answers with fixed rows. */
@@ -132,6 +132,10 @@ const api = (): DaemonApi & { readonly calls: readonly string[] } => {
       calls.push(`peer.start:${input.peerId}`)
       return { peerId: input.peerId, resumed: false, reason: 'no session to resume' }
     },
+    async peerInterrupt(input) {
+      calls.push(`peer.interrupt:${input.peerId}`)
+      return { peerId: input.peerId, interrupted: true }
+    },
     async builds(input) {
       calls.push(`builds:${input.task}`)
       return {
@@ -158,6 +162,13 @@ test('send passes its params through, decoded', async () => {
     params: { to: 'engineer-1' as PeerId, kind: 'info', body: 'hello', briefVersion: 3 },
   })
   assert.deepEqual(subject.calls, ['send:engineer-1:info:3'])
+})
+
+test('peer.interrupt takes a peer and nothing else, and answers whether there was a turn to stop', async () => {
+  const subject = api()
+  assert.deepEqual(await dispatch(subject, { method: 'peer.interrupt', params: { peerId: 'engineer-1' } }), { peerId: 'engineer-1', interrupted: true })
+  assert.deepEqual(subject.calls, ['peer.interrupt:engineer-1'])
+  await assert.rejects(dispatch(subject, { method: 'peer.interrupt', params: { peerId: 'engineer-1', now: true } }), /now/)
 })
 
 test('usage decodes its report strictly and a bad field is named', async () => {

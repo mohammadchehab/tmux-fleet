@@ -102,6 +102,8 @@ export const dispatch = async (api: DaemonApi, request: DaemonRequest, signal?: 
       return api.peerStop(decode(daemonParamsFor('peer.stop'), params), signal)
     case 'peer.start':
       return api.peerStart(decode(daemonParamsFor('peer.start'), params))
+    case 'peer.interrupt':
+      return api.peerInterrupt(decode(daemonParamsFor('peer.interrupt'), params))
   }
 }
 

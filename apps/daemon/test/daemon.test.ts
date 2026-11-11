@@ -125,6 +125,9 @@ const fakeSupervisor = (
     async stopPeer() {
       throw new Error('this fake does not stop one peer')
     },
+    async interrupt() {
+      return false
+    },
     async startPeer() {
       throw new Error('this fake does not start one peer')
     },

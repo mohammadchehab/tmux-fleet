@@ -54,7 +54,7 @@ import type {
 import { daemonProtocolVersion } from '@fleet/foundation-contracts'
 import type { EventStore } from '@fleet/foundation-store'
 import type { BuildLedger } from '@fleet/orchestration-ledger'
-import { effortWarnings, modelFor, type Profile, type ProfileProvider, type PeerProfile } from '../config/profile.ts'
+import { effortWarnings, modelFor, purgeLimitsOf, type Profile, type ProfileProvider, type PeerProfile } from '../config/profile.ts'
 import type { Scheduler } from '@fleet/orchestration-routines'
 import type { Supervisor } from '../execution/sessions.ts'
 import { catchUpWork } from '../execution/work-sync.ts'
@@ -140,6 +140,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     socketPath: deps.paths.socketPath,
     storePath: deps.paths.storePath,
     protocolVersion: daemonProtocolVersion,
+    purgeContextRatio: purgeLimitsOf(deps.profile).contextRatio,
     ...(warnings.length === 0 ? {} : { warnings }),
   }
   let running = false
@@ -486,6 +487,11 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
         by: ACTOR,
         ...(signal === undefined ? {} : { signal }),
       })
+    },
+
+    async peerInterrupt(input) {
+      await requirePeer(input.peerId)
+      return { peerId: input.peerId, interrupted: await deps.supervisor.interrupt(input.peerId) }
     },
 
     async peerStart(input) {

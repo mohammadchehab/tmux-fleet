@@ -15,8 +15,8 @@ import {
 
 const decode = (value: unknown) => parseStrict(watchFrame(), value)
 
-test('the protocol starts at 1 and rides the daemon status', () => {
-  assert.equal(daemonProtocolVersion, 1)
+test('the protocol version rides the daemon status, with the purge ratio the watch marks rows against', () => {
+  assert.equal(daemonProtocolVersion, 2, 'bumped for peer.interrupt and purgeContextRatio; the next change to a frame or an RPC bumps it again')
   const status = {
     profile: 'p',
     pid: 1,
@@ -24,10 +24,12 @@ test('the protocol starts at 1 and rides the daemon status', () => {
     socketPath: '/s',
     storePath: '/t',
     protocolVersion: daemonProtocolVersion,
+    purgeContextRatio: 0.6,
   }
   assert.deepEqual(parseStrict(daemonStatus(), status), status)
   const { protocolVersion: _gone, ...old } = status
   assert.throws(() => parseStrict(daemonStatus(), old), SchemaError, 'a daemon that does not say its protocol is not one a client can trust')
+  assert.throws(() => parseStrict(daemonStatus(), { ...status, purgeContextRatio: 1.5 }), SchemaError)
 })
 
 test('every frame kind round-trips, with and without the request id', () => {
@@ -38,7 +40,7 @@ test('every frame kind round-trips, with and without the request id', () => {
     { stream: 'row', seq: 6, at: '2026-11-11T08:00:03.000Z', row: { kind: 'state', peerId: 'engineer-1', state: 'idle' } },
     { stream: 'row', seq: 7, at: '2026-11-11T08:00:03.000Z', row: { kind: 'mail', phase: 'sent', msgId: 'msg_0123456789abcdef', to: 'engineer-1', from: 'user' } },
     { stream: 'row', seq: 8, at: '2026-11-11T08:00:03.000Z', row: { kind: 'decision', phase: 'requested', decisionId: 'dec_0123456789abcdef', question: 'merge?' } },
-    { id: '7', stream: 'ready', seq: 8, from: 1, protocolVersion: 1 },
+    { id: '7', stream: 'ready', seq: 8, from: 1, protocolVersion: 2 },
     { id: '7', stream: 'end', reason: 'dropped' },
   ]
   for (const frame of frames) assert.deepEqual(decode(frame), frame)

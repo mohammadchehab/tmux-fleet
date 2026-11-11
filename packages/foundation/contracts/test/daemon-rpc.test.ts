@@ -88,6 +88,7 @@ const validParams: { readonly [M in DaemonMethod]: readonly unknown[] } = {
   'peer.release': [{ peerId: 'peer-1' }],
   'peer.stop': [{ peerId: 'peer-1' }, { peerId: 'peer-1', now: false }],
   'peer.start': [{ peerId: 'peer-1' }],
+  'peer.interrupt': [{ peerId: 'peer-1' }],
 }
 
 test('the method set is the one a client builds against, and the usage report a hook sends', () => {
@@ -109,6 +110,7 @@ test('the method set is the one a client builds against, and the usage report a 
     'peer.release',
     'peer.stop',
     'peer.start',
+    'peer.interrupt',
   ])
 })
 
@@ -212,7 +214,7 @@ test('a response without `ok` is neither half', () => {
 test('a result is the method\'s own, so an ok payload is not silently another method\'s', () => {
   // The table is exhaustive by type; this is the runtime half — `ls` does not
   // accept `up`'s answer, so a client that mixed two methods up is told.
-  const asStatusOnly = { profile: 'p', pid: 1, startedAt: '2026-11-10T10:00:00.000Z', socketPath: '/s', storePath: '/t', protocolVersion: 1 }
+  const asStatusOnly = { profile: 'p', pid: 1, startedAt: '2026-11-10T10:00:00.000Z', socketPath: '/s', storePath: '/t', protocolVersion: 2, purgeContextRatio: 0.6 }
   assert.equal(decodeStrict(daemonResultFor('ls'), asStatusOnly).ok, false)
   assert.equal(decodeStrict(daemonResultFor('up'), asStatusOnly).ok, true)
 })
@@ -222,7 +224,7 @@ test('the status is what `up` and `ls` both report', () => {
     profile: 'acme',
     pid: 4242,
     startedAt: '2026-11-10T09:00:00.000Z',
-    protocolVersion: 1,
+    protocolVersion: 2, purgeContextRatio: 0.6,
     socketPath: '/home/u/.fleet/acme/daemon/fleetd.sock',
     storePath: '/home/u/.fleet/acme/store/fleet.db',
   }

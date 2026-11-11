@@ -131,7 +131,7 @@ executable and arguments from a new optional `Provider.attachCommand(ref, spec)`
 provider package. Only the daemon can build the env (provider endpoints and keys come from the profile through
 `compose.ts`), and a client may not import the daemon, so the daemon hands it over. When the profile sets a key, that
 key crosses the socket to the attach client. The socket is the user's own and the client runs as the same user who owns
-the key; the daemon must create the socket readable by its owner only. `peer.hold`
+the key; the daemon must create the socket readable by its owner only. Peers run as the same user, so the socket is not a boundary between a person and a peer, and neither is a token or a `FLEET_PEER` check, since a peer can read any file the person can. The real boundary is a separate uid or a sandbox, outside this design. `peer.hold`
 on a held peer returns the same answer, so reopening a session whose terminal died is the same call.
 
 A hold waits for the turn boundary, which can be never (a turn parked on an approval nobody answers). It is therefore

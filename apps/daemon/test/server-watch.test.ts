@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import type { PeerId } from '@fleet/foundation-core'
-import type { DaemonApi, WatchFrame } from '@fleet/foundation-contracts'
+import { daemonProtocolVersion, type DaemonApi, type WatchFrame } from '@fleet/foundation-contracts'
 
 import { createDisplayFeed } from '../src/execution/display.ts'
 import { createDaemonServer } from '../src/api/server.ts'
@@ -74,7 +74,7 @@ test('a watch replays the buffer under the request id, says ready, then streams 
     socket.write(`${JSON.stringify({ id: 'w1', method: 'peer.watch', params: {} })}\n`)
     await read.until(() => read.out.some((frame) => frame['stream'] === 'ready'))
     assert.deepEqual(read.out.map((frame) => [frame['id'], frame['stream']]), [['w1', 'line'], ['w1', 'ready']])
-    assert.equal(read.out[1]?.['protocolVersion'], 1)
+    assert.equal(read.out[1]?.['protocolVersion'], daemonProtocolVersion)
 
     feed.push(a, { kind: 'turn', phase: 'started' })
     feed.row({ kind: 'state', peerId: a, state: 'working' })

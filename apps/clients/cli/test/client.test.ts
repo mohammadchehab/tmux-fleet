@@ -16,7 +16,7 @@ const status = {
   pid: 4242,
   startedAt: now,
   socketPath: '/tmp/fleetd.sock',
-  storePath: '/tmp/store.sqlite', protocolVersion: 1,
+  storePath: '/tmp/store.sqlite', protocolVersion: 2, purgeContextRatio: 0.6,
 }
 
 const peer = {
