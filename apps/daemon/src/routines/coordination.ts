@@ -214,7 +214,6 @@ export const coordinationFor = async (wiring: CoordinationWiring): Promise<Coord
           coordination,
           directory,
           wrap,
-          namespace: wiring.coord.engagement,
           team: wiring.coord.team,
           self: user,
           clock: wiring.clock,

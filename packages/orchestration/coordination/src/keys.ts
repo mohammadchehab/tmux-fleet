@@ -42,8 +42,6 @@ export interface KeyReconcileOptions {
   readonly coordination: Coordination
   readonly directory: TeamDirectory
   readonly wrap: KeyWrap
-  /** The engagement code name: `eng-07`. */
-  readonly namespace: string
   /** `<org>/<slug>`: the engagement's GitHub team. */
   readonly team: string
   /** This fleet's own login. */
@@ -87,7 +85,7 @@ export const reconcileKey = async (options: KeyReconcileOptions): Promise<KeyOut
     return { kind: 'refused', reason: `${options.self} is not on ${options.team}, so this fleet does not decide its key` }
   }
 
-  const prefix = `${options.namespace}/rotate/`
+  const prefix = 'rotate/'
   const rotations = rotationsOf(await options.coordination.refs(prefix), prefix)
   const [current] = rotations
 
