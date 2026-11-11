@@ -186,3 +186,171 @@ test('the display carries the peer’s words, its tools and its turn boundaries 
   }
   assert.deepEqual(contract, ['turn.started', 'turn.ended'], 'the deltas added no contract events')
 })
+
+// ---- TASK-103: a result that consumes more than one turn ------------------------------------------------------
+
+type Gate = { open(): void; opened: Promise<void> }
+const gate = (): Gate => {
+  let open!: () => void
+  const opened = new Promise<void>((resolve) => {
+    open = resolve
+  })
+  return { open, opened }
+}
+
+/**
+ * A scripted CLI that can see what the adapter sends: `script` gets a reader for the user messages the adapter
+ * pushed (the brief first), so a `result` can echo the uuids it really sent, as the real CLI does.
+ */
+const cliThat = (script: (next: () => Promise<{ uuid?: string }>) => AsyncGenerator<unknown>): QueryFactory =>
+  ((args: { prompt: AsyncIterable<{ uuid?: string }> }) => {
+    const reader = args.prompt[Symbol.asyncIterator]()
+    return {
+      [Symbol.asyncIterator]: () => script(async () => (await reader.next()).value as { uuid?: string }),
+      close: () => undefined,
+      interrupt: async () => undefined,
+      setModel: async () => undefined,
+      setPermissionMode: async () => undefined,
+      getContextUsage: async () => ({}),
+    }
+  }) as unknown as QueryFactory
+
+const INIT = { type: 'system', subtype: 'init', session_id: 'sess_fold', model: 'claude-sonnet-5-5', permissionMode: 'default' }
+const nudge = { text: 'one more thing', kind: 'nudge', briefVersion: 1 } as never
+const settle = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Collect turn events until `until` says stop or `ms` passes; the session is stopped after. */
+const turnEvents = async (
+  provider: ClaudeProvider,
+  handle: Awaited<ReturnType<ClaudeProvider['start']>>,
+  until: (seen: { type: string; turnId: string; reason?: string }[]) => boolean,
+  ms: number,
+): Promise<{ type: string; turnId: string; reason?: string }[]> => {
+  const seen: { type: string; turnId: string; reason?: string }[] = []
+  const stop = setTimeout(() => void provider.stop(handle), ms)
+  try {
+    for await (const event of provider.events(handle)) {
+      if (event.type === 'turn.started') seen.push({ type: event.type, turnId: event.turnId })
+      if (event.type === 'turn.ended') seen.push({ type: event.type, turnId: event.turnId, reason: event.reason })
+      if (until(seen)) break
+    }
+  } finally {
+    clearTimeout(stop)
+    await provider.stop(handle).catch(() => undefined)
+  }
+  return seen
+}
+
+const endedIds = (seen: { type: string; turnId: string }[]): string[] =>
+  seen.filter((event) => event.type === 'turn.ended').map((event) => event.turnId)
+
+test('a result that names the turns it consumed ends every one of them, with the result’s own reason (TASK-103)', async () => {
+  for (const failed of [false, true]) {
+    const queued = gate()
+    const provider = new ClaudeProvider({
+      initTimeoutMs: 5_000,
+      foldQuietMs: 20,
+      query: cliThat(async function* (next) {
+        const brief = await next()
+        yield INIT
+        const second = await next()
+        yield { type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed, result: 'both', user_message_uuids: [brief.uuid, second.uuid], queued_turn_count: 0 }
+        queued.open()
+        await new Promise(() => undefined)
+      }),
+    })
+    const holding = setInterval(() => undefined, 1_000)
+    try {
+      const handle = await provider.start(spec())
+      await provider.send(handle, nudge)
+      const seen = await turnEvents(provider, handle, (events) => endedIds(events).length === 2, 3_000)
+      const started = seen.filter((event) => event.type === 'turn.started').map((event) => event.turnId)
+      assert.deepEqual(endedIds(seen).sort(), [...started].sort(), 'every turn that started also ended')
+      assert.ok(seen.filter((event) => event.type === 'turn.ended').every((event) => event.reason === (failed ? 'failed' : 'completed')), 'both end the way the result did')
+    } finally {
+      clearInterval(holding)
+    }
+  }
+})
+
+test('a result that leaves a queued send behind ends only the turns it names, however long the next result takes (TASK-103)', async () => {
+  const provider = new ClaudeProvider({
+    initTimeoutMs: 5_000,
+    foldQuietMs: 30,
+    query: cliThat(async function* (next) {
+      const brief = await next()
+      yield INIT
+      const second = await next()
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'a', user_message_uuids: [brief.uuid], queued_turn_count: 1 }
+      // Far longer than foldQuietMs: compaction, a retry, a hook — the second turn is real and silent.
+      await settle(250)
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'b', user_message_uuids: [second.uuid], queued_turn_count: 0 }
+      await new Promise(() => undefined)
+    }),
+  })
+  const holding = setInterval(() => undefined, 1_000)
+  try {
+    const handle = await provider.start(spec())
+    const second = await provider.send(handle, nudge)
+    const seen = await turnEvents(provider, handle, (events) => endedIds(events).length === 2, 3_000)
+    assert.equal(endedIds(seen).length, 2)
+    assert.equal(endedIds(seen)[1], second, 'the second turn ended on its own result, not on a timer')
+  } finally {
+    clearInterval(holding)
+  }
+})
+
+test('with no uuids to go by and nothing queued, the turns still open end after the quiet period — as the result ended (TASK-103)', async () => {
+  const provider = new ClaudeProvider({
+    initTimeoutMs: 5_000,
+    foldQuietMs: 40,
+    query: cliThat(async function* (next) {
+      await next()
+      yield INIT
+      await next()
+      yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'overloaded', queued_turn_count: 0 }
+      await new Promise(() => undefined)
+    }),
+  })
+  const holding = setInterval(() => undefined, 1_000)
+  try {
+    const handle = await provider.start(spec())
+    await provider.send(handle, nudge)
+    const seen = await turnEvents(provider, handle, (events) => endedIds(events).length === 2, 3_000)
+    assert.equal(endedIds(seen).length, 2)
+    assert.ok(seen.filter((event) => event.type === 'turn.ended').every((event) => event.reason === 'failed'), 'an error result is not reported as success')
+  } finally {
+    clearInterval(holding)
+  }
+})
+
+test('a turn sent inside the quiet period is its own: the fallback does not end it (TASK-103)', async () => {
+  const release = gate()
+  const provider = new ClaudeProvider({
+    initTimeoutMs: 5_000,
+    foldQuietMs: 60,
+    query: cliThat(async function* (next) {
+      await next()
+      yield INIT
+      await next()
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'a', queued_turn_count: 0 }
+      await release.opened
+      await new Promise(() => undefined)
+    }),
+  })
+  const holding = setInterval(() => undefined, 1_000)
+  try {
+    const handle = await provider.start(spec())
+    await provider.send(handle, nudge)
+    const third = (async () => {
+      await settle(20)
+      return provider.send(handle, nudge)
+    })()
+    const seen = await turnEvents(provider, handle, () => false, 250)
+    const last = await third
+    assert.ok(!endedIds(seen).includes(last), 'the turn sent inside the window is still open')
+  } finally {
+    release.open()
+    clearInterval(holding)
+  }
+})

@@ -30,6 +30,8 @@
  *   `default`, `acceptEdits` or `plan`.
  */
 
+import { randomUUID } from 'node:crypto'
+
 import { query, type Options, type PermissionResult, type Query } from '@anthropic-ai/claude-agent-sdk'
 import {
   fleetError,
@@ -60,7 +62,7 @@ import type {
 } from '@fleet/runtime-provider-sdk'
 
 import { buildChildEnv, recordedEndpoint } from './env.ts'
-import { isContractEvent, type AdapterEvent } from './events.ts'
+import { isContractEvent, type AdapterEvent, type TurnEndReason } from './events.ts'
 import { mapMessage, questionAnswers, readQuestions, summariseToolUse, type TurnState } from './messages.ts'
 import { PendingRequests } from './pending.ts'
 import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy } from './policy.ts'
@@ -87,6 +89,15 @@ export interface ClaudeSessionConfig {
   readonly settingSources: readonly ('user' | 'project' | 'local')[]
   /** How long `start()` waits for `init` before calling the session failed. */
   readonly initTimeoutMs: number
+  /**
+   * The fallback for a CLI that does not name the turns a `result` consumed
+   * (`user_message_uuids` absent). The CLI runs a message queued behind a running
+   * turn *inside* that turn and answers both with one `result`; a current CLI
+   * says which messages it consumed and nothing is guessed. Only when it says
+   * nothing, and also reports no queued send (`queued_turn_count` 0), are the
+   * turns still in flight called folded after this much silence.
+   */
+  readonly foldQuietMs: number
   readonly clock: Clock
   /**
    * The SDK entry point, `query` itself unless a test sets another. A session
@@ -107,6 +118,7 @@ export const defaultSessionConfig: ClaudeSessionConfig = {
   usageCost: true,
   settingSources: [],
   initTimeoutMs: 60_000,
+  foldQuietMs: 2_000,
   clock: systemClock,
 }
 
@@ -205,6 +217,8 @@ export class ClaudeSession {
   #observedMode: string | undefined
   #state: PeerState = 'starting'
   #inflight: TurnId[] = []
+  /** The uuid each in-flight turn's user message carries, so a `result` can name the turns it consumed (TASK-103). */
+  readonly #uuids = new Map<TurnId, Uuid>()
   #turnState: TurnState = { interrupted: false }
   #lastContextTokens: number | undefined
   #lastCostUsd: number | undefined
@@ -257,7 +271,7 @@ export class ClaudeSession {
   async start(turn: Turn): Promise<ClaudeSession> {
     this.#emit({ type: 'turn.started', turnId: this.#openingTurn, at: this.#now() })
     // The CLI says nothing until the first user message, so the brief goes now.
-    this.#input.push(turn.text)
+    this.#input.push(turn.text, this.#mint(this.#openingTurn))
 
     const init = await this.#whenStarted()
     this.#state = 'idle'
@@ -284,12 +298,14 @@ export class ClaudeSession {
 
   async send(turn: Turn): Promise<TurnId> {
     this.#assertLive()
+    // A send is a turn in flight: a fallback timer armed for the turns before it must not end it.
+    this.#disarmFold()
     const turnId = newTurnId()
     this.#inflight.push(turnId)
     this.#turnState = { ...this.#turnState, interrupted: false }
     this.#state = 'working'
     this.#emit({ type: 'turn.started', turnId, at: this.#now() })
-    this.#input.push(turn.text)
+    this.#input.push(turn.text, this.#mint(turnId))
     return turnId
   }
 
@@ -315,6 +331,7 @@ export class ClaudeSession {
 
   async stop(): Promise<void> {
     if (this.#state === 'ended') return
+    this.#disarmFold()
     this.#state = 'ended'
     const { questions, approvals } = this.#pending.abandon('ended')
     for (const abandoned of questions) {
@@ -503,7 +520,61 @@ export class ClaudeSession {
     }
   }
 
+  #mint(turnId: TurnId): Uuid {
+    const uuid = randomUUID()
+    this.#uuids.set(turnId, uuid)
+    return uuid
+  }
+
+  /**
+   * The in-flight turns this `result` consumed, by the uuids the CLI echoes in
+   * `user_message_uuids` — the message that started the turn and any queued one
+   * it folded in between tool rounds (TASK-103). Empty when the CLI names none,
+   * which leaves the caller on the first-in-first-out answer it always had.
+   */
+  #consumedBy(message: unknown): TurnId[] {
+    const named = (message as { user_message_uuids?: unknown }).user_message_uuids
+    if (!Array.isArray(named)) return []
+    return this.#inflight.filter((id) => {
+      const uuid = this.#uuids.get(id)
+      return uuid !== undefined && named.includes(uuid)
+    })
+  }
+
+  /** Armed only for a `result` that names no consumed message and reports no queued send; see `foldQuietMs`. */
+  #foldTimer: ReturnType<typeof setTimeout> | undefined
+
+  #disarmFold(): void {
+    if (this.#foldTimer !== undefined) clearTimeout(this.#foldTimer)
+    this.#foldTimer = undefined
+  }
+
+  /**
+   * The ids are the ones in flight *now*, snapshotted: a turn sent after this
+   * arms is its own, and `send()` disarms besides. The turns end the way the
+   * result that left them did — an error or an interrupt is not 'completed'.
+   */
+  #armFold(reason: TurnEndReason, error: string | undefined): void {
+    this.#disarmFold()
+    const folded = [...this.#inflight]
+    if (folded.length === 0) return
+    this.#foldTimer = setTimeout(() => {
+      this.#foldTimer = undefined
+      if (!isLive(this.#state)) return
+      const ended = folded.filter((id) => this.#inflight.includes(id))
+      this.#inflight = this.#inflight.filter((id) => !ended.includes(id))
+      this.#turnState = { interrupted: false }
+      this.#state = this.#inflight.length > 0 ? 'working' : 'idle'
+      for (const turnId of ended) {
+        this.#uuids.delete(turnId)
+        this.#emit({ type: 'turn.ended', turnId, at: this.#now(), reason, ...(error === undefined ? {} : { error }) })
+      }
+    }, this.#config.foldQuietMs)
+    this.#foldTimer.unref()
+  }
+
   #onMessage(message: unknown): void {
+    this.#disarmFold()
     const record = message as { type?: unknown; subtype?: unknown; session_id?: unknown }
     this.#lastContextTokens = fallbackTokensFrom((record as { usage?: unknown }).usage) ?? this.#lastContextTokens
     if (record.type === 'result') {
@@ -520,7 +591,9 @@ export class ClaudeSession {
     const delta = textDeltaOf(message)
     if (delta !== undefined) this.#display.push({ kind: 'text', text: delta })
 
-    const turnId = this.#inflight[0]
+    const consumed = record.type === 'result' ? this.#consumedBy(message) : []
+    const turnId = consumed[0] ?? this.#inflight[0]
+    let resultEnd: { reason: TurnEndReason; error: string | undefined } | undefined
     for (const event of mapMessage(message, turnId, this.#turnState, this.#now())) {
       if (event.type === 'session.started') {
         const first = this.#sessionRef === undefined
@@ -540,12 +613,30 @@ export class ClaudeSession {
       }
       if (event.type === 'turn.ended') {
         if (event.reason === 'failed' && event.error !== undefined) this.#lastError = event.error
-        this.#inflight = this.#inflight.filter((id) => id !== event.turnId)
+        const ending = new Set([event.turnId, ...consumed])
+        this.#inflight = this.#inflight.filter((id) => !ending.has(id))
+        for (const id of ending) this.#uuids.delete(id)
         this.#turnState = { interrupted: false }
         this.#state = this.#inflight.length > 0 ? 'working' : 'idle'
+        resultEnd = { reason: event.reason, error: event.error }
+        this.#emit(event)
+        // The other turns this result consumed end the way it did. Each gets its own
+        // `turn.ended`, and `turnSpend()` returns the same `#spent` for all of them.
+        // That does not double-count: the supervisor's `#recordUsage` runs only at a
+        // boundary where its `#openTurns` is empty (`supervisor/src/session.ts`, the
+        // `#openTurns.size > 0` check before it), so a folded group is billed once, at its last.
+        for (const id of consumed) {
+          if (id !== event.turnId) this.#emit({ ...event, turnId: id })
+        }
+        continue
       }
       if (event.type === 'error') this.#lastError = event.message
       this.#emit(event)
+    }
+    // A CLI that names nothing and queues nothing has no result still to come for what is left (see `foldQuietMs`).
+    const unnamed = !Array.isArray((message as { user_message_uuids?: unknown }).user_message_uuids)
+    if (resultEnd !== undefined && unnamed && (message as { queued_turn_count?: unknown }).queued_turn_count === 0) {
+      this.#armFold(resultEnd.reason, resultEnd.error)
     }
   }
 
@@ -712,6 +803,7 @@ export class ClaudeSession {
    */
   #finish(reason: 'exit' | 'crash', error: string | undefined): void {
     if (this.#state === 'ended') return
+    this.#disarmFold()
     this.#state = reason === 'crash' ? 'failed' : 'ended'
     if (error !== undefined) this.#lastError = error
     // Before the events close: `start()` may be waiting on this to read the
@@ -783,16 +875,19 @@ const deferred = <T>(): { promise: Promise<T>; resolve: (value: T) => void } => 
   return { promise, resolve }
 }
 
+/** What the SDK types a message uuid as. */
+type Uuid = ReturnType<typeof randomUUID>
+
 /** The streaming-input queue: `send()` pushes, `stop()` ends, the CLI pulls. */
-type UserMessage = { type: 'user'; message: { role: 'user'; content: string }; parent_tool_use_id: null }
+type UserMessage = { type: 'user'; uuid: Uuid; message: { role: 'user'; content: string }; parent_tool_use_id: null }
 
 class InputQueue implements AsyncIterable<UserMessage> {
   readonly #pending: UserMessage[] = []
   #wake: ((result: IteratorResult<UserMessage>) => void) | undefined
   #ended = false
 
-  push(text: string): void {
-    const message: UserMessage = { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null }
+  push(text: string, uuid: Uuid): void {
+    const message: UserMessage = { type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null }
     const wake = this.#wake
     if (wake !== undefined) {
       this.#wake = undefined
