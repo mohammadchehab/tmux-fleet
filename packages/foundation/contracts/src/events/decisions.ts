@@ -24,6 +24,13 @@ export const toolApprovalKind = 'tool_approval'
 export const toolApprovalOptions = ['allow', 'deny'] as const
 
 /**
+ * The kind of a decision raised for a question a peer is blocked on (§6.1,
+ * TASK-118). Its options are the labels the question offered, and answering it is
+ * a provider `answer()` on the peer's session, not a PM tick.
+ */
+export const peerQuestionKind = 'peer_question'
+
+/**
  * Something needs an answer. When it blocks on the user it is the decision
  * inbox and a "needs your decision" notification (§6.1); a rule that decided
  * by itself uses `decision.answered` with `source: "rule"` and no request.

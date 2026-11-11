@@ -34,10 +34,12 @@ import {
   type DecisionId,
   type PeerId,
   type PeerState,
+  type QuestionId,
   type SessionId,
   type TurnId,
 } from '@fleet/foundation-core'
 import {
+  peerQuestionKind,
   toolApprovalKind,
   toolApprovalOptions,
   type Effort,
@@ -66,6 +68,10 @@ const TOOL_MAX = 64
 const TARGET_MAX = 200
 /** `peer.failed.message`'s own bound: a provider's sentence, cut where the store would refuse it. */
 const FAILURE_MESSAGE_MAX = 1000
+/** `decision.requested.question`'s bound (§3): a peer's question is the peer's own words, cut where the store would refuse it. */
+const QUESTION_MAX = 2_000
+/** `decision.requested.options[]`'s bound: a label the inbox can show and `fleet decide` can take. */
+const OPTION_MAX = 200
 
 /**
  * The one kind of target this fleet stores: the path an edit-family call names.
@@ -190,6 +196,22 @@ interface OpenApproval {
   readonly sessionId: SessionId
 }
 
+/**
+ * A question raised as decisions and not yet answered or closed (TASK-118): one
+ * part per question the peer asked in that one `question.asked`, because the
+ * contract's answer is one label per question in order and `fleet decide`
+ * answers one decision at a time.
+ */
+interface OpenQuestion {
+  readonly questionId: QuestionId
+  readonly turnId: TurnId
+  readonly sessionId: SessionId
+  /** The decision each part is offered as, in the order the parts were asked. */
+  readonly parts: readonly { readonly decisionId: DecisionId; readonly labels: readonly string[] }[]
+  /** The label chosen for each part, by its index. The ask is answered when every part is here. */
+  readonly chosen: Map<number, string>
+}
+
 const hex16 = (text: string): string => createHash('sha256').update(text).digest('hex').slice(0, 16)
 
 /**
@@ -199,6 +221,14 @@ const hex16 = (text: string): string => createHash('sha256').update(text).digest
  */
 const approvalDecisionId = (sessionId: SessionId, requestId: string): DecisionId =>
   `dec_${hex16(`${sessionId}:${requestId}`)}` as DecisionId
+
+/**
+ * The decision one part of a question is raised as, named the same way and for
+ * the same reason as an approval's, with the part's index because one ask can
+ * hold several.
+ */
+const questionDecisionId = (sessionId: SessionId, questionId: QuestionId, part: number): DecisionId =>
+  `dec_${hex16(`${sessionId}:${questionId}:${part}`)}` as DecisionId
 
 const deferred = <T>(): Deferred<T> => {
   let resolve!: (value: T) => void
@@ -258,6 +288,13 @@ export class PeerSession {
    * not overwritten by a close that came after it.
    */
   readonly #approvals = new Map<DecisionId, OpenApproval>()
+  /**
+   * The questions raised as decisions that nobody has answered yet (TASK-118),
+   * by each part's decision. Entries leave as each part is answered, or when the
+   * question dies and its decisions are closed — and a close never overwrites an
+   * answer, for the same reason an approval's does not.
+   */
+  readonly #questions = new Map<DecisionId, { readonly open: OpenQuestion; readonly part: number }>()
   /**
    * Set once the bookkeeping invariant has been recorded, so `run()` reports it
    * instead of recovering into a fresh session that hides it (§8).
@@ -385,6 +422,34 @@ export class PeerSession {
     if (open.sessionId !== sessionIdOf(this.#handle)) return false
     try {
       await this.#ports.provider.respond(this.#handle, open.requestId, decision)
+    } catch (thrown) {
+      if (toFleetError(thrown).code === 'not_found') return false
+      throw thrown
+    }
+    return true
+  }
+
+  /**
+   * Answer a question this peer is blocked on, by one decision it was raised as
+   * (§6.1, TASK-118). `false` when there is nothing to answer: the decision is
+   * not one of this session's, it was answered already, its session is gone, or
+   * the provider no longer holds the question.
+   *
+   * An ask with several parts is answered once, when the last part arrives: the
+   * contract's `QuestionAnswer` is one label per question, in the order they
+   * were asked, and the provider settles the whole ask at once.
+   */
+  async answerQuestion(decisionId: DecisionId, option: string): Promise<boolean> {
+    const entry = this.#questions.get(decisionId)
+    if (entry === undefined) return false
+    const { open, part } = entry
+    this.#questions.delete(decisionId)
+    if (open.sessionId !== sessionIdOf(this.#handle)) return false
+    open.chosen.set(part, option)
+    if (open.chosen.size < open.parts.length) return true
+    const answer = open.parts.map((_, index) => open.chosen.get(index) ?? '')
+    try {
+      await this.#ports.provider.answer(this.#handle, open.questionId, answer)
     } catch (thrown) {
       if (toFleetError(thrown).code === 'not_found') return false
       throw thrown
@@ -655,10 +720,12 @@ export class PeerSession {
           if (owner.turnId === event.turnId) this.#pending.delete(id)
         }
         // An approval its turn outlived was not answered through the fleet, so
-        // its decision would otherwise sit open with nothing behind it.
+        // its decision would otherwise sit open with nothing behind it. A
+        // question's parts are the same fact (TASK-118).
         for (const [decisionId, open] of this.#approvals) {
           if (open.turnId === event.turnId) await this.#closeApproval(decisionId, 'abandoned: the turn ended')
         }
+        await this.#closeQuestionDecisions((open) => open.turnId === event.turnId, 'abandoned: the turn ended')
         // A failed turn carries the one sentence that explains the `failed`
         // state — a CLI's exit reason, the provider's own message — and
         // `peer.state_changed` has nowhere to put it: its `reason` says why the
@@ -685,6 +752,7 @@ export class PeerSession {
       case 'question.asked':
         this.#openingTurnWaitsOnPerson(event.turnId)
         this.#pending.set(event.questionId, { turnId: event.turnId, sessionId })
+        await this.#raiseQuestion(sessionId, event)
         break
       case 'approval.requested':
         this.#openingTurnWaitsOnPerson(event.turnId)
@@ -693,6 +761,10 @@ export class PeerSession {
         break
       case 'question.abandoned':
         this.#pending.delete(event.questionId)
+        await this.#closeQuestionDecisions(
+          (open) => open.questionId === event.questionId,
+          'abandoned: the turn was interrupted or the session stopped',
+        )
         break
       case 'approval.abandoned':
         this.#pending.delete(event.requestId)
@@ -700,6 +772,7 @@ export class PeerSession {
         break
       case 'session.ended':
         await this.#closeApprovals(sessionId, 'abandoned: the session ended')
+        await this.#closeQuestionDecisions((open) => open.sessionId === sessionId, 'abandoned: the session ended')
         // The session is over and everything it owned dies with it: an open
         // turn it will never end, and a question or approval no one can answer
         // any more because the session that asked is gone. A replacement
@@ -761,6 +834,75 @@ export class PeerSession {
         requestId: event.requestId,
       },
     })
+  }
+
+  /**
+   * A question the peer is blocked on, raised as §6.1 decisions a person answers
+   * with `fleet decide` (TASK-118). One part of an ask is one decision, because
+   * the answer is one label per question in order and a person answers decisions
+   * one at a time; the question text is the peer's own words, which is what the
+   * person has to read to choose between the labels.
+   */
+  async #raiseQuestion(sessionId: SessionId, event: Extract<ProviderEvent, { type: 'question.asked' }>): Promise<void> {
+    const { clock, peerId, record } = this.#ports
+    const parts = event.questions.map((question, index) => {
+      const labels = (question.options ?? []).map((option) => bounded(option.label, OPTION_MAX))
+      return {
+        decisionId: questionDecisionId(sessionId, event.questionId, index),
+        labels,
+        question: bounded(`${String(peerId)} asks: ${question.question}`, QUESTION_MAX),
+        inputsHash: hex16(`${sessionId}:${event.questionId}:${index}`),
+      }
+    })
+    const open: OpenQuestion = {
+      questionId: event.questionId,
+      turnId: event.turnId,
+      sessionId,
+      parts: parts.map((part) => ({ decisionId: part.decisionId, labels: part.labels })),
+      chosen: new Map(),
+    }
+    parts.forEach((part, index) => this.#questions.set(part.decisionId, { open, part: index }))
+    for (const part of parts) {
+      await record({
+        type: 'decision.requested',
+        ts: clock.now(),
+        subject: part.decisionId,
+        actor: peerActor(peerId),
+        data: {
+          decisionId: part.decisionId,
+          kind: peerQuestionKind,
+          question: part.question,
+          // A question with no labels offers nothing to choose, so the inbox row
+          // has no options; `AskUserQuestion` always offers them, and a provider
+          // that does not is one this path cannot answer through `fleet decide`.
+          options: [...part.labels],
+          inputsHash: part.inputsHash,
+          routedTo: 'user',
+          peerId,
+          requestId: String(event.questionId),
+        },
+      })
+    }
+  }
+
+  /**
+   * Close the question decisions that answer `which`, because nobody can answer
+   * them any more. A part a person already answered is gone from the map and is
+   * not closed: an answer is never overwritten by a close that came after it.
+   */
+  async #closeQuestionDecisions(which: (open: OpenQuestion) => boolean, why: string): Promise<void> {
+    const { clock, peerId, record } = this.#ports
+    for (const [decisionId, entry] of [...this.#questions]) {
+      if (!which(entry.open)) continue
+      if (!this.#questions.delete(decisionId)) continue
+      await record({
+        type: 'decision.answered',
+        ts: clock.now(),
+        subject: decisionId,
+        actor: peerActor(peerId),
+        data: { decisionId, source: 'rule', text: why, durationMs: 0 },
+      })
+    }
   }
 
   /** Close one approval's decision because nobody can answer it any more; a no-op once answered. */

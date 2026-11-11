@@ -481,6 +481,12 @@ escalated) is a `Decision` row in state `open`, with `id`, a one-line question, 
 event it came from. `fleet decide <id>` shows it and takes the answer (`fleet decide <id> <option>` or free text);
 the answer is an event (`decision.answered`) that unblocks the Work and closes the notification state.
 
+A peer's own block is in the same inbox, because a peer that is `waiting_input` is the user's to unblock: a
+`tool_approval` (options `allow`/`deny`) and a `peer_question` (options are the labels the peer offered), both
+carrying the peer and the provider's id. Answering either routes the answer back to the peer's session —
+`respond()` for the approval, `answer()` for the question, one label per question in the order asked — and the
+answer itself never enters the log, so a replay re-asks rather than re-reading it.
+
 **Events that notify** (Mohammad, 2026-11-10; macOS desktop only for now):
 
 | class | events |

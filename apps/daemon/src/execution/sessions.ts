@@ -180,6 +180,12 @@ export interface Supervisor extends PeerSessions {
    * Returns false if the session no longer has the approval open (answered, abandoned, or session gone).
    */
   answerApproval(decisionId: DecisionId, peerId: PeerId, decision: 'allow' | 'deny'): Promise<boolean>
+  /**
+   * Answer a peer_question decision by calling the peer's session's `answerQuestion`
+   * (TASK-118). Returns false if the session no longer has the question open
+   * (answered, abandoned, or the session is gone).
+   */
+  answerQuestion(decisionId: DecisionId, peerId: PeerId, option: string): Promise<boolean>
 }
 
 /** Wait for `until`, or reject when `signal` aborts first; the waited-for promise is left running. */
@@ -957,6 +963,12 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       const running = sessions.get(peerId)
       if (running === undefined) return false
       return await running.session.answerApproval(decisionId, decision)
+    },
+
+    async answerQuestion(decisionId: DecisionId, peerId: PeerId, option: string) {
+      const running = sessions.get(peerId)
+      if (running === undefined) return false
+      return await running.session.answerQuestion(decisionId, option)
     },
 
     async startPeer(peerId) {
