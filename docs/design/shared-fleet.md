@@ -196,10 +196,15 @@ revocation is for a person to remove, not for the fleet to step around.
 
 The copies are checked against the keys the members have **now**, not against what the record says about them, because
 the record is the part an insider writes. A copy's header states the keys it is sealed to — `age` leaves it in the
-clear and binds it to the file key — and the identity in it is the tag `age` itself picks a private key by, so a copy a
-stranger could open is one the check refuses; nothing is decrypted, and no one signs anything. One case pays for that:
-a member who has since replaced or removed a key leaves a copy that is honest but no longer opens, which reads exactly
-like a forged one, so the look refuses, the log names the member, and a person removes the ref. Rotating instead was
+clear and binds it to the file key, so a stanza cannot be added to a member's copy without the key that copy was sealed
+for. The identity in it is the 4-byte tag `age` itself picks a private key by, which is **all** it is: the full public
+key is not in the header, so the check refuses every forgery except one where an insider bothers to grind a key whose
+tag matches a member's (2³², and the copy is then one only that key opens). Nothing is decrypted and no one signs
+anything, so that residual is the cost; closing it means authenticating the record, which is decision-5.
+
+One case pays otherwise: a member who has since replaced or removed a key leaves a copy that is honest but no longer
+opens, which reads exactly like a forged one, so the look refuses, the log names the member, and a person removes the
+ref. Rotating instead was
 declined as decision-4 (b): a key that changed under the fleet is the moment a person should look, and with
 `taskData: false` no fleet is opening copies yet, so the refusal costs a rotation and not a secret.
 

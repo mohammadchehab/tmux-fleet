@@ -43,8 +43,14 @@ export const ageRecipient = (key: string): string | undefined => {
  * the SHA-256 of the SSH public key's wire form, base64 without padding
  * (`agessh.sshFingerprint`, age 1.3.2). It is the identity `age` matches a
  * private key on when it opens a copy, which is what makes the header a
- * statement that can be checked without the key: a copy is sealed to a key
- * exactly when one of its stanzas carries that key's tag.
+ * statement that can be checked without the key — but only to 32 bits. The
+ * full public key is not in the header, so a stanza says "sealed to a key with
+ * this tag", not "sealed to this key": an insider willing to search can make a
+ * key whose tag is another's and write a copy only that key opens, and nothing
+ * in the header shows it. What this can prove is that no *accidental* or cheap
+ * forgery is in the record, which is every forgery that is not a tag collision;
+ * proving who sealed a copy needs the record authenticated, not a longer look
+ * at the header.
  */
 const ageRecipientTag = (recipient: string): string | undefined => {
   const [type, body] = recipient.trim().split(/\s+/)
@@ -113,8 +119,10 @@ export const createAgeKeyWrap = (options: { readonly age?: GitRunner; readonly c
       const tags = stanzaTags(armored)
       if (tags === undefined) return false
       const allowed = new Set(recipients.map(ageRecipientTag))
-      // Every stanza, not any: one sealed to an outsider as well is a copy an
-      // outsider opens, however well the member's own key is in there.
+      // Every stanza, not any: one sealed to an outsider's key as well is a
+      // copy an outsider opens, however well the member's own key is in there.
+      // The stanzas are matched by their 32-bit tags, so a ground key whose tag
+      // collides is not caught here — see `ageRecipientTag`.
       return tags.every((tag) => allowed.has(tag))
     },
 
