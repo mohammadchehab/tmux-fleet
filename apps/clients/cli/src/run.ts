@@ -35,6 +35,8 @@ import {
   type BuildsParams,
   type Decision,
   type LsResult,
+  type PeerHoldResult,
+  type PeerResumeResult,
   type TurnKind,
   type WorkNotePhase,
   type UpResult,
@@ -56,6 +58,7 @@ import {
   formatUp,
 } from './render.ts'
 import { socketPathOf } from './socket.ts'
+import { takeoverEnv, type Takeover } from './takeover.ts'
 
 /** Both eval verbs, so a wrong one names every one that exists. */
 const EVALS_USAGE = 'fleet evals run <suite> | fleet evals compare <runA> <runB>'
@@ -72,6 +75,10 @@ const usage = (): string =>
     '  fleet peek <peer> [--limit N]       a peer\'s mailbox, oldest first (--limit keeps the newest N)',
     '  fleet decide <id> [answer]          show an open decision, or answer it',
     '  fleet note <phase> <text>           tell the fleet where you are, from a peer session',
+    '  fleet attach <peer> [--now]         take a peer over in its own CLI; exiting hands it back',
+    '  fleet release <peer>                hand back a peer whose attach ended without doing so',
+    '  fleet stop <peer> [--now]           stop one peer; the others keep running',
+    '  fleet start <peer>                  start a stopped peer again, from where it was',
     '  fleet replay [--from N [--to N]]    rebuild the projections, or read a window of the log',
     '  fleet evals run <suite> --provider <name> --model <id> --repo <owner/name> --sha <sha>',
     '                                      run an eval suite against its baseline, as a build',
@@ -95,6 +102,9 @@ const usage = (): string =>
     '  --repo <owner/name>  the repo the sha belongs to',
     '  --sha <sha>          the commit the run is against; it is checked out on the host that runs it',
     '  --save-baseline      write this run as the baseline instead of comparing (where the build ran)',
+    '',
+    'options, on `attach` and `stop`:',
+    '  --now              interrupt the turn instead of waiting for it to end',
     '',
     'options, on `replay`:',
     '  --from <seq>       read the log from this seq instead of rebuilding the projections',
@@ -123,6 +133,11 @@ export type Command =
   | { readonly kind: 'decide'; readonly id: string; readonly decision?: string; readonly note?: string }
   | { readonly kind: 'note'; readonly phase: WorkNotePhase; readonly body: string }
   | { readonly kind: 'replay'; readonly from?: number; readonly to?: number }
+  // watch-and-attach §4, §5, §7.2: one peer taken over, handed back, stopped or started.
+  | { readonly kind: 'attach'; readonly peer: string; readonly now: boolean }
+  | { readonly kind: 'release'; readonly peer: string }
+  | { readonly kind: 'stop'; readonly peer: string; readonly now: boolean }
+  | { readonly kind: 'start'; readonly peer: string }
   | {
       readonly kind: 'evals-run'
       readonly suite: string
@@ -190,6 +205,7 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
   let sha: string | undefined
   let saveBaseline = false
   let json = false
+  let now = false
 
   // `--` ends the CLI's own words and starts a command's (§11: a build's argv is
   // passed through untouched, so `-c` in it is the build's flag, not ours).
@@ -205,6 +221,10 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       if (arg === '--help' || arg === '-h') return { command: { kind: 'help' }, how: { json } }
       if (arg === '--json') {
         json = true
+        continue
+      }
+      if (arg === '--now') {
+        now = true
         continue
       }
       if (arg === '--save-baseline') {
@@ -367,6 +387,16 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
         how: how(),
       }
     }
+    case 'attach':
+    case 'stop': {
+      arity(name, rest, '<peer> [--now]', (count) => count === 1)
+      return { command: { kind: name, peer: rest[0] ?? '', now }, how: how() }
+    }
+    case 'release':
+    case 'start': {
+      arity(name, rest, '<peer>', (count) => count === 1)
+      return { command: { kind: name, peer: rest[0] ?? '' }, how: how() }
+    }
     case 'note': {
       arity('note', rest, '<phase> <text>', (count) => count >= 2)
       const [phase, ...words] = rest
@@ -474,6 +504,12 @@ export interface RunDeps {
   readonly upIntervalMs?: number
   /** "Is this profile file there?" — `existsSync` unless a test says otherwise. */
   readonly profileFileExists?: (path: string) => boolean
+  /**
+   * `fleet attach`: run the provider's CLI in this terminal until it exits
+   * (watch-and-attach §5). Absent means this build cannot hand the terminal over,
+   * and attach says so before it holds anything.
+   */
+  readonly takeover?: Takeover
 }
 
 interface Answer {
@@ -632,6 +668,64 @@ const execute = async (
         })
       }
       return { text: formatDecision(found), value: found }
+    }
+    case 'attach': {
+      const takeover = deps.takeover
+      if (takeover === undefined) {
+        throw fleetError('external_failed', 'this build of the CLI cannot hand a terminal over; run it from a fleet checkout')
+      }
+      const peer = asArgument(peerId(), command.peer, 'peer')
+      // Say what the hold is waiting for before it waits: a turn can take minutes,
+      // and a silent prompt reads as a hang (§5 step 1).
+      const row = (await call('ls', {})).peers.find((candidate) => candidate.peerId === peer)
+      if (row?.state === 'held') say(`${peer} is already held; reopening its session`)
+      else if (row?.state === 'working' || row?.state === 'waiting_input') {
+        say(
+          command.now
+            ? `${peer} is mid-turn; interrupting it`
+            : `${peer} is mid-turn; waiting for the turn to end (fleet attach ${peer} --now interrupts it)`,
+        )
+      }
+      const held = await call('peer.hold', { peerId: peer, ...(command.now ? { now: true } : {}) })
+      for (const line of attachBanner(held)) say(line)
+      let exit: { readonly code: number | null; readonly signal: string | null } | undefined
+      let failure: unknown
+      try {
+        exit = await takeover(held.command, { cwd: held.cwd, env: takeoverEnv(held.env, deps.env ?? {}) })
+      } catch (thrown) {
+        // The CLI did not run, but the peer is held: it is handed back all the same.
+        failure = thrown
+      }
+      // §5 step 4: whatever happened to the CLI, the peer goes back.
+      let released
+      try {
+        released = await call('peer.release', { peerId: peer })
+      } catch (thrown) {
+        throw fleetError(
+          'external_failed',
+          `${peer} is still held: the release failed (${toFleetError(thrown).message}); fleet release ${peer} hands it back`,
+          { cause: thrown },
+        )
+      }
+      if (failure !== undefined) {
+        throw fleetError('external_failed', `could not run ${held.command.executable}: ${toFleetError(failure).message}; ${peer} was handed back`, {
+          cause: failure,
+        })
+      }
+      return { text: formatReleased(released, 'handed back'), value: { held, exit, released } }
+    }
+    case 'release': {
+      const result = await call('peer.release', { peerId: asArgument(peerId(), command.peer, 'peer') })
+      return { text: formatReleased(result, 'handed back'), value: result }
+    }
+    case 'stop': {
+      const peer = asArgument(peerId(), command.peer, 'peer')
+      const result = await call('peer.stop', { peerId: peer, ...(command.now ? { now: true } : {}) })
+      return { text: `stopped ${peer}; fleet start ${peer} brings it back`, value: result }
+    }
+    case 'start': {
+      const result = await call('peer.start', { peerId: asArgument(peerId(), command.peer, 'peer') })
+      return { text: formatReleased(result, 'started'), value: result }
     }
     case 'note': {
       // The peer is the caller, and `FLEET_PEER` is how the daemon tells a
@@ -807,5 +901,22 @@ export const run = async (argv: readonly string[], deps: RunDeps): Promise<numbe
     return error.code === 'invalid_input' ? 2 : 1
   }
 }
+
+/** What a person reads before the provider's CLI takes the screen (§5, §9). */
+export const attachBanner = (held: PeerHoldResult): readonly string[] => [
+  `taking over ${String(held.peerId)}: ${held.providerId} session ${String(held.sessionRef)}, in ${held.cwd}`,
+  held.pendingMessages === 0
+    ? 'no messages are waiting for it; any that arrive wait until you hand it back'
+    : `${String(held.pendingMessages)} message${held.pendingMessages === 1 ? ' is' : 's are'} waiting for it, delivered when you hand it back`,
+  ...(held.providerId === 'cursor'
+    ? [`cursor opens in plan mode; switching mode lets you write into the shared checkout ${held.cwd}`]
+    : []),
+  'exit the CLI to hand it back to the fleet',
+]
+
+const formatReleased = (result: PeerResumeResult, verb: string): string =>
+  result.resumed
+    ? `${verb} ${String(result.peerId)}: the fleet resumed its session`
+    : `${verb} ${String(result.peerId)}: started a fresh session${result.reason === undefined ? '' : ` (${result.reason})`}`
 
 export { usage }

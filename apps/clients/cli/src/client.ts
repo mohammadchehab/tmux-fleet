@@ -121,7 +121,18 @@ export const callDaemon = async <M extends DaemonMethod>(
   const checked = refuseParams(daemonParamsFor(method), params, method)
   // `up` may need longer: it registers peers, starts supervisor/scheduler, and catches up work.
   // On slower machines this can take >30s, so give it 60s. Other methods are fast (local projections).
-  const timeoutMs = options.timeoutMs ?? (method === 'up' ? 60_000 : 30_000)
+  // A hold or a stop waits for the peer's turn to end, which can take as long as
+  // the turn does, so it has no timeout; a release or a start brings a session
+  // up, which a provider may take its own init timeout over (watch-and-attach §4).
+  const timeoutMs =
+    options.timeoutMs ??
+    (method === 'peer.hold' || method === 'peer.stop'
+      ? 0
+      : method === 'peer.release' || method === 'peer.start'
+        ? 120_000
+        : method === 'up'
+          ? 60_000
+          : 30_000)
 
   return new Promise<DaemonResults[M]>((resolve, reject) => {
     let buffer = ''
@@ -141,9 +152,11 @@ export const callDaemon = async <M extends DaemonMethod>(
         reject(error)
       })
 
-    socket.setTimeout(timeoutMs, () =>
-      fail(fleetError('timeout', `fleetd did not answer ${method} within ${String(timeoutMs)} ms`)),
-    )
+    if (timeoutMs > 0) {
+      socket.setTimeout(timeoutMs, () =>
+        fail(fleetError('timeout', `fleetd did not answer ${method} within ${String(timeoutMs)} ms`)),
+      )
+    }
     socket.on('error', (error: NodeJS.ErrnoException) =>
       fail(
         unreachableError(
