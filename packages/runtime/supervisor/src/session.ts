@@ -334,14 +334,17 @@ export class PeerSession {
     }
 
     let failed: unknown
+    // A session the provider says crashed or exited on its own is recovered
+    // (TASK-39). Its end is already in the store, written by `#apply`, so it
+    // leaves the loop normally and is thrown after it: thrown from inside, it
+    // would be caught as a stream failure and recorded ended a second time.
+    let endedOnItsOwn: 'crash' | 'exit' | undefined
     try {
       for await (const event of stream) {
         await this.#apply(handle, event, purge !== undefined)
 
         if (event.type === 'session.ended') {
-          if (event.reason === 'crash' || event.reason === 'exit') {
-            throw fleetError('provider_failed', `session ended with reason '${event.reason}', triggering recovery`)
-          }
+          if (event.reason === 'crash' || event.reason === 'exit') endedOnItsOwn = event.reason
           break
         }
         if (event.type !== 'turn.ended') continue
@@ -451,7 +454,13 @@ export class PeerSession {
       throw failed
     }
 
-    return purge === undefined ? undefined : await purge
+    // A purge already under way restarts the peer itself; recovering as well
+    // would start a second session over the first.
+    if (purge !== undefined) return await purge
+    if (endedOnItsOwn !== undefined) {
+      throw fleetError('provider_failed', `session ended with reason '${endedOnItsOwn}', triggering recovery`)
+    }
+    return undefined
   }
 
   async #apply(handle: SessionHandle, event: ProviderEvent, purging: boolean): Promise<void> {

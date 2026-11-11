@@ -248,7 +248,7 @@ test('events become peer states, and a completed turn that is under the limit ke
     started(),
     { type: 'tool.use', turnId, tool: 'Bash' },
     ended(),
-    { type: 'session.ended', reason: 'exit', code: 0 },
+    { type: 'session.ended', reason: 'stopped' },
   )
   await run
 
@@ -291,7 +291,7 @@ test('a tool summary is stored only when it is a path — a command never reache
     { type: 'tool.use', turnId, tool: 'WebFetch', summary: 'https://example.com/?token=abc' },
     { type: 'tool.use', turnId, tool: 'mcp__github__create_issue', summary: 'a secret-shaped target' },
     ended(),
-    { type: 'session.ended', reason: 'exit', code: 0 },
+    { type: 'session.ended', reason: 'stopped' },
   )
   await run
 
@@ -342,7 +342,7 @@ test('a completed turn is recorded with what it cost and how it explored', async
     // A tool the guard does not watch is a call, but not one of its counters.
     { type: 'tool.use', turnId, tool: 'Bash' },
     ended(),
-    { type: 'session.ended', reason: 'exit', code: 0 },
+    { type: 'session.ended', reason: 'stopped' },
   )
   await run
 
@@ -383,8 +383,7 @@ test('a provider that counts no tokens records no usage, rather than a row of ze
   const run = session.run()
   r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), { type: 'tool.use', turnId, tool: 'Grep' }, ended(), {
     type: 'session.ended',
-    reason: 'exit',
-    code: 0,
+    reason: 'stopped',
   })
   await run
 
@@ -413,7 +412,7 @@ test('a session says it started, before anything else it does', async () => {
   })
 
   const run = session.run()
-  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), { type: 'session.ended', reason: 'exit', code: 0 })
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), { type: 'session.ended', reason: 'stopped' })
   await run
 
   // §4: the stored `session.started` is what the sessions projection, the mailbox's replay on start and
@@ -457,7 +456,7 @@ test('a session started on an effort records the level it was asked for', async 
   })
 
   const run = session.run()
-  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), { type: 'session.ended', reason: 'exit', code: 0 })
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), { type: 'session.ended', reason: 'stopped' })
   await run
 
   const first = r.records[0]
@@ -490,7 +489,7 @@ test('a session that replaces another after a purge says it started too', async 
   await wait()
   r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended())
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
-  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push(started(), ended(), { type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push(started(), ended(), { type: 'session.ended', reason: 'stopped' })
   await run
 
   // One per session, in order: the mailbox replays unacked mail when the *replacement's* `session.started`
@@ -536,17 +535,17 @@ test('at the limit the session purges, comes back on the new handle, and keeps r
   // The old session's stream is closed by the purge's stop; the new one runs.
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
   assert.equal(session.handle.sessionId, 'ses_bbbbbbbbbbbbbbbb')
-  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push(started(), ended(), { type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push(started(), ended(), { type: 'session.ended', reason: 'stopped' })
   await run
 
   // The session this purge replaced is `purged`, not `stopped` or `failed`: it
-  // did exactly what §8 asked. The fresh one then ends on its own.
+  // did exactly what §8 asked. The fresh one is then stopped.
   const ends = r.records.filter((record) => record.type === 'session.ended')
   assert.deepEqual(
     ends.map((record) => (record.type === 'session.ended' ? record.data.endReason : undefined)),
-    // The purge's own stop is the restart, not an end; the fresh session's
-    // clean exit is `completed`, which is the contract's word for it (§3, §4).
-    ['purged', 'completed'],
+    // The purge's own stop is the restart, not an end; the fresh session was
+    // stopped on purpose, and a clean exit would now be recovered (TASK-39).
+    ['purged', 'stopped'],
   )
 })
 
@@ -589,7 +588,7 @@ test('a session that ends while the purge waits for its answer does not hang the
   r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({ type: 'session.ended', reason: 'crash', code: 1 })
 
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the purge to restart the peer')
-  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
   assert.equal(session.handle.sessionId, 'ses_bbbbbbbbbbbbbbbb')
 })
@@ -633,7 +632,7 @@ test('a purge whose restart fails recovers the peer, rather than leaving it with
   assert.equal(session.handle.sessionId, 'ses_cccccccccccccccc')
 
   await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
-  r.feeds.get('ses_cccccccccccccccc')?.push(started(), ended(), { type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_cccccccccccccccc')?.push(started(), ended(), { type: 'session.ended', reason: 'stopped' })
   await run
   assert.equal(session.state, 'ended')
 })
@@ -761,7 +760,7 @@ test('no mail is delivered into a session while it is being purged', async () =>
   // Once the replacement is running, mail is accepted again.
   await session.deliver(mail)
 
-  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
 })
 
@@ -800,7 +799,7 @@ test('a question answered inside its turn does not hold the purge off: the turn 
 
   await until(() => stub.calls.length === 1, 'the purge to fire at the boundary that answered the question')
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
-  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
 })
 
@@ -839,7 +838,7 @@ test('a stream that throws ends the session in the store before the peer is reco
   assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [])
 
   await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
-  r.feeds.get('ses_cccccccccccccccc')?.push({ type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_cccccccccccccccc')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
 })
 
@@ -875,7 +874,7 @@ test('a session.ended with reason crash triggers recovery', async () => {
     await until(() => r.recovered.length === 1, 'the recovery to be asked for')
     const ends = r.records.filter((record) => record.type === 'session.ended')
     assert.equal(ends.length, 1, 'the crashed session is recorded as ended')
-    assert.equal(ends[0]?.type === 'session.ended' ? ends[0].data.endReason : undefined, 'crash')
+    assert.equal(ends[0]?.type === 'session.ended' ? ends[0].data.endReason : undefined, 'crashed')
 
     await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
     r.feeds.get('ses_cccccccccccccccc')?.push({ type: 'session.ended', reason: 'stopped' })
@@ -915,7 +914,7 @@ test('a session.ended with reason exit triggers recovery', async () => {
     await until(() => r.recovered.length === 1, 'the recovery to be asked for')
     const ends = r.records.filter((record) => record.type === 'session.ended')
     assert.equal(ends.length, 1, 'the exited session is recorded as ended')
-    assert.equal(ends[0]?.type === 'session.ended' ? ends[0].data.endReason : undefined, 'exit')
+    assert.equal(ends[0]?.type === 'session.ended' ? ends[0].data.endReason : undefined, 'completed')
 
     await until(() => r.feeds.has('ses_cccccccccccccccc'), 'the recovered session to subscribe')
     r.feeds.get('ses_cccccccccccccccc')?.push({ type: 'session.ended', reason: 'stopped' })
@@ -995,7 +994,7 @@ test('a session that dies with work open leaves none of it to its replacement', 
   await until(() => stub.calls.length === 1, 'the replacement to purge')
 
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
-  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
 
   // Nothing was recorded as a fault: inheriting is the bug, and this session
@@ -1050,7 +1049,7 @@ test('a question still open on this session holds the purge off until its turn e
   })
   await until(() => stub.calls.length === 1, 'the purge to fire once the question is answered')
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
-  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
 })
 
@@ -1178,7 +1177,7 @@ test('a turn still in flight at a turn boundary does not trigger a purge', async
 
   // The purge stops the old session and the wrapper moves to the fresh one.
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
-  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
 })
 
@@ -1208,7 +1207,7 @@ test('records are appended in order and awaited before the next event is read', 
   })
 
   const run = session.run()
-  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), { type: 'session.ended', reason: 'exit', code: 0 })
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), ended(), { type: 'session.ended', reason: 'stopped' })
   await run
 
   // Awaited, so `run()` only resolves once the last append landed — and the
@@ -1246,7 +1245,7 @@ test('a compaction on the stream is one peer.compacted, priced when the profile 
       started(),
       { type: 'compaction', turnId, trigger: 'auto', contextTokensBefore: 200_000, contextTokensAfter: 12_000 },
       ended(),
-      { type: 'session.ended', reason: 'exit', code: 0 },
+      { type: 'session.ended', reason: 'stopped' },
     )
   await run
 
@@ -1291,7 +1290,7 @@ test('a compaction between turns is recorded, and one with no price carries no c
     .get('ses_aaaaaaaaaaaaaaaa')
     ?.push(
       { type: 'compaction', trigger: 'manual', contextTokensBefore: 90_000 },
-      { type: 'session.ended', reason: 'exit', code: 0 },
+      { type: 'session.ended', reason: 'stopped' },
     )
   await run
 
@@ -1335,6 +1334,6 @@ test('the session hands off before the provider compacts, not after', async () =
 
   assert.deepEqual(stub.calls, [{ sessionId: 'ses_aaaaaaaaaaaaaaaa', asked: ['write your state file'] }])
   await until(() => r.feeds.has('ses_bbbbbbbbbbbbbbbb'), 'the fresh session to subscribe')
-  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'exit' })
+  r.feeds.get('ses_bbbbbbbbbbbbbbbb')?.push({ type: 'session.ended', reason: 'stopped' })
   await run
 })
