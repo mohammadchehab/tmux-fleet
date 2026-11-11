@@ -43,6 +43,10 @@ export type PurgeRecord = Extract<
  * `peer.failed` is here for the same reason from the other side: a failed turn
  * carries the provider's sentence about *why*, and §6.1's failure class is where
  * that sentence belongs — a state change says the peer failed, not what failed.
+ *
+ * `decision.requested`/`decision.answered` are an approval the peer is blocked
+ * on (TASK-115): the stream is the only place it is seen, so the supervisor
+ * raises it as a §6.1 decision, and closes it when the approval dies unanswered.
  */
 export type SessionRecord =
   | PurgeRecord
@@ -58,6 +62,8 @@ export type SessionRecord =
           | 'turn.usage_recorded'
           | 'session.ended'
           | 'provider.errored'
+          | 'decision.requested'
+          | 'decision.answered'
       }
     >
 

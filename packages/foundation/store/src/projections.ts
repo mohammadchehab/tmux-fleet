@@ -1627,7 +1627,7 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
 
     // ------------------------------------------------- decisions and signals
     case 'decision.requested': {
-      const { decisionId, kind, question, options, workId, inputsHash, routedTo } = event.data
+      const { decisionId, kind, question, options, workId, inputsHash, routedTo, peerId, requestId } = event.data
       writeDecision(
         db,
         parse(PROJECTION_SCHEMAS.decision, {
@@ -1639,6 +1639,8 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
           inputsHash,
           workId,
           requestedAt: ts,
+          peerId,
+          requestId,
         }),
       )
       // A Judge answers its own questions; only a decision routed to the user is

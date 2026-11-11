@@ -24,17 +24,29 @@
  * and only a recovery that fails too rejects.
  */
 
+import { createHash } from 'node:crypto'
+
 import {
   fleetError,
   peerActor,
+  toFleetError,
   type Clock,
+  type DecisionId,
   type PeerId,
   type PeerState,
   type SessionId,
   type TurnId,
 } from '@fleet/foundation-core'
-import type { Effort, ProviderEvent, SessionEndReason, StateFile, Usage } from '@fleet/foundation-contracts'
-import type { Provider, SessionHandle, Turn } from '@fleet/runtime-provider-sdk'
+import {
+  toolApprovalKind,
+  toolApprovalOptions,
+  type Effort,
+  type ProviderEvent,
+  type SessionEndReason,
+  type StateFile,
+  type Usage,
+} from '@fleet/foundation-contracts'
+import type { ApprovalDecision, Provider, SessionHandle, Turn } from '@fleet/runtime-provider-sdk'
 
 import { peerStateOf } from './peer-state.ts'
 import { purgeTrigger, type PurgeLimits } from './policy.ts'
@@ -171,6 +183,23 @@ interface PendingOwner {
   readonly sessionId: SessionId
 }
 
+/** An approval raised as a decision and not yet answered or closed (TASK-115). */
+interface OpenApproval {
+  readonly requestId: string
+  readonly turnId: TurnId
+  readonly sessionId: SessionId
+}
+
+const hex16 = (text: string): string => createHash('sha256').update(text).digest('hex').slice(0, 16)
+
+/**
+ * The decision an approval is raised as, named by the session and the
+ * provider's request id rather than minted: a replay of the same stream names
+ * the same decision (§5.4).
+ */
+const approvalDecisionId = (sessionId: SessionId, requestId: string): DecisionId =>
+  `dec_${hex16(`${sessionId}:${requestId}`)}` as DecisionId
+
 const deferred = <T>(): Deferred<T> => {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((done) => {
@@ -222,6 +251,13 @@ export class PeerSession {
    * replacement.
    */
   readonly #pending = new Map<string, PendingOwner>()
+  /**
+   * The approvals raised as decisions that nobody has answered yet (TASK-115).
+   * An entry leaves when `answerApproval` answers it, or when the approval dies
+   * unanswered and its decision is closed — never both, so a person's answer is
+   * not overwritten by a close that came after it.
+   */
+  readonly #approvals = new Map<DecisionId, OpenApproval>()
   /**
    * Set once the bookkeeping invariant has been recorded, so `run()` reports it
    * instead of recovering into a fresh session that hides it (§8).
@@ -333,6 +369,27 @@ export class PeerSession {
       )
     }
     return this.#ports.provider.send(this.#handle, turn)
+  }
+
+  /**
+   * Answer an approval this peer is blocked on, by the decision it was raised
+   * as (§6.1, TASK-115). `false` when there is nothing to answer: the decision
+   * is not one of this session's, it was answered already, its session is gone,
+   * or the provider no longer holds the request — a stale answer is a
+   * `not_found`, never an answer to somebody else's call.
+   */
+  async answerApproval(decisionId: DecisionId, decision: ApprovalDecision): Promise<boolean> {
+    const open = this.#approvals.get(decisionId)
+    if (open === undefined) return false
+    this.#approvals.delete(decisionId)
+    if (open.sessionId !== sessionIdOf(this.#handle)) return false
+    try {
+      await this.#ports.provider.respond(this.#handle, open.requestId, decision)
+    } catch (thrown) {
+      if (toFleetError(thrown).code === 'not_found') return false
+      throw thrown
+    }
+    return true
   }
 
   /** Stop the session deliberately: no restart, no purge. */
@@ -533,6 +590,7 @@ export class PeerSession {
       // A stream that threw never got to synthesise its own `session.ended`, so
       // this session ends here: whatever it still owned is abandoned with it,
       // exactly as a `session.ended` would have done (§8).
+      await this.#closeApprovals(sessionId, 'abandoned: the session ended').catch(() => {})
       this.#abandonAllOwnedBy(sessionId)
       // State first, then the end, in the order `#apply` writes a real
       // `session.ended`: the store's end projection moves the *session*, it does
@@ -602,6 +660,11 @@ export class PeerSession {
         for (const [id, owner] of this.#pending) {
           if (owner.turnId === event.turnId) this.#pending.delete(id)
         }
+        // An approval its turn outlived was not answered through the fleet, so
+        // its decision would otherwise sit open with nothing behind it.
+        for (const [decisionId, open] of this.#approvals) {
+          if (open.turnId === event.turnId) await this.#closeApproval(decisionId, 'abandoned: the turn ended')
+        }
         // A failed turn carries the one sentence that explains the `failed`
         // state — a CLI's exit reason, the provider's own message — and
         // `peer.state_changed` has nowhere to put it: its `reason` says why the
@@ -632,14 +695,17 @@ export class PeerSession {
       case 'approval.requested':
         this.#openingTurnWaitsOnPerson(event.turnId)
         this.#pending.set(event.requestId, { turnId: event.turnId, sessionId })
+        await this.#raiseApproval(sessionId, event)
         break
       case 'question.abandoned':
         this.#pending.delete(event.questionId)
         break
       case 'approval.abandoned':
         this.#pending.delete(event.requestId)
+        await this.#closeApproval(approvalDecisionId(sessionId, event.requestId), 'abandoned: the turn was interrupted or the session stopped')
         break
       case 'session.ended':
+        await this.#closeApprovals(sessionId, 'abandoned: the session ended')
         // The session is over and everything it owned dies with it: an open
         // turn it will never end, and a question or approval no one can answer
         // any more because the session that asked is gone. A replacement
@@ -670,6 +736,56 @@ export class PeerSession {
     }
     if (event.type === 'session.ended') {
       await this.#recordEnd(handle, endReasonOf(event, purging), event.code)
+    }
+  }
+
+  /**
+   * An approval the peer is blocked on, raised as a §6.1 decision a person
+   * answers with `fleet decide` (TASK-115). The question names the tool and,
+   * for the edit family only, the path — the same rule as `peer.tool_used`: a
+   * command, a URL or a brief never reaches the log, whatever the adapter sent.
+   */
+  async #raiseApproval(sessionId: SessionId, event: Extract<ProviderEvent, { type: 'approval.requested' }>): Promise<void> {
+    const { clock, peerId, record } = this.#ports
+    const decisionId = approvalDecisionId(sessionId, event.requestId)
+    const tool = bounded(event.tool, TOOL_MAX)
+    const target = TARGET_TOOLS.has(event.tool) && event.summary !== undefined ? bounded(event.summary, TARGET_MAX) : undefined
+    this.#approvals.set(decisionId, { requestId: event.requestId, turnId: event.turnId, sessionId })
+    await record({
+      type: 'decision.requested',
+      ts: clock.now(),
+      subject: decisionId,
+      actor: peerActor(peerId),
+      data: {
+        decisionId,
+        kind: toolApprovalKind,
+        question: `${String(peerId)} wants to use ${tool}${target === undefined ? '' : ` on ${target}`}: allow or deny?`,
+        options: [...toolApprovalOptions],
+        inputsHash: hex16(`${sessionId}:${event.requestId}:${event.tool}`),
+        routedTo: 'user',
+        peerId,
+        requestId: event.requestId,
+      },
+    })
+  }
+
+  /** Close one approval's decision because nobody can answer it any more; a no-op once answered. */
+  async #closeApproval(decisionId: DecisionId, why: string): Promise<void> {
+    if (!this.#approvals.delete(decisionId)) return
+    const { clock, peerId, record } = this.#ports
+    await record({
+      type: 'decision.answered',
+      ts: clock.now(),
+      subject: decisionId,
+      actor: peerActor(peerId),
+      data: { decisionId, source: 'rule', text: why, durationMs: 0 },
+    })
+  }
+
+  /** Close every approval one session still has open, because that session is over. */
+  async #closeApprovals(sessionId: SessionId, why: string): Promise<void> {
+    for (const [decisionId, open] of this.#approvals) {
+      if (open.sessionId === sessionId) await this.#closeApproval(decisionId, why)
     }
   }
 

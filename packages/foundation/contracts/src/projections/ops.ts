@@ -43,6 +43,13 @@ export interface Decision {
   readonly workId?: WorkId
   readonly requestedAt: string
   readonly answeredAt?: string
+  /**
+   * The peer blocked on a tool_approval decision, so `decide allow|deny` can route
+   * the answer back to that peer's session (TASK-115).
+   */
+  readonly peerId?: PeerId
+  /** The provider's request id for a tool_approval, so the log names the exact call. */
+  readonly requestId?: string
 }
 
 export const decision = (): Schema<Decision> =>
@@ -60,6 +67,8 @@ export const decision = (): Schema<Decision> =>
     workId: optional(workId()),
     requestedAt: timestamp(),
     answeredAt: optional(timestamp()),
+    peerId: optional(peerId()),
+    requestId: optional(string({ minLength: 1, maxLength: 200 })),
   })
 
 // ------------------------------------------------------------------- routines

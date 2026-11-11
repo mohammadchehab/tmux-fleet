@@ -172,6 +172,11 @@ export interface Supervisor extends PeerSessions {
    * there was nothing to stop: no running session, or none mid-turn.
    */
   interrupt(peerId: PeerId): Promise<boolean>
+  /**
+   * Answer a tool_approval decision by calling the peer's session's answerApproval method.
+   * Returns false if the session no longer has the approval open (answered, abandoned, or session gone).
+   */
+  answerApproval(decisionId: string, peerId: PeerId, decision: 'allow' | 'deny'): Promise<boolean>
 }
 
 /** Wait for `until`, or reject when `signal` aborts first; the waited-for promise is left running. */
@@ -923,6 +928,12 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       if (running === undefined || running.session.isAtBoundary()) return false
       await running.session.interrupt()
       return true
+    },
+
+    async answerApproval(decisionId, peerId, decision) {
+      const running = sessions.get(peerId)
+      if (running === undefined) return false
+      return await running.session.answerApproval(decisionId, decision)
     },
 
     async startPeer(peerId) {
