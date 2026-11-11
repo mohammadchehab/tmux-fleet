@@ -58,12 +58,20 @@ test('deltas are gathered into the lines a person would read, and a tool or a tu
 })
 
 test('gathered text flushes by itself after the flush interval', async () => {
-  const feed = createDisplayFeed({ flushMs: 10 })
-  const iterator = feed.watch({})[Symbol.asyncIterator]()
-  assert.equal((await iterator.next()).value?.stream, 'ready')
-  feed.push(a, { kind: 'text', text: 'no newline yet' })
-  const next = await iterator.next()
-  assert.deepEqual(texts([next.value as WatchFrame]), ['no newline yet'])
+  // The flush timer is unref'd on purpose (the daemon has its own reasons to stay alive), so this
+  // test holds the loop itself; without it the runner finds nothing pending and cancels the test
+  // with "Promise resolution is still pending but the event loop has already resolved".
+  const holding = setInterval(() => undefined, 1_000)
+  try {
+    const feed = createDisplayFeed({ flushMs: 10 })
+    const iterator = feed.watch({})[Symbol.asyncIterator]()
+    assert.equal((await iterator.next()).value?.stream, 'ready')
+    feed.push(a, { kind: 'text', text: 'no newline yet' })
+    const next = await iterator.next()
+    assert.deepEqual(texts([next.value as WatchFrame]), ['no newline yet'])
+  } finally {
+    clearInterval(holding)
+  }
 })
 
 test('a line is cut to the width budget before it is buffered, and a flood is counted rather than shown', async () => {
