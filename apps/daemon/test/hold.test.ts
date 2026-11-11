@@ -67,7 +67,16 @@ const at = () => systemClock.now()
  * A provider with a stream per session. Each session's opening turn starts at
  * once and ends when the test says (`endOpening`), or at once with `autoOpen`.
  */
-const fakeProvider = (options: { autoOpen?: boolean; resumeFails?: boolean } = {}) => {
+const fakeProvider = (
+  options: {
+    /** Whether a session's opening turn ends by itself; a function decides per way of opening. */
+    autoOpen?: boolean | ((how: 'start' | 'resume') => boolean)
+    resumeFails?: boolean
+    /** A provider that takes one turn at a time (cursor): `send` while a turn runs is refused. */
+    rejectWhileBusy?: boolean
+  } = {},
+) => {
+  const busy = new Set<string>()
   const feeds = new Map<string, Feed>()
   const opened: Opened[] = []
   const sent: { sessionId: string; text: string }[] = []
@@ -81,7 +90,9 @@ const fakeProvider = (options: { autoOpen?: boolean; resumeFails?: boolean } = {
     feeds.set(sessionId, feed)
     opened.push({ sessionId, peerId: spec.peerId, how, ref, spec })
     feed.push({ type: 'turn.started', turnId: briefTurnId, at: at() })
-    if (options.autoOpen !== false) feed.push({ type: 'turn.ended', turnId: briefTurnId, at: at(), reason: 'completed' })
+    const auto = typeof options.autoOpen === 'function' ? options.autoOpen(how) : options.autoOpen !== false
+    if (!auto) busy.add(sessionId)
+    if (auto) feed.push({ type: 'turn.ended', turnId: briefTurnId, at: at(), reason: 'completed' })
     return { sessionId, sessionRef: ref as ProviderSessionRef, peerId: spec.peerId, providerId: 'claude', model: spec.model, permissionMode: spec.permissionMode, briefTurnId }
   }
   const provider = {
@@ -94,6 +105,9 @@ const fakeProvider = (options: { autoOpen?: boolean; resumeFails?: boolean } = {
     },
     events: (handle: SessionHandle) => feeds.get(handle.sessionId) as Feed,
     send: async (handle: SessionHandle, turn: Turn) => {
+      if (options.rejectWhileBusy === true && busy.has(handle.sessionId)) {
+        throw new Error(`session ${handle.sessionId} is still running a turn; the message was not sent`)
+      }
       sent.push({ sessionId: handle.sessionId, text: turn.text })
       const turnId = `trn_${String(sent.length).padStart(15, '0')}x` as TurnId
       feeds.get(handle.sessionId)?.push({ type: 'turn.started', turnId, at: at() }, { type: 'turn.ended', turnId, at: at(), reason: 'completed' })
@@ -116,12 +130,13 @@ const fakeProvider = (options: { autoOpen?: boolean; resumeFails?: boolean } = {
   const endOpening = (peerId: string) => {
     const last = [...opened].reverse().find((o) => o.peerId === peerId)
     const index = opened.indexOf(last as Opened) + 1
+    busy.delete(last?.sessionId ?? '')
     feeds.get(last?.sessionId ?? '')?.push({ type: 'turn.ended', turnId: `trn_${String(index).padStart(16, '0')}` as TurnId, at: at(), reason: 'completed' })
   }
   /** A turn that stays running until `endTurn`. */
-  const startTurn = (sessionId: string) => feeds.get(sessionId)?.push({ type: 'turn.started', turnId: 'trn_000000000000feed' as TurnId, at: at() })
+  const startTurn = (sessionId: string) => busy.add(sessionId) && feeds.get(sessionId)?.push({ type: 'turn.started', turnId: 'trn_000000000000feed' as TurnId, at: at() })
   const endTurn = (sessionId: string, reason: 'completed' | 'interrupted' = 'completed') =>
-    feeds.get(sessionId)?.push({ type: 'turn.ended', turnId: 'trn_000000000000feed' as TurnId, at: at(), reason })
+    busy.delete(sessionId) && feeds.get(sessionId)?.push({ type: 'turn.ended', turnId: 'trn_000000000000feed' as TurnId, at: at(), reason })
   return { provider, opened, sent, calls, endOpening, startTurn, endTurn }
 }
 
@@ -447,4 +462,30 @@ test('stopping the daemon with a hold still waiting for a turn does not hang, an
   await within(refused, 1_000, 'the pending hold')
   assert.ok(fake.calls.includes(`stop:${first.sessionId}`), 'the held-up peer was stopped with the rest')
   assert.ok(fake.calls.includes(`stop:${sessionOf(fake, reviewer).sessionId}`))
+})
+
+test('mail queued during a hold is delivered when the handback turn ends, on a provider that takes one turn at a time', async () => {
+  // The resumed session's handback turn is still running when the delivery fires on
+  // `session.started`, and this provider refuses a send until it ends — cursor's rule.
+  const fake = fakeProvider({ autoOpen: (how) => how === 'start', rejectWhileBusy: true })
+  const f = await fleet(fake)
+  await f.supervisor.start()
+  await settle()
+  await f.supervisor.hold(engineer, { by: 'user' })
+  assert.ok((await f.mailbox.send({ to: engineer, from: 'user', kind: 'info', briefVersion: 1, body: 'take #43' })).ok)
+
+  await f.supervisor.release(engineer)
+  await settle()
+  const resumed = sessionOf(fake, engineer)
+  assert.equal(fake.sent.filter((row) => row.text === 'take #43').length, 0, 'the handback turn is running: nothing could be sent yet')
+  assert.equal((await f.mailbox.pending(engineer)).length, 1, 'and the message is still waiting, not lost')
+
+  fake.endOpening(engineer) // the handback turn ends; the peer goes idle
+  await settle()
+  await settle()
+  const deliveries = fake.sent.filter((row) => row.text === 'take #43')
+  assert.equal(deliveries.length, 1, 'delivered once, without another send to wake it')
+  assert.equal(deliveries[0]?.sessionId, resumed.sessionId)
+  assert.equal((await f.events()).filter((e) => e.type === 'message.delivered').length, 1, 'and recorded as delivered once')
+  await f.supervisor.stop()
 })
