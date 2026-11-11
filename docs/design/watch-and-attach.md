@@ -134,6 +134,13 @@ key crosses the socket to the attach client. The socket is the user's own and th
 the key; the daemon must create the socket readable by its owner only. `peer.hold`
 on a held peer returns the same answer, so reopening a session whose terminal died is the same call.
 
+A hold waits for the turn boundary, which can be never (a turn parked on an approval nobody answers). It is therefore
+tied to its connection: the socket's close aborts a pending `peer.hold` or `peer.stop`, and the session goes back to the
+running map untouched, so a client that died cannot leave a peer half-taken — found live, where `fleet attach` and
+`fleet release` both answered "already being held" for good. `fleet down` ends a pending wait the same way. The attach
+client forwards SIGHUP and SIGTERM to the CLI and waits it out (escalating a CLI that ignores them), so a closed terminal
+still ends in the release.
+
 **Resume failing.** If `provider.resume` rejects on release, the supervisor falls back to a fresh start with the state
 file, as recovery does today, and records the reason on `peer.released`. The peer is never left held with nobody
 holding it.
@@ -184,19 +191,33 @@ before buffering, so a peer printing a large file cannot grow the buffer or the 
 
 **RPC.** `peer.watch { peerId?, since? }` is the daemon's first streaming method: it answers with the buffered lines,
 then pushes new ones until the client disconnects. The stream also carries the rows the view needs from the store —
-peer state changes, mail sent and delivered, judge decisions — so the view does not poll.
+peer state changes, mail sent and delivered, decisions requested and answered — so the view does not poll.
 
+The shapes are `packages/foundation/contracts/src/watch.ts`, which both `fleet watch` and the editor extension read.
 The framing stays newline-delimited JSON on the same socket. What changes:
 
-- A second message kind beside the one response: stream frames `{ id, stream: 'line' | 'end', ... }`.
-- A dispatch path whose handler returns an async iterable.
+- A second message kind beside the one response: stream frames `{ id, stream, ... }`, with `stream` one of `line`
+  (a `DisplayLine` for a peer), `row` (a store fact), `ready` (the buffered history is sent; `seq` is the newest the
+  daemon has, `from` the oldest it still holds) and `end` (the reason, then the daemon closes the connection).
+  Every `line` and `row` carries `seq`, one counter for the daemon run, so a reconnect sends `since` and gets only
+  what it missed.
+- A request that cannot start (bad params) is answered as any request is, with one `{ id, ok: false, error }` line.
 - One connection per watch. A stream on a shared connection would block every request queued behind it, and today's
-  clients close the socket on the first line.
+  clients close the socket on the first line; a second request on a watch connection is refused.
+- `DaemonStatus.protocolVersion` (an integer, 1 at first) is bumped whenever a stream frame or an RPC changes shape,
+  so a client reads it on connect and knows whether it can speak to the daemon.
 
 A slow or stalled client is dropped, never waited for. Today's server ignores what `write()` returns, and a stalled
-client then buffers without bound (9 MB in 2 seconds in the spike). So: when `write()` returns false, or the socket's
-buffered length passes a cap, the daemon destroys that socket; on `close` it ends the iterator. The feed must not be
-able to slow a peer or grow the daemon.
+client then buffers without bound (9 MB in 2 seconds in the spike). So the daemon destroys a watch socket whose unsent
+output passes a cap (4 MiB), and ends a watcher that falls 2 000 frames behind with `end: dropped`; on `close` it ends
+the iterator. The cap is not `write()`'s own `false`, which fires at 16 KiB — less than the replay a healthy client is
+sent in one burst. The feed must not be able to slow a peer or grow the daemon.
+
+A watcher is also not a way to hurt the daemon with what a peer prints: lines are cut before they are buffered, text
+deltas are gathered into lines, and one push makes at most 50 lines — the rest of a flood is counted, not shown.
+
+**Context used.** The peer's activity row carries `contextTokens` and `contextLimit` from the last
+`turn.usage_recorded` (schema 10, not backfilled): a peer with no recorded turn has neither, and shows no number.
 
 ## 7. The watch program
 
