@@ -396,6 +396,19 @@ describe('the merge event (§10)', () => {
     assert.match(String(seen.mailbox.sent[0]?.body), /trunk branch/)
   })
 
+  for (const longLived of ['develop', 'staging', 'release/2.x']) {
+    it(`never deletes the long-lived ${longLived} when its release PR merges (TASK-90)`, async () => {
+      const release = mergedPr({ head: longLived, base: 'main' })
+      const seen = harness(fakeForge({ prs: [release], branches: [{ name: longLived, sha: HEAD }] }), {
+        projection: [release],
+      })
+      await seen.run(eventContext(workMerged()))
+
+      assert.deepEqual(seen.forge.deleted, [])
+      assert.deepEqual(typesOf(seen.store), [])
+    })
+  }
+
   it('does nothing when the projection does not say the PR merged', async () => {
     const seen = harness(fakeForge(), { projection: [mergedPr({ merged: false })] })
     const outcome = await seen.run(eventContext(workMerged()))
@@ -527,6 +540,20 @@ describe('the nightly sweep (§6)', () => {
     assert.deepEqual(seen.forge.deleted, [])
     assert.equal(seen.mailbox.sent.length, 0)
   })
+
+  for (const longLived of ['develop', 'staging', 'release/2.x']) {
+    it(`never deletes the long-lived ${longLived} after a release PR from it merges (TASK-90)`, async () => {
+      // The repo's trunk is `main`; `${longLived}` is the integration branch a release PR is cut from.
+      const release = mergedPr({ head: longLived, base: 'main' })
+      const seen = harness(fakeForge({ prs: [release], branches: [{ name: longLived, sha: HEAD }] }), {
+        projection: [release],
+      })
+      await seen.run(scheduleContext())
+
+      assert.deepEqual(seen.forge.deleted, [])
+      assert.deepEqual(typesOf(seen.store), [])
+    })
+  }
 
   it('keeps the checkout when the delete failed, because the branch is still there', async () => {
     const seen = harness(fakeForge({ prs: [mergedPr()] }), {
