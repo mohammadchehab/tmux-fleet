@@ -815,8 +815,10 @@ The Worktree manager is the only thing that creates or deletes worktrees; peers 
 - **Merging never deletes.** The gate no longer passes `--delete-branch` at all (#102): a merge that deletes cannot be
   retried without it, and a dependent that appears mid-merge is a branch someone still sits on. Deletion is its own act,
   `branch-cleanup` (§6), with its own pin: the delete names the sha it expects and refuses a branch that moved
-  (`head_moved`). The rule is **no deletion while a dependent exists**, not "never delete": a dependent is retargeted
-  onto the base the merge went into first, and a dependent that cannot move keeps the branch alive.
+  (`head_moved`). The rule is **no deletion while a dependent exists**, not "never delete": a dependent — a PR still
+  open, based at this branch — is retargeted onto the base the merge went into, and a dependent that cannot move
+  keeps the branch alive. The order is the pin first: a branch that moved past the merge is not acted on at all, so
+  nothing is retargeted off a branch that stays.
 - **Two triggers, one rule.** A `work.merged` event deletes that branch with the merged head sha and removes the merged
   Work's worktree (§9), recording `branch.deleted {repo, branch, sha, by}` — the sha is the commit to restore the branch
   from. A nightly sweep deletes only branches whose head equals a merged PR's head; anything else (closed without merge,

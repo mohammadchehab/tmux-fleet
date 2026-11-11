@@ -15,11 +15,13 @@
  * merge recorded, and both refuse to touch a branch something else is based on.
  *
  * - **A dependent blocks the delete, and then moves.** §10's rule is "no deletion
- *   while a dependent exists", not "never delete": a PR stacked on this branch is
- *   retargeted onto the base the merge went into (§10's `retargetDependents`,
- *   performed here for the ones that appeared after the gate ran), and the branch
- *   goes only if nothing is based on it afterwards. A retarget that fails is a
- *   branch that stays, and a message that says why.
+ *   while a dependent exists", not "never delete": a PR still open and based on
+ *   this branch is retargeted onto the base the merge went into (§10's
+ *   `retargetDependents`, performed here for the ones that appeared after the gate
+ *   ran), and the branch goes only if nothing is based on it afterwards. A retarget
+ *   that fails is a branch that stays, and a message that says why. The pin is
+ *   asked first: a branch that moved past the merge is left alone, and its
+ *   dependents are not moved off it.
  * - **Everything else is a person's decision.** A branch with commits after the
  *   merge, one whose PR was closed without merging, one the fleet has no PR for —
  *   the sweep never deletes those. It tells the owner, when there is one.
@@ -39,6 +41,7 @@ import type {
   AppendEvent,
   EventSink,
   Mailbox,
+  ForgePullRequest,
   PullRequest,
   PullRequestRef,
   PullRequests,
@@ -172,9 +175,17 @@ const tell = async (deps: BranchCleanupDeps, workId: WorkId | undefined, body: s
  * branch's own PR has just merged, so the question is whether anything else is
  * based on it. `list` and not the port's `dependents`, because a PR that appeared
  * after the merge has no `stackParent` pointing anywhere — its *base* is the fact.
+ *
+ * Only a PR that is neither merged nor closed is a dependent. A merged one is
+ * history; one the forge says is `closed` was abandoned, and `gh` refuses to
+ * retarget it — read as a dependent it was one that could never move, so the branch
+ * under it was never deleted and its owner was told so every night (TASK-91). The
+ * test is `closed` and not "not open" on purpose: an absent state is *unknown*,
+ * never closed (`ForgePullRequest`), and an unknown row is still worth moving out
+ * of the way.
  */
-const basedOn = (open: readonly PullRequest[], branch: string): readonly PullRequest[] =>
-  open.filter((pr) => pr.base === branch && !pr.merged)
+const basedOn = (read: readonly ForgePullRequest[], branch: string): readonly PullRequest[] =>
+  read.filter((pr) => pr.base === branch && pr.merged === false && pr.state !== 'closed')
 
 /**
  * Make the branch clear to delete: move whatever is based on it onto `base`, then
@@ -187,8 +198,12 @@ const clearDependents = async (
   repo: Repo,
   branch: string,
   base: string,
-  /** The open PRs the caller already read; the sweep has them, the event path does not. */
-  known?: readonly PullRequest[],
+  /**
+   * The PRs the caller already read, in any state; `basedOn` is what decides which
+   * of them are dependents. The sweep has them all, the event path has none and
+   * asks the forge for the open ones.
+   */
+  known?: readonly ForgePullRequest[],
 ): Promise<{ readonly clear: true } | { readonly clear: false; readonly reason: string }> => {
   const open = known ?? (await deps.pullRequests.list(repo, { state: 'open' }))
   const dependents = basedOn(open, branch)
@@ -393,8 +408,28 @@ const onMerge = async (deps: BranchCleanupDeps, context: RoutineContext): Promis
     return { outcome: { actions: refused.actions, actionsFailed: refused.failed, inputsHash: hashOf(observations) }, observations }
   }
 
+  // §10's pin, asked before anything is moved (TASK-92). A branch that moved past
+  // the sha the merge recorded is one this wake will not delete, so its dependents
+  // stay where they are: retargeting them first put stacked PRs on `main` under a
+  // branch that then survived. The sweep asks the same question in the same order.
+  // A branch the remote does not have at all is left to `deleteBranch` to report —
+  // there is no head here to say it moved.
+  const live = (await deps.pullRequests.branches(row.repo)).find((entry) => entry.name === branch)?.sha
+  const seen = { ...observations, live }
+  if (live !== undefined && live !== sha) {
+    const refused = await refuse(
+      deps,
+      row.repo,
+      branch,
+      `it has commits after the merge (it is at ${String(live)}, not the merged ${String(sha)})`,
+      workId,
+    )
+    return { outcome: { actions: refused.actions, actionsFailed: refused.failed, inputsHash: hashOf(seen) }, observations: seen }
+  }
+
   const cleared = await clearDependents(deps, row.repo, branch, row.base)
   let tally: Tally
+
   if (!cleared.clear) {
     tally = await refuse(deps, row.repo, branch, cleared.reason, workId)
   } else {
@@ -404,7 +439,7 @@ const onMerge = async (deps: BranchCleanupDeps, context: RoutineContext): Promis
     }
   }
 
-  return { outcome: { actions: tally.actions, actionsFailed: tally.failed, inputsHash: hashOf(observations) }, observations }
+  return { outcome: { actions: tally.actions, actionsFailed: tally.failed, inputsHash: hashOf(seen) }, observations: seen }
 }
 
 /** A branch the sweep has decided about, before it acts. */
@@ -466,13 +501,9 @@ const sweep = async (deps: BranchCleanupDeps, context: RoutineContext): Promise<
         continue
       }
 
-      const cleared = await clearDependents(
-        deps,
-        repo,
-        branch.name,
-        pinned.base,
-        all.filter((pr) => !pr.merged),
-      )
+      // Every PR the sweep read, closed ones included: `basedOn` is the one place
+      // that says what a dependent is, so the two ways in cannot disagree (TASK-91).
+      const cleared = await clearDependents(deps, repo, branch.name, pinned.base, all)
       if (!cleared.clear) {
         observations.push({ repo: String(repo), branch: branch.name, sha: String(branch.sha), verdict: 'dependent' })
         tally = plus(tally, await refuse(deps, repo, branch.name, cleared.reason, owner))

@@ -373,6 +373,28 @@ describe('the merge event (§10)', () => {
     assert.equal(outcome.actionsFailed, 1)
   })
 
+  it('does not move a dependent onto the trunk when the branch itself moved (TASK-92)', async () => {
+    // §10's pin is checked before anything is retargeted. The branch has commits
+    // the merge never saw, so it stays — and a dependent left on the trunk would
+    // be a stacked PR rebased onto `main` under a branch that still exists.
+    const stack = parse(pullRequestSchema(), {
+      ...mergedPr(),
+      number: 13,
+      base: BRANCH,
+      head: 'fleet/work-2',
+      merged: false,
+    })
+    const seen = harness(fakeForge({ prs: [stack], branches: [{ name: BRANCH, sha: MOVED }] }), {
+      projection: [mergedPr()],
+    })
+    const outcome = await seen.run(eventContext(workMerged()))
+
+    assert.deepEqual(seen.forge.retargeted, [], 'nothing is moved off a branch that is staying')
+    assert.deepEqual(seen.forge.deleted, [])
+    assert.match(String(seen.mailbox.sent[0]?.body), /commits after the merge/)
+    assert.equal(outcome.actionsFailed, 1)
+  })
+
   it('refuses a branch that moved past the merged head, and says so', async () => {
     // The remote has commits the merge never saw: `deleteBranch` refuses with
     // `head_moved`, and the routine reports rather than forcing.
@@ -498,6 +520,47 @@ describe('the nightly sweep (§6)', () => {
     assert.deepEqual(seen.forge.deleted, [])
     assert.equal(seen.mailbox.sent.length, 1)
     assert.match(String(seen.mailbox.sent[0]?.body), /commits after the merge/)
+  })
+
+  it('still moves a dependent whose state the forge did not report (unknown is not closed)', async () => {
+    // `ForgePullRequest.state` is optional and its absence means *unknown*, never
+    // closed — so a row without one is moved out of the way rather than assumed
+    // abandoned. Only an explicit `closed` is a PR nobody will push to again.
+    const stack = parse(pullRequestSchema(), {
+      ...mergedPr(),
+      number: 15,
+      base: BRANCH,
+      head: 'fleet/work-3',
+      merged: false,
+    })
+    const seen = harness(fakeForge({ prs: [mergedPr(), stack] }), { projection: [mergedPr()] })
+    const outcome = await seen.run(scheduleContext())
+
+    assert.deepEqual(seen.forge.retargeted, [{ number: 15, base: 'main' }])
+    assert.deepEqual(seen.forge.deleted, [{ branch: BRANCH, sha: HEAD }])
+    assert.equal(outcome.actionsFailed, 0)
+  })
+
+  it('is not blocked by a PR closed without merging that is based on the branch (TASK-91)', async () => {
+    // The sweep hands `clearDependents` every PR it read, and a closed one is not
+    // a dependent: nobody is going to push to it, and `gh` refuses to retarget it.
+    // Reading it as open left the branch undeleted every night, with the owner
+    // told "not deleted" each time.
+    const abandoned = { ...parse(pullRequestSchema(), {
+      ...mergedPr(),
+      number: 14,
+      base: BRANCH,
+      head: 'fleet/work-2',
+      merged: false,
+    }), state: 'closed' as const }
+    const forge = fakeForge({ prs: [mergedPr()], closed: [abandoned] })
+    forge.refuseRetarget = true
+    const seen = harness(forge, { projection: [mergedPr()] })
+    const outcome = await seen.run(scheduleContext())
+
+    assert.deepEqual(seen.forge.retargeted, [], 'a closed PR is never retargeted')
+    assert.deepEqual(seen.forge.deleted, [{ branch: BRANCH, sha: HEAD }])
+    assert.equal(outcome.actionsFailed, 0)
   })
 
   it('leaves a branch whose PR was closed without merging, and tells the owner', async () => {
