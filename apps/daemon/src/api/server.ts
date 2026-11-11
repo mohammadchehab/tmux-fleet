@@ -9,7 +9,7 @@
  */
 
 import { createServer, type Server, type Socket } from 'node:net'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { fleetError, type FleetError } from '@fleet/foundation-core'
 import type { DaemonApi, DaemonResponse } from '@fleet/foundation-contracts'
@@ -55,7 +55,10 @@ const isDown = (line: string): boolean => {
 }
 
 export const createDaemonServer = async (deps: ServerDeps): Promise<DaemonServer> => {
-  await mkdir(dirname(deps.socketPath), { recursive: true })
+  // 0700 when this creates the directory: what crosses the socket can include a
+  // provider key (watch-and-attach §4, `peer.hold`), so the path to it is the
+  // owner's. An existing directory is left as the person made it.
+  await mkdir(dirname(deps.socketPath), { recursive: true, mode: 0o700 })
   // A socket file left by a dead daemon makes `listen` fail with EADDRINUSE and
   // no way to tell live from dead, so it is removed first: the pid file is the
   // liveness answer, not the socket.
@@ -93,13 +96,24 @@ export const createDaemonServer = async (deps: ServerDeps): Promise<DaemonServer
     socket.on('error', () => sockets.delete(socket))
   })
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(deps.socketPath, () => {
-      server.off('error', reject)
-      resolve()
+  // The socket is the owner's alone: `peer.hold` hands the takeover the env the
+  // headless session got, keys included (watch-and-attach §4). The umask makes
+  // the file 0600 from the moment `listen` binds it, so there is no window in
+  // which another user could connect; the chmod after is the same rule stated
+  // once more, for a platform whose bind ignores the umask.
+  const umask = process.umask(0o177)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(deps.socketPath, () => {
+        server.off('error', reject)
+        resolve()
+      })
     })
-  })
+  } finally {
+    process.umask(umask)
+  }
+  await chmod(deps.socketPath, 0o600)
 
   const pid = process.pid
   await writeFile(deps.pidPath, `${String(pid)}\n`, 'utf8')
