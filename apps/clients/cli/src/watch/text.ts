@@ -1,32 +1,17 @@
 /** The small text helpers the watch's render and `--once` share: fitting to a width, wrapping, a clock. */
 
-/**
- * A whole escape sequence: CSI (`\u001b[`, parameters, a final byte), OSC
- * (`\u001b]` up to the BEL or the string terminator), or one of the two-byte
- * escapes (`\u001bc` resets the terminal outright).
- */
-const ESCAPE = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])/g
-/** Whatever is left: C0 (a stray ESC included), DEL, and C1. */
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
-/** Control that separates words rather than drawing anything: the break is worth keeping. */
-const BREAK = /[\n\r\t\v\f]/g
+import { stripControl } from '@fleet/foundation-core'
 
 /**
- * Strip the terminal control characters out of text a peer chose the bytes of.
- *
- * Everything the watch paints that a peer had a hand in — the target of its last
- * tool call, a line of its output, the question it asks, the mail it was sent,
- * even its own id — is a string the peer wrote. A terminal cannot tell a peer's
- * `\u001b[2J` from this view's own colour, so a payload there is not a garbled
- * row: it is a cleared screen, a moved cursor, a rewritten window title, a
- * clipboard write. The render is the only place that still knows which escapes
- * are its own, so it is where the two are told apart (TASK-105).
- *
- * Not `wrap`'s job alone: `--once` prints no escapes of its own and so never
- * passes through `fit` — it strips every line it builds instead.
+ * Where the strip lives, and why it is not here: `stripControl` is in
+ * `@fleet/foundation-core`, because `fleet ls`, `fleet peek` and the watch all
+ * print text a peer wrote and `apps` never import each other (§1.1). The watch
+ * is the one client that also prints colours of its own, so it applies the strip
+ * underneath them — in `fit` and `wrap`, which is every line the board lays
+ * out — rather than to the finished line, which would take its own SGR with it
+ * (TASK-105).
  */
-export const stripControl = (text: string): string =>
-  text.replace(ESCAPE, '').replace(BREAK, ' ').replace(CONTROL, '')
+export { stripControl }
 
 /** Cut to `width` columns, with a marker, or pad with spaces to exactly `width`. */
 export const fit = (text: string, width: number): string => {

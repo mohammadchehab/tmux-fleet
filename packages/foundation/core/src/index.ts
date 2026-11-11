@@ -1,7 +1,8 @@
 /**
  * `@fleet/foundation-core`: ids, the event envelope, `PeerState`, Result/Error,
- * the structural digest, the schema combinators, the profile path layout and the
- * secret redaction text passes through before it leaves the process.
+ * the structural digest, the schema combinators, the profile path layout, the
+ * secret redaction text passes through before it leaves the process, and the
+ * control-character strip text passes through before it reaches a terminal.
  * Pure helpers only — no domain logic that another group owns, and no I/O:
  * `node:crypto` mints ids and hashes, `node:os`/`node:path` derive where a
  * profile's files live, and nothing here opens, reads or writes one
@@ -18,3 +19,4 @@ export * from './peer-state.ts'
 export * from './clock.ts'
 export * from './paths.ts'
 export * from './redact.ts'
+export * from './control.ts'
