@@ -252,8 +252,11 @@ export class CursorSession {
       ...this.#config.executableArgs,
       '-p',
       // The peer's cwd is a checkout fleetd chose, not one a person opened. Without
-      // this a headless turn in a directory cursor has not been told to trust stops
-      // at the workspace-trust prompt with no one to answer it (watch-and-attach §8).
+      // this a headless turn in a directory cursor has not been told to trust exits 1
+      // before it runs ("Workspace Trust Required"), so every turn would fail. Trust
+      // is recorded per directory and outlives the turn, and it loads the repo's own
+      // hooks — `.cursor/hooks.json` and `.claude/settings.json` — which run their
+      // commands whatever the mode, plan included (watch-and-attach §8, TASK-106).
       '--trust',
       '--output-format',
       'stream-json',

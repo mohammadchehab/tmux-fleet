@@ -326,10 +326,15 @@ running; a held peer's pane shows a banner with the count of waiting messages.
 
 - **Sender attribution.** `fleet send` stamps every message `from: user`. `SendParams` gains the sender, taken from
   `FLEET_PEER` when set, so mail a peer sends — headless or during a takeover — is attributed to it.
-- **Cursor trust.** The Cursor adapter never passes `--trust`, so a headless turn in an untrusted directory stops at the
-  workspace-trust prompt. The adapter passes it. That means a repo's `.cursor` MCP servers and hooks run without the
-  prompt. This is accepted because a peer's cwd is always the profile's own checkout or a worktree fleetd made of it:
-  the person chose that repo when they wrote the profile.
+- **Cursor trust.** The Cursor adapter never passed `--trust`, so a headless turn in an untrusted directory exited 1
+  ("Workspace Trust Required") before it ran. The adapter passes it. Trust is recorded per directory
+  (`~/.cursor/projects/<path>/.workspace-trusted`) and outlives the turn. It means the repo's own hooks run without
+  the prompt: `.cursor/hooks.json` and, because cursor-agent reads them too, `.claude/settings.json`. Their commands
+  run in plan mode as in any other (verified for TASK-106 on cursor-agent 2026.11.11: `beforeReadFile`, `sessionEnd`
+  and a Claude `PreToolUse` hook all ran under `-p --trust --mode plan`), and the CLI has no switch to skip project
+  hooks. This is accepted because a peer's cwd is always the profile's own checkout or a worktree fleetd made of it:
+  the person chose that repo when they wrote the profile, and its hooks are the repo's code like the rest of it. A
+  profile key would not make it safer, because without trust a cursor peer cannot run at all.
 
 Both are bugs today and ship separately from this design.
 
