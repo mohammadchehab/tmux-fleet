@@ -33,6 +33,7 @@ import {
   refOf,
   state,
   tick,
+  tokenReport,
   work,
   T0,
 } from './support/state.ts'
@@ -934,4 +935,42 @@ test('a heartbeat has no note to read, so a blocked note never asks twice from t
 test('a note about a Work the fleet does not have is left in the log rather than guessed at', () => {
   const { snapshot, note } = noted({ workId: 'wrk_00000000000000ff' })
   assert.deepEqual(decide({ state: snapshot, tick: tick(), event: note }).actions, [])
+})
+
+// -------------------------------------------------------------- the ledger the rules read (TASK-72)
+// `inputsHash` claims to cover everything the rules could have read. The spend cap reads `tokens` and the judge rules
+// read `judge`, so a state that differs only there must hash differently: a replay over a different bill is not a
+// replay of this one, and a cap decided on a stale bill must not be recognised as current.
+
+test('the hash covers the ledger: a different bill is a different input', () => {
+  const base = state({ peers: [peer()] })
+  const bill = (costUsd: number) => state({ peers: [peer()], tokens: [tokenReport({ costUsd })] })
+
+  assert.notEqual(decide({ state: base, tick: tick() }).inputsHash, decide({ state: bill(3), tick: tick() }).inputsHash)
+  assert.notEqual(decide({ state: bill(3), tick: tick() }).inputsHash, decide({ state: bill(4), tick: tick() }).inputsHash)
+})
+
+test('the hash covers the judge questions: a question answered since is a different input', () => {
+  const question = {
+    questionId: 'jq_0000000000000001' as never,
+    kind: 'judge' as never,
+    inputsHash: 'abcdef0123456789',
+    askedAt: '2026-11-10T09:00:00.000Z',
+  }
+  const open = state({ peers: [peer()], judge: [question] })
+  const answered = state({
+    peers: [peer()],
+    judge: [{ ...question, answer: 'merge', answeredAt: '2026-11-10T09:05:00.000Z', model: 'opus' } as never],
+  })
+
+  assert.notEqual(decide({ state: open, tick: tick() }).inputsHash, decide({ state: answered, tick: tick() }).inputsHash)
+})
+
+test('the ledger hashes alike in any order: a store s answer order is not an input (TASK-72)', () => {
+  const a = tokenReport({ peerId: 'a' as never, costUsd: 1 })
+  const b = tokenReport({ peerId: 'b' as never, costUsd: 2 })
+  const left = state({ peers: [peer()], tokens: [a, b] })
+  const right = state({ peers: [peer()], tokens: [b, a] })
+
+  assert.equal(decide({ state: left, tick: tick() }).inputsHash, decide({ state: right, tick: tick() }).inputsHash)
 })
