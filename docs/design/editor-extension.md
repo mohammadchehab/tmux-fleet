@@ -90,7 +90,8 @@ Clicking a peer opens its output channel. Its context menu and inline buttons ar
 | stopped | Start |
 
 Clicking a decision opens a quick pick of its options; choosing one calls `decide`. Send a message opens an input box
-and sends through the Mailbox as the person.
+and sends through the Mailbox as the person, as kind `nudge`: from this window a message is always a person prodding a
+running peer.
 
 A status bar item shows `Fleet: 4 peers · 2 need you` and opens the side bar.
 
@@ -153,6 +154,9 @@ machine.
     each server's own CLI (`code-server` / `cursor-server --install-extension <vsix>`). A local `code --install-extension`
     never carries a file-installed package to a remote host, so running the command on the fleet's host is the only way
     that works.
+  The package installed is `--vsix <path>`, or by default the newest one built into `apps/clients/editor/dist`, until
+  releases carry it. Whether a host already has the extension is read from its extensions directory, not by running the
+  editor CLI, because `fleet up` asks on every start.
   A server appears the first time an editor connects to that host, so `fleet up` prints one line when it finds an
   editor or editor server without the extension, naming the command to run. `fleet editor uninstall` reverses it.
 - Packaging is `vsce package` on the bundled output. The manifest carries a repository field and a licence file, so
