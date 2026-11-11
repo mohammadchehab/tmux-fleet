@@ -404,6 +404,12 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
         // we don't fail the decide call in that case, as the decision.answered event is already appended.
         await deps.supervisor.answerApproval(input.id, decision.peerId, input.decision as 'allow' | 'deny')
       }
+      // A peer_question is the same route with the label the person chose (TASK-118): the
+      // question was the peer's, so only its session can answer it, and `answeredEvent`
+      // has already refused a label the question did not offer.
+      if (decision.kind === 'peer_question' && decision.peerId !== undefined) {
+        await deps.supervisor.answerQuestion(input.id, decision.peerId, input.decision)
+      }
 
       return (await read.decisions.get(input.id)) ?? decision
     },

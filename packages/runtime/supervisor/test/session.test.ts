@@ -101,6 +101,8 @@ interface Rig {
   readonly provider: Provider
   /** Every approval the wrapper answered through the provider, in order. */
   readonly responded: { sessionId: string; requestId: string; decision: string }[]
+  /** Every question the wrapper answered through the provider, in order (TASK-118). */
+  readonly answered: { sessionId: string; questionId: string; answer: readonly string[] }[]
   /** Every recovery the wrapper asked for, with the failure and handoff it was told about. */
   readonly recovered: { from: string; failure: unknown; stateFile: unknown }[]
   readonly recover: (
@@ -140,6 +142,7 @@ const rig = (
   const records: SessionRecord[] = []
   const recovered: { from: string; failure: unknown; stateFile: unknown }[] = []
   const responded: { sessionId: string; requestId: string; decision: string }[] = []
+  const answered: { sessionId: string; questionId: string; answer: readonly string[] }[] = []
 
   const recover = async (
     from: SessionHandle,
@@ -175,6 +178,10 @@ const rig = (
       if (options.respondNotFound === true) throw fleetError('not_found', `no pending approval ${requestId}`)
       responded.push({ sessionId: h.sessionId, requestId, decision })
     },
+    answer: async (h: SessionHandle, questionId: string, answer: readonly string[]) => {
+      if (options.respondNotFound === true) throw fleetError('not_found', `no open question ${questionId}`)
+      answered.push({ sessionId: h.sessionId, questionId, answer })
+    },
     ...(options.spend === undefined ? {} : { turnSpend: () => options.spend }),
     stop: async (h: SessionHandle) => {
       // The adapter synthesises `session.ended` when we stop it (§4); the rig does the same.
@@ -184,7 +191,7 @@ const rig = (
     },
   } as unknown as Provider
 
-  return { feeds, sent, records, provider, responded, recovered, recover }
+  return { feeds, sent, records, provider, responded, answered, recovered, recover }
 }
 
 /** A purge stub that does what the real one does to the stream: ask, then stop. */
@@ -1543,6 +1550,157 @@ test('an approval the provider no longer holds is not answered, and says so', as
   })
   await until(() => requestedDecisions(r).length === 1, 'the decision to be requested')
   assert.equal(await session.answerApproval(requestedDecisions(r)[0]!.decisionId, 'allow'), false)
+
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({ type: 'session.ended', reason: 'stopped' })
+  await run
+})
+
+// ------------------------------------------------- questions as decisions (TASK-118)
+
+test('a question a peer is blocked on becomes a decision a person can answer (TASK-118)', async () => {
+  // Same gap as TASK-115, for `question.asked`: the peer sat in `waiting_input`
+  // with its question nowhere in `fleet decide`, and answering it meant attaching
+  // to the session by hand. The supervisor reads the stream, so it is where the
+  // question becomes a §6.1 decision — options are the labels the peer offered.
+  const r = rig()
+  const session = approvalSession(r)
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  const questionId = 'qst_0123456789abcdef' as QuestionId
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), {
+    type: 'question.asked',
+    turnId,
+    questionId,
+    questions: [
+      {
+        question: 'Which branch should the stack target?',
+        header: 'Base',
+        options: [{ label: 'main' }, { label: 'release/2.x' }],
+      },
+    ],
+  })
+  await until(() => requestedDecisions(r).length === 1, 'the decision to be requested')
+
+  const [decision] = requestedDecisions(r)
+  assert.ok(decision !== undefined)
+  assert.equal(decision.kind, 'peer_question')
+  assert.deepEqual(decision.options, ['main', 'release/2.x'])
+  assert.equal(decision.routedTo, 'user')
+  assert.equal(decision.peerId, peerId)
+  assert.match(decision.question, /engineer-1/)
+  assert.match(decision.question, /Which branch should the stack target\?/)
+  assert.equal(session.state, 'waiting_input')
+  assert.deepEqual(r.records.flatMap((record) => appendIssues(record)), [], 'and the store would take it')
+
+  // The answer goes to the session that asked, by the provider's own id, as the
+  // contract's one label per question in order.
+  assert.equal(await session.answerQuestion(decision.decisionId, 'release/2.x'), true)
+  assert.deepEqual(r.answered, [{ sessionId: 'ses_aaaaaaaaaaaaaaaa', questionId, answer: ['release/2.x'] }])
+  // Once is all a question can be answered.
+  assert.equal(await session.answerQuestion(decision.decisionId, 'main'), false)
+  assert.equal(r.answered.length, 1)
+
+  // The session ending afterwards does not close a decision the person already answered.
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(ended(), { type: 'session.ended', reason: 'stopped' })
+  await run
+  assert.deepEqual(answeredDecisions(r), [])
+})
+
+test('a question with several parts is one decision per part, answered together (TASK-118)', async () => {
+  // `answer()` takes one label per question in order and settles the whole ask at
+  // once, so the wrapper holds each part's answer until the last one arrives —
+  // answering half an ask would be an answer the provider cannot apply.
+  const r = rig()
+  const session = approvalSession(r)
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  const questionId = 'qst_0123456789abcdef' as QuestionId
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), {
+    type: 'question.asked',
+    turnId,
+    questionId,
+    questions: [
+      { question: 'Merge the PR now?', options: [{ label: 'yes' }, { label: 'no' }] },
+      { question: 'Then rebase the stack?', options: [{ label: 'yes' }, { label: 'no' }] },
+    ],
+  })
+  await until(() => requestedDecisions(r).length === 2, 'both decisions to be requested')
+
+  const [first, second] = requestedDecisions(r)
+  assert.match(first!.question, /Merge the PR now\?/)
+  assert.match(second!.question, /Then rebase the stack\?/)
+  assert.notEqual(first!.decisionId, second!.decisionId, 'each part is its own row in the inbox')
+
+  assert.equal(await session.answerQuestion(first!.decisionId, 'no'), true)
+  assert.deepEqual(r.answered, [], 'the ask is not answered until every part is')
+
+  assert.equal(await session.answerQuestion(second!.decisionId, 'yes'), true)
+  assert.deepEqual(r.answered, [{ sessionId: 'ses_aaaaaaaaaaaaaaaa', questionId, answer: ['no', 'yes'] }])
+
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(ended(), { type: 'session.ended', reason: 'stopped' })
+  await run
+})
+
+test('a question that dies unanswered closes its decision, so the inbox never offers a dead one (TASK-118)', async () => {
+  const r = rig()
+  const session = approvalSession(r)
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  const questionId = 'qst_0123456789abcdef' as QuestionId
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
+    started(),
+    { type: 'question.asked', turnId, questionId, questions: [{ question: 'ship it?', options: [{ label: 'yes' }, { label: 'no' }] }] },
+    { type: 'question.abandoned', questionId },
+  )
+  await until(() => answeredDecisions(r).length === 1, 'the decision to be closed')
+
+  const [requested] = requestedDecisions(r)
+  const [answered] = answeredDecisions(r)
+  assert.equal(answered?.decisionId, requested?.decisionId)
+  assert.equal(answered?.source, 'rule')
+  assert.equal(answered?.option, undefined, 'nobody chose yes or no')
+  assert.match(answered?.text ?? '', /abandoned/)
+  assert.equal(await session.answerQuestion(requested!.decisionId, 'yes'), false)
+  assert.deepEqual(r.answered, [])
+
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({ type: 'session.ended', reason: 'stopped' })
+  await run
+  assert.equal(answeredDecisions(r).length, 1, 'closed once, not again at the end')
+})
+
+test('the decision for a question is named by the question, so a replay names it the same (TASK-118)', async () => {
+  const ids: string[] = []
+  for (let i = 0; i < 2; i += 1) {
+    const r = rig()
+    const session = approvalSession(r)
+    const run = session.run()
+    await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+    r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(
+      started(),
+      { type: 'question.asked', turnId, questionId: 'qst_0123456789abcdef' as QuestionId, questions: [{ question: 'ship it?', options: [{ label: 'yes' }] }] },
+      { type: 'session.ended', reason: 'stopped' },
+    )
+    await run
+    const [decision] = requestedDecisions(r)
+    assert.ok(decision !== undefined)
+    ids.push(decision.decisionId)
+  }
+  assert.equal(ids[0], ids[1])
+})
+
+test('a question the provider no longer holds is not answered, and says so (TASK-118)', async () => {
+  const r = rig(undefined, { respondNotFound: true })
+  const session = approvalSession(r)
+  const run = session.run()
+  await until(() => r.feeds.has('ses_aaaaaaaaaaaaaaaa'), 'the stream to be subscribed')
+  r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push(started(), {
+    type: 'question.asked',
+    turnId,
+    questionId: 'qst_0123456789abcdef' as QuestionId,
+    questions: [{ question: 'ship it?', options: [{ label: 'yes' }] }],
+  })
+  await until(() => requestedDecisions(r).length === 1, 'the decision to be requested')
+  assert.equal(await session.answerQuestion(requestedDecisions(r)[0]!.decisionId, 'yes'), false)
 
   r.feeds.get('ses_aaaaaaaaaaaaaaaa')?.push({ type: 'session.ended', reason: 'stopped' })
   await run

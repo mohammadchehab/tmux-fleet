@@ -166,6 +166,10 @@ const fakeSupervisor = (
       log.push(`answerApproval(${decisionId}, ${peer}, ${decision})`)
       return true
     },
+    async answerQuestion(decisionId: string, peer: PeerId, option: string) {
+      log.push(`answerQuestion(${decisionId}, ${peer}, ${option})`)
+      return true
+    },
   }
 }
 
@@ -935,6 +939,41 @@ test("§6.1: a tool_approval decision answered by `decide allow` routes to the p
   // Answer the decision
   const result = await daemon.decide({ id: decisionId, decision: 'allow', note: undefined })
   assert.equal(result.state, 'answered')
+
+  await daemon.down()
+})
+
+test("§6.1: a peer_question decision answered by `fleet decide` routes the label to the peer's session (TASK-118)", async () => {
+  const { daemon, store, supervisor } = await harness()
+  await daemon.up()
+
+  const decisionId = newDecisionId()
+  const peerId = 'engineer-1' as PeerId
+  await store.append([
+    {
+      ts: '2026-11-10T10:00:00.000Z',
+      type: 'decision.requested',
+      subject: decisionId,
+      actor: 'scheduler',
+      data: {
+        decisionId,
+        kind: 'peer_question',
+        question: 'engineer-1 asks: Which branch should the stack target?',
+        options: ['main', 'release/2.x'],
+        inputsHash: 'abcdef0123456789',
+        peerId,
+        requestId: 'qst_0123456789abcdef',
+      },
+    },
+  ])
+
+  const result = await daemon.decide({ id: decisionId, decision: 'release/2.x', note: undefined })
+  assert.equal(result.state, 'answered')
+  assert.equal(result.option, 'release/2.x')
+  assert.ok(
+    supervisor.log.includes(`answerQuestion(${decisionId}, ${peerId}, release/2.x)`),
+    `the label reaches the session that asked: ${supervisor.log.join(', ')}`,
+  )
 
   await daemon.down()
 })

@@ -223,6 +223,9 @@ const fakeSupervisor = (sessionId: SessionId): Supervisor & { readonly sent: rea
     async startPeer() {
       throw new Error('this fake does not start one peer')
     },
+    async answerQuestion() {
+      throw new Error('this fake answers no question')
+    },
     async answerApproval() {
       return false
     },
