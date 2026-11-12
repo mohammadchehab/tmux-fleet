@@ -76,11 +76,11 @@ const GIT_READ =
 const WORD_START = '(?:^|[\\s;&|(\\x60/"\'])'
 
 /**
- * A push to main/master, a force push (`-f`, `--force`, `--force-with-lease`, a `+` refspec), and a
+ * A push to main/master, a force or destructive push (`-f`, `--force`, `--force-with-lease`, `--mirror`, `--all`, `--delete`, a `+` or wildcard refspec), and a
  * PR merge or a raw `gh api` call: the supervisor's to do, so a peer asks. A branch push stays routine.
  */
 const SUPERVISOR_ONLY =
-  `${WORD_START}(?:git\\b[^\\n]*\\bpush\\b[^\\n]*(?:\\b(?:main|master)\\b|--force|\\s-[a-zA-Z]*f|\\s\\+\\S)|gh\\b[^\\n]*\\b(?:merge|api)\\b)`
+  `${WORD_START}(?:git\\b[\\s\\S]*\\bpush\\b[\\s\\S]*(?:\\b(?:main|master)\\b|--force|--mirror|--all\\b|--delete\\b|\\s-[a-zA-Z]*[fd]|\\s\\+\\S|\\*)|gh\\b[\\s\\S]*\\b(?:merge|api)\\b)`
 
 /**
  * The routine default set: decision-6 option 3. The one place its rules are written.
