@@ -34,8 +34,9 @@ import {
   type PeerAction,
 } from './actions.ts'
 import { FleetConnection, PROTOCOL_VERSION, type FleetState } from './connection.ts'
-import { daemonAt, type FleetDaemon } from './daemon.ts'
+import { daemonAt, watchDaemon, type FleetDaemon } from './daemon.ts'
 import { discover } from './discovery.ts'
+import { PeerOutputs, type OpenWatch } from './output.ts'
 import type { Disposable, EditorPort, PickItem } from './port.ts'
 import { runningProfiles } from './profiles.ts'
 import { countOf, type FleetRows } from './rows.ts'
@@ -51,6 +52,8 @@ export interface ActivationDeps {
   /** Overridden in tests; the real one is `daemonAt` (`daemon.ts`). */
   readonly daemonFor?: (socketPath: string) => FleetDaemon
   readonly pollMs?: number
+  /** Overridden in tests; the real one is `watchDaemon` (`daemon.ts`). */
+  readonly openWatch?: OpenWatch
 }
 
 export interface Activation extends Disposable {
@@ -171,7 +174,11 @@ export const activateWith = (deps: ActivationDeps): Activation => {
     status.set(bar.text, bar.tooltip, state.phase === 'connected' ? 'fleet.peers.focus' : 'fleet.focus')
   }
 
+  // Declared before the connection so the first state it reports can reach it.
+  let outputs: PeerOutputs | undefined
+
   const onState = (state: FleetState): void => {
+    outputs?.socketChanged()
     try {
       render(state)
     } catch (error) {
@@ -193,6 +200,14 @@ export const activateWith = (deps: ActivationDeps): Activation => {
     onState,
     ...(deps.pollMs === undefined ? {} : { pollMs: deps.pollMs }),
   })
+
+  outputs = new PeerOutputs({
+    createOutput: (name) => editor.createOutput(name),
+    openWatch: deps.openWatch ?? watchDaemon,
+    socketPath: () => (connection.current().phase === 'connected' ? connection.socket() : undefined),
+    log: (line) => editor.log(line),
+  })
+  const peerOutputs = outputs
 
   /** The daemon this window is talking to, or `undefined` when it is not talking to one. */
   const daemonNow = (): { readonly daemon: FleetDaemon; readonly profile: string } | undefined => {
@@ -331,8 +346,31 @@ export const activateWith = (deps: ActivationDeps): Activation => {
     editor.openTerminal('fleet: up', [cli(), 'up'])
   }
 
-  const register = (id: string, handler: (argument?: string) => void): void => {
+  /**
+   * The editor hands a command the row's `commandArg` when the row is clicked,
+   * and the row's whole element when a context-menu item runs it. Both name the
+   * same peer or decision; this reads either, so a menu item does not send an
+   * object where an id belongs.
+   */
+  const idOf = (argument: unknown, field: 'peerId' | 'decisionId'): string | undefined => {
+    if (typeof argument === 'string') return argument === '' ? undefined : argument
+    if (typeof argument !== 'object' || argument === null) return undefined
+    if (field === 'peerId') {
+      const peerId = (argument as { readonly peerId?: unknown }).peerId
+      return typeof peerId === 'string' ? peerId : undefined
+    }
+    const decisionId = (argument as { readonly decision?: { readonly decisionId?: unknown } }).decision?.decisionId
+    return typeof decisionId === 'string' ? decisionId : undefined
+  }
+
+  const register = (id: string, handler: (argument?: unknown) => void): void => {
     disposables.push(editor.registerCommand(id, handler))
+  }
+  const onPeer = (id: string, run: (peerId: string) => void): void => {
+    register(id, (argument) => {
+      const peerId = idOf(argument, 'peerId')
+      if (peerId !== undefined) run(peerId)
+    })
   }
 
   register('fleet.refresh', () => connection.refresh())
@@ -343,27 +381,17 @@ export const activateWith = (deps: ActivationDeps): Activation => {
   register('fleet.choose-profile', () => {
     void chooseProfile()
   })
-  register('fleet.decision.answer', (decisionId) => {
+  register('fleet.decision.answer', (argument) => {
+    const decisionId = idOf(argument, 'decisionId')
     if (decisionId !== undefined) void answer(decisionId)
   })
-  register('fleet.peer.actions', (peerId) => {
-    if (peerId !== undefined) void offerActions(peerId)
-  })
-  register('fleet.peer.takeover', (peerId) => {
-    if (peerId !== undefined) void runAction(peerId, 'takeover')
-  })
-  register('fleet.peer.takeover.now', (peerId) => {
-    if (peerId !== undefined) void runAction(peerId, 'takeover-now')
-  })
-  register('fleet.peer.send', (peerId) => {
-    if (peerId !== undefined) void runAction(peerId, 'send')
-  })
-  register('fleet.peer.stop', (peerId) => {
-    if (peerId !== undefined) void runAction(peerId, 'stop')
-  })
-  register('fleet.peer.start', (peerId) => {
-    if (peerId !== undefined) void runAction(peerId, 'start')
-  })
+  onPeer('fleet.peer.output', (peerId) => peerOutputs.show(peerId))
+  onPeer('fleet.peer.actions', (peerId) => void offerActions(peerId))
+  onPeer('fleet.peer.takeover', (peerId) => void runAction(peerId, 'takeover'))
+  onPeer('fleet.peer.takeover.now', (peerId) => void runAction(peerId, 'takeover-now'))
+  onPeer('fleet.peer.send', (peerId) => void runAction(peerId, 'send'))
+  onPeer('fleet.peer.stop', (peerId) => void runAction(peerId, 'stop'))
+  onPeer('fleet.peer.start', (peerId) => void runAction(peerId, 'start'))
 
   // A changed setting is a changed fleet: `fleet.profile` and `fleet.socket` are
   // read on every poll, so the next one picks the change up.
@@ -386,6 +414,7 @@ export const activateWith = (deps: ActivationDeps): Activation => {
     answer,
     dispose: () => {
       connection.stop()
+      peerOutputs.dispose()
       for (const disposable of disposables) disposable.dispose()
     },
   }
