@@ -188,10 +188,18 @@ class SqliteEventStore implements EventStore {
   }
 
   async read(from: Seq, limit = 1000): Promise<readonly FleetEvent[]> {
-    return this.#db
-      .all<EventRow>(`${SELECT_EVENTS} WHERE seq >= ? ORDER BY seq LIMIT ?`, from, limit)
-      .map((row) => toEvent(row))
-      .filter((event): event is FleetEvent => event !== undefined)
+    // The limit counts events this build can read, not rows: a row of an unregistered type is skipped, and
+    // `LIMIT ?` in SQL would let skipped rows use up the page, so a short or empty page would look like the end
+    // of the log. Walk the rows and stop once `limit` events are collected.
+    const events: FleetEvent[] = []
+    if (limit <= 0) return events
+    for (const row of this.#db.iterate<EventRow>(`${SELECT_EVENTS} WHERE seq >= ? ORDER BY seq`, from)) {
+      const event = toEvent(row)
+      if (event === undefined) continue
+      events.push(event)
+      if (events.length >= limit) break
+    }
+    return events
   }
 
   async latest(type: FleetEvent['type'], subject: string): Promise<FleetEvent | undefined> {
