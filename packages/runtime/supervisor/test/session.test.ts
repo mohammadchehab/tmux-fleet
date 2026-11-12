@@ -1872,3 +1872,67 @@ test('a store that refuses the activity rows leaves the session live, and says w
   assert.equal(failures[2]?.turnId, undefined, 'a compaction between records belongs to no turn, and says so')
   assert.match((failures[1]?.error as Error).message, /the store refused peer\.tool_used/)
 })
+
+// ------------------------------------------------ a refused decision row is not a dead session (TASK-130)
+// The rows that raise and close §6.1 decisions were the ones TASK-82 left behind: `#raiseApproval`, `#raiseQuestion`,
+// `#closeApproval` and `#closeQuestionDecisions` still awaited the store bare, so the first refusal threw out of the
+// loop and the peer was recovered. A decision the store would not take is a bookkeeping failure, and a person's
+// inbox is not the session's life.
+
+test('a store that refuses the decision rows leaves the session live, and says what it lost (TASK-130)', async (t) => {
+  const r = rig()
+  const { session, failures } = refusingSession(
+    r,
+    (record) => record.type === 'decision.requested' || record.type === 'decision.answered',
+  )
+  t.after(() => session.stop())
+
+  const run = session.run()
+  r.feeds
+    .get('ses_aaaaaaaaaaaaaaaa')
+    ?.push(
+      started(),
+      {
+        type: 'approval.requested',
+        turnId,
+        requestId: 'apr_0123456789abcdef',
+        tool: 'Bash',
+        summary: 'git push --force origin main',
+      },
+      { type: 'approval.abandoned', requestId: 'apr_0123456789abcdef' },
+      {
+        type: 'question.asked',
+        turnId,
+        questionId: 'qst_0123456789abcdef' as QuestionId,
+        questions: [{ question: 'ship it?', options: [{ label: 'yes' }, { label: 'no' }] }],
+      },
+      { type: 'question.abandoned', questionId: 'qst_0123456789abcdef' as QuestionId },
+      ended(),
+      { type: 'session.ended', reason: 'stopped' },
+    )
+  await until(
+    () => r.recovered.length > 0 || session.state === 'ended',
+    'the stream to reach its end, or the peer to have been recovered',
+  )
+
+  assert.deepEqual(r.recovered, [], 'the peer did not fail: only the store did')
+  assert.equal(session.state, 'ended')
+  await run
+  // One approval raised and abandoned, then one question raised and abandoned, and every one of the four refused —
+  // the sequence is the whole of what the loop did with them, and the loop is still here to say it.
+  assert.deepEqual(
+    failures.map((failure) => failure.record),
+    ['decision.requested', 'decision.answered', 'decision.requested', 'decision.answered'],
+  )
+  // A close names the turn the decision belonged to, not the event that closed it: `approval.abandoned` and
+  // `question.abandoned` carry no turn of their own, and the decision's own turn is the one a person would look up.
+  assert.deepEqual(
+    failures.map((failure) => failure.turnId),
+    [turnId, turnId, turnId, turnId],
+  )
+  // Nothing else went missing: the state changes around them landed.
+  assert.deepEqual(
+    r.records.filter((record) => record.type === 'peer.state_changed').map((record) => record.data.state),
+    ['working', 'waiting_input', 'working', 'waiting_input', 'working', 'idle', 'ended'],
+  )
+})
