@@ -21,11 +21,12 @@ import { openSqliteStore, type EventStore } from '@fleet/foundation-store'
 import type { RoutineContext } from '@fleet/orchestration-routines'
 import type { ScanRequest } from '@fleet/security-findings'
 import type { ScannerId, ToolIo } from '@fleet/security-scanners'
-import { createSecurityScanFactory, prTargetsOf, scanTargets, securityScanned } from '../src/routines/security.ts'
+import { createSecurityScanFactory, type Scratch, prTargetsOf, scanTargets, securityScanned } from '../src/routines/security.ts'
 
 const repo = 'acme/fleet' as Repo
 const sha = 'a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0' as Sha
 const checkout = '/tmp/fleet/acme-fleet'
+const scratchRoot = '/tmp/fleet-scan-test'
 const reportPath = (name: string): string => `/tmp/fleet-reports/${name}`
 
 const at = '2026-11-10T09:00:00.000Z'
@@ -92,9 +93,14 @@ const fakeIo = (options: {
   readonly calls?: Call[]
   /** What `git rev-parse HEAD` says in each checkout; a checkout not listed is at `sha`. */
   readonly heads?: Readonly<Record<string, string>>
-  /** Checkouts whose tree has uncommitted changes. */
-  readonly dirty?: readonly string[]
+  /** Checkouts whose object database lacks the commit. */
+  readonly missing?: readonly string[]
+  /** `git worktree add` fails. */
+  readonly addFails?: boolean
+  /** Every git call, in order. */
+  readonly gitCalls?: { cwd: string; args: readonly string[] }[]
 }): ToolIo => {
+  const gitCalls = options.gitCalls
   const installed = options.installed ?? ['semgrep', 'gitleaks', 'osv-scanner']
   const broken = options.broken ?? []
   // A tool that ran and found nothing still prints a report; a test that wants
@@ -113,8 +119,20 @@ const fakeIo = (options: {
       if (binary === 'git') {
         // The daemon asks what a checkout is at before it scans it; never a process.
         const where = execOptions?.cwd ?? ''
-        if (args[0] === 'rev-parse') return { code: 0, stdout: `${options.heads?.[where] ?? sha}\n`, stderr: '' }
-        if (args[0] === 'status') return { code: 0, stdout: options.dirty?.includes(where) === true ? ' M src/run.ts\n' : '', stderr: '' }
+        const git = args.filter((arg, index) => !(arg === '-c' || args[index - 1] === '-c'))
+        gitCalls?.push({ cwd: where, args })
+        if (git[0] === 'cat-file') {
+          return options.missing?.includes(where) === true
+            ? { code: 128, stdout: '', stderr: 'fatal: Not a valid object name' }
+            : { code: 0, stdout: '', stderr: '' }
+        }
+        if (git[0] === 'worktree' && git[1] === 'add') {
+          return options.addFails === true
+            ? { code: 128, stdout: '', stderr: 'fatal: cannot add' }
+            : { code: 0, stdout: '', stderr: '' }
+        }
+        if (git[0] === 'rev-parse') return { code: 0, stdout: `${options.heads?.[where] ?? sha}\n`, stderr: '' }
+        return { code: 0, stdout: '', stderr: '' }
       }
       options.calls?.push({ binary, args, ...(execOptions?.cwd === undefined ? {} : { cwd: execOptions.cwd }) })
       if (broken.includes(binary)) throw new Error(`${binary}: spawn ENOENT`)
@@ -134,7 +152,7 @@ const semgrepReport = (): string =>
     results: [
       {
         check_id: 'typescript.lang.security.audit.shell-injection',
-        path: `${checkout}/src/run.ts`,
+        path: `${scratchRoot}/snapshot/src/run.ts`,
         start: { line: 12 },
         extra: { severity: 'error', lines: '  exec(userInput)' },
       },
@@ -159,13 +177,25 @@ const findingsOf = async (store: EventStore) => (await store.reader()).findings.
 /** The event the scheduler hands the body when a `pr.opened` wakes it; `seq` is the store's, not the body's business. */
 const opened = { seq: 2, ...prOpened } as FleetEvent
 
-const scan = (store: EventStore, io: ToolIo, options?: { readonly scanners?: readonly ScannerId[] }) =>
+const snapshot = `${scratchRoot}/snapshot`
+const fakeScratch = (log: string[] = []): Scratch => ({
+  make: async () => {
+    log.push('make')
+    return scratchRoot
+  },
+  remove: async (path) => {
+    log.push(`remove ${path}`)
+  },
+})
+
+const scan = (store: EventStore, io: ToolIo, options?: { readonly scanners?: readonly ScannerId[]; readonly scratch?: Scratch }) =>
   securityScanned(
     {
       store: { append: (batch) => store.append(batch) },
       io,
       scanners: options?.scanners ?? ['semgrep', 'gitleaks', 'osv-scanner'],
       reportPath,
+      scratch: options?.scratch ?? fakeScratch(),
       read: store.reader(),
     },
     context(opened),
@@ -187,60 +217,68 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
     assert.equal(body.kind, 'security-scan')
   })
 
-  it('scans the checkout the fleet made for that repository, not the daemon’s cwd', async () => {
+  it('scans a throwaway snapshot of the commit, not the fleet’s live worktree', async () => {
     const store = await open()
     await store.append([worktreeCreated, prOpened])
     const calls: Call[] = []
+    const gitCalls: { cwd: string; args: readonly string[] }[] = []
+    const log: string[] = []
 
-    const outcome = await scan(store, fakeIo({ stdout: { semgrep: semgrepReport() }, calls }))
+    const outcome = await scan(store, fakeIo({ stdout: { semgrep: semgrepReport() }, calls, gitCalls }), { scratch: fakeScratch(log) })
     assert.equal(outcome.actionsFailed, 0)
     assert.ok(calls.length > 0)
-    for (const call of calls) assert.equal(call.cwd, checkout, `${call.binary} runs in the fleet's worktree`)
-
+    for (const call of calls) assert.equal(call.cwd, snapshot, `${call.binary} runs in the snapshot`)
+    const add = gitCalls.find((call) => call.args.includes('add'))
+    assert.deepEqual(add?.args, ['-c', 'core.hooksPath=/dev/null', 'worktree', 'add', '--detach', snapshot, sha])
+    assert.equal(add?.cwd, checkout)
+    assert.ok(gitCalls.some((call) => call.args.join(' ') === `worktree remove --force ${snapshot}`), 'the worktree is unregistered')
+    assert.deepEqual(log, ['make', `remove ${scratchRoot}`], 'the private directory is removed')
     await store.close()
   })
 
-  it('scans the checkout that is at the PR’s head, not the first worktree the repository has', async () => {
-    const store = await open()
-    // The other peer's worktree is listed first and sits on some other commit.
-    await store.append([otherWorktree, worktreeCreated, prOpened])
-    const calls: Call[] = []
-
-    const outcome = await scan(
-      store,
-      fakeIo({ stdout: { semgrep: semgrepReport() }, calls, heads: { '/tmp/fleet/acme-fleet-other': 'f'.repeat(40) } }),
-    )
-
-    assert.equal(outcome.actionsFailed, 0)
-    assert.ok(calls.length > 0)
-    for (const call of calls) assert.equal(call.cwd, checkout, 'the tree the findings are attributed to is the tree that was scanned')
-    await store.close()
-  })
-
-  it('finds the matching checkout whichever worktree it is, not only the one that happens to come first', async () => {
+  it('scans even when every live worktree is on another commit', async () => {
     const store = await open()
     await store.append([worktreeCreated, otherWorktree, prOpened])
     const calls: Call[] = []
 
-    const outcome = await scan(store, fakeIo({ calls, heads: { [checkout]: 'f'.repeat(40) } }))
+    const outcome = await scan(
+      store,
+      fakeIo({ calls, heads: { [checkout]: 'f'.repeat(40), '/tmp/fleet/acme-fleet-other': 'e'.repeat(40) } }),
+      { scratch: fakeScratch() },
+    )
 
     assert.equal(outcome.actionsFailed, 0)
     assert.ok(calls.length > 0)
-    for (const call of calls) assert.equal(call.cwd, '/tmp/fleet/acme-fleet-other')
+    for (const call of calls) assert.equal(call.cwd, snapshot)
     await store.close()
   })
 
-  it('records a skip, and scans nothing, when no checkout is at the PR’s head', async () => {
+  it('takes the commit from whichever worktree has it', async () => {
+    const store = await open()
+    await store.append([worktreeCreated, otherWorktree, prOpened])
+    const gitCalls: { cwd: string; args: readonly string[] }[] = []
+
+    const outcome = await scan(store, fakeIo({ gitCalls, missing: [checkout] }), { scratch: fakeScratch() })
+
+    assert.equal(outcome.actionsFailed, 0)
+    assert.equal(gitCalls.find((call) => call.args.includes('add'))?.cwd, '/tmp/fleet/acme-fleet-other')
+    await store.close()
+  })
+
+  it('records a skip, and scans nothing, when no checkout has the commit', async () => {
     const store = await open()
     await store.append([worktreeCreated, prOpened])
     const calls: Call[] = []
+    const log: string[] = []
 
     const outcome = await scan(
       store,
-      fakeIo({ stdout: { semgrep: semgrepReport() }, calls, heads: { [checkout]: 'f'.repeat(40) } }),
+      fakeIo({ stdout: { semgrep: semgrepReport() }, calls, missing: [checkout] }),
+      { scratch: fakeScratch(log) },
     )
 
-    assert.deepEqual(calls, [], 'a tree on another commit is not scanned and called this commit')
+    assert.deepEqual(calls, [])
+    assert.deepEqual(log, [], 'no scratch directory is made for a commit that cannot be snapshotted')
     assert.equal(outcome.actionsFailed, 1)
     const all = await events(store)
     assert.equal(all.filter((event) => event.type === 'finding.raised').length, 0)
@@ -248,19 +286,59 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
     await store.close()
   })
 
-  it('does not scan a tree with uncommitted changes as if it were the commit', async () => {
+  it('cleans up and records a skip when the snapshot cannot be made', async () => {
     const store = await open()
     await store.append([worktreeCreated, prOpened])
     const calls: Call[] = []
+    const log: string[] = []
 
-    const outcome = await scan(store, fakeIo({ stdout: { semgrep: semgrepReport() }, calls, dirty: [checkout] }))
+    const outcome = await scan(store, fakeIo({ calls, addFails: true }), { scratch: fakeScratch(log) })
 
     assert.deepEqual(calls, [])
+    assert.deepEqual(log, ['make', `remove ${scratchRoot}`])
     assert.equal(outcome.actionsFailed, 1)
     await store.close()
   })
 
-  it('a nightly tick does not scan a checkout that is not at origin/main’s head', async () => {
+  it('cleans up the snapshot when a scan throws', async () => {
+    const store = await open()
+    await store.append([worktreeCreated, prOpened])
+    const log: string[] = []
+
+    await scan(store, fakeIo({ broken: ['semgrep'] }), { scratch: fakeScratch(log) })
+
+    assert.deepEqual(log, ['make', `remove ${scratchRoot}`])
+    await store.close()
+  })
+
+  it('refuses an abbreviated sha, which git would resolve by prefix', async () => {
+    const store = await open()
+    await store.append([worktreeCreated])
+    const gitCalls: { cwd: string; args: readonly string[] }[] = []
+    // Abbreviated shas pass the contract, and a prefix is not the commit a finding names.
+    const bad = {
+      ...opened,
+      data: { ...(opened as { data: object }).data, headSha: 'a1b2c3d' },
+    } as unknown as FleetEvent
+
+    const outcome = await securityScanned(
+      {
+        store: { append: (batch) => store.append(batch) },
+        io: fakeIo({ gitCalls }),
+        scanners: ['semgrep'],
+        reportPath,
+        scratch: fakeScratch(),
+        read: store.reader(),
+      },
+      context(bad),
+    )
+
+    assert.equal(outcome.actionsFailed, 1)
+    assert.equal(gitCalls.some((call) => call.args.includes('add')), false)
+    await store.close()
+  })
+
+  it('a nightly tick scans main’s head from a snapshot although every worktree is on a peer branch', async () => {
     const store = await open()
     await store.append([worktreeCreated])
     const calls: Call[] = []
@@ -268,19 +346,20 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
     const outcome = await securityScanned(
       {
         store: { append: (batch) => store.append(batch) },
-        // The only worktree is a peer's topic branch, on another commit than main's head.
         io: fakeIo({ stdout: { semgrep: semgrepReport() }, calls, heads: { [checkout]: 'f'.repeat(40) } }),
         scanners: ['semgrep'],
         reportPath,
+        scratch: fakeScratch(),
         read: store.reader(),
         nightly: { repos: [repo], branch: 'main', head: headOf({ [checkout]: sha }) },
       },
       context(),
     )
 
-    assert.deepEqual(calls, [], 'main’s sha must not be pinned on a feature branch’s files')
-    assert.equal(outcome.actionsFailed, 1)
-    assert.equal((await events(store)).filter((event) => event.type === 'scan.skipped').length, 1)
+    assert.equal(outcome.actionsFailed, 0)
+    assert.ok(calls.length > 0)
+    for (const call of calls) assert.equal(call.cwd, snapshot)
+    assert.equal((await events(store)).filter((event) => event.type === 'scan.skipped').length, 0)
     await store.close()
   })
 
@@ -399,6 +478,7 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
         io: fakeIo({ stdout: { semgrep: semgrepReport() } }),
         scanners: ['semgrep'],
         reportPath,
+        scratch: fakeScratch(),
         read: store.reader(),
       },
       context(),
@@ -424,6 +504,7 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
         io: fakeIo({ stdout: { semgrep: semgrepReport() } }),
         scanners: ['semgrep'],
         reportPath,
+        scratch: fakeScratch(),
         read: store.reader(),
         nightly: { repos: [repo], branch: 'main', head: headOf({ [checkout]: sha }) },
       },
@@ -450,6 +531,7 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
         io: fakeIo({ stdout: { semgrep: semgrepReport() } }),
         scanners: ['semgrep'],
         reportPath,
+        scratch: fakeScratch(),
         read: store.reader(),
         // The checkout exists, but git cannot name a head for it.
         nightly: { repos: [repo], branch: 'main', head: headOf({}) },
@@ -481,6 +563,7 @@ describe('the security-scan routine the daemon registers (§6.2)', () => {
         io: fakeIo({ stdout: { semgrep: semgrepReport() } }),
         scanners: ['semgrep'],
         reportPath,
+        scratch: fakeScratch(),
         read: store.reader(),
         nightly: { repos: [repo], branch: 'main', head: headOf({}) },
       },

@@ -24,11 +24,16 @@
  *    no copy of it, so there is nothing it meant to scan and nothing to report —
  *    otherwise every repo the fleet is not working in would fail every night.
  *
- * The checkout is the worktree the fleet already made for that repository (§9).
+ * The scan reads an immutable snapshot of the commit — a throwaway detached
+ * worktree made from the repository's worktrees (§9), removed afterwards — never
+ * a peer's live tree, which keeps changing and sits on some other branch.
  * Scanning the daemon's own cwd would be scanning whatever directory `fleetd`
  * happened to start in, which is a different tree on every host.
  */
 
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { AppendEvent, BranchHead, EventSink, FleetEvent, ReadModel } from '@fleet/foundation-contracts'
 import { shortHash, type Repo, type Sha } from '@fleet/foundation-core'
 import type { RoutineContext, RoutineFactory, RoutineOutcome } from '@fleet/orchestration-routines'
@@ -58,6 +63,8 @@ export interface SecurityWiring {
    * the daemon's cwd.
    */
   readonly nightly?: NightlyScan
+  /** Where a snapshot of the scanned commit is made. Absent means the OS temp directory; a test passes a fake. */
+  readonly scratch?: Scratch
 }
 
 /** What the nightly scan needs: which repos, which branch, and how to name its head. */
@@ -124,44 +131,96 @@ const gitIn = async (io: ToolIo, cwd: string, args: readonly string[]): Promise<
   }
 }
 
-/** What looking for the tree at a commit found. */
-type CheckoutAt =
-  | { readonly kind: 'found'; readonly cwd: string }
+/** What making a snapshot of a commit found. */
+type SnapshotAt =
+  | { readonly kind: 'found'; readonly cwd: string; readonly release: () => Promise<void> }
   | { readonly kind: 'none' }
   | { readonly kind: 'unmatched'; readonly reason: string }
 
+/** A private scratch directory for one snapshot, and the way to remove it. */
+export interface Scratch {
+  /** Make an empty directory only this user can enter, and return its path. */
+  readonly make: () => Promise<string>
+  /** Remove a directory `make` returned, and everything in it. Never throws. */
+  readonly remove: (path: string) => Promise<void>
+}
+
+/** The real scratch space: `mkdtemp` in the OS temp directory, which creates it with mode 0700. */
+export const nodeScratch: Scratch = {
+  make: () => mkdtemp(join(tmpdir(), 'fleet-scan-')),
+  remove: async (path) => {
+    try {
+      await rm(path, { recursive: true, force: true })
+    } catch {
+      // Best effort: a leftover scratch directory is private and in the OS temp dir.
+    }
+  },
+}
+
+const fullSha = /^[0-9a-f]{40}([0-9a-f]{24})?$/i
+
 /**
- * The worktree a finding at `sha` may be attributed to: one whose HEAD *is* that
- * commit and whose tree is clean. The fleet has a worktree per peer, on whatever
- * branch that peer is on, so "a worktree of this repository" scans a different
- * tree than the one the finding names — and files a finding under a commit it
- * does not belong to, or clears a commit it never read (§6.2). A repository with
- * no worktree at all is `none` (nothing was meant to be scanned); one with
- * worktrees but none at the commit is `unmatched`, and is recorded.
+ * An immutable snapshot of exactly `sha`: a throwaway detached worktree under a
+ * private temp directory, made from any of the repository's worktrees (they
+ * share one object database). Scanning a peer's live worktree instead is racy —
+ * the peer keeps editing it while the scan runs, so findings could be filed under
+ * a commit the files no longer match — and a peer sits on a `peer/*` branch, so
+ * the nightly scan of main's head would almost never find a tree at that commit.
+ *
+ * Hooks are disabled for the checkout (`core.hooksPath=/dev/null`) because a
+ * repository's `post-checkout` would otherwise run during the scan setup. The
+ * sha is validated as full hex, so it can never be read as a git option; every
+ * command is an argv, never a shell string. The snapshot is removed by `release`,
+ * and on any failure here before it is handed back. A repository with no worktree
+ * at all is `none`; one whose object database lacks the commit is `unmatched`.
  */
-const checkoutAt = async (
-  deps: { readonly read: ReadModel; readonly io: ToolIo },
+const snapshotAt = async (
+  deps: { readonly read: ReadModel; readonly io: ToolIo; readonly scratch: Scratch },
   repo: Repo,
   sha: Sha,
-): Promise<CheckoutAt> => {
+): Promise<SnapshotAt> => {
   const worktrees = (await deps.read.worktrees.all()).filter((worktree) => worktree.repo === repo)
   if (worktrees.length === 0) return { kind: 'none' }
+  if (!fullSha.test(sha)) return { kind: 'unmatched', reason: `${sha} is not a full commit hash` }
 
-  const notes: string[] = []
+  let source: string | undefined
   for (const worktree of worktrees) {
-    const head = await gitIn(deps.io, worktree.path, ['rev-parse', 'HEAD'])
-    if (head?.toLowerCase() !== sha.toLowerCase()) {
-      notes.push(`${worktree.path} is at ${head ?? 'an unreadable HEAD'}`)
-      continue
+    if ((await gitIn(deps.io, worktree.path, ['cat-file', '-e', `${sha}^{commit}`])) !== undefined) {
+      source = worktree.path
+      break
     }
-    const changes = await gitIn(deps.io, worktree.path, ['status', '--porcelain'])
-    if (changes !== '') {
-      notes.push(`${worktree.path} ${changes === undefined ? 'has no readable status' : 'has uncommitted changes'}`)
-      continue
-    }
-    return { kind: 'found', cwd: worktree.path }
   }
-  return { kind: 'unmatched', reason: `no clean checkout of ${repo} at ${sha}: ${notes.join('; ')}`.slice(0, 480) }
+  if (source === undefined) {
+    return { kind: 'unmatched', reason: `commit ${sha} is not present in any checkout of ${repo}`.slice(0, 480) }
+  }
+
+  const parent = await deps.scratch.make()
+  const path = join(parent, 'snapshot')
+  const release = async (): Promise<void> => {
+    await gitIn(deps.io, source, ['worktree', 'remove', '--force', path])
+    await deps.scratch.remove(parent)
+    await gitIn(deps.io, source, ['worktree', 'prune'])
+  }
+  try {
+    const added = await gitIn(deps.io, source, [
+      '-c',
+      'core.hooksPath=/dev/null',
+      'worktree',
+      'add',
+      '--detach',
+      path,
+      sha,
+    ])
+    const head = added === undefined ? undefined : await gitIn(deps.io, path, ['rev-parse', 'HEAD'])
+    if (head?.toLowerCase() !== sha.toLowerCase()) {
+      await release()
+      return { kind: 'unmatched', reason: `could not snapshot ${sha} of ${repo} from ${source}` }
+    }
+    return { kind: 'found', cwd: path, release }
+  } catch (error) {
+    await release()
+    throw error
+  }
 }
 
 /**
@@ -278,7 +337,7 @@ export const securityScanned = async (
 
   for (const target of plan.targets) {
     const { repo, sha } = target.request.target
-    const found = await checkoutAt(deps, repo, sha)
+    const found = await snapshotAt({ ...deps, scratch: deps.scratch ?? nodeScratch }, repo, sha)
     if (found.kind !== 'found') {
       const reason = found.kind === 'none' ? `no checkout for ${repo} at ${sha}` : found.reason
       await deps.store.append([skipped({ repo, sha, reason }, at)])
@@ -289,8 +348,13 @@ export const securityScanned = async (
     }
     const cwd = found.cwd
 
-    const scanners = createScanners(deps.io, { cwd, scanners: deps.scanners, reportPath: deps.reportPath })
-    const results = await Promise.all(scanners.map((scanner) => runScanner(scanner, target.request)))
+    let results: ScanResult[]
+    try {
+      const scanners = createScanners(deps.io, { cwd, scanners: deps.scanners, reportPath: deps.reportPath })
+      results = await Promise.all(scanners.map((scanner) => runScanner(scanner, target.request)))
+    } finally {
+      await found.release()
+    }
     const scanned = planScan({ ...target.request, results, known, now: at })
     await deps.store.append(scanned.events)
 
