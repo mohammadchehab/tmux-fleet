@@ -72,6 +72,11 @@ test('a push to main, a force push and a PR merge ask', () => {
   assert.equal(decide('Bash', { command: 'git push --force origin feat/x' }), 'ask')
   assert.equal(decide('Bash', { command: 'git status && git push origin master' }), 'ask')
   assert.equal(decide('Bash', { command: 'gh pr merge 12 --squash' }), 'ask')
+  assert.equal(decide('Bash', { command: 'git push --force-with-lease origin feat/x' }), 'ask')
+  assert.equal(decide('Bash', { command: 'git push origin +feat/x' }), 'ask', 'a + refspec is a force push')
+  assert.equal(decide('Bash', { command: 'git push origin HEAD:main' }), 'ask')
+  assert.equal(decide('Bash', { command: '/usr/bin/git push origin main' }), 'ask', 'a path to git is still git')
+  assert.equal(decide('Bash', { command: 'gh api repos/o/r/pulls/1/merge -X PUT' }), 'ask', 'the raw API can merge too')
 })
 
 test('network is denied: the web tools, and curl, wget and ssh from the shell', () => {
@@ -80,6 +85,8 @@ test('network is denied: the web tools, and curl, wget and ssh from the shell', 
   assert.equal(decide('Bash', { command: 'curl https://example.com' }), 'deny')
   assert.equal(decide('Bash', { command: 'git status && wget https://example.com' }), 'deny')
   assert.equal(decide('Bash', { command: 'ssh build-host' }), 'deny')
+  assert.equal(decide('Bash', { command: '/usr/bin/curl https://example.com' }), 'deny', 'a path to curl is still curl')
+  assert.equal(decide('Bash', { command: '"curl" https://example.com' }), 'deny')
 })
 
 test('writes inside the worktree run silently; a write outside it is denied', () => {
