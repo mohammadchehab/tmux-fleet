@@ -228,6 +228,18 @@ test('the live view shows a shell command and a search pattern, redacted; the st
   assert.equal(displaySummary('WebFetch', { url: 'https://example.com' }), undefined)
   assert.equal(displaySummary('Bash', { command: `echo ${'x'.repeat(500)}` })?.length, 300)
   assert.ok(!displaySummary('Bash', { command: 'curl -H "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz0123456789" x' })?.includes('ghp_abcdefghijklmnopqrstuvwxyz0123456789'), 'a token is redacted')
+  for (const [command, leaked] of [
+    ['curl -u alice:hunter2 https://x', 'hunter2'],
+    ['mysql -phunter2 db', 'hunter2'],
+    ['DB_PASSWORD=hunter2 node a.js', 'hunter2'],
+    ['tool --password hunter2 run', 'hunter2'],
+    ['tool --token=hunter2 run', 'hunter2'],
+  ] as const) {
+    const shown = displaySummary('Bash', { command }) ?? ''
+    assert.ok(!shown.includes(leaked), `${command} -> ${shown}`)
+    assert.ok(shown.length > 0)
+  }
+  assert.equal(displaySummary('Bash', { command: 'pnpm test -p foo' }), 'pnpm test -p foo', 'a plain flag is not a credential')
   // The stored event is unchanged: no command in it.
   assert.equal(summariseToolUse('Bash', { command: 'ls' }), undefined)
 })

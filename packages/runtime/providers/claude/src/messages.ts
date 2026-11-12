@@ -169,8 +169,18 @@ export const summariseToolUse = (name: string, input: Record<string, unknown>): 
 export const displaySummary = (name: string, input: Record<string, unknown>): string | undefined => {
   const raw = name === 'Bash' ? input.command : name === 'Grep' || name === 'Glob' ? input.pattern : undefined
   if (typeof raw !== 'string' || raw.length === 0) return summariseToolUse(name, input)
-  return truncate(redactSecrets(raw).replace(/\s+/g, ' ').trim(), 300)
+  return truncate(redactCommand(redactSecrets(raw)).replace(/\s+/g, ' ').trim(), 300)
 }
+
+/**
+ * The credential shapes in a command line that `redactSecrets` does not know: `-u user:pass`, `--user`/`--password`
+ * and `--token` values, a `-p<password>` glued to its flag, and `FOO_PASSWORD=value` style env prefixes.
+ */
+const redactCommand = (command: string): string =>
+  command
+    .replace(/(\s(?:-u|--user|--password|--passwd|--token|--secret|--api-key)(?:\s+|=))\S+/gi, '$1[redacted]')
+    .replace(/(\s-p)(?=\S)\S+/g, '$1[redacted]')
+    .replace(/(\b[A-Za-z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY)[A-Za-z0-9_]*=)\S+/gi, '$1[redacted]')
 
 /** One live-view summary per tool call in an assistant message, in the order `mapMessage` emits its `tool.use` events. */
 export const displayToolUses = (message: Record<string, unknown>): (string | undefined)[] =>
