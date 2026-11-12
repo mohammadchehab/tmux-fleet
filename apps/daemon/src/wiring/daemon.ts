@@ -303,9 +303,17 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
       // Everything here is a projection: `fleet ls` shows what the store knows,
       // not a shape this file invented, so a row that gained a field in §3 is a
       // row that gained a field in the CLI (§2).
+      // A peer dropped from the profile keeps its history in the store (§3), but
+      // once it has ended it is not part of this fleet any more: listing it would
+      // show a peer `fleet up` will never start again. A live one still shows,
+      // so a session that is running is never hidden.
+      const declared = new Set<string>(deps.profile.peers.map((peer) => peer.id))
+      const peers = (await read.peers.all()).filter(
+        (peer) => declared.has(peer.peerId) || (peer.state !== 'ended' && peer.state !== 'failed'),
+      )
       return {
         status,
-        peers: await read.peers.all(),
+        peers,
         routines: await read.routines.all(),
         decisions: await read.decisions.open(),
         compactions: await read.compactions.all(),
