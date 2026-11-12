@@ -106,14 +106,22 @@ export const questionThinCards: Rule = (ctx) => {
       goal: goal === '' ? card.title : goal,
       acceptance: [],
     }
+    const questionId = deriveId('qst', { kind: 'thin_card', workId: card.workId }) as QuestionId
+    const inputsHash = shortHash(input)
+    // Already answered for these exact inputs: asking again only appends another requested/answered pair, and
+    // `dispatch` wakes on that pair, so a thin card would be asked about on every tick. An edited card hashes
+    // differently and is asked afresh. The verdict itself is `markReadyWork`'s to read; this rule just stays quiet.
+    const prior = ctx.index.judge(questionId)
+    if (prior?.answer !== undefined && prior.inputsHash === inputsHash) continue
+
     drafts.push(
       draft(`question:${String(card.workId)}`, {
         kind: 'request_judge',
         causedBy: ctx.causedBy,
-        questionId: deriveId('qst', { kind: 'thin_card', workId: card.workId }) as QuestionId,
+        questionId,
         question: 'thin_card',
         input,
-        inputsHash: shortHash(input),
+        inputsHash,
         workId: card.workId,
       }),
     )
