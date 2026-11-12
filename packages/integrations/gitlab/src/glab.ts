@@ -33,17 +33,25 @@ export interface GlabResult {
  */
 export type GlabRunner = (args: readonly string[]) => Promise<GlabResult>
 
+/** How long one `glab` call may run before it is killed and reported as a failure. */
+export const DEFAULT_TIMEOUT_MS = 60_000
+
 /**
  * `glab` on `PATH`, with `host` pinned in the child's environment when the
  * profile named one. A missing binary surfaces as code 1 with the spawn message
  * on stderr, the same shape `execFileGh` gives.
  */
-export const execFileGlab = (host?: string): GlabRunner => (args) =>
+export const execFileGlab = (host?: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): GlabRunner => (args) =>
   new Promise((resolve) => {
     const env = host === undefined ? process.env : { ...process.env, GITLAB_HOST: host }
-    execFile('glab', [...args], { maxBuffer: 4 << 20, env }, (error, stdout, stderr) => {
+    execFile('glab', [...args], { maxBuffer: 4 << 20, env, timeout: timeoutMs }, (error, stdout, stderr) => {
       if (error === null) {
         resolve({ code: 0, stdout: String(stdout), stderr: String(stderr) })
+        return
+      }
+      if (error.killed === true) {
+        // A hung `glab` (a prompt, a dead network) must not stall the routine that called it.
+        resolve({ code: 124, stdout: String(stdout ?? ''), stderr: `glab timed out after ${timeoutMs}ms` })
         return
       }
       const code = typeof error.code === 'number' ? error.code : 1
