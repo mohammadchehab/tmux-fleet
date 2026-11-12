@@ -10,3 +10,11 @@
 # access to nothing. The spike that held it was deleted (#103) and main scans the whole history, so the fingerprint stays
 # after the path is gone: deleting it is what turned this back into a CRITICAL finding.
 e257e145443d7baca9a919d26869d8d91c6271ec:spikes/agent-sdk/probe.mjs:generic-api-key:515
+
+# A redaction test's input: a made-up `curl -u alice:hunter2` command line the claude provider must scrub (#270). Test
+# data, grants access to nothing.
+1478a1bdfb7420798a48cec9a33469b9ee584f93:packages/runtime/providers/claude/test/messages.test.ts:curl-auth-user:230
+
+# A made-up key-shaped string the tokenEnv test pastes to prove it is refused and never echoed (TASK-95). It was renamed
+# to a low-entropy value in the next commit; the history keeps the old one, so the fingerprint stays.
+03d6c8a867827aa4e01f53c4c64947c0d6ec3340:apps/daemon/test/profile.test.ts:generic-api-key:100
