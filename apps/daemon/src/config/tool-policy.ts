@@ -1,11 +1,11 @@
 /**
  * The tool policy a peer starts with (TASK-119), and the one place its defaults live.
  *
- * The defaults are decision-6 option 1: reads and in-worktree git inspection run
- * without asking; writes and shell ask; network and anything outside the worktree
- * are denied. Option 3 of that decision (allow inside the worktree, ask for network
- * and outside paths) is a change to `routineToolPolicy`, nowhere else: the profile
- * block chooses a preset, and the preset's rules are not repeated anywhere.
+ * The defaults are decision-6 option 3: work inside the worktree (reads, writes, edits,
+ * shell) runs without asking; network and anything outside the worktree are denied;
+ * pushing to main and merging a PR still ask, because those are the supervisor's.
+ * The rules live in `routineToolPolicy`, nowhere else: the profile block chooses a
+ * preset, and the preset's rules are not repeated anywhere.
  *
  * A guard rail, not a sandbox: a shell command can still reach what the rules do
  * not name. The adapter's `compilePolicy` and `evaluatePolicy` decide each call.
@@ -71,19 +71,24 @@ const NETWORK_COMMAND = '(?:^|[\\s;&|(\\x60])(?:curl|wget|ssh|scp|sftp|rsync|nc|
 const GIT_READ =
   'git (?:status|diff)(?: --(?:stat|name-only|name-status|cached|staged|no-color|short|porcelain))*(?: (?:--|[\\w./~^@][\\w./~^@-]*))*'
 
+/** A push to main/master or a force push, and a PR merge: the supervisor's to do, so a peer asks. */
+const SUPERVISOR_ONLY =
+  '(?:git push\\b[^\\n]*(?:\\b(?:main|master)\\b|--force|-f\\b)|gh pr merge\\b)'
+
 /**
- * The routine default set: decision-6 option 1. The one place its rules are written.
+ * The routine default set: decision-6 option 3. The one place its rules are written.
  * Rules are in order and the first match wins, so the denies come before the allows.
  */
 export const routineToolPolicy = (cwd: string): ToolPolicy => {
   const resolvedPathTools = ['Read', 'Write', 'Edit']
   const jsonPathTools = ['MultiEdit', 'Grep', 'Glob']
   return {
-    defaultAction: 'ask',
+    defaultAction: 'allow',
     rules: [
       { tool: 'WebFetch', action: 'deny' },
       { tool: 'WebSearch', action: 'deny' },
       { tool: 'Bash', pattern: NETWORK_COMMAND, action: 'deny' },
+      { tool: 'Bash', pattern: SUPERVISOR_ONLY, action: 'ask' },
       ...resolvedPathTools.map((tool) => ({ tool, pattern: outsideWorktreeResolved(cwd), action: 'deny' as const })),
       ...jsonPathTools.map((tool) => ({ tool, pattern: outsideWorktreeInJson(cwd), action: 'deny' as const })),
       { tool: 'Glob', pattern: outsideGlobInJson('pattern'), action: 'deny' },

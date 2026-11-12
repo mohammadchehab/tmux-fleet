@@ -710,13 +710,13 @@ const toolPolicyProfile = (block: Record<string, unknown> | undefined): Profile 
     peers: [{ id: peerId, role: 'engineer', provider: 'claude', model: 'claude-opus-5-5' }],
   })
 
-test('a peer starts with the routine tool policy, so routine reads and git inspection do not ask (TASK-119)', async (t) => {
+test('a peer starts with the routine tool policy, so in-worktree work does not ask (TASK-119)', async (t) => {
   const r = await rig(toolPolicyProfile(undefined))
   t.after(() => r.supervisor.stop())
   await r.supervisor.start()
 
   assert.deepEqual(r.starts[0]?.toolPolicy, toolPolicyFor(undefined, checkout))
-  assert.equal(r.starts[0]?.toolPolicy?.defaultAction, 'ask')
+  assert.equal(r.starts[0]?.toolPolicy?.defaultAction, 'allow')
 })
 
 test('a profile that asks for ask-all starts the peer with no tool policy at all (TASK-119)', async (t) => {
