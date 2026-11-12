@@ -137,6 +137,48 @@ const pipelineName = (row: Readonly<Record<string, unknown>>): string => `pipeli
 export interface ChecksAt {
   readonly sha: Sha
   readonly ref?: string
+  /** The request's own iid, so a `refs/merge-requests/<iid>/...` ref can be tied to this request and no other. */
+  readonly iid?: number
+  /** `head_pipeline.id`: the pipeline GitLab itself says is the request's current one. */
+  readonly headPipelineId?: number
+}
+
+/**
+ * Which pipeline rows describe the head. Three shapes:
+ *
+ * 1. a branch pipeline: `sha` is the head, `ref` is the source branch or absent;
+ * 2. a detached merge-request pipeline: `sha` is the head and `ref` is
+ *    `refs/merge-requests/<iid>/head` (this request's iid when it is known);
+ * 3. a merged-results pipeline: it runs on a synthesized merge commit, so `sha` is
+ *    not the head. It is accepted only when its ref is this request's
+ *    `refs/merge-requests/<iid>/merge` AND it is the pipeline GitLab reports as the
+ *    request's `head_pipeline` (a stale run for an older head has another id).
+ *
+ * Anything else is dropped: another branch, another request's ref, a stale sha, a
+ * row with no sha.
+ */
+const ranOnHead = (row: Readonly<Record<string, unknown>>, at: ChecksAt): boolean => {
+  const ref = text(row['ref'])
+  const mrRef = at.iid === undefined ? undefined : `refs/merge-requests/${String(at.iid)}`
+  if (text(row['sha']) === at.sha) {
+    if (at.ref === undefined || ref === undefined || ref === at.ref) return true
+    return mrRef === undefined ? /^refs\/merge-requests\/\d+\/head$/.test(ref) : ref === `${mrRef}/head`
+  }
+  if (mrRef === undefined || at.headPipelineId === undefined || ref !== `${mrRef}/merge`) return false
+  return pipelineId(row) === at.headPipelineId
+}
+
+/** The pin for grading `row`'s pipelines: its head sha and branch, plus the iid and head pipeline GitLab reports. */
+const atFrom = (row: Readonly<Record<string, unknown>>, headSha: Sha, head: string | undefined): ChecksAt => {
+  const iid = iidOf(row)
+  const headPipeline = record(row['head_pipeline'])
+  const headPipelineId = headPipeline === undefined ? 0 : pipelineId(headPipeline)
+  return {
+    sha: headSha,
+    ...(head === undefined ? {} : { ref: head }),
+    ...(iid === undefined ? {} : { iid }),
+    ...(headPipelineId === 0 ? {} : { headPipelineId }),
+  }
 }
 
 /**
@@ -151,11 +193,7 @@ const ranOn = (
   at: ChecksAt | undefined,
 ): readonly Readonly<Record<string, unknown>>[] => {
   if (at === undefined) return rows
-  return rows.filter((row) => {
-    if (text(row['sha']) !== at.sha) return false
-    const ref = text(row['ref'])
-    return at.ref === undefined || ref === undefined || ref === at.ref
-  })
+  return rows.filter((row) => ranOnHead(row, at))
 }
 
 /**
@@ -295,7 +333,7 @@ export const pullRequestFrom = (raw: unknown, on: Repo, evidence: MergeRequestEv
   const base = needText(row, 'target_branch')
   const head = needText(row, 'source_branch')
   const headSha = shape(shaShape(), row['sha'], 'sha')
-  const checks = checksFrom(evidence.pipelines ?? row['head_pipeline'], { sha: headSha, ref: head })
+  const checks = checksFrom(evidence.pipelines ?? row['head_pipeline'], atFrom(row, headSha, head))
   const review = reviewFrom(evidence.approvals ?? row['approvals'] ?? row['approved_by'])
   const merged = row['state'] === 'merged' || (row['merged_at'] !== null && row['merged_at'] !== undefined)
   const state = stateFrom(row['state'])
@@ -331,7 +369,7 @@ export const gradedChecksFrom = (raw: unknown, pipelines: unknown): GradedChecks
   if (row === undefined) throw fleetError('external_failed', 'glab reported a merge request that is not an object')
   const headSha = shape(shaShape(), row['sha'], 'sha')
   const head = text(row['source_branch'])
-  return { ...checksFrom(pipelines, { sha: headSha, ...(head === undefined ? {} : { ref: head }) }), headSha }
+  return { ...checksFrom(pipelines, atFrom(row, headSha, head)), headSha }
 }
 
 /** The head sha a merge request is at, read on its own — what a refused merge is compared against (§10). */

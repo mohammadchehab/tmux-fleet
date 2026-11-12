@@ -49,6 +49,9 @@ const pipeline = (id: number, status: string, overrides: Readonly<Record<string,
 /** The head `mrJson` reports, so a call that pins grading has something to pin it to. */
 const head = { sha: parse(sha(), 'abc1234'), ref: 'feat' } as const
 
+/** The same head as a merge request reports it: with its iid and the pipeline GitLab calls its head_pipeline. */
+const mrHead = { ...head, iid: 7, headPipelineId: 5 } as const
+
 describe('checksFrom: §10 reads the newest pipeline as one of three states', () => {
   it('is passing on a successful pipeline', () => {
     assert.deepEqual(checksFrom([pipeline(1, 'success')]), { state: 'passing', failing: [] })
@@ -112,6 +115,47 @@ describe('checksFrom: the verdict is about the head sha, whatever else the merge
     assert.deepEqual(checksFrom([pipeline(1, 'success', { ref: 'other' })], head), { state: 'pending', failing: [] })
     // A row with no ref is the same branch as far as GitLab tells us; only a differing ref is a mismatch.
     assert.deepEqual(checksFrom([pipeline(1, 'success', { ref: undefined })], head), { state: 'passing', failing: [] })
+  })
+
+  it('accepts a detached MR pipeline on the head, and only this request’s refs/merge-requests/<iid>/head', () => {
+    const detached = pipeline(1, 'success', { ref: 'refs/merge-requests/7/head', source: 'merge_request_event' })
+    assert.deepEqual(checksFrom([detached], mrHead), { state: 'passing', failing: [] })
+    // Without the iid, any detached-MR head ref on the head sha is still a detached MR pipeline.
+    assert.deepEqual(checksFrom([detached], head), { state: 'passing', failing: [] })
+    // Another request's ref is not this one's, even on the same sha.
+    const other = pipeline(1, 'success', { ref: 'refs/merge-requests/8/head' })
+    assert.deepEqual(checksFrom([other], mrHead), { state: 'pending', failing: [] })
+    // A stale head sha on a detached ref is still stale.
+    const stale = pipeline(1, 'success', { ref: 'refs/merge-requests/7/head', sha: '0ld0000' })
+    assert.deepEqual(checksFrom([stale], mrHead), { state: 'pending', failing: [] })
+  })
+
+  it('accepts a merged-results pipeline only when it is this request’s merge ref and GitLab’s head_pipeline', () => {
+    const merged = pipeline(5, 'success', { ref: 'refs/merge-requests/7/merge', sha: 'merge99' })
+    assert.deepEqual(checksFrom([merged], mrHead), { state: 'passing', failing: [] })
+    const failed = pipeline(5, 'failed', { ref: 'refs/merge-requests/7/merge', sha: 'merge99' })
+    assert.deepEqual(checksFrom([failed], mrHead), { state: 'failing', failing: ['pipeline 5'] })
+    // A stale merged-results run (an older head's) is a different pipeline id: dropped.
+    const staleRun = pipeline(4, 'success', { ref: 'refs/merge-requests/7/merge', sha: 'merge88' })
+    assert.deepEqual(checksFrom([staleRun], mrHead), { state: 'pending', failing: [] })
+    // Another request's merge ref, even with the right id, is not this request's.
+    const elsewhere = pipeline(5, 'success', { ref: 'refs/merge-requests/8/merge', sha: 'merge99' })
+    assert.deepEqual(checksFrom([elsewhere], mrHead), { state: 'pending', failing: [] })
+    // With no iid or head pipeline to tie it to, a merge-ref pipeline cannot be shown to describe the head.
+    assert.deepEqual(checksFrom([merged], head), { state: 'pending', failing: [] })
+  })
+
+  it('pullRequestFrom grades a detached or merged-results head_pipeline instead of staying pending', () => {
+    const detached = pipeline(5, 'success', { ref: 'refs/merge-requests/7/head' })
+    assert.equal(pullRequestFrom(mrJson({ head_pipeline: detached }), where).checks, 'passing')
+    const merged = pipeline(5, 'success', { ref: 'refs/merge-requests/7/merge', sha: 'merge99' })
+    const asMr = mrJson({ head_pipeline: merged })
+    assert.equal(pullRequestFrom(asMr, where).checks, 'passing')
+    assert.equal(pullRequestFrom(asMr, where, { pipelines: [merged] }).checks, 'passing')
+    assert.equal(gradedChecksFrom(asMr, [merged]).state, 'passing')
+    // The same merge-ref run listed while head_pipeline is a newer one is stale.
+    const newer = pipeline(6, 'running', { ref: 'refs/merge-requests/7/merge', sha: 'merge100' })
+    assert.equal(pullRequestFrom(mrJson({ head_pipeline: newer }), where, { pipelines: [merged] }).checks, 'pending')
   })
 
   it('never grades a row with no sha, because it cannot be shown to describe the head', () => {
