@@ -10,6 +10,7 @@ import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
+import { execFileGit } from '../src/git.ts'
 import { createRepoFiles } from '../src/repo-files.ts'
 
 const git = (cwd: string, ...args: string[]): string =>
@@ -99,9 +100,60 @@ describe('createRepoFiles', () => {
     assert.deepEqual(await createRepoFiles().read(clone, 'AGENTS.md'), { text: 'Newer reviewed rules.\n', ref: newer })
   })
 
-  it('falls back to the local ref when the remote cannot be reached', async () => {
+  it('reads nothing when the remote cannot be reached: the local origin/main is peer-writable, so it is not silently trusted', async () => {
+    const { origin, clone } = cloned()
+    git(clone, 'remote', 'set-url', 'origin', join(origin, 'gone'))
+    assert.equal(await createRepoFiles().read(clone, 'AGENTS.md'), undefined)
+  })
+
+  it('falls back to the local ref only when the caller opts in, and names it', async () => {
     const { origin, clone, sha } = cloned()
     git(clone, 'remote', 'set-url', 'origin', join(origin, 'gone'))
+    assert.deepEqual(await createRepoFiles(undefined, { allowStaleLocal: true }).read(clone, 'AGENTS.md'), {
+      text: 'Reviewed rules.\n',
+      ref: sha,
+    })
+  })
+
+  it('ignores url.*.insteadOf in the shared config: the standards cannot be fetched from another repository', async () => {
+    const { origin, clone, sha } = cloned()
+    const evil = dir('fleet-evil-')
+    git(evil, 'init', '-q', '-b', 'main')
+    writeFileSync(join(evil, 'AGENTS.md'), 'Evil rules.\n')
+    git(evil, 'add', '.')
+    git(evil, 'commit', '-q', '-m', 'evil')
+    git(clone, 'config', `url.${evil}.insteadOf`, origin)
+
     assert.deepEqual(await createRepoFiles().read(clone, 'AGENTS.md'), { text: 'Reviewed rules.\n', ref: sha })
+  })
+
+  it('a pinned remoteUrl wins over a rewritten remote.origin.url', async () => {
+    const { origin, clone, sha } = cloned()
+    const evil = dir('fleet-evil-')
+    git(evil, 'init', '-q', '-b', 'main')
+    writeFileSync(join(evil, 'AGENTS.md'), 'Evil rules.\n')
+    git(evil, 'add', '.')
+    git(evil, 'commit', '-q', '-m', 'evil')
+    git(clone, 'remote', 'set-url', 'origin', evil)
+
+    assert.deepEqual(await createRepoFiles(undefined, { remoteUrl: origin }).read(clone, 'AGENTS.md'), {
+      text: 'Reviewed rules.\n',
+      ref: sha,
+    })
+  })
+
+  it('runs network git outside the shared repository, with transport keys pinned', async () => {
+    const { origin, clone } = cloned()
+    const calls: { args: readonly string[]; cwd: string }[] = []
+    const files = createRepoFiles(async (args, cwd) => {
+      calls.push({ args, cwd })
+      return execFileGit(args, cwd)
+    })
+    await files.read(clone, 'AGENTS.md')
+    const net = calls.filter((c) => c.args.includes('fetch'))
+    assert.equal(net.length, 1)
+    assert.notEqual(net[0]?.cwd, clone)
+    assert.ok(net[0]?.args.includes('core.sshCommand=ssh'))
+    assert.ok(net[0]?.args.includes(origin))
   })
 })

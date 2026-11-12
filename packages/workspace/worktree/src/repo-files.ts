@@ -8,10 +8,13 @@
  * caller records cannot come from two different commits if the branch moves
  * between the two calls.
  *
- * Which commit is the *remote's*, not the local ref's: see the comment at the
- * `ls-remote` below. The caller records the sha, so what was read is visible.
+ * Which commit is the *remote's*, not the local ref's: see the comment in `read`.
+ * The caller records the sha, so what was read is visible.
  */
 
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { RepoFiles } from '@fleet/foundation-contracts'
 import { execFileGit, type GitRunner } from './git.ts'
 import { remoteDefault } from './refs.ts'
@@ -20,16 +23,21 @@ const SHA = /^[0-9a-f]{40}$/
 
 /**
  * The repo's git config is shared with every worktree, so a peer can write it.
- * Network commands must bypass or override the shared config to prevent a peer from
- * running programs of its choosing. Keys reset here:
- * - `core.sshCommand`, `core.askPass`, `core.gitProxy`: can run programs
- * - `remote.origin.uploadpack`, `remote.origin.receivepack`: can run programs
+ * Network commands therefore never run *in* that repository: they run in a scratch
+ * bare repository of our own, against an explicit URL, so none of the repository's
+ * local config (`remote.origin.*`, `url.*.insteadOf`, `http.proxy`,
+ * `credential.helper`, ...) is read at all. System and global config still apply, on
+ * purpose: they are the user's, not a peer's, and a `credential.helper` there is how
+ * a private repository authenticates. On top of that, keys that can run programs or
+ * widen transports are pinned:
+ * - `core.sshCommand`, `core.askPass`, `core.gitProxy`, `core.fsmonitor`: can run programs
+ * - `remote.origin.uploadpack`: can run programs
  * - `protocol.*`: control which transports are allowed
  *
- * `credential.helper` is left as-is: it is how a private repository authenticates,
- * and stripping it would make this fail for exactly the repos that need it. A peer
- * runs as fleetd's own OS user, so this reader is a guard against drift and accident,
- * not a sandbox; what keeps one from rewriting its rules is its tool policy.
+ * What stays peer-writable is the URL itself, read from `remote.origin.url`; pass
+ * `remoteUrl` to pin it from a source a peer cannot write. A peer runs as fleetd's
+ * own OS user, so this reader is a guard against drift and accident, not a sandbox;
+ * what keeps one from rewriting its rules is its tool policy.
  */
 const TRANSPORT = [
   '-c', 'core.sshCommand=ssh',
@@ -42,7 +50,24 @@ const TRANSPORT = [
   '-c', 'protocol.ssh.allow=always',
 ] as const
 
-export const createRepoFiles = (runner: GitRunner = execFileGit): RepoFiles => ({
+export interface RepoFilesOptions {
+  /** The origin to ask, from a source a peer cannot write. Default: the repository's `remote.origin.url`. */
+  readonly remoteUrl?: string
+  /**
+   * When the remote cannot be reached, read the local `origin/<branch>` ref anyway.
+   * Off by default: that ref lives in the shared git directory and a peer can point it
+   * at a commit of its own, so trusting it is a decision the caller makes, not a
+   * silent fallback. The recorded `ref` still says which commit was read.
+   */
+  readonly allowStaleLocal?: boolean
+}
+
+interface Read {
+  readonly text: string
+  readonly ref: string
+}
+
+export const createRepoFiles = (runner: GitRunner = execFileGit, options: RepoFilesOptions = {}): RepoFiles => ({
   async read(cwd, path) {
     // A path is a path *in the repository*: `..` or an absolute one would ask git
     // for something that is not the file the caller named.
@@ -53,31 +78,48 @@ export const createRepoFiles = (runner: GitRunner = execFileGit): RepoFiles => (
     if (base === undefined) return undefined
 
     const resolved = await runner(['rev-parse', '--verify', '--quiet', `${base}^{commit}`], cwd)
-    let ref = resolved.stdout.trim()
-    if (resolved.code !== 0 || !SHA.test(ref)) return undefined
+    const local = resolved.stdout.trim()
+    if (resolved.code !== 0 || !SHA.test(local)) return undefined
 
     // `refs/remotes/origin/*` live in the repository's shared git directory, which a
     // peer working in any of its worktrees can write: `git update-ref` would let it
     // point `origin/main` at a commit of its own and so rewrite its rules. So the
-    // remote is asked what the branch is, and that commit is what is read. Offline,
-    // the local ref stands (stale beats none) — the one case a peer's edit of it
-    // could matter, and the recorded sha says which commit was read. This is a guard
-    // against drift and accident, not a sandbox: a peer runs as fleetd's own user, so
-    // what actually keeps one from rewriting its rules is its tool policy.
+    // remote is asked what the branch is, and that commit is what is read, fetched
+    // into a scratch repository so the shared config never touches the transport.
+    // Unreachable: nothing is read unless `allowStaleLocal` says the local ref may
+    // stand. This is a guard against drift and accident, not a sandbox.
     const branch = base.replace(/^origin\//, '')
-    const asked = await runner([...TRANSPORT, 'ls-remote', '--exit-code', 'origin', `refs/heads/${branch}`], cwd)
-    const remote = asked.code === 0 ? (asked.stdout.split(/\s/)[0] ?? '') : ''
-    if (SHA.test(remote) && remote !== ref) {
-      const have = async (): Promise<boolean> => (await runner(['cat-file', '-e', `${remote}^{commit}`], cwd)).code === 0
-      // Objects only: nothing a fetch of a branch does touches a ref a peer's rules hang on.
-      if (!(await have())) await runner([...TRANSPORT, 'fetch', '--quiet', '--no-write-fetch-head', 'origin', `refs/heads/${branch}`], cwd)
-      // Not there even now: nothing trustworthy to read, so nothing is read.
-      if (!(await have())) return undefined
-      ref = remote
+    const url = options.remoteUrl ?? (await runner(['config', '--local', '--get', 'remote.origin.url'], cwd)).stdout.trim()
+    if (url !== '') {
+      const remote = await fromRemote(runner, url, branch, path)
+      if (remote !== undefined) return remote.read
     }
+    if (options.allowStaleLocal !== true) return undefined
 
-    const shown = await runner(['show', `${ref}:${path}`], cwd)
+    const shown = await runner(['show', `${local}:${path}`], cwd)
     // 128 is "no such path in that commit" (and "not a repository"): both are "nothing to read".
-    return shown.code === 0 ? { text: shown.stdout, ref } : undefined
+    return shown.code === 0 ? { text: shown.stdout, ref: local } : undefined
   },
 })
+
+/** `undefined`: the remote could not be reached. Otherwise what it holds (`read` is undefined when the path is not there). */
+const fromRemote = async (
+  runner: GitRunner,
+  url: string,
+  branch: string,
+  path: string,
+): Promise<{ readonly read: Read | undefined } | undefined> => {
+  const scratch = await mkdtemp(join(tmpdir(), 'fleet-repofiles-'))
+  try {
+    if ((await runner(['init', '--quiet', '--bare'], scratch)).code !== 0) return undefined
+    // Objects only, into a ref of the scratch repository: nothing here is a peer's to move.
+    const fetched = await runner([...TRANSPORT, 'fetch', '--quiet', '--no-write-fetch-head', url, `+refs/heads/${branch}:refs/fetched`], scratch)
+    if (fetched.code !== 0) return undefined
+    const tip = (await runner(['rev-parse', '--verify', '--quiet', 'refs/fetched^{commit}'], scratch)).stdout.trim()
+    if (!SHA.test(tip)) return undefined
+    const shown = await runner(['show', `${tip}:${path}`], scratch)
+    return { read: shown.code === 0 ? { text: shown.stdout, ref: tip } : undefined }
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+}
