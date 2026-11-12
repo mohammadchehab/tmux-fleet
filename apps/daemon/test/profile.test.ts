@@ -95,6 +95,17 @@ describe('decoding a profile', () => {
     assert.equal(decodeProfile(minimal()).security, undefined)
   })
 
+
+  it('refuses a pasted key as tokenEnv at load, without echoing it (TASK-95)', () => {
+    const key = 'sk-PASTEDSECRET-0123456789'
+    for (const providers of [{ deepinfra: { tokenEnv: key } }, { cursor: { tokenEnv: key } }]) {
+      assert.throws(
+        () => decodeProfile(minimal({ providers })),
+        (thrown: unknown) => thrown instanceof Error && /environment variable name/.test(thrown.message) && !thrown.message.includes('PASTEDSECRET'),
+      )
+    }
+    assert.doesNotThrow(() => decodeProfile(minimal({ providers: { deepinfra: { tokenEnv: 'ACME_DEEPINFRA_KEY' } } })))
+  })
   it('refuses a scanner it cannot build, and an empty set that would scan nothing', () => {
     assert.throws(() => decodeProfile(minimal({ security: { scanners: ['snyk'] } })), /snyk/)
     // An empty list would install the routine and then scan nothing, which reads

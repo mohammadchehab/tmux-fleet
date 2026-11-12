@@ -633,6 +633,13 @@ const budgetBlock = (): Schema<{ readonly usd: number }> =>
  * is a block that reads as configured and then permits nothing, so every peer on
  * that provider would fail at `fleet up` with no hint that the list was the bug.
  */
+/**
+ * The *name* of an environment variable, and nothing else. A pasted key is the common mistake and would otherwise
+ * pass as a name, then be quoted by an error that reaches the event log. The refusal message never echoes the value.
+ */
+const envName = (): Schema<string> =>
+  refine(text(120), (value) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(value), 'an environment variable name (letters, digits, underscore), not a key')
+
 const deepInfraBlock = (): Schema<DeepInfraProfile> =>
   objectAs<DeepInfraProfile>()({
     allowedModels: optional(
@@ -646,14 +653,14 @@ const deepInfraBlock = (): Schema<DeepInfraProfile> =>
     // Names, not values: a profile says *where* the key is, and the daemon is
     // the thing that reads it. A path long enough for a real one, short enough
     // that a pasted key is refused rather than silently ignored.
-    tokenEnv: optional(text(120)),
+    tokenEnv: optional(envName()),
     tokenFile: optional(text(400)),
   })
 
 const cursorBlock = (): Schema<CursorProfile> =>
   objectAs<CursorProfile>()({
     contextLimits: optional(record(positiveInt())),
-    tokenEnv: optional(text(120)),
+    tokenEnv: optional(envName()),
     tokenFile: optional(text(400)),
   })
 
@@ -843,12 +850,12 @@ const jiraAuthBlock = (): Schema<JiraAuthProfile> =>
     objectAs<JiraCloudAuthProfile>()({
       kind: oneOf(['cloud'] as const),
       email: text(200),
-      tokenEnv: optional(text(120)),
+      tokenEnv: optional(envName()),
       tokenFile: optional(text(400)),
     }),
     objectAs<JiraPatAuthProfile>()({
       kind: oneOf(['pat'] as const),
-      tokenEnv: optional(text(120)),
+      tokenEnv: optional(envName()),
       tokenFile: optional(text(400)),
     }),
   ])
