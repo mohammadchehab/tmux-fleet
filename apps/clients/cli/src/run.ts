@@ -840,8 +840,10 @@ const execute = async (
       // A ledger that would not take the rows is a fleet problem, not a verdict on
       // the model: the run has already happened and cost what it cost, so the rows
       // are reported as lost and the answer still prints with the suite's own code.
+      // A reused run's rows are already in the log from the run that made them: appending them again repeats
+      // every attempt (the projection flags each as an anomaly) and rewrites `finishedAt` (TASK-98).
       try {
-        await appendEvalEvents(call, answer.events)
+        if (!result.deduped) await appendEvalEvents(call, answer.events)
       } catch (thrown) {
         say(`fleet: the run's eval events did not reach the ledger: ${toFleetError(thrown).message}`)
       }
