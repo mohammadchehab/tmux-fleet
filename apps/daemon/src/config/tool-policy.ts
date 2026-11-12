@@ -76,11 +76,19 @@ const GIT_READ =
 const WORD_START = '(?:^|[\\s;&|(\\x60/"\'])'
 
 /**
- * A push to main/master, a force or destructive push (`-f`, `--force`, `--force-with-lease`, `--mirror`, `--all`, `--delete`, a `+` or wildcard refspec), and a
- * PR merge or a raw `gh api` call: the supervisor's to do, so a peer asks. A branch push stays routine.
+ * The one push a peer makes without asking: `git push [-u] [origin] <branch>`, a plain branch name that is
+ * not main or master. Everything else that pushes (`--force` and every abbreviation of it, `--mirror`,
+ * `--delete`, `+` and wildcard refspecs, `HEAD:main`, `git -c ...`, a bare `git push`, a split line) asks,
+ * because a denylist of bad flags cannot keep up with git's own spellings. An allow covers the whole
+ * command, so a chained one never matches it.
  */
-const SUPERVISOR_ONLY =
-  `${WORD_START}(?:git\\b[\\s\\S]*\\bpush\\b[\\s\\S]*(?:\\b(?:main|master)\\b|--force|--mirror|--all\\b|--delete\\b|\\s-[a-zA-Z]*[fd]|\\s\\+\\S|\\*)|gh\\b[\\s\\S]*\\b(?:merge|api)\\b)`
+const SAFE_PUSH = 'git push(?: (?:-u|--set-upstream))?(?: origin)? (?!(?:main|master)$)\\w[\\w./-]*'
+
+/** Any command that pushes: it asks unless `SAFE_PUSH` already allowed it (rules run in order). */
+const ANY_PUSH = `${WORD_START}git\\b[\\s\\S]*\\bpush\\b`
+
+/** A PR merge or a raw `gh api` call is the supervisor's to do, so a peer asks. */
+const GH_SUPERVISOR = `${WORD_START}gh\\b[\\s\\S]*\\b(?:merge|api)\\b`
 
 /**
  * The routine default set: decision-6 option 3. The one place its rules are written.
@@ -95,7 +103,9 @@ export const routineToolPolicy = (cwd: string): ToolPolicy => {
       { tool: 'WebFetch', action: 'deny' },
       { tool: 'WebSearch', action: 'deny' },
       { tool: 'Bash', pattern: NETWORK_COMMAND, action: 'deny' },
-      { tool: 'Bash', pattern: SUPERVISOR_ONLY, action: 'ask' },
+      { tool: 'Bash', pattern: SAFE_PUSH, action: 'allow' },
+      { tool: 'Bash', pattern: ANY_PUSH, action: 'ask' },
+      { tool: 'Bash', pattern: GH_SUPERVISOR, action: 'ask' },
       ...resolvedPathTools.map((tool) => ({ tool, pattern: outsideWorktreeResolved(cwd), action: 'deny' as const })),
       ...jsonPathTools.map((tool) => ({ tool, pattern: outsideWorktreeInJson(cwd), action: 'deny' as const })),
       { tool: 'Glob', pattern: outsideGlobInJson('pattern'), action: 'deny' },
