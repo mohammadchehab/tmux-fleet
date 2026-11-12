@@ -661,10 +661,13 @@ test('a compaction says whether the configured limit was the reason, which is th
   // limit *for this model*, so the alert has to say which one.
   assert.match(raised[0]?.body ?? '', /engineer-1 \(claude-sonnet-5-5\)/)
   assert.match(raised[0]?.body ?? '', /40,000 tokens/)
-  assert.match(raised[0]?.body ?? '', /configured limit is too high for this model/)
+  assert.match(raised[0]?.body ?? '', /20% of the configured limit of 200,000/)
+  assert.match(raised[0]?.body ?? '', /does not show the limit is wrong/)
+  assert.doesNotMatch(raised[0]?.body ?? '', /limit is too high for this model/)
 
   assert.match(raised[1]?.body ?? '', /200,000 tokens/)
-  assert.match(raised[1]?.body ?? '', /limit fits this model/)
+  assert.match(raised[1]?.body ?? '', /100% of the configured limit/)
+  assert.match(raised[1]?.body ?? '', /context reached the configured limit/)
 
   assert.match(raised[2]?.body ?? '', /no context limit/)
 
