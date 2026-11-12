@@ -30,6 +30,8 @@ export const markOf = (state: PeerState): string => marks[state]
 const reverse = (text: string): string => `\u001b[7m${text}\u001b[0m`
 const dim = (text: string): string => `\u001b[2m${text}\u001b[0m`
 const bold = (text: string): string => `\u001b[1m${text}\u001b[0m`
+const cyan = (text: string): string => `\u001b[1;36m${text}\u001b[0m`
+const yellow = (text: string): string => `\u001b[33m${text}\u001b[0m`
 
 /** Context used as a whole percent, or undefined when the peer has no recorded turn. */
 export const contextPercent = (activity: PeerActivity | undefined): number | undefined =>
@@ -76,27 +78,53 @@ const peerLine = (ls: LsResult, peer: Peer, width: number): string => {
   return fit(`${head} ${doing} ${tail}`.trimEnd(), width)
 }
 
-const timelineLine = (item: TimelineItem): string => {
-  if (item.kind === 'mail') return `✉ mail ${item.phase}${item.from === undefined ? '' : ` from ${item.from}`}`
+/**
+ * One timeline item as styled lines of at most `width` visible columns. Each
+ * line is wrapped first and coloured after, because `wrap` counts every
+ * character it is given and an escape would be counted as text. The detail pane
+ * is the last column on the screen, so nothing is drawn after these lines.
+ */
+const itemLines = (item: TimelineItem, width: number): readonly string[] => {
+  if (item.kind === 'mail') {
+    if (item.phase === 'delivered') return wrap('  ✓ delivered', width).map(dim)
+    const head = `✉ ${item.mailKind ?? 'mail'}${item.from === undefined ? '' : ` from ${item.from}`}`
+    const indent = '  '
+    const body = (item.text ?? '')
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .flatMap((line) => wrap(line, Math.max(1, width - indent.length)))
+      .map((line) => `${indent}${line}`)
+    return [...wrap(head, width).map(cyan), ...body]
+  }
   const line = item.line
   switch (line.kind) {
     case 'text':
-      return line.text
+      return wrap(line.text, width)
     case 'tool':
-      return `⚙ ${line.tool}${line.summary === undefined ? '' : ` ${line.summary}`}`
+      return wrap(`⚙ ${line.tool}${line.summary === undefined ? '' : ` ${line.summary}`}`, width).map(yellow)
     case 'turn':
-      return line.phase === 'started' ? '— turn started —' : `— turn ended${line.reason === undefined ? '' : ` (${line.reason})`} —`
+      return wrap(
+        line.phase === 'started' ? '— turn started —' : `— turn ended${line.reason === undefined ? '' : ` (${line.reason})`} —`,
+        width,
+      ).map(dim)
   }
 }
 
-/** The newest `height` wrapped lines of a peer's timeline. */
-export const detailLines = (items: readonly TimelineItem[], width: number, height: number): readonly string[] => {
-  const wrapped = items.flatMap((item) => wrap(timelineLine(item), width))
-  return wrapped.slice(Math.max(0, wrapped.length - height))
+/**
+ * `height` wrapped lines of a peer's timeline, `scroll` lines up from the newest.
+ * A scroll past the top stops at the top, so the wheel never shows a blank pane.
+ */
+export const detailLines = (items: readonly TimelineItem[], width: number, height: number, scroll = 0): readonly string[] => {
+  const wrapped = items.flatMap((item) => itemLines(item, width))
+  const offset = Math.min(Math.max(0, scroll), Math.max(0, wrapped.length - height))
+  const end = wrapped.length - offset
+  return wrapped.slice(Math.max(0, end - height), end)
 }
 
 const menuLines = (menu: Menu, width: number): readonly string[] => [
-  bold(fit(menu.title, width)),
+  // The title is the question being answered: wrapped whole, never cut, since
+  // the person cannot answer what they cannot read.
+  ...wrap(menu.title, width).map(bold),
   ...menu.items.map((item, index) => {
     const text = fit(`${index === menu.index ? '>' : ' '} ${item.label}`, width)
     return index === menu.index ? reverse(text) : text
@@ -137,7 +165,15 @@ export const render = (state: WatchState, nowMs: number): readonly string[] => {
         ? menuLines(state.menu, detailWidth)
         : peer === undefined
           ? []
-          : [dim(fit(`${peer.peerId} · ${peer.role} · ${peer.providerId}/${peer.model}`, detailWidth)), ...detailLines(state.timelines.get(peer.peerId) ?? [], detailWidth, bodyHeight - 1)]
+          : [
+              dim(
+                fit(
+                  `${peer.peerId} · ${peer.role} · ${peer.providerId}/${peer.model}${state.scroll > 0 ? ' · scrolled up, wheel down to follow' : ''}`,
+                  detailWidth,
+                ),
+              ),
+              ...detailLines(state.timelines.get(peer.peerId) ?? [], detailWidth, bodyHeight - 1, state.scroll),
+            ]
     for (let row = 0; row < bodyHeight; row += 1) {
       const peerRow = ls.peers[row]
       const left =

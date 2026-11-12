@@ -27,7 +27,10 @@ import {
   type DecideParams,
   type LsResult,
   type SendParams,
+  watchFrame,
 } from '@fleet/foundation-contracts'
+
+import type { OpenWatch } from './output.ts'
 
 /** Default 5 s: the tree redraws on a short tick, so a slow answer is stale, not worth waiting for. */
 const TIMEOUT_MS = 5_000
@@ -113,3 +116,43 @@ export const daemonAt = (socketPath: string): FleetDaemon => ({
   decide: async (params) => callDaemon(socketPath, 'decide', params),
   send: async (params) => callDaemon(socketPath, 'send', params),
 })
+
+/**
+ * The one long connection (§5): `peer.watch`, a request line out and frames
+ * until either side closes. Frames are checked against the contract; a line
+ * that is not one ends the stream, because a daemon that drifted should be loud.
+ * The same framing `apps/clients/cli` writes, written again because apps never
+ * import each other (§1.1).
+ */
+export const watchDaemon: OpenWatch = ({ socketPath, since, onFrame, onClose }) => {
+  const socket = createConnection(socketPath)
+  socket.setEncoding('utf8')
+  let buffer = ''
+  let done = false
+  const finish = (error?: Error): void => {
+    if (done) return
+    done = true
+    socket.destroy()
+    onClose(error)
+  }
+  socket.on('connect', () => {
+    socket.write(`${JSON.stringify({ id: 'watch', method: 'peer.watch', params: since === undefined ? {} : { since } })}\n`)
+  })
+  socket.on('data', (chunk: string) => {
+    buffer += chunk
+    for (let newline = buffer.indexOf('\n'); newline >= 0; newline = buffer.indexOf('\n')) {
+      const line = buffer.slice(0, newline)
+      buffer = buffer.slice(newline + 1)
+      if (line === '') continue
+      try {
+        onFrame(parseStrict(watchFrame(), JSON.parse(line)))
+      } catch (thrown) {
+        finish(thrown instanceof Error ? thrown : new Error(String(thrown)))
+        return
+      }
+    }
+  })
+  socket.on('error', (error) => finish(error))
+  socket.on('close', () => finish())
+  return { close: () => finish() }
+}

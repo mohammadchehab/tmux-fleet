@@ -16,7 +16,7 @@ import {
 const decode = (value: unknown) => parseStrict(watchFrame(), value)
 
 test('the protocol version rides the daemon status, with the purge ratio the watch marks rows against', () => {
-  assert.equal(daemonProtocolVersion, 2, 'bumped for peer.interrupt and purgeContextRatio; the next change to a frame or an RPC bumps it again')
+  assert.equal(daemonProtocolVersion, 3, 'bumped for the mail row kind and text; the next change to a frame or an RPC bumps it again')
   const status = {
     profile: 'p',
     pid: 1,
