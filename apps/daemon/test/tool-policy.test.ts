@@ -1,10 +1,10 @@
 /**
- * The default tool policy a peer starts with (TASK-119, decision-6 option 1).
+ * The default tool policy a peer starts with (TASK-119, decision-6 option 3).
  *
  * Judged through the Claude adapter's own matcher, not by inspecting the rule
  * list: what matters is what a peer is asked about, and the adapter is the thing
- * that asks. Allowed reads and in-worktree git inspection run silently; writes
- * and shell ask; network and anything outside the worktree are denied.
+ * that asks. Work inside the worktree (reads, writes, shell) runs silently; network
+ * and anything outside the worktree are denied; a push to main and a PR merge ask.
  */
 
 import assert from 'node:assert/strict'
@@ -59,15 +59,19 @@ test('a glob with braces, brackets or extglob syntax asks, never allows, so it c
   assert.equal(decide('Grep', { pattern: 'x', glob: '*.ts' }), 'allow', 'a plain glob is still allowed')
 })
 
-test('git status and git diff run silently; other git and any chained command ask', () => {
+test('shell inside the worktree runs silently, chained or not', () => {
   assert.equal(decide('Bash', { command: 'git status' }), 'allow')
-  assert.equal(decide('Bash', { command: 'git status --porcelain' }), 'allow')
   assert.equal(decide('Bash', { command: 'git diff --stat' }), 'allow')
-  assert.equal(decide('Bash', { command: 'git diff HEAD~1 -- src/a.ts' }), 'allow')
-  assert.equal(decide('Bash', { command: 'git diff --output=/etc/x' }), 'ask', 'a flag that writes a file is not a read')
+  assert.equal(decide('Bash', { command: 'pnpm typecheck' }), 'allow')
+  assert.equal(decide('Bash', { command: 'cd packages/x && node --test test/a.test.ts' }), 'allow')
+  assert.equal(decide('Bash', { command: 'git push origin feat/task-1' }), 'allow', 'a branch push is routine')
+})
+
+test('a push to main, a force push and a PR merge ask', () => {
   assert.equal(decide('Bash', { command: 'git push origin main' }), 'ask')
-  assert.equal(decide('Bash', { command: 'git status; rm -rf build' }), 'ask', 'a chained command is never covered by an allow')
-  assert.equal(decide('Bash', { command: 'rm -rf build' }), 'ask')
+  assert.equal(decide('Bash', { command: 'git push --force origin feat/x' }), 'ask')
+  assert.equal(decide('Bash', { command: 'git status && git push origin master' }), 'ask')
+  assert.equal(decide('Bash', { command: 'gh pr merge 12 --squash' }), 'ask')
 })
 
 test('network is denied: the web tools, and curl, wget and ssh from the shell', () => {
@@ -78,10 +82,10 @@ test('network is denied: the web tools, and curl, wget and ssh from the shell', 
   assert.equal(decide('Bash', { command: 'ssh build-host' }), 'deny')
 })
 
-test('writes ask, even inside the worktree; a write outside it is denied', () => {
-  assert.equal(decide('Write', { file_path: 'src/a.ts', content: 'x' }), 'ask')
-  assert.equal(decide('Edit', { file_path: '/work/widgets/a.ts' }), 'ask')
-  assert.equal(decide('MultiEdit', { file_path: 'a.ts' }), 'ask')
+test('writes inside the worktree run silently; a write outside it is denied', () => {
+  assert.equal(decide('Write', { file_path: 'src/a.ts', content: 'x' }), 'allow')
+  assert.equal(decide('Edit', { file_path: '/work/widgets/a.ts' }), 'allow')
+  assert.equal(decide('MultiEdit', { file_path: 'a.ts' }), 'allow')
   assert.equal(decide('Write', { file_path: '/etc/x', content: 'x' }), 'deny')
 })
 
