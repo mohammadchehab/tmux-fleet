@@ -603,6 +603,18 @@ describe('run: evals run', () => {
     assert.notEqual(taskOf(saving.calls), taskOf(plain.calls), 'the ledger keys on (repo, sha, task)')
   })
 
+  it('does not append the rows again when the ledger reused an earlier run (TASK-98)', async () => {
+    // The first run already put its rows in the log; appending them again is a second run_started, repeated
+    // case_scored attempts the projection flags as anomalies, and a rewritten finishedAt.
+    const { deps, calls, out } = evals(await built(evalAnswer({ kind: 'pass', exitCode: 0 }), {}, true))
+    assert.equal(await run(judge(), deps), 0)
+    assert.deepEqual(
+      calls.map((c) => c.method),
+      ['builds'],
+    )
+    assert.match(out[0] ?? '', /reused:/)
+  })
+
   it('sends the rows through events.append in the two batches the citation rule asks for', async () => {
     const { deps, calls } = evals(await built(evalAnswer({ kind: 'pass', exitCode: 0 })))
     assert.equal(await run(judge(), deps), 0)
