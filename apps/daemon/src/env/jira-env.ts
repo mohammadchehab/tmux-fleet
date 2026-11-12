@@ -20,7 +20,7 @@
  * for the daemon's lifetime, so a rotated token takes effect on the next start.
  *
  * What never happens: the token in a message, an error detail, an event or a
- * process argument. The errors below name the variable and the file — the two
+ * process argument. The errors below name the file, never the variable — the two
  * things an operator can act on — and quote neither.
  */
 
@@ -69,15 +69,15 @@ const readToken = async (name: string, file: string, options: JiraEnvOptions): P
   } catch (cause) {
     throw fleetError(
       'config_mismatch',
-      `no Jira token for this site: ${name} is not set in fleetd's environment and ${file} could not be read`,
-      { details: { env: name, file }, cause },
+      `no Jira token for this site: the token variable is not set in fleetd's environment and ${file} could not be read`,
+      { details: { file }, cause },
     )
   }
   const [firstLine] = source.split('\n')
   const token = (firstLine ?? '').trim()
   if (token === '') {
-    throw fleetError('config_mismatch', `no Jira token: ${file} is empty and ${name} is not set`, {
-      details: { env: name, file },
+    throw fleetError('config_mismatch', `no Jira token: ${file} is empty and the token variable is not set`, {
+      details: { file },
     })
   }
   return token

@@ -114,17 +114,16 @@ describe('reading the DeepInfra key', () => {
     assert.equal(read, '/run/secrets/key')
   })
 
-  it('refuses a missing key with config_mismatch, naming the variable and the file and nothing else', async () => {
+  it('refuses a missing key with config_mismatch, naming the file, never the variable', async () => {
     const unreadable = optionsWith({
       readText: () => Promise.reject(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
     })
     await assert.rejects(readDeepInfraToken(unreadable), (thrown: unknown) => {
       assert.equal(code(thrown), 'config_mismatch')
       const message = (thrown as Error).message
-      assert.match(message, new RegExp(DEFAULT_DEEPINFRA_TOKEN_ENV))
+      assert.ok(!message.includes(DEFAULT_DEEPINFRA_TOKEN_ENV))
       assert.match(message, /\/home\/tester\/\.config\/deepinfra\/key/)
       assert.deepEqual((thrown as { details?: unknown }).details, {
-        env: DEFAULT_DEEPINFRA_TOKEN_ENV,
         file: `${CONFIG_HOME}/deepinfra/key`,
       })
       return true

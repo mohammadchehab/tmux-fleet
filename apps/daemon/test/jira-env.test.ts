@@ -94,7 +94,7 @@ describe('reading a Jira token', () => {
     assert.deepEqual(reader.asked, ['/run/secrets/jira'])
   })
 
-  it('refuses with the variable and the path, never a value, when neither source yields one', async () => {
+  it('refuses with the path, never the variable or a value, when neither source yields one', async () => {
     const unreadable = new Error('ENOENT: no such file or directory')
     let thrown: unknown
     try {
@@ -109,7 +109,7 @@ describe('reading a Jira token', () => {
       thrown = error
     }
     assert.equal(code(thrown), 'config_mismatch')
-    assert.match(rendered(thrown), /JIRA_API_TOKEN/)
+    assert.doesNotMatch(rendered(thrown), /JIRA_API_TOKEN/)
     assert.match(rendered(thrown), /\/home\/tester\/\.config\/jira\/token/)
   })
 
@@ -122,6 +122,6 @@ describe('reading a Jira token', () => {
     }
     assert.equal(code(thrown), 'config_mismatch')
     assert.match((thrown as Error).message, /is empty/)
-    assert.match(rendered(thrown), /JIRA_PAT/)
+    assert.doesNotMatch(rendered(thrown), /JIRA_PAT/)
   })
 })

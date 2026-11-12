@@ -52,7 +52,7 @@ test('§4: a DeepInfra peer is started with the key, and the key reaches nothing
   }
 })
 
-test('§4: no key anywhere fails `fleet up` by name — the variable and the file, never a value', async (t) => {
+test('§4: no key anywhere fails `fleet up` by name — the file, never the variable or a value', async (t) => {
   const sandbox = await createSandbox({
     peers: [{ id: 'engineer-1', role: 'engineer', provider: 'deepinfra', model: MODEL }],
     // Nothing set, and the profile names no file of its own, so the default is
@@ -65,7 +65,7 @@ test('§4: no key anywhere fails `fleet up` by name — the variable and the fil
   await assert.rejects(sandbox.call('up'), (thrown: unknown) => {
     const error = thrown as Error & { code?: string }
     assert.equal(error.code, 'config_mismatch')
-    assert.match(error.message, new RegExp(DEFAULT_DEEPINFRA_TOKEN_ENV))
+    assert.ok(!error.message.includes(DEFAULT_DEEPINFRA_TOKEN_ENV), 'the message never quotes the variable name')
     assert.ok(error.message.includes(expectedFile), 'the message names the file it looked for')
     return true
   })
