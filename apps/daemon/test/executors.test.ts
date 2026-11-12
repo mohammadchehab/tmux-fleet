@@ -42,6 +42,7 @@ import {
   type PullRequest,
   type ReadModel,
   type Work,
+  pmActionKinds,
 } from '@fleet/foundation-contracts'
 import type { JudgeService } from '@fleet/orchestration-judge'
 
@@ -572,12 +573,13 @@ test('block_work for a Work the fleet does not have is a failed action, not a si
   assert.deepEqual(store.appended, [])
 })
 
-test('the daemon owns exactly the eight kinds it can carry out (§5.2)', () => {
+test('the daemon owns exactly the ten kinds it can carry out (§5.2)', () => {
   const wiring = deps()
   const kinds = createDaemonExecutors(wiring)
     .flatMap((entry) => entry.kinds)
     .sort()
   assert.deepEqual(kinds, [
+    'assign',
     'block_work',
     'flag_capacity',
     'mark_ready',
@@ -586,14 +588,22 @@ test('the daemon owns exactly the eight kinds it can carry out (§5.2)', () => {
     'request_decision',
     'request_judge',
     'send_message',
+    'supersede_brief',
   ])
+})
+
+test('every kind the PM can decide has a home: the daemon or the gate, so no assignment fails as unwired', () => {
+  const daemon = createDaemonExecutors(deps()).flatMap((entry) => entry.kinds)
+  const gate = ['merge', 'retarget']
+  const homeless = pmActionKinds.filter((kind) => !daemon.includes(kind) && !gate.includes(kind))
+  assert.deepEqual(homeless, [])
 })
 
 test('the gate stays the only home of merge and retarget, so a kind cannot be carried out twice (§10)', () => {
   const router = createExecutorRouter({ executors: createDaemonExecutors(deps()) })
   assert.equal(router.kinds.has('merge'), false)
   assert.equal(router.kinds.has('retarget'), false)
-  assert.equal(router.kinds.size, 8)
+  assert.equal(router.kinds.size, 10)
 })
 
 test('an executor called with a kind it does not own says so rather than guessing (§5.2)', async () => {

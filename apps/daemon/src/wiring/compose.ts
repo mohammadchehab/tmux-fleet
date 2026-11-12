@@ -510,7 +510,11 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
     }),
   )
 
-  const executor = createExecutorRouter({ executors })
+  const executor = createExecutorRouter({
+    executors,
+    onFailed: (outcome) =>
+      console.error(`fleetd: ${outcome.action.kind} failed: ${outcome.error ?? 'no reason given'}`),
+  })
 
   // §6.1 and §6.2 are the two bodies the daemon registers itself: neither is a PM
   // tick, and neither may grow `RoutineBodyDeps` (§6) — each is a factory closing
