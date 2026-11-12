@@ -41,8 +41,11 @@ export interface InteractiveDeps {
   readonly refreshMs?: number
 }
 
-const ENTER_SCREEN = '\u001b[?1049h\u001b[?25l'
-const LEAVE_SCREEN = '\u001b[?25h\u001b[?1049l'
+// Mouse reporting (1000, in SGR form 1006) so the wheel arrives as a scroll of
+// the detail pane instead of the terminal turning it into arrow keys that move
+// the selection. Off again on leaving, before the screen is handed back.
+const ENTER_SCREEN = '\u001b[?1049h\u001b[?25l\u001b[?1000h\u001b[?1006h'
+const LEAVE_SCREEN = '\u001b[?1006l\u001b[?1000l\u001b[?25h\u001b[?1049l'
 
 const painted = (lines: readonly string[]): string => `\u001b[H${lines.map((line) => `${line}\u001b[K`).join('\r\n')}\u001b[J`
 

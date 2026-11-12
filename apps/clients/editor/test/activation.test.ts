@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url'
 
 import { activateWith, type Activation } from '../src/activation.ts'
 import type { FleetDaemon } from '../src/daemon.ts'
+import type { OpenWatch } from '../src/output.ts'
+import type { WatchFrame } from '@fleet/foundation-contracts'
 import { lsOf, decisionOf, compactionsOf, peerOf } from './fixtures.ts'
 import { fakeEditor, type FakeEditor } from './fake-editor.ts'
 
@@ -31,6 +33,8 @@ interface Harness {
   answer(ls: ReturnType<typeof lsOf>): void
   /** Makes the next poll fail, as a daemon that went away would. */
   fail(reason: string): void
+  /** Every `peer.watch` the window opened, with a way to push frames down it and to end it. */
+  readonly watches: { readonly since?: number; push(frame: WatchFrame): void; end(): void; closed: boolean }[]
 }
 
 const harness = (options: {
@@ -65,11 +69,29 @@ const harness = (options: {
     },
   }
 
-  const activation = activateWith({ editor, daemonFor: () => daemon })
+  const watches: Harness['watches'] = []
+  const openWatch: OpenWatch = ({ since, onFrame, onClose }) => {
+    const watch = {
+      ...(since === undefined ? {} : { since }),
+      closed: false,
+      push: (frame: WatchFrame) => onFrame(frame),
+      end: () => onClose(),
+    }
+    watches.push(watch)
+    return {
+      close: () => {
+        watch.closed = true
+        onClose()
+      },
+    }
+  }
+
+  const activation = activateWith({ editor, daemonFor: () => daemon, openWatch })
   return {
     editor,
     activation,
     calls,
+    watches,
     answer: (next) => {
       ls = next
     },
@@ -294,6 +316,7 @@ test('every command the manifest offers is registered, and nothing else is', asy
     'fleet.decision.answer',
     'fleet.focus',
     'fleet.peer.actions',
+    'fleet.peer.output',
     'fleet.peer.send',
     'fleet.peer.start',
     'fleet.peer.stop',
@@ -314,4 +337,67 @@ test('the setting that names the program is machine-scoped, so a repository cann
   ) as { readonly contributes: { readonly configuration: { readonly properties: Record<string, { readonly scope?: string }> } } }
   const properties = manifest.contributes.configuration.properties
   assert.equal(properties['fleet.command']?.scope, 'machine')
+})
+
+const at = '2026-11-12T12:00:00.000Z'
+const lineFrame = (seq: number, peerId: string, text: string): WatchFrame =>
+  ({ stream: 'line', seq, at, peerId, line: { kind: 'text', text } }) as WatchFrame
+
+test('clicking a peer opens its live output, fed from one watch stream', async () => {
+  const h = harness({ ls: lsOf({ peers: [peerOf('engineer-1', 'working'), peerOf('engineer-2', 'working')] }) })
+  await h.activation.tick()
+
+  const peers = rows(h)[1]
+  const [row] = peers === undefined ? [] : (h.editor.provider?.children(peers) ?? [])
+  assert.equal(row?.commandId, 'fleet.peer.output', 'the click is the output, the actions are the menu')
+
+  // Lines for a peer nobody has opened yet are kept, so opening it shows them.
+  await h.editor.click('fleet.peer.output', 'engineer-1')
+  assert.equal(h.watches.length, 1)
+  h.watches[0]?.push(lineFrame(1, 'engineer-1', 'reading the brief'))
+  h.watches[0]?.push(lineFrame(2, 'engineer-2', 'running the tests'))
+  h.watches[0]?.push({
+    stream: 'row',
+    seq: 3,
+    at,
+    row: { kind: 'mail', phase: 'sent', msgId: 'msg_0123456789abcdef', to: 'engineer-1', from: 'pm', mailKind: 'brief', text: 'Brief v2\nWork: fix it' },
+  } as WatchFrame)
+  h.watches[0]?.push({ stream: 'line', seq: 4, at, peerId: 'engineer-1', line: { kind: 'tool', tool: 'Bash', summary: 'pnpm test' } } as WatchFrame)
+
+  const one = h.editor.outputs.get('Fleet: engineer-1')
+  assert.deepEqual(one?.lines, ['reading the brief', '✉ brief from pm', '  Brief v2', '  Work: fix it', '⚙ Bash pnpm test'])
+  assert.equal(one?.shown, 1)
+
+  await h.editor.click('fleet.peer.output', 'engineer-2')
+  assert.equal(h.watches.length, 1, 'a second channel shares the stream')
+  assert.deepEqual(h.editor.outputs.get('Fleet: engineer-2')?.lines, ['running the tests'])
+
+  h.activation.dispose()
+  assert.equal(h.watches[0]?.closed, true)
+  assert.equal(one?.disposed, true)
+})
+
+test('a stream the daemon dropped reconnects from the last seq it saw', async () => {
+  const h = harness({ ls: lsOf({ peers: [peerOf('engineer-1', 'working')] }) })
+  await h.activation.tick()
+  await h.editor.click('fleet.peer.output', 'engineer-1')
+  h.watches[0]?.push(lineFrame(7, 'engineer-1', 'before'))
+  h.watches[0]?.end()
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 3_100)
+  })
+  assert.equal(h.watches.length, 2)
+  assert.equal(h.watches[1]?.since, 7)
+  h.activation.dispose()
+})
+
+test('a context-menu item, which hands over the whole row, acts on that row\'s peer', async () => {
+  const h = harness({ ls: lsOf({ peers: [peerOf('engineer-1', 'working')] }) })
+  await h.activation.tick()
+  const peers = rows(h)[1]
+  const [row] = peers === undefined ? [] : (h.editor.provider?.children(peers) ?? [])
+
+  h.editor.asks.push('look at TASK-4')
+  await h.editor.click('fleet.peer.send', row)
+  assert.deepEqual(h.calls.send, [{ to: 'engineer-1', kind: 'nudge', body: 'look at TASK-4' }])
 })
