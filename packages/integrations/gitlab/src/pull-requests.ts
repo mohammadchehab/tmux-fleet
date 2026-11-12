@@ -144,12 +144,13 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
     api(`${projectPath(repo)}/merge_requests/${String(number)}/approvals`)
 
   /**
-   * `list`'s approvals, one per row, a few at a time. A page is up to `limit` merge
-   * requests and each costs a `glab` process, so the reads are chunked rather than
-   * fanned out at once; and a row whose read fails is `pending` (the conservative
-   * answer) instead of failing the page, the same trade `get` makes for pipelines.
+   * `list`'s approvals and pipelines, per row, a few rows at a time. The merge request list embeds neither,
+   * so a row graded from the list alone would read `pending` for ever. A page is up to `limit` merge
+   * requests and each costs two `glab` processes, so the reads are chunked rather than fanned out at once;
+   * and a read that fails leaves its own field `pending` (the conservative answer) instead of failing the
+   * page, the same trade `get` makes.
    */
-  const reviewsOf = async (repo: Repo, rows: readonly unknown[]): Promise<MergeRequestEvidence[]> => {
+  const evidenceOf = async (repo: Repo, rows: readonly unknown[]): Promise<MergeRequestEvidence[]> => {
     const found: MergeRequestEvidence[] = []
     for (let start = 0; start < rows.length; start += APPROVALS_AT_ONCE) {
       const chunk = rows.slice(start, start + APPROVALS_AT_ONCE)
@@ -158,7 +159,12 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
           chunk.map(async (row) => {
             // No `iid`, no approvals to ask for: `pullRequestFrom` reports that row as unusable on its own.
             const number = iidOf(row)
-            return number === undefined ? {} : { approvals: await approvalsOf(repo, number).catch(() => undefined) }
+            if (number === undefined) return {}
+            const [approvals, pipelines] = await Promise.all([
+              approvalsOf(repo, number).catch(() => undefined),
+              pipelinesOf(repo, number).catch(() => undefined),
+            ])
+            return { approvals, pipelines }
           }),
         )),
       )
@@ -210,13 +216,13 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
 
   return {
     /**
-     * The page, with each row's review read from its own approvals endpoint. `pr-babysit` records
+     * The page, with each row's review and checks read from its own approvals and pipelines endpoints. `pr-babysit` records
      * these rows as observations (§6), so a row that was not asked is a PR the log holds as `pending`
      * for as long as the list is its only read — which is exactly what `work-sync`'s `green` refuses.
      */
     list: async (repo, listOptions) => {
       const rows = await readRows(listPath(repo, listOptions?.state ?? 'open'))
-      const evidence = await reviewsOf(repo, rows)
+      const evidence = await evidenceOf(repo, rows)
       return rows.map((row, at) => pullRequestFrom(row, repo, evidence[at] ?? {}))
     },
 

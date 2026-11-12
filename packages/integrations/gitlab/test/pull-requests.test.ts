@@ -84,6 +84,38 @@ describe('list and searchIntent', () => {
     )
   })
 
+  it('gives every row the checks its own pipelines endpoint reports (TASK-89)', async () => {
+    // The merge request list does not embed a pipeline, so a row graded from the list alone is a constant
+    // `pending` — and `pr-babysit` would never see a red pipeline turn red.
+    const fake = fakeGlab((args) => {
+      if (args[1] === `${project}/merge_requests/7/pipelines`) return json([pipeline(1, 'failed')])
+      if (args[1] === `${project}/merge_requests/8/pipelines`) return json([pipeline(2, 'success')])
+      if (args[1]?.endsWith('/approvals') === true) return json({ approved: false })
+      return json([mrJson(), mrJson({ iid: 8, target_branch: 'feat', source_branch: 'feat-2' })])
+    })
+    const prs = await createGitLabPullRequests({ glab: fake.glab }).list(where)
+
+    assert.deepEqual(
+      prs.map((pr) => pr.checks),
+      ['failing', 'passing'],
+    )
+  })
+
+  it('reads pending checks for the row whose pipelines read failed, and the rest as GitLab answered', async () => {
+    const fake = fakeGlab((args) => {
+      if (args[1] === `${project}/merge_requests/7/pipelines`) return { code: 1, stderr: 'boom' }
+      if (args[1] === `${project}/merge_requests/8/pipelines`) return json([pipeline(2, 'success')])
+      if (args[1]?.endsWith('/approvals') === true) return json({ approved: false })
+      return json([mrJson(), mrJson({ iid: 8, target_branch: 'feat', source_branch: 'feat-2' })])
+    })
+    const prs = await createGitLabPullRequests({ glab: fake.glab }).list(where)
+
+    assert.deepEqual(
+      prs.map((pr) => pr.checks),
+      ['pending', 'passing'],
+    )
+  })
+
   it('reads pending for the row whose approvals read failed, and the rest of the page as GitLab answered', async () => {
     const fake = fakeGlab((args) => {
       if (args[1] === `${project}/merge_requests/7/approvals`) return { code: 1, stderr: 'boom' }
