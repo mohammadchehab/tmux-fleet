@@ -5,8 +5,8 @@
  * The unit tests prove the planner, the adapters and the body. What only this
  * can prove is the wiring — that `profile.security.scanners` reaches the
  * scheduler's factory map, that the trigger the daemon already had configured
- * (`pr.opened`, §6.2's every-PR rule) reaches the body, that the body finds the
- * checkout the fleet made, and that what it finds lands in the store the daemon
+ * (`pr.opened`, §6.2's every-PR rule) reaches the body, that the body snapshots the
+ * commit from a checkout the fleet made, and that what it finds lands in the store the daemon
  * is using. The tools are injected, so a test run needs none of them installed.
  */
 
@@ -45,7 +45,7 @@ const prOpened: AppendEvent = {
  */
 const fakeIo = (head: Sha = sha): ToolIo => ({
   has: async (binary) => binary === 'semgrep',
-  exec: async (binary, args) => ({
+  exec: async (binary, args, options) => ({
     code: 0,
     stderr: '',
     stdout:
@@ -58,7 +58,8 @@ const fakeIo = (head: Sha = sha): ToolIo => ({
             results: [
               {
                 check_id: 'typescript.lang.security.audit.shell-injection',
-                path: `${checkout}/src/run.ts`,
+                // The body scans a snapshot of the commit, so the tool reports paths under its cwd.
+                path: `${options?.cwd ?? checkout}/src/run.ts`,
                 start: { line: 12 },
                 extra: { severity: 'error', lines: '  exec(userInput)' },
               },
