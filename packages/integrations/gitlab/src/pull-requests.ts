@@ -310,8 +310,10 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
         String(mergeOptions.headSha),
         ...(flag === undefined ? [] : [flag]),
         ...(mergeOptions.deleteBranch ? ['--remove-source-branch'] : []),
-        // "Merge when the pipeline succeeds", for a caller that asked to wait rather than to merge now.
-        ...(mergeOptions.auto === true ? ['--auto-merge'] : []),
+        // "Merge when the pipeline succeeds" only for a caller that asked to wait. Otherwise it is switched off
+        // explicitly: glab turns it on by itself while a pipeline is running, and would then exit 0 having queued
+        // the merge rather than made it, which the gate would record as merged.
+        mergeOptions.auto === true ? '--auto-merge' : '--auto-merge=false',
         // The merge confirmation, which has no TTY on this side.
         '--yes',
       ])
@@ -337,9 +339,15 @@ export const createGitLabPullRequests = (options: GitLabOptions = {}): GitLabPul
 
       // The merge commit is a nicety, not the merge: a second call that fails leaves `mergeSha` absent, and the
       // `pr.merged` event records the head sha it merged either way (§3).
-      const sha = await readRaw(repo, number)
-        .then(mergeShaFrom)
-        .catch(() => undefined)
+      const raw = await readRaw(repo, number).catch(() => undefined)
+      // Exit 0 is not proof for a merge asked for now: if GitLab still reports the request open, nothing landed,
+      // and returning would let the gate record `pr.merged` and delete the source branch of an unmerged request.
+      if (mergeOptions.auto !== true && (typeof raw === 'object' && raw !== null && (raw as { state?: unknown }).state === 'opened')) {
+        throw fleetError('external_failed', `glab mr merge ${String(number)} exited 0 but ${String(repo)}!${String(number)} is still open; nothing was merged`, {
+          details: { repo: String(repo), number, method: mergeOptions.method },
+        })
+      }
+      const sha = raw === undefined ? undefined : mergeShaFrom(raw)
       return sha === undefined ? {} : { mergeSha: sha }
     },
 
