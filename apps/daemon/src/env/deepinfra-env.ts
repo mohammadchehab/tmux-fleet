@@ -29,7 +29,7 @@ import { join } from 'node:path'
 import { fleetError } from '@fleet/foundation-core'
 import { deepInfraEnv } from '@fleet/runtime-provider-deepinfra'
 
-import { cursorEnv, cursorKeyRouted, readCursorToken } from './cursor-env.ts'
+import { cursorEnv, cursorKeyRouted, readCursorForwardedEnv, readCursorToken } from './cursor-env.ts'
 import { modelFor } from '../config/profile.ts'
 import type { Profile, PeerProfile, ProfileProvider, JudgeProfile } from '../config/profile.ts'
 
@@ -120,7 +120,12 @@ export const providerEnvFor =
     // `cursor` is routed only when the profile names where its key lives (TASK-24);
     // otherwise it is the machine's own login, and the fragment stays empty.
     if (provider === 'cursor') {
-      return cursorKeyRouted(options.profile) ? cursorEnv(await readCursorToken(options)) : {}
+      // The git/ssh credentials come first so the key route, which has its own
+      // rules, can never be overwritten by a forwarded name (TASK-80).
+      return {
+        ...readCursorForwardedEnv(options),
+        ...(cursorKeyRouted(options.profile) ? cursorEnv(await readCursorToken(options)) : {}),
+      }
     }
     if (provider !== DEEP_INFRA) return {}
     const block = options.profile.providers?.deepinfra
