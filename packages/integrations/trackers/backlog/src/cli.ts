@@ -33,22 +33,33 @@ export type BacklogRunner = (
   options: { readonly cwd: string },
 ) => Promise<BacklogResult>
 
+/** How long one `backlog` call may run before it is killed and reported as a failure. */
+export const DEFAULT_TIMEOUT_MS = 60_000
+
 /**
  * `backlog` on `PATH`. A missing binary surfaces as code 127 with the spawn
  * message on stderr, the way a shell reports it, so `transition`/`get` can tell
  * "the CLI is not installed" from "the CLI answered no".
  */
-export const execFileBacklog: BacklogRunner = (args, options) =>
+export const backlogRunner = (timeoutMs: number = DEFAULT_TIMEOUT_MS): BacklogRunner => (args, options) =>
   new Promise((resolve) => {
-    execFile('backlog', [...args], { cwd: options.cwd, maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
+    execFile('backlog', [...args], { cwd: options.cwd, maxBuffer: 4 << 20, timeout: timeoutMs }, (error, stdout, stderr) => {
       if (error === null) {
         resolve({ code: 0, stdout: String(stdout), stderr: String(stderr) })
+        return
+      }
+      if (error.killed === true) {
+        // A hung `backlog` must not stall the routine that called it.
+        resolve({ code: 124, stdout: String(stdout ?? ''), stderr: `backlog timed out after ${timeoutMs}ms` })
         return
       }
       const code = typeof error.code === 'number' ? error.code : 127
       resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') || error.message })
     })
   })
+
+/** `backlogRunner` with the default timeout. */
+export const execFileBacklog: BacklogRunner = backlogRunner()
 
 /** One `backlog` call, as this package uses it: the raw result, or its stdout parsed as JSON. */
 export interface BacklogCli {
