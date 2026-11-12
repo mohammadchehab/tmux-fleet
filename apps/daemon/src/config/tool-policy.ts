@@ -8,7 +8,8 @@
  * preset, and the preset's rules are not repeated anywhere.
  *
  * A guard rail, not a sandbox: a shell command can still reach what the rules do
- * not name. The adapter's `compilePolicy` and `evaluatePolicy` decide each call.
+ * not name (`python -c`, `node -e`, a package manager). Keeping a peer off the network or
+ * off main for certain takes an egress firewall and server-side branch protection. The adapter's `compilePolicy` and `evaluatePolicy` decide each call.
  */
 
 import type { ToolPolicy } from '@fleet/foundation-contracts'
@@ -60,7 +61,7 @@ const SAFE_GLOB_CHARS = '[\\w./*?-]'
 const outsideWorktreeResolved = (cwd: string): string => `^(?!${escapeRegExp(cwd)}(?:/|$))`
 
 /** Shell commands that reach the network. Searched anywhere in the command, so a chained one is caught too. */
-const NETWORK_COMMAND = '(?:^|[\\s;&|(\\x60])(?:curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)(?:\\s|$)'
+const NETWORK_COMMAND = '(?:^|[\\s;&|(\\x60/"\'])(?:curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)(?:[\\s"\\x27]|$)'
 
 /**
  * `git status` and `git diff`, with the flags that only read. A flag that writes
@@ -71,9 +72,15 @@ const NETWORK_COMMAND = '(?:^|[\\s;&|(\\x60])(?:curl|wget|ssh|scp|sftp|rsync|nc|
 const GIT_READ =
   'git (?:status|diff)(?: --(?:stat|name-only|name-status|cached|staged|no-color|short|porcelain))*(?: (?:--|[\\w./~^@][\\w./~^@-]*))*'
 
-/** A push to main/master or a force push, and a PR merge: the supervisor's to do, so a peer asks. */
+/** Where a command word may start: line start, after a separator or a subshell, or after a path (`/usr/bin/git`). */
+const WORD_START = '(?:^|[\\s;&|(\\x60/"\'])'
+
+/**
+ * A push to main/master, a force push (`-f`, `--force`, `--force-with-lease`, a `+` refspec), and a
+ * PR merge or a raw `gh api` call: the supervisor's to do, so a peer asks. A branch push stays routine.
+ */
 const SUPERVISOR_ONLY =
-  '(?:git push\\b[^\\n]*(?:\\b(?:main|master)\\b|--force|-f\\b)|gh pr merge\\b)'
+  `${WORD_START}(?:git\\b[^\\n]*\\bpush\\b[^\\n]*(?:\\b(?:main|master)\\b|--force|\\s-[a-zA-Z]*f|\\s\\+\\S)|gh\\b[^\\n]*\\b(?:merge|api)\\b)`
 
 /**
  * The routine default set: decision-6 option 3. The one place its rules are written.
