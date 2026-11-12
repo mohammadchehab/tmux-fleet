@@ -424,6 +424,7 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
         const failing = recordFailure(routine, failedAt, error)
         // The failure and its escalation go in one batch: a banner that outran
         // the fact it is about would be the ledger telling two stories (§6, §6.1).
+        let refusedAppend: string | undefined
         try {
           await deps.store.append([
             failedEvent(routine, failedAt, error),
@@ -438,7 +439,11 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
             const { escalated: _said, ...unsaid } = current
             attempts.set(routine.id, escalatedBefore === undefined ? unsaid : { ...unsaid, escalated: escalatedBefore })
           }
-          throw refused
+          // Contained, not rethrown: one routine's refused write must not
+          // abort the tick and drop the records already collected (TASK-85).
+          // The failure still happened and is still reported on the record,
+          // with the store's refusal beside it; the ledger just lacks it.
+          refusedAppend = messageOf(toFleetError(refused, 'store_failed'))
         }
         // A failed run is a run: the projection stamps `lastRunAt` with it
         // (`projections.ts`, `routine.failed`) and a restart seeds `lastRun` from
@@ -450,17 +455,35 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
           actionsFailed: 0,
           durationMs: clock.millis() - startedMillis,
           ok: false,
-          error,
+          error: refusedAppend === undefined ? error : `${error}; and the store refused the routine.failed write: ${refusedAppend}`,
         })
       }
 
       const finishedAt = clock.now()
       const durationMs = clock.millis() - startedMillis
-      await deps.store.append([finishedEvent(routine, finishedAt, durationMs, actions, actionsFailed)])
+      let finishedRefused: string | undefined
+      try {
+        await deps.store.append([finishedEvent(routine, finishedAt, durationMs, actions, actionsFailed)])
+      } catch (refused) {
+        // The body already ran and acted: re-running it to fix the ledger would
+        // repeat its actions, so it counts as run (lastRun below) and the
+        // record says the write was lost (TASK-85).
+        finishedRefused = messageOf(toFleetError(refused, 'store_failed'))
+      }
       lastRun.set(routine.id, finishedAt)
       // It recovered, so the next failure is a first failure again — and if it
       // ever reaches three, worth a banner of its own (§6.1).
       attempts.delete(routine.id)
+      if (finishedRefused !== undefined) {
+        return record({
+          actions,
+          actionsFailed,
+          inputsHash,
+          durationMs,
+          ok: false,
+          error: `the store refused the routine.finished write: ${finishedRefused}`,
+        })
+      }
       return record({ actions, actionsFailed, inputsHash, durationMs, ok: true })
     } finally {
       inFlight.delete(routine.id)
