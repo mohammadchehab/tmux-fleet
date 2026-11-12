@@ -633,9 +633,11 @@ export class ClaudeSession {
       if (event.type === 'error') this.#lastError = event.message
       this.#emit(event)
     }
-    // A CLI that names nothing and queues nothing has no result still to come for what is left (see `foldQuietMs`).
-    const unnamed = !Array.isArray((message as { user_message_uuids?: unknown }).user_message_uuids)
-    if (resultEnd !== undefined && unnamed && (message as { queued_turn_count?: unknown }).queued_turn_count === 0) {
+    // A result that queues nothing is the last one for this run, so a turn still in flight after it was folded
+    // in unnamed (or named by a CLI that left it out) has no result still to come: the quiet period ends it.
+    // Armed for a result that names every turn too; then `#inflight` is empty and the timer does nothing.
+    // Not armed while a send is queued behind the result: that send's own result is still to come.
+    if (resultEnd !== undefined && (message as { queued_turn_count?: unknown }).queued_turn_count === 0) {
       this.#armFold(resultEnd.reason, resultEnd.error)
     }
   }
