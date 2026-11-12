@@ -72,6 +72,8 @@ export interface WatchState {
   /** The newest seq seen on the stream, for a reconnect's `since`. */
   readonly lastSeq: number
   readonly selected: number
+  /** How many lines the detail pane is scrolled up from the newest; 0 follows the peer live. */
+  readonly scroll: number
   readonly menu: Menu | undefined
   readonly compose: Compose | undefined
   /** One line of what the last action did, or why it failed. */
@@ -88,6 +90,7 @@ export const initialState = (size: { cols: number; rows: number }, offsetMinutes
   link: 'connecting',
   lastSeq: 0,
   selected: 0,
+  scroll: 0,
   menu: undefined,
   compose: undefined,
   notice: undefined,
@@ -134,6 +137,12 @@ export const focusedPeer = (state: WatchState): Peer | undefined => {
   if (row.kind === 'peer') return row.peer
   return row.need.kind === 'peer' ? row.need.peer : undefined
 }
+
+/** Lines one wheel notch moves the detail pane. */
+export const wheelLines = 3
+
+/** A page: most of the screen, keeping a few lines of the last one in view. */
+const pageLines = (state: WatchState): number => Math.max(1, state.rows - 8)
 
 const clamp = (state: WatchState): WatchState => {
   const count = selectables(state).length
@@ -280,9 +289,17 @@ const onKey = (state: WatchState, key: Key): Step => {
   if (state.menu !== undefined) return onMenuKey(state, state.menu, key)
   switch (key.kind) {
     case 'up':
-      return stay(clamp({ ...state, selected: state.selected - 1 }))
+      return stay(clamp({ ...state, selected: state.selected - 1, scroll: 0 }))
     case 'down':
-      return stay(clamp({ ...state, selected: state.selected + 1 }))
+      return stay(clamp({ ...state, selected: state.selected + 1, scroll: 0 }))
+    case 'scroll-up':
+      return stay({ ...state, scroll: state.scroll + wheelLines })
+    case 'scroll-down':
+      return stay({ ...state, scroll: Math.max(0, state.scroll - wheelLines) })
+    case 'page-up':
+      return stay({ ...state, scroll: state.scroll + pageLines(state) })
+    case 'page-down':
+      return stay({ ...state, scroll: Math.max(0, state.scroll - pageLines(state)) })
     case 'enter': {
       const menu = menuFor(selectables(state)[state.selected])
       return stay(menu === undefined ? state : { ...state, menu, notice: undefined })
@@ -292,8 +309,8 @@ const onKey = (state: WatchState, key: Key): Step => {
       return { state, effects: [{ kind: 'quit' }] }
     case 'char':
       if (key.char === 'q') return { state, effects: [{ kind: 'quit' }] }
-      if (key.char === 'k') return stay(clamp({ ...state, selected: state.selected - 1 }))
-      if (key.char === 'j') return stay(clamp({ ...state, selected: state.selected + 1 }))
+      if (key.char === 'k') return stay(clamp({ ...state, selected: state.selected - 1, scroll: 0 }))
+      if (key.char === 'j') return stay(clamp({ ...state, selected: state.selected + 1, scroll: 0 }))
       if (key.char === 'r') return { state, effects: [{ kind: 'refresh' }] }
       return stay(state)
     default:

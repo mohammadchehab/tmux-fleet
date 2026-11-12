@@ -110,10 +110,15 @@ const itemLines = (item: TimelineItem, width: number): readonly string[] => {
   }
 }
 
-/** The newest `height` wrapped lines of a peer's timeline. */
-export const detailLines = (items: readonly TimelineItem[], width: number, height: number): readonly string[] => {
+/**
+ * `height` wrapped lines of a peer's timeline, `scroll` lines up from the newest.
+ * A scroll past the top stops at the top, so the wheel never shows a blank pane.
+ */
+export const detailLines = (items: readonly TimelineItem[], width: number, height: number, scroll = 0): readonly string[] => {
   const wrapped = items.flatMap((item) => itemLines(item, width))
-  return wrapped.slice(Math.max(0, wrapped.length - height))
+  const offset = Math.min(Math.max(0, scroll), Math.max(0, wrapped.length - height))
+  const end = wrapped.length - offset
+  return wrapped.slice(Math.max(0, end - height), end)
 }
 
 const menuLines = (menu: Menu, width: number): readonly string[] => [
@@ -160,7 +165,15 @@ export const render = (state: WatchState, nowMs: number): readonly string[] => {
         ? menuLines(state.menu, detailWidth)
         : peer === undefined
           ? []
-          : [dim(fit(`${peer.peerId} · ${peer.role} · ${peer.providerId}/${peer.model}`, detailWidth)), ...detailLines(state.timelines.get(peer.peerId) ?? [], detailWidth, bodyHeight - 1)]
+          : [
+              dim(
+                fit(
+                  `${peer.peerId} · ${peer.role} · ${peer.providerId}/${peer.model}${state.scroll > 0 ? ' · scrolled up, wheel down to follow' : ''}`,
+                  detailWidth,
+                ),
+              ),
+              ...detailLines(state.timelines.get(peer.peerId) ?? [], detailWidth, bodyHeight - 1, state.scroll),
+            ]
     for (let row = 0; row < bodyHeight; row += 1) {
       const peerRow = ls.peers[row]
       const left =
