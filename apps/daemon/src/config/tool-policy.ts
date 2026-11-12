@@ -44,6 +44,14 @@ const outsideGlobInJson = (key: 'pattern' | 'glob'): string =>
   `"${key}":"(?:~|/|(?:[^"]*/)?\\.\\.(?:/|"))`
 
 /**
+ * A glob made only of characters that name a plain relative path: letters, digits,
+ * `_ . / * ? -`. Anything else (braces, brackets, extglobs, backslashes, `~`, a
+ * leading `/`) is not matched, so it is not auto-allowed: the search tools' glob
+ * dialects are wider than a regex can check, so the policy fails closed on them.
+ */
+const SAFE_GLOB_CHARS = '[\\w./*?-]'
+
+/**
  * A path that leaves the worktree, for the tools the adapter matches against the
  * resolved file path (`Read`, `Write`, `Edit`). The path is already absolute and
  * normalised by then, so outside means not under `cwd`, with the boundary checked
@@ -81,6 +89,11 @@ export const routineToolPolicy = (cwd: string): ToolPolicy => {
       { tool: 'Glob', pattern: outsideGlobInJson('pattern'), action: 'deny' },
       { tool: 'Grep', pattern: outsideGlobInJson('glob'), action: 'deny' },
       { tool: 'Read', action: 'allow' },
+      // A glob outside the plain relative set asks; the rest of each tool is allowed.
+      // (An allow rule must cover the whole input, so the unsafe case is an ask, not
+      // a narrow allow.)
+      { tool: 'Grep', pattern: `"glob":"(?!${SAFE_GLOB_CHARS}*")`, action: 'ask' },
+      { tool: 'Glob', pattern: `"pattern":"(?!${SAFE_GLOB_CHARS}*")`, action: 'ask' },
       { tool: 'Grep', action: 'allow' },
       { tool: 'Glob', action: 'allow' },
       { tool: 'Bash', pattern: GIT_READ, action: 'allow' },
