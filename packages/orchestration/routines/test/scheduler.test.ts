@@ -261,13 +261,6 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     return { state, ...built }
   }
 
-  /** The same, for the daily routine: the one whose period is a day. */
-  const dailyHarness = () => {
-    const { state, factory } = flaky('standup')
-    const built = harness({ config: standupOnly, factories: { standup: factory } })
-    return { state, ...built }
-  }
-
   /** Tick a second at a time until the routine runs again, and answer how long it waited. */
   const waitForNextRun = async (
     state: { runs: number },
@@ -323,24 +316,41 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     assert.ok(waits.at(-1) === HOUR, `the last wait should have reached the hour, got ${waits.at(-1)}`)
   })
 
-  it('never retries a daily routine sooner than its day', async () => {
-    const HOUR = 60 * 60 * 1_000
-    const { deps, state, clock } = dailyHarness()
+  it('does not retry a failed daily routine until its next occurrence, and then does not wait out a day', async () => {
+    // Local wall clock, as `schedule` is: standup is 09:00.
+    const local = (day: number, hours: number, minutes = 0): string => new Date(2026, 10, day, hours, minutes).toISOString()
+    const { state, factory } = flaky('standup')
+    const { deps, clock } = harness({ config: standupOnly, factories: { standup: factory } })
+    clock.set(local(10, 14))
+    const scheduler = createScheduler(deps)
+    await scheduler.tick()
+    assert.equal(state.runs, 1, 'the catch-up after a 14:00 restart fails')
+
+    clock.set(local(10, 23, 59))
+    await scheduler.tick()
+    assert.equal(state.runs, 1, 'it is not retried before the next occurrence')
+
+    clock.set(local(11, 9))
+    await scheduler.tick()
+    assert.equal(state.runs, 2, 'tomorrow 09:00 runs, though under 24 h after the failure')
+  })
+
+  it('a daily routine that failed at 23:50 still runs at the next 09:00', async () => {
+    const local = (day: number, hours: number, minutes = 0): string => new Date(2026, 10, day, hours, minutes).toISOString()
+    const { state, factory } = flaky('standup')
+    const { deps, clock } = harness({ config: standupOnly, factories: { standup: factory } })
+    clock.set(local(10, 23, 50))
     const scheduler = createScheduler(deps)
     await scheduler.tick()
     assert.equal(state.runs, 1)
 
-    clock.advance(23 * HOUR)
+    clock.set(local(11, 8, 59))
     await scheduler.tick()
-    assert.equal(state.runs, 1, 'the window has reopened, but not the day the backoff waits out')
+    assert.equal(state.runs, 1, 'the occurrence at 09:00 is still ahead')
 
-    clock.advance(HOUR - 1)
+    clock.set(local(11, 9))
     await scheduler.tick()
-    assert.equal(state.runs, 1, 'a millisecond short of the day is still short of it')
-
-    clock.advance(1)
-    await scheduler.tick()
-    assert.equal(state.runs, 2, 'and at the day it is retried, once')
+    assert.equal(state.runs, 2, 'the following day is not skipped')
   })
 
   it('runs on a later recurring trigger when the first one is not due', async () => {
