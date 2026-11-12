@@ -363,26 +363,27 @@ describe('merge', () => {
       '--sha',
       'abc1234',
       '--squash',
+      '--auto-merge=false',
       '--yes',
     ])
     assert.deepEqual(merged, { mergeSha: 'def5678' })
   })
 
   it('passes no method flag for a merge commit, because that is GitLab’s default', async () => {
-    const fake = fakeGlab((args) => (args[1] === 'merge' ? {} : json(mrJson())))
+    const fake = fakeGlab((args) => (args[1] === 'merge' ? {} : json(mrJson({ state: 'merged' }))))
     await createGitLabPullRequests({ glab: fake.glab }).merge(where, 7, { method: 'merge', deleteBranch: false, headSha: head })
     assert.ok(!fake.calls[0]?.includes('--squash'))
-    assert.deepEqual(fake.calls[0]?.slice(-3), ['--sha', 'abc1234', '--yes'])
+    assert.deepEqual(fake.calls[0]?.slice(-4), ['--sha', 'abc1234', '--auto-merge=false', '--yes'])
   })
 
   it('removes the source branch only when asked — §10 is the caller that decides', async () => {
-    const fake = fakeGlab((args) => (args[1] === 'merge' ? {} : json(mrJson())))
+    const fake = fakeGlab((args) => (args[1] === 'merge' ? {} : json(mrJson({ state: 'merged' }))))
     await createGitLabPullRequests({ glab: fake.glab }).merge(where, 7, { method: 'merge', deleteBranch: true, headSha: head })
-    assert.deepEqual(fake.calls[0]?.slice(5), ['--sha', 'abc1234', '--remove-source-branch', '--yes'])
+    assert.deepEqual(fake.calls[0]?.slice(5), ['--sha', 'abc1234', '--remove-source-branch', '--auto-merge=false', '--yes'])
   })
 
   it('asks GitLab to wait for the pipeline when the caller says auto', async () => {
-    const fake = fakeGlab((args) => (args[1] === 'merge' ? {} : json(mrJson())))
+    const fake = fakeGlab((args) => (args[1] === 'merge' ? {} : json(mrJson({ state: 'merged' }))))
     await createGitLabPullRequests({ glab: fake.glab }).merge(where, 7, {
       method: 'squash',
       deleteBranch: false,
@@ -390,6 +391,23 @@ describe('merge', () => {
       auto: true,
     })
     assert.deepEqual(fake.calls[0]?.slice(5), ['--sha', 'abc1234', '--squash', '--auto-merge', '--yes'])
+  })
+
+  it('switches auto-merge off explicitly, and refuses to call a still-open request merged', async () => {
+    const fake = fakeGlab((args) => (args[1] === 'merge' ? {} : json(mrJson())))
+    await assert.rejects(
+      createGitLabPullRequests({ glab: fake.glab }).merge(where, 7, { method: 'squash', deleteBranch: true, headSha: head }),
+      { code: 'external_failed', message: /still open; nothing was merged/ },
+    )
+    assert.ok(fake.calls[0]?.includes('--auto-merge=false'))
+  })
+
+  it('does not demand a merged state of a caller that asked to wait for the pipeline', async () => {
+    const fake = fakeGlab((args) => (args[1] === 'merge' ? {} : json(mrJson())))
+    assert.deepEqual(
+      await createGitLabPullRequests({ glab: fake.glab }).merge(where, 7, { method: 'squash', deleteBranch: false, headSha: head, auto: true }),
+      {},
+    )
   })
 
   it('is a merge even when the merge commit cannot be read afterwards', async () => {
