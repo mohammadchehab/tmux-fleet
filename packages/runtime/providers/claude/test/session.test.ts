@@ -300,6 +300,32 @@ test('a result that leaves a queued send behind ends only the turns it names, ho
   }
 })
 
+test('a result naming none of our turns ends nothing, however many are in flight (TASK-104)', async () => {
+  const provider = new ClaudeProvider({
+    initTimeoutMs: 5_000,
+    foldQuietMs: 30,
+    query: cliThat(async function* (next) {
+      await next()
+      yield INIT
+      const second = await next()
+      // A CLI-started turn: it names a uuid that is none of ours, and a send is queued behind it.
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'x', user_message_uuids: ['not-ours'], queued_turn_count: 1 }
+      await settle(60)
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'b', user_message_uuids: [second.uuid], queued_turn_count: 0 }
+      await new Promise(() => undefined)
+    }),
+  })
+  const holding = setInterval(() => undefined, 1_000)
+  try {
+    const handle = await provider.start(spec())
+    const second = await provider.send(handle, nudge)
+    const seen = await turnEvents(provider, handle, (events) => endedIds(events).length >= 1, 3_000)
+    assert.equal(endedIds(seen)[0], second, 'the foreign result ended nothing: the first turn to end is the one a result named')
+  } finally {
+    clearInterval(holding)
+  }
+})
+
 test('a result that names only one of two folded turns, with nothing queued, still ends the other after the quiet period (peer.hold hang)', async () => {
   // The CLI folded the second send into the first turn's run and named only the message that started it.
   // Nothing is queued behind that result, so nothing else is coming to end the second turn: without the
