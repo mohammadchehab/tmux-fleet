@@ -15,6 +15,7 @@
  * ticket sitting as a Work nobody assigned until the next 60 s dispatch.
  */
 
+import type { ForgeRef } from '@fleet/foundation-core'
 import type { EventSink, Tracker } from '@fleet/foundation-contracts'
 import { sync, type RoutineContext, type RoutineFactory, type RoutineOutcome } from '@fleet/orchestration-routines'
 
@@ -29,6 +30,8 @@ export interface TrackerSyncWiring {
   readonly role?: string
   /** The profile's `comments`: absent is off — a note is not mirrored unless the profile says so. */
   readonly comments?: boolean
+  /** The profile's `forge`: which forge a PR link points at. Absent is GitHub. */
+  readonly forge?: ForgeRef
 }
 
 /** The `tracker-sync` entry of the scheduler's factory map. */

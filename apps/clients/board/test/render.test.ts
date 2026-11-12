@@ -76,6 +76,18 @@ describe('board: the rows are the projection rows', () => {
 })
 
 describe('board: a row says what a person needs to act on it', () => {
+  it('links a GitLab merge request, not a GitHub pull, when the daemon says gitlab', () => {
+    const html = renderBoard({
+      status: { ...statusFixture(), forge: { kind: 'gitlab', host: 'git.example' } },
+      work: [workFixture({ workId: 'wrk_0000000000000001', state: 'in_review', prs: [{ repo: 'grp/sub/proj' as typeof REPO, number: 5 }] })],
+      usage: [],
+      activity: [],
+      renderedAt: AT,
+    })
+    assert.match(html, /href="https:\/\/git.example\/grp\/sub\/proj\/-\/merge_requests\/5"/)
+    assert.doesNotMatch(html, /github\.com/)
+  })
+
   it('names the assignee, the PR and the tracker key', () => {
     const html = page([
       workFixture({

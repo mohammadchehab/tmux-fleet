@@ -133,6 +133,7 @@ export const createDaemon = (deps: DaemonDeps): Daemon => {
     storePath: deps.paths.storePath,
     protocolVersion: daemonProtocolVersion,
     purgeContextRatio: purgeLimitsOf(deps.profile).contextRatio,
+    ...(deps.profile.forge === undefined ? {} : { forge: deps.profile.forge }),
     ...(warnings.length === 0 ? {} : { warnings }),
   }
   let running = false
