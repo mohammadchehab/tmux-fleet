@@ -832,22 +832,25 @@ export class PeerSession {
     const tool = bounded(event.tool, TOOL_MAX)
     const target = TARGET_TOOLS.has(event.tool) && event.summary !== undefined ? bounded(event.summary, TARGET_MAX) : undefined
     this.#approvals.set(decisionId, { requestId: event.requestId, turnId: event.turnId, sessionId })
-    await record({
-      type: 'decision.requested',
-      ts: clock.now(),
-      subject: decisionId,
-      actor: peerActor(peerId),
-      data: {
-        decisionId,
-        kind: toolApprovalKind,
-        question: `${String(peerId)} wants to use ${tool}${target === undefined ? '' : ` on ${target}`}: allow or deny?`,
-        options: [...toolApprovalOptions],
-        inputsHash: hex16(`${sessionId}:${event.requestId}:${event.tool}`),
-        routedTo: 'user',
-        peerId,
-        requestId: event.requestId,
-      },
-    })
+    const question = `${String(peerId)} wants to use ${tool}${target === undefined ? '' : ` on ${target}`}: allow or deny?`
+    await this.#bookkeep('decision.requested', event.turnId, () =>
+      record({
+        type: 'decision.requested',
+        ts: clock.now(),
+        subject: decisionId,
+        actor: peerActor(peerId),
+        data: {
+          decisionId,
+          kind: toolApprovalKind,
+          question,
+          options: [...toolApprovalOptions],
+          inputsHash: hex16(`${sessionId}:${event.requestId}:${event.tool}`),
+          routedTo: 'user',
+          peerId,
+          requestId: event.requestId,
+        },
+      }),
+    )
   }
 
   /**
@@ -877,25 +880,27 @@ export class PeerSession {
     }
     parts.forEach((part, index) => this.#questions.set(part.decisionId, { open, part: index }))
     for (const part of parts) {
-      await record({
-        type: 'decision.requested',
-        ts: clock.now(),
-        subject: part.decisionId,
-        actor: peerActor(peerId),
-        data: {
-          decisionId: part.decisionId,
-          kind: peerQuestionKind,
-          question: part.question,
-          // A question with no labels offers nothing to choose, so the inbox row
-          // has no options; `AskUserQuestion` always offers them, and a provider
-          // that does not is one this path cannot answer through `fleet decide`.
-          options: [...part.labels],
-          inputsHash: part.inputsHash,
-          routedTo: 'user',
-          peerId,
-          requestId: String(event.questionId),
-        },
-      })
+      await this.#bookkeep('decision.requested', event.turnId, () =>
+        record({
+          type: 'decision.requested',
+          ts: clock.now(),
+          subject: part.decisionId,
+          actor: peerActor(peerId),
+          data: {
+            decisionId: part.decisionId,
+            kind: peerQuestionKind,
+            question: part.question,
+            // A question with no labels offers nothing to choose, so the inbox row
+            // has no options; `AskUserQuestion` always offers them, and a provider
+            // that does not is one this path cannot answer through `fleet decide`.
+            options: [...part.labels],
+            inputsHash: part.inputsHash,
+            routedTo: 'user',
+            peerId,
+            requestId: String(event.questionId),
+          },
+        }),
+      )
     }
   }
 
@@ -909,27 +914,32 @@ export class PeerSession {
     for (const [decisionId, entry] of [...this.#questions]) {
       if (!which(entry.open)) continue
       if (!this.#questions.delete(decisionId)) continue
-      await record({
-        type: 'decision.answered',
-        ts: clock.now(),
-        subject: decisionId,
-        actor: peerActor(peerId),
-        data: { decisionId, source: 'rule', text: why, durationMs: 0 },
-      })
+      await this.#bookkeep('decision.answered', entry.open.turnId, () =>
+        record({
+          type: 'decision.answered',
+          ts: clock.now(),
+          subject: decisionId,
+          actor: peerActor(peerId),
+          data: { decisionId, source: 'rule', text: why, durationMs: 0 },
+        }),
+      )
     }
   }
 
   /** Close one approval's decision because nobody can answer it any more; a no-op once answered. */
   async #closeApproval(decisionId: DecisionId, why: string): Promise<void> {
-    if (!this.#approvals.delete(decisionId)) return
+    const open = this.#approvals.get(decisionId)
+    if (open === undefined || !this.#approvals.delete(decisionId)) return
     const { clock, peerId, record } = this.#ports
-    await record({
-      type: 'decision.answered',
-      ts: clock.now(),
-      subject: decisionId,
-      actor: peerActor(peerId),
-      data: { decisionId, source: 'rule', text: why, durationMs: 0 },
-    })
+    await this.#bookkeep('decision.answered', open.turnId, () =>
+      record({
+        type: 'decision.answered',
+        ts: clock.now(),
+        subject: decisionId,
+        actor: peerActor(peerId),
+        data: { decisionId, source: 'rule', text: why, durationMs: 0 },
+      }),
+    )
   }
 
   /** Close every approval one session still has open, because that session is over. */
