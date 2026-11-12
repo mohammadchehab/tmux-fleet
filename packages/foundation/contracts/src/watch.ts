@@ -38,7 +38,7 @@ import {
   type PeerState,
   type Schema,
 } from '@fleet/foundation-core'
-import { displayLine, type DisplayLine } from './provider.ts'
+import { displayLine, turnKinds, type DisplayLine, type TurnKind } from './provider.ts'
 
 /**
  * The version of this wire protocol, as `DaemonStatus.protocolVersion` reports it.
@@ -46,8 +46,9 @@ import { displayLine, type DisplayLine } from './provider.ts'
  * it on connect knows whether it can speak to this daemon.
  *
  * 1: `peer.watch` and its frames. 2: `peer.interrupt`, and `DaemonStatus.purgeContextRatio`.
+ * 3: a `mail` row carries `mailKind` and `text`.
  */
-export const daemonProtocolVersion = 2
+export const daemonProtocolVersion = 3
 
 export interface WatchParams {
   /** One peer's lines (the rows still say what the fleet did); absent: every peer. */
@@ -62,7 +63,17 @@ export const watchParams = (): Schema<WatchParams> =>
 /** A fact from the store, cut down to what a view shows. */
 export type WatchRow =
   | { readonly kind: 'state'; readonly peerId: PeerId; readonly state: PeerState }
-  | { readonly kind: 'mail'; readonly phase: 'sent' | 'delivered'; readonly msgId: MessageId; readonly to: PeerId; readonly from?: string }
+  | {
+      readonly kind: 'mail'
+      readonly phase: 'sent' | 'delivered'
+      readonly msgId: MessageId
+      readonly to: PeerId
+      readonly from?: string
+      /** On `sent`: what kind of message it is (`brief`, `answer`, `nudge`, `info`). */
+      readonly mailKind?: TurnKind
+      /** On `sent`: the start of the body, blank lines dropped and cut to a display line, so the view shows what was said. */
+      readonly text?: string
+    }
   | { readonly kind: 'decision'; readonly phase: 'requested' | 'answered'; readonly decisionId: DecisionId; readonly question?: string }
 
 export const watchRow = (): Schema<WatchRow> =>
@@ -74,6 +85,8 @@ export const watchRow = (): Schema<WatchRow> =>
       msgId: messageId(),
       to: peerId(),
       from: optional(string({ maxLength: 80 })),
+      mailKind: optional(oneOf(turnKinds)),
+      text: optional(string({ maxLength: 500 })),
     }),
     objectAs<Extract<WatchRow, { kind: 'decision' }>>()({
       kind: literal('decision'),

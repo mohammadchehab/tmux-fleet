@@ -11,7 +11,7 @@ import { homedir } from 'node:os'
 
 import * as vscode from 'vscode'
 
-import type { Disposable, EditorPort, PickItem, Severity, StatusBarLike, TreeProvider, TreeView } from './port.ts'
+import type { Disposable, EditorPort, OutputLike, PickItem, Severity, StatusBarLike, TreeProvider, TreeView } from './port.ts'
 import type { FleetItem } from './tree.ts'
 
 const ICONS: Readonly<Record<string, string>> = {
@@ -140,6 +140,22 @@ export const vscodePort = (): EditorPort => {
         },
         dispose: () => {
           item.dispose()
+        },
+      }
+    },
+
+    createOutput: (name: string): OutputLike => {
+      // The `log` language is what colours it: no highlighter of ours to keep.
+      const channel = vscode.window.createOutputChannel(name, 'log')
+      return {
+        append: (line) => {
+          channel.appendLine(line)
+        },
+        show: () => {
+          channel.show(true)
+        },
+        dispose: () => {
+          channel.dispose()
         },
       }
     },
