@@ -46,7 +46,9 @@ export const readCursorToken = async (options: DeepInfraEnvOptions): Promise<str
 
   const file = block?.tokenFile
   if (file === undefined) {
-    throw fleetError('config_mismatch', `no cursor key for this peer: the configured token variable is not set in fleetd's environment`)
+    throw fleetError('config_mismatch', `no cursor key for this peer: ${name} is not set in fleetd's environment`, {
+      details: { env: name },
+    })
   }
   const readText = options.readText ?? ((path: string) => readFile(path, 'utf8'))
   let source: string
@@ -56,15 +58,15 @@ export const readCursorToken = async (options: DeepInfraEnvOptions): Promise<str
     // No `cause`: an fs error can quote a path, and a reader's error could quote anything.
     throw fleetError(
       'config_mismatch',
-      `no cursor key for this peer: the configured token variable is not set in fleetd's environment and ${file} could not be read`,
-      { details: { file } },
+      `no cursor key for this peer: ${name} is not set in fleetd's environment and ${file} could not be read`,
+      { details: { env: name, file } },
     )
   }
   const [firstLine] = source.split('\n')
   const token = (firstLine ?? '').trim()
   if (token === '') {
-    throw fleetError('config_mismatch', `no cursor key: ${file} is empty and the configured token variable is not set`, {
-      details: { file },
+    throw fleetError('config_mismatch', `no cursor key: ${file} is empty and ${name} is not set`, {
+      details: { env: name, file },
     })
   }
   return token

@@ -69,15 +69,15 @@ const readToken = async (name: string, file: string, options: JiraEnvOptions): P
   } catch (cause) {
     throw fleetError(
       'config_mismatch',
-      `no Jira token for this site: the configured token variable is not set in fleetd's environment and ${file} could not be read`,
-      { details: { file }, cause },
+      `no Jira token for this site: ${name} is not set in fleetd's environment and ${file} could not be read`,
+      { details: { env: name, file }, cause },
     )
   }
   const [firstLine] = source.split('\n')
   const token = (firstLine ?? '').trim()
   if (token === '') {
-    throw fleetError('config_mismatch', `no Jira token: ${file} is empty and the configured token variable is not set`, {
-      details: { file },
+    throw fleetError('config_mismatch', `no Jira token: ${file} is empty and ${name} is not set`, {
+      details: { env: name, file },
     })
   }
   return token

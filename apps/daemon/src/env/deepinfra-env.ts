@@ -80,8 +80,8 @@ export const readDeepInfraToken = async (options: DeepInfraEnvOptions): Promise<
   } catch (cause) {
     throw fleetError(
       'config_mismatch',
-      `no DeepInfra token for this peer: the configured token variable is not set in fleetd's environment and ${file} could not be read`,
-      { details: { file }, cause },
+      `no DeepInfra token for this peer: ${name} is not set in fleetd's environment and ${file} could not be read`,
+      { details: { env: name, file }, cause },
     )
   }
   // The first line only, as v1 read it: a key file that has grown a comment or a
@@ -89,8 +89,8 @@ export const readDeepInfraToken = async (options: DeepInfraEnvOptions): Promise<
   const [firstLine] = source.split('\n')
   const token = (firstLine ?? '').trim()
   if (token === '') {
-    throw fleetError('config_mismatch', `no DeepInfra token: ${file} is empty and the configured token variable is not set`, {
-      details: { file },
+    throw fleetError('config_mismatch', `no DeepInfra token: ${file} is empty and ${name} is not set`, {
+      details: { env: name, file },
     })
   }
   return token
