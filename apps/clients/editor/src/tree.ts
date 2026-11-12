@@ -127,9 +127,9 @@ const peerItem = (row: PeerRow): FleetItem => ({
   actions: row.actions,
   warning: row.warning,
   contextValue: `peer.${standingOf(row.state)}`,
-  // §5's output channel is the click; until it exists this opens the actions,
-  // which is the only useful thing a click can do to a peer today.
-  commandId: 'fleet.peer.actions',
+  // §5: the click opens the peer's live output; its actions are the context menu
+  // and the inline button.
+  commandId: 'fleet.peer.output',
   commandArg: row.peerId,
 })
 
