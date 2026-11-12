@@ -300,6 +300,32 @@ test('a result that leaves a queued send behind ends only the turns it names, ho
   }
 })
 
+test('a result that names only one of two folded turns, with nothing queued, still ends the other after the quiet period (peer.hold hang)', async () => {
+  // The CLI folded the second send into the first turn's run and named only the message that started it.
+  // Nothing is queued behind that result, so nothing else is coming to end the second turn: without the
+  // quiet-period fallback it stays in flight forever, and a hold that waits for the turn waits forever too.
+  const provider = new ClaudeProvider({
+    initTimeoutMs: 5_000,
+    foldQuietMs: 30,
+    query: cliThat(async function* (next) {
+      const brief = await next()
+      yield INIT
+      await next()
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'a', user_message_uuids: [brief.uuid], queued_turn_count: 0 }
+      await new Promise(() => undefined)
+    }),
+  })
+  const holding = setInterval(() => undefined, 1_000)
+  try {
+    const handle = await provider.start(spec())
+    await provider.send(handle, nudge)
+    const seen = await turnEvents(provider, handle, (events) => endedIds(events).length === 2, 3_000)
+    assert.equal(endedIds(seen).length, 2, 'both folded turns ended, not only the one the result named')
+  } finally {
+    clearInterval(holding)
+  }
+})
+
 test('with no uuids to go by and nothing queued, the turns still open end after the quiet period — as the result ended (TASK-103)', async () => {
   const provider = new ClaudeProvider({
     initTimeoutMs: 5_000,
