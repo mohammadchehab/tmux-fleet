@@ -879,6 +879,34 @@ test('a Judge question is one row, and the answer fills it in rather than replac
   assert.equal((await store.reader().judge.all()).length, 1, 'an answer is not a second question')
 })
 
+test('re-asking an answered question for the same inputs keeps the answer; changed inputs drop it', async () => {
+  const store = await open()
+  const questionId = 'qst_2b7c9d1e4f6a8b0c'
+  const asked = (inputsHash: string) =>
+    event('judge.requested', questionId, {
+      questionId,
+      kind: 'thin_card',
+      input: { kind: 'thin_card', title: 'Go live', goal: 'Ship it.', acceptance: [] },
+      inputsHash,
+    })
+  await store.append([
+    asked('sha256:4c1d7e9a0b2f3568'),
+    event('judge.answered', questionId, {
+      questionId,
+      kind: 'thin_card',
+      answer: { kind: 'thin_card', thin: true, missing: ['a goal'], why: 'no description' },
+      model: 'claude-haiku-4-5',
+      durationMs: 900,
+      retries: 0,
+    }),
+    asked('sha256:4c1d7e9a0b2f3568'),
+  ])
+  assert.equal((await store.reader().judge.get(questionId as never))?.answer?.kind, 'thin_card', 'same inputs: answer kept')
+
+  await store.append([asked('sha256:ffffffffffffffff')])
+  assert.equal((await store.reader().judge.get(questionId as never))?.answer, undefined, 'new inputs: the old answer no longer applies')
+})
+
 test('an answer with no question on file is an anomaly, not an invented question', async () => {
   const path = tempStorePath()
   const store = await openSqliteStore({ path, clock: fixedClock })
