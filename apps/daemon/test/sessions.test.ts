@@ -24,6 +24,7 @@ import type { Provider, SessionHandle, TurnSpend } from '@fleet/runtime-provider
 import type { BookkeepingFailure } from '@fleet/runtime-supervisor'
 
 import { decodeProfile, type Profile } from '../src/config/profile.ts'
+import { toolPolicyFor } from '../src/config/tool-policy.ts'
 import { createSupervisor, type Supervisor } from '../src/execution/sessions.ts'
 import type { StandingBriefs } from '../src/execution/standards.ts'
 
@@ -698,4 +699,30 @@ test('a peer refused at start is a peer.failed the board shows, the other peers 
     message: 'standards.nonNegotiables names /p/n.md, which cannot be read',
     retryable: false,
   })
+})
+
+const toolPolicyProfile = (block: Record<string, unknown> | undefined): Profile =>
+  decodeProfile({
+    profile: 'test',
+    repos: ['acme/widgets'],
+    checkouts: { 'acme/widgets': checkout },
+    ...(block === undefined ? {} : { toolPolicy: block }),
+    peers: [{ id: peerId, role: 'engineer', provider: 'claude', model: 'claude-opus-5-5' }],
+  })
+
+test('a peer starts with the routine tool policy, so routine reads and git inspection do not ask (TASK-119)', async (t) => {
+  const r = await rig(toolPolicyProfile(undefined))
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+
+  assert.deepEqual(r.starts[0]?.toolPolicy, toolPolicyFor(undefined, checkout))
+  assert.equal(r.starts[0]?.toolPolicy?.defaultAction, 'ask')
+})
+
+test('a profile that asks for ask-all starts the peer with no tool policy at all (TASK-119)', async (t) => {
+  const r = await rig(toolPolicyProfile({ preset: 'ask-all' }))
+  t.after(() => r.supervisor.stop())
+  await r.supervisor.start()
+
+  assert.equal(r.starts[0]?.toolPolicy, undefined)
 })

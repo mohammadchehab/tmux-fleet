@@ -50,6 +50,7 @@ import {
 } from '@fleet/integrations-trackers-jira'
 import { parse as parseYaml } from 'yaml'
 import type { RoutineSettings, RoutinesConfig } from '@fleet/orchestration-routines'
+import { toolPolicyPresets, type ProfileToolPolicy } from './tool-policy.ts'
 
 export { profileProviders, type ProfileProvider }
 
@@ -467,6 +468,11 @@ export interface Profile {
    * a routine that silently polled nothing would read as a sync that agreed.
    */
   readonly trackers?: TrackerProfile
+  /**
+   * TASK-119: the tool policy every peer starts with, so routine reads and git
+   * inspection do not ask. Absent, the routine preset (decision-6 option 1).
+   */
+  readonly toolPolicy?: ProfileToolPolicy
   readonly limits?: {
     /** How many sessions may be live at once (§6's `keep-busy` and self-purge). */
     readonly maxSessions?: number
@@ -871,6 +877,11 @@ const standardsBlock = (): Schema<StandardsProfile> =>
     skills: optional(record(array(text(400), { maxItems: 30 }))),
   })
 
+const toolPolicyBlock = (): Schema<ProfileToolPolicy> =>
+  objectAs<ProfileToolPolicy>()({
+    preset: optional(oneOf(toolPolicyPresets)),
+  })
+
 export const profileSchema = (): Schema<Profile> =>
   objectAs<Profile>()({
     profile: text(60),
@@ -888,6 +899,7 @@ export const profileSchema = (): Schema<Profile> =>
     security: optional(securityBlock()),
     builds: optional(buildsBlock()),
     trackers: optional(trackerBlock()),
+    toolPolicy: optional(toolPolicyBlock()),
     limits: optional(limitsBlock()),
     tickIntervalMs: optional(positiveInt()),
     deleteMergedBranches: optional(boolean()),

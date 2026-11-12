@@ -64,6 +64,7 @@ import {
 } from '@fleet/runtime-supervisor'
 
 import { effortFor, modelFor, purgeLimitsOf, type PeerProfile, type Profile } from '../config/profile.ts'
+import { toolPolicyFor } from '../config/tool-policy.ts'
 import { heldWorksOf } from './held-work.ts'
 import { roleStatement, type StandingBriefs } from './standards.ts'
 
@@ -452,6 +453,9 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
     // Resolved, not copied: a peer that names only a role takes the role's model
     // and effort (TASK-12's precedence peer > role > refuse).
     const effort = effortFor(deps.profile, peer)
+    // TASK-119: the profile's tool policy, decided against this session's own worktree, so a routine read
+    // is not a question. Absent for `ask-all`, which is the behaviour a session had before the block.
+    const toolPolicy = toolPolicyFor(deps.profile.toolPolicy, cwd)
     const spec: SessionSpec = {
       peerId: peer.id,
       role: peer.role,
@@ -460,6 +464,7 @@ export const createSupervisor = (deps: SupervisorDeps): Supervisor => {
       ...(effort === undefined ? {} : { effort }),
       permissionMode: peer.permissionMode ?? 'default',
       env: await envFor(peer, deps),
+      ...(toolPolicy === undefined ? {} : { toolPolicy }),
       brief,
       ...(standing?.systemPromptAppend === undefined ? {} : { systemPromptAppend: standing.systemPromptAppend }),
     }
