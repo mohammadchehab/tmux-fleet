@@ -219,6 +219,31 @@ test('read, iterate and rebuild skip unknown event types rather than throwing', 
   await rebuilder.close()
 })
 
+test('read(from, limit) counts readable events, so skipped rows never shorten a page (TASK-64)', async () => {
+  const path = tempStorePath()
+  const store = await open({ path })
+  await store.append(threeEvents())
+  await store.close()
+
+  const db = new DatabaseSync(path)
+  // Two unknown rows ahead of the last known event would eat a SQL LIMIT of 2 and leave the page empty.
+  const insert = db.prepare(
+    `INSERT INTO events (seq, ts, type, subject, actor, caused_by, data) VALUES (:seq, :ts, 'future.event', 's', 'pm', NULL, '{}')`,
+  )
+  insert.run({ seq: 4, ts: '2026-11-10T00:00:00.000Z' })
+  insert.run({ seq: 5, ts: '2026-11-10T00:00:00.000Z' })
+  db.close()
+  const writer = await open({ path })
+  await writer.append([threeEvents()[0] as AppendEvent])
+  await writer.close()
+
+  const reader = await open({ path, readOnly: true })
+  // seq 4 and 5 are unknown, 6 is known: a SQL LIMIT 2 from 3 would return [3] and look like the end of the log.
+  assert.deepEqual((await reader.read(3, 2)).map((e) => e.seq), [3, 6])
+  assert.deepEqual((await reader.read(4, 1)).map((e) => e.seq), [6])
+  await reader.close()
+})
+
 test('a known event type whose row does not parse is thrown, not skipped (TASK-55)', async () => {
   const path = tempStorePath()
   const store = await open({ path })
