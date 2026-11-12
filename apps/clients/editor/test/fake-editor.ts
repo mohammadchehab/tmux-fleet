@@ -8,7 +8,7 @@
  * person would have clicked before it clicks.
  */
 
-import type { Disposable, EditorPort, PickItem, Severity, StatusBarLike, TreeProvider, TreeView } from '../src/port.ts'
+import type { Disposable, EditorPort, OutputLike, PickItem, Severity, StatusBarLike, TreeProvider, TreeView } from '../src/port.ts'
 import type { FleetItem } from '../src/tree.ts'
 
 export interface Notification {
@@ -29,13 +29,15 @@ export interface FakeEditor extends EditorPort {
   readonly picks: (string | undefined)[]
   readonly asks: (string | undefined)[]
   readonly confirms: boolean[]
-  readonly handlers: Map<string, (argument?: string) => void>
+  readonly handlers: Map<string, (argument?: unknown) => void>
+  /** Every output channel opened, by name, with what was written and how often it was shown. */
+  readonly outputs: Map<string, { lines: string[]; shown: number; disposed: boolean }>
   badge: number
   status: string
   /** What the extension registered as its tree provider, so a test can read the rows it draws. */
   provider?: TreeProvider
   /** Called after activation registered its commands, to simulate a menu click. */
-  click(id: string, argument?: string): Promise<void>
+  click(id: string, argument?: unknown): Promise<void>
   /** A settings change, as VS Code would report it. */
   changeSetting(key: string, value: unknown): Promise<void>
 }
@@ -56,11 +58,12 @@ export const fakeEditor = (options: FakeOptions = {}): FakeEditor => {
   const notifications: Notification[] = []
   const statuses: { text: string; tooltip: string }[] = []
   const commandIds: string[] = []
-  const handlers = new Map<string, (argument?: string) => void>()
+  const handlers = new Map<string, (argument?: unknown) => void>()
   const settingsChangeHandlers: ((key: string) => void)[] = []
   const picks: (string | undefined)[] = []
   const asks: (string | undefined)[] = []
   const confirms: boolean[] = []
+  const outputs = new Map<string, { lines: string[]; shown: number; disposed: boolean }>()
 
   const editor: FakeEditor = {
     home: options.home ?? '/home/tester',
@@ -77,6 +80,7 @@ export const fakeEditor = (options: FakeOptions = {}): FakeEditor => {
     asks,
     confirms,
     handlers,
+    outputs,
     badge: 0,
     status: '',
 
@@ -110,6 +114,22 @@ export const fakeEditor = (options: FakeOptions = {}): FakeEditor => {
       hide: noop,
       dispose: noop,
     }),
+
+    createOutput: (name: string): OutputLike => {
+      const record = { lines: [] as string[], shown: 0, disposed: false }
+      outputs.set(name, record)
+      return {
+        append: (line) => {
+          record.lines.push(line)
+        },
+        show: () => {
+          record.shown += 1
+        },
+        dispose: () => {
+          record.disposed = true
+        },
+      }
+    },
 
     pick: async (items: readonly PickItem[]) => {
       const answer = picks.shift()
