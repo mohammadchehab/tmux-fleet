@@ -34,6 +34,8 @@ export interface RouterDeps {
   readonly executors: readonly KindExecutor[]
   /** Every append a delegated action made, so the router can report one flat list of seqs. */
   readonly onAppended?: (seqs: readonly Seq[]) => void
+  /** Every action that failed, with its error: `actionsFailed` alone says how many, never why. */
+  readonly onFailed?: (outcome: ActionOutcome) => void
 }
 
 export interface Router extends ActionExecutor {
@@ -92,7 +94,9 @@ export const createExecutorRouter = (deps: RouterDeps): Router => {
     async execute(request: ExecuteRequest): Promise<ExecutionReport> {
       const outcomes: ActionOutcome[] = []
       for (const action of request.actions) {
-        outcomes.push(await runOne(action, request))
+        const outcome = await runOne(action, request)
+        if (!outcome.ok) deps.onFailed?.(outcome)
+        outcomes.push(outcome)
       }
       return {
         outcomes,

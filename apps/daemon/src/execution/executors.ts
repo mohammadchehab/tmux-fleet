@@ -45,6 +45,7 @@ import type {
   RequestJudgeAction,
   SendMessageAction,
 } from '@fleet/foundation-contracts'
+import { createBriefExecutor } from '@fleet/orchestration-briefs'
 import type { JudgeService } from '@fleet/orchestration-judge'
 import type { KindExecutor } from './executor.ts'
 import { renderStandup } from '../routines/standup.ts'
@@ -487,6 +488,17 @@ export interface DaemonExecutorDeps {
 /** Every kind this app owns, as the router wants them: one entry per dependency group (§5.2). */
 export const createDaemonExecutors = (deps: DaemonExecutorDeps): readonly KindExecutor[] => [
   { kinds: ['send_message'], executor: createMailboxExecutor({ mailbox: deps.mailbox }) },
+  // `assign` and `supersede_brief` publish the brief and send it. Unwired, every
+  // assignment the PM decided failed with "no executor is wired", and no Work moved.
+  (() => {
+    const briefs = createBriefExecutor({
+      store: deps.store,
+      reads: deps.read,
+      mailbox: deps.mailbox,
+      ...(deps.clock === undefined ? {} : { clock: deps.clock }),
+    })
+    return { kinds: briefs.kinds, executor: briefs }
+  })(),
   {
     kinds: ['request_judge'],
     executor: createJudgeExecutor({ judge: deps.judge, store: deps.store, ...(deps.clock === undefined ? {} : { clock: deps.clock }) }),
