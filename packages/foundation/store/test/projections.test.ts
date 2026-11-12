@@ -879,6 +879,42 @@ test('a Judge question is one row, and the answer fills it in rather than replac
   assert.equal((await store.reader().judge.all()).length, 1, 'an answer is not a second question')
 })
 
+const askThin = (questionId: string, inputsHash: string): AppendEvent =>
+  event('judge.requested', questionId, {
+    questionId,
+    kind: 'thin_card',
+    input: { kind: 'thin_card', title: 'Go live', goal: 'Go live', acceptance: [] },
+    inputsHash,
+  })
+
+const answerThin = (questionId: string): AppendEvent =>
+  event('judge.answered', questionId, {
+    questionId,
+    kind: 'thin_card',
+    answer: { kind: 'thin_card', thin: true, missing: ['a goal'], why: 'one line' },
+    model: 'claude-haiku-4-5',
+    durationMs: 900,
+    retries: 0,
+  })
+
+test('asking an answered question again with the same inputs keeps its answer', async () => {
+  const store = await open()
+  const questionId = 'qst_2b7c9d1e4f6a8b0c'
+  await store.append([askThin(questionId, 'sha256:aaaa'), answerThin(questionId), askThin(questionId, 'sha256:aaaa')])
+  const row = await store.reader().judge.get(questionId as never)
+  assert.equal(row?.answer?.kind, 'thin_card', 'a re-ask of the same question must not wipe the stored answer')
+  assert.equal((await store.reader().judge.all()).length, 1)
+})
+
+test('asking the same question id with different inputs starts it afresh', async () => {
+  const store = await open()
+  const questionId = 'qst_2b7c9d1e4f6a8b0c'
+  await store.append([askThin(questionId, 'sha256:aaaa'), answerThin(questionId), askThin(questionId, 'sha256:bbbb')])
+  const row = await store.reader().judge.get(questionId as never)
+  assert.equal(row?.answer, undefined, 'an edited card is a new question; the old verdict is stale')
+  assert.equal(row?.inputsHash, 'sha256:bbbb')
+})
+
 test('an answer with no question on file is an anomaly, not an invented question', async () => {
   const path = tempStorePath()
   const store = await openSqliteStore({ path, clock: fixedClock })

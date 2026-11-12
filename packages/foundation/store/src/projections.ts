@@ -1999,6 +1999,11 @@ export const applyEvent = (db: Sqlite, event: FleetEvent): void => {
       // the card's own text, already in the `work` row, and storing it again would
       // make every answer's row carry a copy of the fleet's longest fields. The
       // hash is what §5.4 needs a replay to recognise.
+      // The same question asked again about the same inputs (a thin card is re-asked by any caller that does not
+      // read the projection) is not a new question: keep the row, answer and all, so a reader never sees a
+      // verdict vanish between the re-ask and the cached `judge.answered`. Different inputs are a new question.
+      const prior = judgeQuestionById(db, questionId)
+      if (prior !== undefined && prior.inputsHash === inputsHash) return
       writeJudgeQuestion(
         db,
         parse(PROJECTION_SCHEMAS.judgeQuestion, {
