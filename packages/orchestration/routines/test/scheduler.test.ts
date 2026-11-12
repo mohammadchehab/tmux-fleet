@@ -427,7 +427,8 @@ describe('a failing routine backs off, and says so once it is broken', () => {
     // as said.
     refuseEscalation = true
     clock.advance(61_000)
-    await assert.rejects(scheduler.tick(), /store is unavailable/)
+    const refused = await scheduler.tick()
+    assert.match(headOf(refused, 'record').error ?? '', /store is unavailable/, 'contained, and said on the record')
     assert.equal(inner.ofType('routine.failing').length, 0)
     await waitForNextRun(state, () => scheduler.tick(), clock)
     assert.equal(inner.ofType('routine.failing').length, 1, 'the refused escalation is owed, not announced')
@@ -733,5 +734,60 @@ describe('start and stop', () => {
     const afterFirst = pm.requests.length
     await scheduler.start()
     assert.equal(pm.requests.length, afterFirst)
+  })
+})
+
+describe("one routine's store failure does not take the others down (TASK-85)", () => {
+  const throwing = (kind: RoutineKind): RoutineFactory => () => ({
+    kind,
+    run: async () => {
+      throw new Error('body blew up')
+    },
+  })
+
+  /** A store that refuses writes of the given types about keep-busy. */
+  const refusingFor = (inner: ReturnType<typeof fakeStore>, types: readonly string[]) => ({
+    append: async (batch: Parameters<typeof inner.append>[0]) => {
+      if (batch.some((event) => types.includes(event.type) && event.subject === 'keep-busy')) {
+        throw new Error('store is unavailable')
+      }
+      return inner.append(batch)
+    },
+  })
+
+  it('a refused routine.failed leaves the other routines running and their records returned', async () => {
+    const inner = fakeStore()
+    const runs: { routineId: string; trigger: string; at: string }[] = []
+    const { deps } = harness({
+      store: refusingFor(inner, ['routine.failed']),
+      factories: { 'keep-busy': throwing('keep-busy'), dispatch: recordingFactory('dispatch', runs) },
+    })
+    const scheduler = createScheduler(deps)
+    const records = await scheduler.wake(peerStateChanged(41))
+    const failed = records.find((record) => record.kind === 'keep-busy')
+    assert.ok(failed !== undefined, 'the failed routine still has a record')
+    assert.equal(failed.ok, false)
+    assert.match(failed.error ?? '', /body blew up/)
+    assert.match(failed.error ?? '', /store is unavailable/)
+    const others = records.filter((record) => record.kind !== 'keep-busy')
+    assert.ok(others.length > 0 && others.every((record) => record.ok), 'the rest ran and finished')
+    assert.equal(inner.ofType('routine.failed').length, 0, 'the refused write is not in the ledger')
+  })
+
+  it('a refused routine.finished is reported on the record, not thrown', async () => {
+    const inner = fakeStore()
+    const runs: { routineId: string; trigger: string; at: string }[] = []
+    const { deps } = harness({
+      store: refusingFor(inner, ['routine.finished']),
+      factories: { 'keep-busy': recordingFactory('keep-busy', runs), dispatch: recordingFactory('dispatch', runs) },
+    })
+    const scheduler = createScheduler(deps)
+    const records = await scheduler.wake(peerStateChanged(41))
+    const refused = records.find((record) => record.kind === 'keep-busy')
+    assert.ok(refused !== undefined)
+    assert.equal(refused.ok, false)
+    assert.equal(refused.actions, 1, 'the body ran and its actions are counted')
+    assert.match(refused.error ?? '', /routine\.finished/)
+    assert.equal(records.filter((record) => record.kind !== 'keep-busy').every((record) => record.ok), true)
   })
 })
