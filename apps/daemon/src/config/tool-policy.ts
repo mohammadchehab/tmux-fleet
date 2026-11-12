@@ -35,6 +35,15 @@ const outsideWorktreeInJson = (cwd: string): string =>
   `"(?:path|file_path)":"(?:~|(?!${escapeRegExp(cwd)}(?:/|"))/|(?:[^"]*/)?\\.\\.(?:/|"))`
 
 /**
+ * A glob that names a path outside the worktree, for the search tools whose glob is
+ * a path pattern rather than a `path` key: `Glob`'s `pattern` and `Grep`'s `glob`.
+ * A glob is relative to the worktree unless it starts with `/` or `~`, or climbs
+ * with `..`. `Grep`'s own `pattern` is a regex and is not checked here.
+ */
+const outsideGlobInJson = (key: 'pattern' | 'glob'): string =>
+  `"${key}":"(?:~|/|(?:[^"]*/)?\\.\\.(?:/|"))`
+
+/**
  * A path that leaves the worktree, for the tools the adapter matches against the
  * resolved file path (`Read`, `Write`, `Edit`). The path is already absolute and
  * normalised by then, so outside means not under `cwd`, with the boundary checked
@@ -69,6 +78,8 @@ export const routineToolPolicy = (cwd: string): ToolPolicy => {
       { tool: 'Bash', pattern: NETWORK_COMMAND, action: 'deny' },
       ...resolvedPathTools.map((tool) => ({ tool, pattern: outsideWorktreeResolved(cwd), action: 'deny' as const })),
       ...jsonPathTools.map((tool) => ({ tool, pattern: outsideWorktreeInJson(cwd), action: 'deny' as const })),
+      { tool: 'Glob', pattern: outsideGlobInJson('pattern'), action: 'deny' },
+      { tool: 'Grep', pattern: outsideGlobInJson('glob'), action: 'deny' },
       { tool: 'Read', action: 'allow' },
       { tool: 'Grep', action: 'allow' },
       { tool: 'Glob', action: 'allow' },

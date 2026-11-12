@@ -39,6 +39,17 @@ test('reads outside the worktree are denied, including a sibling that shares its
   assert.equal(decide('Glob', { pattern: '*', path: '/Users/me' }), 'deny')
 })
 
+test('a glob that names a path outside the worktree is denied, whatever key carries it', () => {
+  assert.equal(decide('Glob', { pattern: '/Users/me/.ssh/*' }), 'deny', 'an absolute glob names its own root')
+  assert.equal(decide('Glob', { pattern: '~/.ssh/*' }), 'deny')
+  assert.equal(decide('Glob', { pattern: '../../**' }), 'deny')
+  assert.equal(decide('Glob', { pattern: 'src/../../etc/*' }), 'deny')
+  assert.equal(decide('Grep', { pattern: 'x', glob: '/etc/*' }), 'deny')
+  assert.equal(decide('Grep', { pattern: 'x', glob: '../secrets/*' }), 'deny')
+  assert.equal(decide('Grep', { pattern: '../relative-regex' }), 'allow', 'Grep pattern is a regex, not a path')
+  assert.equal(decide('Glob', { pattern: 'src/**/*.ts' }), 'allow')
+})
+
 test('git status and git diff run silently; other git and any chained command ask', () => {
   assert.equal(decide('Bash', { command: 'git status' }), 'allow')
   assert.equal(decide('Bash', { command: 'git status --porcelain' }), 'allow')
