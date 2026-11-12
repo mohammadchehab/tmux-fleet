@@ -330,21 +330,37 @@ describe('a bookkeeping append the store refused (TASK-57)', () => {
   it('is one log line naming the peer, the turn and what the store said', () => {
     const line = bookkeepingFailureLine({
       peerId: 'engineer-1' as PeerId,
+      record: 'peer.tool_used',
       turnId: 'trn_0123456789abcdef' as TurnId,
       error: new Error('database is locked'),
     })
     assert.equal(
       line,
-      'fleetd: bookkeeping for engineer-1 failed on turn trn_0123456789abcdef and the session stays live: database is locked',
+      'fleetd: bookkeeping for engineer-1 failed writing peer.tool_used on turn trn_0123456789abcdef and the session stays live: database is locked',
+    )
+  })
+
+  // TASK-82: a state change or a compaction has no turn of its own, and the line must not invent one — what it has
+  // to name is the row that went missing.
+  it('names the row without a turn when the row belonged to none', () => {
+    const line = bookkeepingFailureLine({
+      peerId: 'engineer-1' as PeerId,
+      record: 'peer.compacted',
+      error: new Error('database is locked'),
+    })
+    assert.equal(
+      line,
+      'fleetd: bookkeeping for engineer-1 failed writing peer.compacted and the session stays live: database is locked',
     )
   })
 
   it('still says something usable when the store threw something that is not an Error', () => {
     const line = bookkeepingFailureLine({
       peerId: 'engineer-1' as PeerId,
+      record: 'turn.usage_recorded',
       turnId: 'trn_0123456789abcdef' as TurnId,
       error: 'SQLITE_BUSY',
     })
-    assert.match(line, /failed on turn trn_0123456789abcdef .*: SQLITE_BUSY$/)
+    assert.match(line, /failed writing turn\.usage_recorded on turn trn_0123456789abcdef .*: SQLITE_BUSY$/)
   })
 })

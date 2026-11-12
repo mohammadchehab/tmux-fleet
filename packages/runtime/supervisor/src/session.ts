@@ -96,17 +96,24 @@ export interface PurgeInput {
 
 /**
  * A bookkeeping append the store refused, kept out of the session's way
- * (TASK-4, TASK-57).
+ * (TASK-4, TASK-57, TASK-82).
  *
  * The row is a measurement, not the session, so a refused append must not end
  * one — but dropping it in silence leaves a fleet whose spend cap reads those
  * rows unable to tell a turn it never spent from one it never measured. This is
- * the whole of what the supervisor knows about it: whose turn it was, which
- * turn, and what the store said.
+ * the whole of what the supervisor knows about it: whose row it was, which turn
+ * it belonged to, and what the store said.
  */
 export interface BookkeepingFailure {
   readonly peerId: PeerId
-  readonly turnId: TurnId
+  /** The event whose append the store refused — the row that did not reach the log. */
+  readonly record: SessionRecord['type']
+  /**
+   * The turn the row belonged to, when it belonged to one. A state change or a
+   * compaction carries no turn of its own often enough that a made-up one would
+   * be worse than an absent one: `/compact` happens between turns by definition.
+   */
+  readonly turnId?: TurnId
   readonly error: unknown
 }
 
@@ -566,8 +573,8 @@ export class PeerSession {
         // cost: a failed or interrupted turn, the purge's ask, a turn that ended while the peer was busy,
         // and a turn whose usage() could not answer are all recorded here, before any gate can skip them.
         const measured = await this.#usageOrUndefined(handle)
-        await this.#recordUsage(handle, event.turnId, measured).catch((error: unknown) =>
-          this.#reportBookkeepingFailure(event.turnId, error),
+        await this.#bookkeep('turn.usage_recorded', event.turnId, () =>
+          this.#recordUsage(handle, event.turnId, measured),
         )
 
         // A turn boundary reached *during* a purge is the peer answering the ask.
@@ -693,18 +700,20 @@ export class PeerSession {
         // fleet showed; the projection keeps the latest and counts the edits.
         // The target survives only for the tools whose summary is a file path.
         const target = TARGET_TOOLS.has(event.tool) ? event.summary : undefined
-        await record({
-          type: 'peer.tool_used',
-          ts: clock.now(),
-          subject: peerId,
-          actor: peerActor(peerId),
-          data: {
-            peerId,
-            sessionId,
-            tool: bounded(event.tool, TOOL_MAX),
-            ...(target === undefined ? {} : { target: bounded(target, TARGET_MAX) }),
-          },
-        })
+        await this.#bookkeep('peer.tool_used', event.turnId, () =>
+          record({
+            type: 'peer.tool_used',
+            ts: clock.now(),
+            subject: peerId,
+            actor: peerActor(peerId),
+            data: {
+              peerId,
+              sessionId,
+              tool: bounded(event.tool, TOOL_MAX),
+              ...(target === undefined ? {} : { target: bounded(target, TARGET_MAX) }),
+            },
+          }),
+        )
         break
       }
       case 'turn.ended':
@@ -734,19 +743,22 @@ export class PeerSession {
         // person: without this row a peer read `failed` with no reason anywhere,
         // and the only way to learn one was to run the provider by hand.
         if (event.reason === 'failed' && event.error !== undefined) {
-          await record({
-            type: 'peer.failed',
-            ts: clock.now(),
-            subject: peerId,
-            actor: peerActor(peerId),
-            data: {
-              peerId,
-              sessionId,
-              reason: 'provider_error',
-              message: bounded(event.error, FAILURE_MESSAGE_MAX),
-              retryable: true,
-            },
-          })
+          const message = bounded(event.error, FAILURE_MESSAGE_MAX)
+          await this.#bookkeep('peer.failed', event.turnId, () =>
+            record({
+              type: 'peer.failed',
+              ts: clock.now(),
+              subject: peerId,
+              actor: peerActor(peerId),
+              data: {
+                peerId,
+                sessionId,
+                reason: 'provider_error',
+                message,
+                retryable: true,
+              },
+            }),
+          )
         }
         break
       case 'question.asked':
@@ -784,7 +796,7 @@ export class PeerSession {
         // between turns and a person's `/compact` always does; both rewrite the
         // peer's context and both cost a bill, and neither has a turn to hang
         // the record on (§8).
-        await this.#recordCompaction(handle, event)
+        await this.#bookkeep('peer.compacted', turnIdOf(event), () => this.#recordCompaction(handle, event))
         break
       default:
         break
@@ -793,13 +805,15 @@ export class PeerSession {
     const next = peerStateOf(event)
     if (next !== undefined && next !== this.#state) {
       this.#state = next
-      await record({
-        type: 'peer.state_changed',
-        ts: clock.now(),
-        subject: peerId,
-        actor: peerActor(peerId),
-        data: { peerId, state: next, sessionId },
-      })
+      await this.#bookkeep('peer.state_changed', turnIdOf(event), () =>
+        record({
+          type: 'peer.state_changed',
+          ts: clock.now(),
+          subject: peerId,
+          actor: peerActor(peerId),
+          data: { peerId, state: next, sessionId },
+        }),
+      )
     }
     if (event.type === 'session.ended') {
       await this.#recordEnd(handle, endReasonOf(event, purging), event.code)
@@ -1020,11 +1034,34 @@ export class PeerSession {
    * is the one rule this call exists under. So the port's own failure is dropped,
    * and dropped knowingly: there is nothing left to report it to.
    */
-  #reportBookkeepingFailure(turnId: TurnId, error: unknown): void {
+  #reportBookkeepingFailure(record: SessionRecord['type'], turnId: TurnId | undefined, error: unknown): void {
     try {
-      this.#ports.onBookkeepingFailure?.({ peerId: this.#ports.peerId, turnId, error })
+      this.#ports.onBookkeepingFailure?.({ peerId: this.#ports.peerId, record, turnId, error })
     } catch {
       // Nothing left to report a failure to. The session is what matters.
+    }
+  }
+
+  /**
+   * Append one row that is bookkeeping, not the session (TASK-82).
+   *
+   * Every append `#apply` makes is one: what the peer is doing, what state it is
+   * in, that it compacted, why it failed. Awaiting them bare meant a store that
+   * refused any one of them threw out of the stream loop, so a session that was
+   * working perfectly was recorded `failed`, ended `crashed` and replaced — the
+   * store's refusal made a fact about the fleet's bookkeeping into a fact about
+   * the peer. The row is dropped and reported (TASK-57), and the loop reads the
+   * next event.
+   */
+  async #bookkeep(
+    record: SessionRecord['type'],
+    turnId: TurnId | undefined,
+    append: () => void | Promise<void>,
+  ): Promise<void> {
+    try {
+      await append()
+    } catch (error) {
+      this.#reportBookkeepingFailure(record, turnId, error)
     }
   }
 
@@ -1196,6 +1233,13 @@ export class PeerSession {
     })
   }
 }
+
+/**
+ * The turn an event belongs to, when it carries one. A `compaction` may land
+ * between turns and a `session.ended` never has one, so this answers
+ * `undefined` rather than borrowing the turn that happened to run last.
+ */
+const turnIdOf = (event: ProviderEvent): TurnId | undefined => ('turnId' in event ? event.turnId : undefined)
 
 /**
  * The provider reports only how its stream stopped — `exit`, `crash`, or the

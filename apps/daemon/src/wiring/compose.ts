@@ -322,13 +322,15 @@ const trackerFor = async (profile: TrackerProfile, credentials: JiraCredentialSo
 
 /**
  * The daemon log's one line for a bookkeeping append the store refused
- * (TASK-57): the peer, the turn and what the store said. Named rather than
- * inlined into the wiring below so the sentence a person reads is the thing
- * under test, and so it is one line per failure by construction.
+ * (TASK-57, TASK-82): the peer, the row, the turn when it had one, and what the
+ * store said. Named rather than inlined into the wiring below so the sentence a
+ * person reads is the thing under test, and so it is one line per failure by
+ * construction.
  */
 export const bookkeepingFailureLine = (failure: BookkeepingFailure): string => {
   const reason = failure.error instanceof Error ? failure.error.message : String(failure.error)
-  return `fleetd: bookkeeping for ${String(failure.peerId)} failed on turn ${String(failure.turnId)} and the session stays live: ${reason}`
+  const turn = failure.turnId === undefined ? '' : ` on turn ${String(failure.turnId)}`
+  return `fleetd: bookkeeping for ${String(failure.peerId)} failed writing ${failure.record}${turn} and the session stays live: ${reason}`
 }
 
 export const compose = async (deps: ComposeDeps): Promise<Composed> => {
