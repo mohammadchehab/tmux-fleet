@@ -253,26 +253,28 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
         continue
       }
     }
-    // Options that can appear even after send/decide starts collecting args
-    if (arg === '--socket' || arg.startsWith('--socket=')) {
+    // Once a send/decide body has started every word is the body, so a body can say "--profile prod" without
+    // rerouting the message. The one exception is decide's documented trailing --note.
+    const bodyStarted = !parseOptions
+    if (!bodyStarted && (arg === '--socket' || arg.startsWith('--socket='))) {
       const read = optionValue(words, index, '--socket')
       socket = read.value
       index = read.next
       continue
     }
-    if (arg === '--profile' || arg.startsWith('--profile=')) {
+    if (!bodyStarted && (arg === '--profile' || arg.startsWith('--profile='))) {
       const read = optionValue(words, index, '--profile')
       profile = read.value
       index = read.next
       continue
     }
-    if (arg === '--limit' || arg.startsWith('--limit=')) {
+    if (!bodyStarted && (arg === '--limit' || arg.startsWith('--limit='))) {
       const read = optionValue(words, index, '--limit')
       limit = read.value
       index = read.next
       continue
     }
-    if (arg === '--note' || arg.startsWith('--note=')) {
+    if ((!bodyStarted || positional[0] === 'decide') && (arg === '--note' || arg.startsWith('--note='))) {
       const read = optionValue(words, index, '--note')
       note = read.value
       index = read.next
@@ -323,11 +325,6 @@ export const parseArgv = (argv: readonly string[]): Parsed => {
       }
     }
     if (parseOptions && arg.startsWith('-')) throw usageError(`unknown option ${arg}`)
-    if (!parseOptions && arg.startsWith('-') && !(arg === '--socket' || arg.startsWith('--socket=') || arg === '--profile' || arg.startsWith('--profile=') || arg === '--limit' || arg.startsWith('--limit=') || arg === '--note' || arg.startsWith('--note='))) {
-      // In send/decide free-text context, treat unknown options as part of text
-      positional.push(arg)
-      continue
-    }
     positional.push(arg)
     // For send and decide, once we have enough positionals, stop parsing general options.
     // But --note, --limit, --socket, --profile continue to be parsed.

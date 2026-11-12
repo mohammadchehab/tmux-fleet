@@ -933,6 +933,32 @@ describe('run: build', () => {
     ])
   })
 
+  it('send body keeps --profile/--socket/--limit/--note words, and routes nowhere else (TASK-69)', async () => {
+    const { deps, calls } = harness({ send: () => ({ msgId: 'msg_0123456789abcdef' }) })
+    const code = await run(
+      argv('send', 'engineer-1', 'nudge', 'run', 'on', '--profile', 'prod', '--socket', '/x', '--limit', '3', '--note', 'n', 'now'),
+      deps,
+    )
+    assert.equal(code, 0)
+    assert.deepEqual(calls, [
+      { method: 'send', params: { to: 'engineer-1', kind: 'nudge', body: 'run on --profile prod --socket /x --limit 3 --note n now' } },
+    ])
+  })
+
+  it('send still reads --profile placed before the body', async () => {
+    const { deps, calls } = harness({ send: () => ({ msgId: 'msg_0123456789abcdef' }) })
+    assert.equal(await run(argv('--profile', 'prod', 'send', 'engineer-1', 'info', 'hi'), deps), 0)
+    assert.equal((calls[0] as { method: string }).method, 'send')
+  })
+
+  it('decide answer keeps --profile words but still reads --note', async () => {
+    const { deps, calls } = harness({ decide: () => ({ ...decision, state: 'answered' as const, text: 'x' }) })
+    await run(argv('decide', 'dec_0123456789abcdef', 'use', '--profile', 'prod', '--note', 'why'), deps)
+    assert.deepEqual(calls, [
+      { method: 'decide', params: { id: 'dec_0123456789abcdef', decision: 'use --profile prod', note: 'why' } },
+    ])
+  })
+
   it('send body can contain --option-like words', async () => {
     const { deps, out, calls } = harness({ send: () => ({ msgId: 'msg_0123456789abcdef' }) })
     const code = await run(argv('send', 'engineer-1', 'info', '--help', 'me'), deps)
