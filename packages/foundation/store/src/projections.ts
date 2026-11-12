@@ -797,12 +797,12 @@ const tokenText = (tokens: number): string => tokens.toLocaleString('en-US')
 /**
  * What a compaction banner says (§6.1, §8).
  *
- * The comparison is the point. A compaction at a number well under the window
- * the peer was *configured* with means the provider gave up long before the
- * fleet's ratio could fire, and the fix is the profile's `contextLimit`, not a
- * tighter purge — so the banner says which of the two it is, using the pair the
- * event carries. With no configured limit to compare against it says only what
- * it knows, rather than guessing at a verdict.
+ * The banner reports the pair the event carries as a share of the configured
+ * limit, and claims only what that pair proves. A provider compacts *before* its
+ * window is full, so `preTokens < contextLimit` is the ordinary case and says
+ * nothing about the limit being wrong: it is not a verdict, and the banner does
+ * not call it one. Only `preTokens >= contextLimit` is a fact (the context hit
+ * the limit). With no configured limit it says only what it knows.
  */
 const compactionDetail = (
   peerId: string,
@@ -817,12 +817,14 @@ const compactionDetail = (
   if (contextLimit === undefined) {
     return { title, body: `${who} — ${compacted}. The provider reported no context limit, so there is nothing to compare it against.` }
   }
+  const percent = Math.round((preTokens / contextLimit) * 100)
+  const limit = tokenText(contextLimit)
   return {
     title,
     body:
-      preTokens < contextLimit
-        ? `${who} — ${compacted} under a configured limit of ${tokenText(contextLimit)}. The configured limit is too high for this model: the provider compacted well before the purge could fire.`
-        : `${who} — ${compacted} against a configured limit of ${tokenText(contextLimit)}. The limit fits this model; the purge simply did not get there first.`,
+      preTokens >= contextLimit
+        ? `${who} — ${compacted}, ${percent}% of the configured limit of ${limit}. The context reached the configured limit; the purge did not get there first.`
+        : `${who} — ${compacted}, ${percent}% of the configured limit of ${limit}. A provider compacts before its window is full, so this alone does not show the limit is wrong; the limit is too high only if this model's real window is smaller than ${limit}.`,
   }
 }
 
