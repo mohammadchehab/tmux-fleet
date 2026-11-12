@@ -602,3 +602,23 @@ describe('the terminal loop', () => {
     await done
   })
 })
+
+describe('the detail pane styles what it shows', () => {
+  const plain = (line: string): string => line.replace(/\u001b\[[0-9;]*m/g, '')
+
+  it('shows what a message said under a coloured header, indented and wrapped to the pane', () => {
+    const lines = detailLines(
+      [
+        { seq: 1, kind: 'mail', phase: 'sent', from: 'pm', mailKind: 'brief', text: 'Brief v9 — engineer-1\nWork: a title long enough to wrap' },
+        { seq: 2, kind: 'mail', phase: 'delivered' },
+      ],
+      24,
+      20,
+    )
+    assert.equal(plain(lines[0] ?? ''), '✉ brief from pm')
+    assert.ok((lines[0] ?? '').startsWith('\u001b[1;36m'), 'the header is coloured')
+    assert.ok(lines.slice(1, -1).every((line) => plain(line).startsWith('  ')), 'the body is indented')
+    assert.ok(lines.every((line) => [...plain(line)].length <= 24), 'no line is wider than the pane')
+    assert.equal(plain(lines.at(-1) ?? ''), '  ✓ delivered')
+  })
+})

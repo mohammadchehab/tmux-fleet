@@ -293,14 +293,25 @@ export const createDisplayFeed = (options: DisplayFeedOptions = {}): DisplayFeed
 /**
  * The store facts a watch shows, cut down to a row: a peer's state changing, mail
  * sent and delivered, a decision opened and answered. Everything else the store
- * records is not the view's business, and prose never comes through here.
+ * records is not the view's business. Prose comes through only cut to one display
+ * line: a decision's question, and what a message said.
  */
 export const rowOf = (event: FleetEvent): WatchRow | undefined => {
   switch (event.type) {
     case 'peer.state_changed':
       return { kind: 'state', peerId: event.data.peerId, state: event.data.state }
     case 'message.sent':
-      return { kind: 'mail', phase: 'sent', msgId: event.data.msgId, to: event.data.to, from: event.data.from }
+      return {
+        kind: 'mail',
+        phase: 'sent',
+        msgId: event.data.msgId,
+        to: event.data.to,
+        from: event.data.from,
+        mailKind: event.data.kind,
+        // Its lines kept and its blank ones dropped, so a brief reads as a
+        // paragraph and not a column of gaps; cut like any display line.
+        text: cut(event.data.body.replace(/\n\s*\n+/g, '\n').trim()),
+      }
     case 'message.delivered':
       return { kind: 'mail', phase: 'delivered', msgId: event.data.msgId, to: event.data.to }
     case 'decision.requested':

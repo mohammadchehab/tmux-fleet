@@ -19,7 +19,14 @@ import { needsYou, type Need } from './needs.ts'
 /** What the detail pane shows, oldest first: lines the peer said, and the mail that reached it. */
 export type TimelineItem =
   | { readonly seq: number; readonly kind: 'line'; readonly line: DisplayLine }
-  | { readonly seq: number; readonly kind: 'mail'; readonly phase: 'sent' | 'delivered'; readonly from?: string }
+  | {
+      readonly seq: number
+      readonly kind: 'mail'
+      readonly phase: 'sent' | 'delivered'
+      readonly from?: string
+      readonly mailKind?: string
+      readonly text?: string
+    }
 
 /** The most items the client keeps per peer; the daemon's own ring is the history. */
 export const timelineLimit = 300
@@ -190,7 +197,14 @@ const applyRow = (state: WatchState, seq: number, row: WatchRow): Step => {
   switch (row.kind) {
     case 'mail':
       return {
-        state: withTimeline(state, row.to, { seq, kind: 'mail', phase: row.phase, ...(row.from === undefined ? {} : { from: row.from }) }),
+        state: withTimeline(state, row.to, {
+          seq,
+          kind: 'mail',
+          phase: row.phase,
+          ...(row.from === undefined ? {} : { from: row.from }),
+          ...(row.mailKind === undefined ? {} : { mailKind: row.mailKind }),
+          ...(row.text === undefined ? {} : { text: row.text }),
+        }),
         // Mail does not change what the list shows; a state or a decision does.
         effects: [],
       }
