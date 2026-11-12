@@ -290,6 +290,27 @@ describe('the store lock', () => {
   })
 })
 
+describe('contenders racing for one stale lock', () => {
+  it('lets exactly one win, however the takeovers interleave', async () => {
+    // Every contender judges the same leftover. One that judged it before a rival's takeover must not
+    // delete the rival's fresh lock, or two daemons hold the store at once.
+    for (let round = 0; round < 40; round += 1) {
+      const dir = await mkdtemp(join(tmpdir(), 'fleet-lock-race-'))
+      const lockPath = join(dir, 'fleetd.lock')
+      await writeFile(lockPath, `${String(deadPid())}\n`, 'utf8')
+
+      const outcomes = await Promise.allSettled(Array.from({ length: 16 }, () => acquireFleetLock(lockPath)))
+      const winners = outcomes.filter((outcome) => outcome.status === 'fulfilled')
+      assert.equal(winners.length, 1, `round ${String(round)}: ${String(winners.length)} contenders hold the lock`)
+      for (const outcome of outcomes) {
+        if (outcome.status === 'rejected') assert.equal(code(outcome.reason), 'conflict')
+      }
+      await winners[0]?.value.release()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('a second fleetd on a store a live one holds', () => {
   it('is refused before it opens the store', async () => {
     const home = await withHome()
