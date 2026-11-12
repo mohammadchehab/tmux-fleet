@@ -50,6 +50,15 @@ test('a glob that names a path outside the worktree is denied, whatever key carr
   assert.equal(decide('Glob', { pattern: 'src/**/*.ts' }), 'allow')
 })
 
+test('a glob with braces, brackets or extglob syntax asks, never allows, so it cannot hide a path', () => {
+  assert.equal(decide('Glob', { pattern: '{/etc,src}/*' }), 'ask', 'a brace alternative can start with a root')
+  assert.equal(decide('Glob', { pattern: 'src/{../..,a}/*' }), 'ask', 'a brace alternative can climb')
+  assert.equal(decide('Glob', { pattern: '[/]etc/*' }), 'ask')
+  assert.equal(decide('Glob', { pattern: '@(/etc|src)/*' }), 'ask')
+  assert.equal(decide('Grep', { pattern: 'x', glob: '{/etc,src}/*' }), 'ask')
+  assert.equal(decide('Grep', { pattern: 'x', glob: '*.ts' }), 'allow', 'a plain glob is still allowed')
+})
+
 test('git status and git diff run silently; other git and any chained command ask', () => {
   assert.equal(decide('Bash', { command: 'git status' }), 'allow')
   assert.equal(decide('Bash', { command: 'git status --porcelain' }), 'allow')
