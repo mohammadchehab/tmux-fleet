@@ -85,7 +85,7 @@ describe('the cursor key route is opt-in, by reference', () => {
 })
 
 describe('a route that yields no key refuses, and says nothing it should not', () => {
-  it('names the variable and the file, never a value', async () => {
+  it('names the file, never the variable or a value', async () => {
     const profile = profileWith({ tokenEnv: 'HETZNER_CURSOR_KEY', tokenFile: '/run/secrets/cursor' })
     const options = optionsWith(profile, {
       // The variable holds a key-shaped value, but blank: it must not be echoed either way.
@@ -95,7 +95,7 @@ describe('a route that yields no key refuses, and says nothing it should not', (
     await assert.rejects(readCursorToken(options), (thrown: unknown) => {
       assert.equal((thrown as { code?: string }).code, 'config_mismatch')
       const text = rendered(thrown)
-      assert.match(text, /HETZNER_CURSOR_KEY/)
+      assert.doesNotMatch(text, /HETZNER_CURSOR_KEY/)
       assert.match(text, /\/run\/secrets\/cursor/)
       assert.equal(text.includes(KEY), false, 'the underlying error text is a cause, not a message')
       return true

@@ -97,14 +97,23 @@ describe('decoding a profile', () => {
 
 
   it('refuses a pasted key as tokenEnv at load, without echoing it (TASK-95)', () => {
-    const key = 'sk-PASTEDSECRET-0123456789'
+    const key = 'not-a-name pasted-value'
     for (const providers of [{ deepinfra: { tokenEnv: key } }, { cursor: { tokenEnv: key } }]) {
       assert.throws(
         () => decodeProfile(minimal({ providers })),
-        (thrown: unknown) => thrown instanceof Error && /environment variable name/.test(thrown.message) && !thrown.message.includes('PASTEDSECRET'),
+        (thrown: unknown) => thrown instanceof Error && /environment variable name/.test(thrown.message) && !thrown.message.includes('pasted-value'),
       )
     }
     assert.doesNotThrow(() => decodeProfile(minimal({ providers: { deepinfra: { tokenEnv: 'ACME_DEEPINFRA_KEY' } } })))
+  })
+  it('refuses a pasted key as a Jira tokenEnv at load, without echoing it (TASK-95)', () => {
+    const key = 'not-a-name pasted-value'
+    for (const auth of [{ kind: 'pat', tokenEnv: key }, { kind: 'cloud', email: 'a@b.test', tokenEnv: key }]) {
+      assert.throws(
+        () => decodeProfile(minimal({ trackers: { system: 'jira', query: 'project = FLEET', baseUrl: 'https://jira.acme.test', auth } })),
+        (thrown: unknown) => thrown instanceof Error && !thrown.message.includes('pasted-value'),
+      )
+    }
   })
   it('refuses a scanner it cannot build, and an empty set that would scan nothing', () => {
     assert.throws(() => decodeProfile(minimal({ security: { scanners: ['snyk'] } })), /snyk/)
