@@ -11,7 +11,13 @@ import { fixedClock, fleetError, type PeerId, type QuestionId, type TurnId } fro
 import { appendIssues, type ProviderEvent, type Usage } from '@fleet/foundation-contracts'
 import type { Provider, SessionHandle, TurnSpend } from '@fleet/runtime-provider-sdk'
 
-import { PeerSession, PurgeRestartFailed, type PurgeOutcome, type SessionRecord } from '../src/index.ts'
+import {
+  PeerSession,
+  PurgeRestartFailed,
+  type BookkeepingFailure,
+  type PurgeOutcome,
+  type SessionRecord,
+} from '../src/index.ts'
 
 const peerId = 'engineer-1' as PeerId
 const turnId = 'trn_0123456789abcdef' as TurnId
@@ -1785,4 +1791,84 @@ test('a turn that ends while another is still open is recorded at its own end (T
 
   // Two turns end, and each has its own spend to account for; the first ended while the peer was not idle.
   assert.equal(usageRows(r).length, 2)
+})
+
+// ------------------------------------ a refused bookkeeping row is not a dead session (TASK-82)
+// `#recordUsage` was guarded in #200 precisely so a store's refusal could not cost the session; the activity rows
+// beside it — `peer.tool_used`, `peer.state_changed` and the compaction record — were awaited bare in `#apply`, so
+// one refused write threw out of the stream loop, marked the pump `failed`, recorded the session `crashed` and
+// replaced it. The store's refusal is a fact about the fleet's bookkeeping, not about the peer, and the loop has to
+// read the next event.
+
+/** A session whose store refuses the rows `refuse` names, and which reports what it could not write (TASK-57). */
+const refusingSession = (
+  r: Rig,
+  refuse: (record: SessionRecord) => boolean,
+): { readonly session: PeerSession; readonly failures: BookkeepingFailure[] } => {
+  const failures: BookkeepingFailure[] = []
+  const session = new PeerSession({
+    provider: r.provider,
+    handle: handle('ses_aaaaaaaaaaaaaaaa'),
+    peerId,
+    briefVersion: 1,
+    limits: { contextRatio: 0.8, autoCompactRatio: 0.9, maxTurns: 10, maxSessionMillis: 60_000 },
+    clock: fixedClock('2026-11-10T09:00:00.000Z'),
+    record: (record) => {
+      if (refuse(record)) throw new Error(`the store refused ${record.type}`)
+      r.records.push(record)
+    },
+    purge: async () => {
+      throw new Error('must not purge')
+    },
+    recover: r.recover,
+    onBookkeepingFailure: (failure) => failures.push(failure),
+  })
+  return { session, failures }
+}
+
+test('a store that refuses the activity rows leaves the session live, and says what it lost (TASK-82)', async (t) => {
+  const r = rig(() => ({ contextTokens: 4_096, contextLimit: 200_000 }), { spend: spendOf })
+  const { session, failures } = refusingSession(
+    r,
+    (record) =>
+      record.type === 'peer.tool_used' || record.type === 'peer.state_changed' || record.type === 'peer.compacted',
+  )
+  t.after(() => session.stop())
+
+  const run = session.run()
+  r.feeds
+    .get('ses_aaaaaaaaaaaaaaaa')
+    ?.push(
+      started(),
+      { type: 'tool.use', turnId, tool: 'Bash' },
+      { type: 'compaction', trigger: 'auto', contextTokensBefore: 200_000, contextTokensAfter: 12_000 },
+      ended(),
+      { type: 'session.ended', reason: 'stopped' },
+    )
+  await until(
+    () => r.recovered.length > 0 || session.state === 'ended',
+    'the stream to reach its end, or the peer to have been recovered',
+  )
+
+  // The pump read every event and ended where the stream did: nothing was thrown out of the loop. A run that
+  // resolves is the second half of that claim — and the reason it is awaited only here is that the failure this
+  // guards against never reaches it: the loop throws, the peer is recovered, and `run()` waits on a session the
+  // test does not feed.
+  assert.deepEqual(r.recovered, [], 'the peer did not fail: only the store did')
+  assert.equal(session.state, 'ended')
+  await run
+  // What the store did take is the bookkeeping that was not refused — and the turn's spend is among it, so the
+  // refused rows did not cost the boundary its own record either.
+  assert.deepEqual(
+    r.records.map((record) => record.type),
+    ['session.started', 'turn.usage_recorded', 'session.ended'],
+  )
+  // Each refusal reached the port that exists for exactly this, naming the row and the turn it belonged to.
+  assert.deepEqual(
+    failures.map((failure) => failure.record),
+    ['peer.state_changed', 'peer.tool_used', 'peer.compacted', 'peer.state_changed', 'peer.state_changed'],
+  )
+  assert.equal(failures[1]?.turnId, turnId, 'a tool call is reported against the turn that made it')
+  assert.equal(failures[2]?.turnId, undefined, 'a compaction between records belongs to no turn, and says so')
+  assert.match((failures[1]?.error as Error).message, /the store refused peer\.tool_used/)
 })
