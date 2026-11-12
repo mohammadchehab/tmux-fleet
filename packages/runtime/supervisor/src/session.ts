@@ -833,24 +833,26 @@ export class PeerSession {
     const target = TARGET_TOOLS.has(event.tool) && event.summary !== undefined ? bounded(event.summary, TARGET_MAX) : undefined
     this.#approvals.set(decisionId, { requestId: event.requestId, turnId: event.turnId, sessionId })
     const question = `${String(peerId)} wants to use ${tool}${target === undefined ? '' : ` on ${target}`}: allow or deny?`
-    await this.#bookkeep('decision.requested', event.turnId, () =>
-      record({
-        type: 'decision.requested',
-        ts: clock.now(),
-        subject: decisionId,
-        actor: peerActor(peerId),
-        data: {
-          decisionId,
-          kind: toolApprovalKind,
-          question,
-          options: [...toolApprovalOptions],
-          inputsHash: hex16(`${sessionId}:${event.requestId}:${event.tool}`),
-          routedTo: 'user',
-          peerId,
-          requestId: event.requestId,
-        },
-      }),
-    )
+    // Deliberately not `#bookkeep` (TASK-130): an approval the store would not
+    // take is one no person can be asked to answer, and swallowing that refusal
+    // leaves the peer blocked on a question the fleet cannot show anyone. The
+    // refusal belongs to the session, and a recovered session re-raises it.
+    await record({
+      type: 'decision.requested',
+      ts: clock.now(),
+      subject: decisionId,
+      actor: peerActor(peerId),
+      data: {
+        decisionId,
+        kind: toolApprovalKind,
+        question,
+        options: [...toolApprovalOptions],
+        inputsHash: hex16(`${sessionId}:${event.requestId}:${event.tool}`),
+        routedTo: 'user',
+        peerId,
+        requestId: event.requestId,
+      },
+    })
   }
 
   /**
@@ -880,27 +882,27 @@ export class PeerSession {
     }
     parts.forEach((part, index) => this.#questions.set(part.decisionId, { open, part: index }))
     for (const part of parts) {
-      await this.#bookkeep('decision.requested', event.turnId, () =>
-        record({
-          type: 'decision.requested',
-          ts: clock.now(),
-          subject: part.decisionId,
-          actor: peerActor(peerId),
-          data: {
-            decisionId: part.decisionId,
-            kind: peerQuestionKind,
-            question: part.question,
-            // A question with no labels offers nothing to choose, so the inbox row
-            // has no options; `AskUserQuestion` always offers them, and a provider
-            // that does not is one this path cannot answer through `fleet decide`.
-            options: [...part.labels],
-            inputsHash: part.inputsHash,
-            routedTo: 'user',
-            peerId,
-            requestId: String(event.questionId),
-          },
-        }),
-      )
+      // Not `#bookkeep`, for the reason `#raiseApproval` gives (TASK-130): a
+      // question no one can read is not a peer anybody can unblock.
+      await record({
+        type: 'decision.requested',
+        ts: clock.now(),
+        subject: part.decisionId,
+        actor: peerActor(peerId),
+        data: {
+          decisionId: part.decisionId,
+          kind: peerQuestionKind,
+          question: part.question,
+          // A question with no labels offers nothing to choose, so the inbox row
+          // has no options; `AskUserQuestion` always offers them, and a provider
+          // that does not is one this path cannot answer through `fleet decide`.
+          options: [...part.labels],
+          inputsHash: part.inputsHash,
+          routedTo: 'user',
+          peerId,
+          requestId: String(event.questionId),
+        },
+      })
     }
   }
 
@@ -914,7 +916,7 @@ export class PeerSession {
     for (const [decisionId, entry] of [...this.#questions]) {
       if (!which(entry.open)) continue
       if (!this.#questions.delete(decisionId)) continue
-      await this.#bookkeep('decision.answered', entry.open.turnId, () =>
+      const written = await this.#bookkeep('decision.answered', entry.open.turnId, () =>
         record({
           type: 'decision.answered',
           ts: clock.now(),
@@ -923,6 +925,11 @@ export class PeerSession {
           data: { decisionId, source: 'rule', text: why, durationMs: 0 },
         }),
       )
+      // The row that says a person can no longer answer this never landed, so
+      // the log still shows it open. Holding it here is the only way the two
+      // agree: dropping it would offer a decision in the inbox that this
+      // session pretends not to know (TASK-130).
+      if (!written) this.#questions.set(decisionId, entry)
     }
   }
 
@@ -931,7 +938,7 @@ export class PeerSession {
     const open = this.#approvals.get(decisionId)
     if (open === undefined || !this.#approvals.delete(decisionId)) return
     const { clock, peerId, record } = this.#ports
-    await this.#bookkeep('decision.answered', open.turnId, () =>
+    const written = await this.#bookkeep('decision.answered', open.turnId, () =>
       record({
         type: 'decision.answered',
         ts: clock.now(),
@@ -940,6 +947,7 @@ export class PeerSession {
         data: { decisionId, source: 'rule', text: why, durationMs: 0 },
       }),
     )
+    if (!written) this.#approvals.set(decisionId, open)
   }
 
   /** Close every approval one session still has open, because that session is over. */
@@ -1055,23 +1063,33 @@ export class PeerSession {
   /**
    * Append one row that is bookkeeping, not the session (TASK-82).
    *
-   * Every append `#apply` makes is one: what the peer is doing, what state it is
-   * in, that it compacted, why it failed. Awaiting them bare meant a store that
-   * refused any one of them threw out of the stream loop, so a session that was
-   * working perfectly was recorded `failed`, ended `crashed` and replaced — the
-   * store's refusal made a fact about the fleet's bookkeeping into a fact about
-   * the peer. The row is dropped and reported (TASK-57), and the loop reads the
-   * next event.
+   * What the peer is doing, what state it is in, that it compacted, why it
+   * failed, and that a decision is no longer answerable: awaiting those bare
+   * meant a store that refused any one of them threw out of the stream loop, so
+   * a session that was working perfectly was recorded `failed`, ended `crashed`
+   * and replaced — the store's refusal made a fact about the fleet's
+   * bookkeeping into a fact about the peer. The row is dropped and reported
+   * (TASK-57), and the loop reads the next event.
+   *
+   * What it is *not* for is raising a decision (TASK-130). A refused
+   * `decision.requested` is a peer waiting on an approval no person can see and
+   * no one can answer: that session must fail visibly and be recovered, not
+   * carry the block for the rest of its life.
+   *
+   * Answers what the store did: `false` when the row was refused, which the
+   * callers that hold in-memory state use to keep that state honest with the log.
    */
   async #bookkeep(
     record: SessionRecord['type'],
     turnId: TurnId | undefined,
     append: () => void | Promise<void>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await append()
+      return true
     } catch (error) {
       this.#reportBookkeepingFailure(record, turnId, error)
+      return false
     }
   }
 
