@@ -478,6 +478,36 @@ test('ls reports the profile peers with the state the store knows', async () => 
   assert.equal((await store.latestSeq()) > 0, true)
 })
 
+test('ls leaves out an ended peer the profile no longer declares, and keeps a live one', async () => {
+  const { daemon, store } = await harness()
+  await daemon.up()
+  const registered = (peerId: PeerId): AppendEvent => ({
+    ts: '2026-11-10T09:00:00.000Z',
+    type: 'peer.registered',
+    subject: peerId,
+    actor: 'user',
+    data: { peerId, role: 'pm', providerId: 'claude', model: 'claude-sonnet-5-5', permissionMode: 'default' },
+  })
+  await store.append([
+    registered('pm' as PeerId),
+    registered('reviewer' as PeerId),
+    {
+      ts: '2026-11-10T09:01:00.000Z',
+      type: 'peer.state_changed',
+      subject: 'pm',
+      actor: 'scheduler',
+      data: { peerId: 'pm' as PeerId, state: 'ended' },
+    },
+  ])
+
+  const { peers } = await daemon.ls()
+  const ids: readonly string[] = peers.map((peer) => peer.peerId).sort()
+  assert.equal(ids.includes('pm'), false, 'dropped from the profile and ended: not this fleet any more')
+  assert.equal(ids.includes('reviewer'), true, 'dropped from the profile but not ended: still shown')
+  assert.equal(ids.includes('engineer-1'), true)
+  await daemon.down()
+})
+
 test('work reports every Work item in the state the projection holds, unfiltered', async () => {
   const { daemon, store } = await harness()
   await daemon.up()
