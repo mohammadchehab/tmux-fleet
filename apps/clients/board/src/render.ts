@@ -14,6 +14,7 @@
  * not need either, and a board that cannot run code cannot be made to write.
  */
 
+import { pullRequestUrl } from '@fleet/foundation-core'
 import { isWorkTerminal, workStates } from '@fleet/foundation-contracts'
 import type { DaemonStatus, PeerActivity, TokenReport, Work, WorkState } from '@fleet/foundation-contracts'
 
@@ -97,12 +98,17 @@ const activityFacts = (row: PeerActivity | undefined): readonly string[] => {
   return facts
 }
 
-const row = (item: Work, spend: Spend | undefined, activity: readonly PeerActivity[]): string => {
+const row = (
+  item: Work,
+  spend: Spend | undefined,
+  activity: readonly PeerActivity[],
+  forge: DaemonStatus['forge'],
+): string => {
   const facts: string[] = []
   if (item.assignee !== undefined) facts.push(`<span class="who">${escape(item.assignee)}</span>`)
   if (item.role !== undefined) facts.push(`<span class="role">${escape(item.role)}</span>`)
   for (const pr of item.prs) {
-    const url = `https://github.com/${pr.repo}/pull/${String(pr.number)}`
+    const url = pullRequestUrl(forge, pr.repo, pr.number)
     facts.push(link(url, prLabel(pr)))
   }
   if (item.external !== undefined) {
@@ -136,8 +142,9 @@ const column = (
   items: readonly Work[],
   spend: ReadonlyMap<string, Spend>,
   activity: readonly PeerActivity[],
+  forge: DaemonStatus['forge'],
 ): string => {
-  const rows = items.map((item) => row(item, spend.get(item.workId), activity)).join('\n')
+  const rows = items.map((item) => row(item, spend.get(item.workId), activity, forge)).join('\n')
   return [
     `<section class="state ${isWorkTerminal(state) ? 'done' : 'open'}">`,
     `<h2>${escape(state)}<span class="count">${String(items.length)}</span></h2>`,
@@ -156,7 +163,7 @@ export const renderBoard = (page: BoardPage): string => {
   const columns = workStates
     .map((state) => ({ state, items: page.work.filter((item) => item.state === state) }))
     .filter((group) => group.items.length > 0)
-    .map((group) => column(group.state, group.items, spend, page.activity))
+    .map((group) => column(group.state, group.items, spend, page.activity, page.status.forge))
     .join('\n')
 
   const body =

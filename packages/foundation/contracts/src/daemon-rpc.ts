@@ -216,6 +216,8 @@ export interface DaemonStatus {
    * row at or past it, so the number a person watches is the one the fleet acts on.
    */
   readonly purgeContextRatio: number
+  /** The forge the fleet's repos live on (profile `forge`), so a client can link a PR; absent means GitHub. */
+  readonly forge?: { readonly kind: 'github' | 'gitlab'; readonly host?: string }
   /**
    * Things the fleet started despite, in the user's words (TASK-12). The fleet is
    * up — a warning is not a refusal — but the profile asked for something the
@@ -234,6 +236,12 @@ export const daemonStatus = (): Schema<DaemonStatus> =>
     storePath: string({ minLength: 1, maxLength: 500 }),
     protocolVersion: positiveInt(),
     purgeContextRatio: number({ min: 0, max: 1 }),
+    forge: optional(
+      objectAs<{ readonly kind: 'github' | 'gitlab'; readonly host?: string }>()({
+        kind: oneOf(['github', 'gitlab'] as const),
+        host: optional(string({ minLength: 1, maxLength: 253 })),
+      }),
+    ),
     warnings: optional(array(string({ minLength: 1, maxLength: 500 }), { maxItems: 50 })),
   })
 

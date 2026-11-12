@@ -588,6 +588,7 @@ export const compose = async (deps: ComposeDeps): Promise<Composed> => {
             query: trackers.query,
             ...(trackers.role === undefined ? {} : { role: trackers.role }),
             ...(trackers.comments === undefined ? {} : { comments: trackers.comments }),
+            ...(profile.forge === undefined ? {} : { forge: profile.forge }),
           }),
         }),
     ...(scanners === undefined

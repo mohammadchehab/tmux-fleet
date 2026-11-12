@@ -314,6 +314,16 @@ describe('the sink half: a work event moves the one card it is about', () => {
     assert.deepEqual(tracker.links, [{ key: 'TASK-1', url: 'https://github.com/acme/widgets/pull/7' }])
   })
 
+  it('links a GitLab merge request when the profile names a gitlab forge, subgroup repo included', async () => {
+    const tracker = fakeTracker([item('TASK-1')])
+    const target = work('TASK-1')
+    const deps = { ...depsOf(tracker, [target]), forge: { kind: 'gitlab', host: 'git.example' } } as const
+
+    await sync(deps, contextOf(reviewRequested(target, 7)))
+
+    assert.deepEqual(tracker.links, [{ key: 'TASK-1', url: 'https://git.example/acme/widgets/-/merge_requests/7' }])
+  })
+
   it('work.merged moves the card to merged and links nothing', async () => {
     const tracker = fakeTracker([item('TASK-1')])
     const target = work('TASK-1')

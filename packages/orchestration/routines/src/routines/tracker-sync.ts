@@ -30,7 +30,8 @@
  * move does not make the other nine lies.
  */
 
-import { deriveId, digestOf, redactSecrets, toFleetError } from '@fleet/foundation-core'
+import type { ForgeRef } from '@fleet/foundation-core'
+import { deriveId, digestOf, pullRequestUrl, redactSecrets, toFleetError } from '@fleet/foundation-core'
 import type {
   AppendEvent,
   EventSink,
@@ -71,6 +72,8 @@ export interface TrackerSyncDeps {
    * Decision without this — that path never leaves the machine.
    */
   readonly comments?: boolean
+  /** Which forge the PR link points at (profile `forge`). Absent is GitHub. */
+  readonly forge?: ForgeRef
 }
 
 /**
@@ -264,7 +267,7 @@ const sinkEvents = async (
   // is named (`work.review_requested.pr`, §10).
   const pr = context.event?.type === 'work.review_requested' ? context.event.data.pr : undefined
   if (pr !== undefined) {
-    const url = `https://github.com/${String(pr.repo)}/pull/${String(pr.number)}`
+    const url = pullRequestUrl(deps.forge, String(pr.repo), pr.number)
     try {
       await deps.tracker.link(external.key, url)
       linked += 1
