@@ -487,6 +487,46 @@ test('a card the Judge called thin stays proposed', () => {
   assert.ok(!kinds(answered.actions).includes('mark_ready'), 'a thin verdict is an answer, not a flavour of yes')
 })
 
+const thinRow = (asked: { questionId: never; inputsHash: string }, card: ReturnType<typeof work>, inputsHash = asked.inputsHash) => ({
+  questionId: asked.questionId,
+  kind: 'thin_card' as const,
+  inputsHash,
+  workId: card.workId,
+  askedAt: T0,
+  answer: { kind: 'thin_card' as const, thin: true, missing: ['a goal'], why: 'The body is one line.' },
+  model: 'claude-haiku-4-5',
+  answeredAt: T0,
+})
+
+test('a thin card already answered is not asked again, and does not hold back the other Works', () => {
+  const thin = work({ state: 'proposed', title: 'Go live', body: '' })
+  const other = work({ workId: 'wrk_0000000000000009' as never, state: 'ready', role: 'engineer', title: 'Build the store' })
+  const asking = decide({ state: state({ peers: [peer()], work: [thin] }), tick: tick() })
+  const asked = asking.actions[0]
+  if (asked?.kind !== 'request_judge') return assert.fail('expected the card to be questioned')
+
+  const answered = decide({
+    state: state({ peers: [peer()], work: [thin, other], judge: [thinRow(asked as never, thin)] }),
+    tick: tick(),
+  })
+
+  assert.ok(!kinds(answered.actions).includes('request_judge'), 'the same question with the same inputs is not asked twice')
+  assert.ok(kinds(answered.actions).includes('assign'), 'the other Work is still handed out')
+})
+
+test('a thin card whose text changed since the answer is asked again', () => {
+  const thin = work({ state: 'proposed', title: 'Go live', body: '' })
+  const asking = decide({ state: state({ peers: [peer()], work: [thin] }), tick: tick() })
+  const asked = asking.actions[0]
+  if (asked?.kind !== 'request_judge') return assert.fail('expected the card to be questioned')
+
+  const again = decide({
+    state: state({ peers: [peer()], work: [thin], judge: [thinRow(asked as never, thin, 'sha256:0000000000000000')] }),
+    tick: tick(),
+  })
+  assert.deepEqual(kinds(again.actions), ['request_judge'])
+})
+
 test('an escalated Judge answer becomes the user s decision, carrying its question', () => {
   // The answer is stated as a *row on the question*, and the tick is given no
   // `judge.answered` event at all: reading it from the projection is what lets a
