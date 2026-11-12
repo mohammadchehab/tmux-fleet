@@ -50,7 +50,7 @@ import type {
 import { planRoutines, type PlannedRoutine, type RoutinesConfig } from './config.ts'
 import type { RoutineBody, RoutineFactory } from './routine.ts'
 import { installedFactories } from './routines/index.ts'
-import { isDue, isRecurring, triggeredBy, type Trigger } from './trigger.ts'
+import { isDue, isRecurring, lastOccurrence, triggeredBy, type Trigger } from './trigger.ts'
 
 /**
  * The write and read ports are `foundation/contracts`': `EventSink` is the
@@ -149,8 +149,6 @@ const MAX_ERROR = 2000
 
 /** The longest a retry is held off for a routine whose own period gives no better answer (§6). */
 const HOUR_MS = 60 * 60 * 1000
-/** A daily routine's period, which is what a daily routine's backoff may grow to (§6). */
-const DAY_MS = 24 * HOUR_MS
 /** Failures in a row that mean "broken", not "unlucky" — the one that is worth a banner (§6, §6.1). */
 const ESCALATE_AFTER = 3
 
@@ -222,14 +220,16 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
 
   /**
    * The routine's own period, in millis — what its window already waits between
-   * runs, and so the shortest a retry may be spaced (§6). A `schedule` fires
-   * once a day; a heartbeat every `everyMs`; a routine that only listens for
-   * events has no period of its own, so nothing to wait out.
+   * runs, and so the shortest a retry may be spaced (§6). A heartbeat fires every
+   * `everyMs`; a routine that only listens for events has no period of its own,
+   * so nothing to wait out. A `schedule` contributes none either: its window
+   * already holds it to once per occurrence, and a day measured from the
+   * *failure* would swallow the next occurrence (TASK-83) — `retryDue` lets a new
+   * occurrence through instead.
    */
   const periodMs = (routine: PlannedRoutine): number => {
     let period = 0
     for (const trigger of routine.triggers) {
-      if (trigger.kind === 'schedule') period = Math.max(period, DAY_MS)
       if (trigger.kind === 'heartbeat') period = Math.max(period, trigger.everyMs)
     }
     return period
@@ -241,7 +241,8 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
    * and never shorter than the routine's own period. So the backoff only ever
    * *lengthens* a retry past the period: a broken daily routine still runs at
    * most once a day, and a broken heartbeat backs off from its minute towards
-   * the hour instead of being retried every tick. `failures` is how many
+   * the hour instead of being retried every tick (a daily `schedule` is held to
+   * once per occurrence by its window, not by this). `failures` is how many
    * attempts in a row have failed — the delay before the next one.
    */
   const backoffMs = (routine: PlannedRoutine, failures: number): number => {
@@ -254,6 +255,13 @@ export const createScheduler = (deps: SchedulerDeps): Scheduler => {
   const retryDue = (routine: PlannedRoutine, now: Timestamp): boolean => {
     const attempt = attempts.get(routine.id)
     if (attempt === undefined) return true
+    // A backoff never blocks the next scheduled occurrence: an occurrence that has
+    // come round since the failed attempt is a fresh run, not a retry of it
+    // (TASK-83). Measured from the failure, a restart's failed catch-up at 14:00
+    // would otherwise hold off tomorrow's 09:00.
+    for (const trigger of routine.triggers) {
+      if (trigger.kind === 'schedule' && lastOccurrence(trigger.at, now) > attempt.atMillis) return true
+    }
     return Date.parse(now) - attempt.atMillis >= backoffMs(routine, attempt.failures)
   }
 
