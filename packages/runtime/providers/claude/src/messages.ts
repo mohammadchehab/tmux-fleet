@@ -14,7 +14,7 @@
  *   what §4 forbids.
  */
 
-import type { Timestamp, TurnId } from '@fleet/foundation-core'
+import { redactSecrets, type Timestamp, type TurnId } from '@fleet/foundation-core'
 import type { ProviderSessionRef } from '@fleet/runtime-provider-sdk'
 
 import type { AdapterEvent, AskedQuestion, TurnEndReason } from './events.ts'
@@ -160,6 +160,21 @@ export const summariseToolUse = (name: string, input: Record<string, unknown>): 
   if (typeof path !== 'string' || path.length === 0) return undefined
   return truncate(path, 200)
 }
+
+/**
+ * What the live view (`fleet watch`) shows for a tool call: the command a shell runs and the pattern a search
+ * looks for, which `summariseToolUse` keeps out of the stored log on purpose. This one is only ever pushed to
+ * the in-memory display feed, never to an event, and the secrets are redacted before it leaves the adapter.
+ */
+export const displaySummary = (name: string, input: Record<string, unknown>): string | undefined => {
+  const raw = name === 'Bash' ? input.command : name === 'Grep' || name === 'Glob' ? input.pattern : undefined
+  if (typeof raw !== 'string' || raw.length === 0) return summariseToolUse(name, input)
+  return truncate(redactSecrets(raw).replace(/\s+/g, ' ').trim(), 300)
+}
+
+/** One live-view summary per tool call in an assistant message, in the order `mapMessage` emits its `tool.use` events. */
+export const displayToolUses = (message: Record<string, unknown>): (string | undefined)[] =>
+  toolUses(message).map((block) => displaySummary(block.name, block.input))
 
 const truncate = (value: string, max: number): string =>
   value.length <= max ? value : `${value.slice(0, max - 1)}…`

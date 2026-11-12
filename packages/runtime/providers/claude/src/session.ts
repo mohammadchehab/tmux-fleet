@@ -63,7 +63,7 @@ import type {
 
 import { buildChildEnv, recordedEndpoint } from './env.ts'
 import { isContractEvent, type AdapterEvent, type TurnEndReason } from './events.ts'
-import { mapMessage, questionAnswers, readQuestions, summariseToolUse, type TurnState } from './messages.ts'
+import { displayToolUses, mapMessage, questionAnswers, readQuestions, summariseToolUse, type TurnState } from './messages.ts'
 import { PendingRequests } from './pending.ts'
 import { compilePolicy, evaluatePolicy, QUESTION_TOOL, type CompiledToolPolicy } from './policy.ts'
 import {
@@ -594,7 +594,17 @@ export class ClaudeSession {
     const consumed = record.type === 'result' ? this.#consumedBy(message) : []
     const turnId = consumed[0] ?? this.#inflight[0]
     let resultEnd: { reason: TurnEndReason; error: string | undefined } | undefined
+    // The live view shows a shell command and a search pattern; the stored `tool.use` does not (§4). One entry
+    // per tool call, in the order `mapMessage` emits them.
+    const shown = record.type === 'assistant' ? displayToolUses(message as Record<string, unknown>) : []
+    let shownAt = 0
     for (const event of mapMessage(message, turnId, this.#turnState, this.#now())) {
+      if (event.type === 'tool.use') {
+        const summary = shown[shownAt++]
+        this.#events.push(event)
+        this.#display.push(summary === undefined ? { kind: 'tool', tool: event.tool } : { kind: 'tool', tool: event.tool, summary })
+        continue
+      }
       if (event.type === 'session.started') {
         const first = this.#sessionRef === undefined
         this.#sessionRef ??= event.sessionRef
