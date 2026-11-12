@@ -81,7 +81,8 @@
       {
         "command": "fleet.peer.actions",
         "title": "What can this peer do?",
-        "category": "Fleet"
+        "category": "Fleet",
+        "icon": "$(ellipsis)"
       },
       {
         "command": "fleet.peer.takeover",
@@ -107,6 +108,12 @@
         "command": "fleet.peer.start",
         "title": "Start",
         "category": "Fleet"
+      },
+      {
+        "command": "fleet.peer.output",
+        "title": "Show live output",
+        "category": "Fleet",
+        "icon": "$(output)"
       }
     ],
     "menus": {
@@ -128,6 +135,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "fleet.peer.output",
+          "when": "view == fleet.peers && viewItem =~ /^peer\\./",
+          "group": "fleet@0"
+        },
+        {
+          "command": "fleet.peer.actions",
+          "when": "view == fleet.peers && viewItem =~ /^peer\\./",
+          "group": "inline"
+        },
         {
           "command": "fleet.peer.takeover",
           "when": "view == fleet.peers && viewItem == peer.running",
@@ -181,6 +198,10 @@
         },
         {
           "command": "fleet.peer.start",
+          "when": "false"
+        },
+        {
+          "command": "fleet.peer.output",
           "when": "false"
         }
       ]
