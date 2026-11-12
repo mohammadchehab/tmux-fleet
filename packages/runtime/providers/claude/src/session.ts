@@ -592,7 +592,10 @@ export class ClaudeSession {
     if (delta !== undefined) this.#display.push({ kind: 'text', text: delta })
 
     const consumed = record.type === 'result' ? this.#consumedBy(message) : []
-    const turnId = consumed[0] ?? this.#inflight[0]
+    // A result that names its messages is authoritative: one naming none of ours (a CLI-started turn, or uuids that
+    // no longer match after a restart) ends nothing. Only a result that names nothing falls back to the oldest turn.
+    const named = record.type === 'result' && Array.isArray((message as { user_message_uuids?: unknown }).user_message_uuids)
+    const turnId = named ? consumed[0] : (consumed[0] ?? this.#inflight[0])
     let resultEnd: { reason: TurnEndReason; error: string | undefined } | undefined
     // The live view shows a shell command and a search pattern; the stored `tool.use` does not (§4). One entry
     // per tool call, in the order `mapMessage` emits them.
