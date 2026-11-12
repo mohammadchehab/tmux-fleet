@@ -602,3 +602,55 @@ describe('the terminal loop', () => {
     await done
   })
 })
+
+describe('the detail pane styles what it shows', () => {
+  const plain = (line: string): string => line.replace(/\u001b\[[0-9;]*m/g, '')
+
+  it('shows what a message said under a coloured header, indented and wrapped to the pane', () => {
+    const lines = detailLines(
+      [
+        { seq: 1, kind: 'mail', phase: 'sent', from: 'pm', mailKind: 'brief', text: 'Brief v9 — engineer-1\nWork: a title long enough to wrap' },
+        { seq: 2, kind: 'mail', phase: 'delivered' },
+      ],
+      24,
+      20,
+    )
+    assert.equal(plain(lines[0] ?? ''), '✉ brief from pm')
+    assert.ok((lines[0] ?? '').startsWith('\u001b[1;36m'), 'the header is coloured')
+    assert.ok(lines.slice(1, -1).every((line) => plain(line).startsWith('  ')), 'the body is indented')
+    assert.ok(lines.every((line) => [...plain(line)].length <= 24), 'no line is wider than the pane')
+    assert.equal(plain(lines.at(-1) ?? ''), '  ✓ delivered')
+  })
+})
+
+describe('the wheel scrolls the detail pane, not the peer list', () => {
+  it('reads the SGR wheel and PageUp/PageDown, and drops clicks', () => {
+    assert.deepEqual(keys('\u001b[<64;50;10M', '\u001b[<65;50;10M', '\u001b[5~', '\u001b[6~', '\u001b[<0;5;5M', '\u001b[<0;5;5m'), [
+      { kind: 'scroll-up' },
+      { kind: 'scroll-down' },
+      { kind: 'page-up' },
+      { kind: 'page-down' },
+    ])
+    assert.deepEqual(keys('\u001b[A', '\u001bOB'), [{ kind: 'up' }, { kind: 'down' }], 'the arrows still read')
+  })
+
+  it('moves the scroll and leaves the selection where it was; moving the selection follows live again', () => {
+    const start = initialState({ cols: 100, rows: 30 })
+    const scrolled = feed(start, key({ kind: 'scroll-up' }), key({ kind: 'scroll-up' }), key({ kind: 'scroll-down' })).state
+    assert.equal(scrolled.selected, start.selected)
+    assert.equal(scrolled.scroll, 3)
+    assert.equal(feed(scrolled, key({ kind: 'scroll-down' }), key({ kind: 'scroll-down' })).state.scroll, 0, 'never below live')
+    assert.equal(feed(scrolled, key({ kind: 'down' })).state.scroll, 0)
+  })
+
+  it('shows older lines when scrolled, and stops at the top', () => {
+    const items = Array.from({ length: 10 }, (_, i) => ({
+      seq: i,
+      kind: 'line' as const,
+      line: { kind: 'text' as const, text: `line ${String(i)}` },
+    }))
+    assert.deepEqual(detailLines(items, 40, 3), ['line 7', 'line 8', 'line 9'])
+    assert.deepEqual(detailLines(items, 40, 3, 2), ['line 5', 'line 6', 'line 7'])
+    assert.deepEqual(detailLines(items, 40, 3, 99), ['line 0', 'line 1', 'line 2'])
+  })
+})

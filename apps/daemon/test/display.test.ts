@@ -235,12 +235,14 @@ test('only the store facts a view shows become rows, and a long question is cut'
   const at = '2026-11-11T08:00:00.000Z'
   const event = (type: string, data: Record<string, unknown>) => ({ seq: 1, ts: at, type, subject: 'x', actor: 'user', data }) as never
   assert.deepEqual(rowOf(event('peer.state_changed', { peerId: a, state: 'idle', sessionId: 'ses_0123456789abcdef' })), { kind: 'state', peerId: a, state: 'idle' })
-  assert.deepEqual(rowOf(event('message.sent', { msgId: 'msg_0123456789abcdef', to: a, from: 'pm', kind: 'info', briefVersion: 1, body: 'the body is not shown' })), {
+  assert.deepEqual(rowOf(event('message.sent', { msgId: 'msg_0123456789abcdef', to: a, from: 'pm', kind: 'info', briefVersion: 1, body: 'Brief v1\n\n\nWork: the title\n' })), {
     kind: 'mail',
     phase: 'sent',
     msgId: 'msg_0123456789abcdef',
     to: a,
     from: 'pm',
+    mailKind: 'info',
+    text: 'Brief v1\nWork: the title',
   })
   assert.deepEqual(rowOf(event('message.delivered', { msgId: 'msg_0123456789abcdef', to: a, sessionId: 'ses_0123456789abcdef' })), {
     kind: 'mail',

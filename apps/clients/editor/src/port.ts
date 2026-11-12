@@ -40,6 +40,13 @@ export interface PickItem {
   readonly value: string
 }
 
+/** A read-only log the person can scroll, search and copy (§5): the editor's output channel. */
+export interface OutputLike extends Disposable {
+  append(line: string): void
+  /** Bring it forward without taking the focus from the editor. */
+  show(): void
+}
+
 export interface StatusBarLike extends Disposable {
   set(text: string, tooltip: string, commandId?: string): void
   hide(): void
@@ -62,6 +69,7 @@ export interface EditorPort {
 
   createTree(provider: TreeProvider): TreeView
   createStatusBar(): StatusBarLike
+  createOutput(name: string): OutputLike
 
   /** A list to choose from; `undefined` when the person dismissed it. */
   pick(items: readonly PickItem[], placeHolder: string): Promise<string | undefined>
@@ -76,7 +84,11 @@ export interface EditorPort {
   /** A command that runs and exits; its output is the notification's detail. */
   run(argv: readonly string[]): Promise<{ readonly ok: boolean; readonly output: string }>
 
-  registerCommand(id: string, handler: (argument?: string) => void): Disposable
+  /**
+   * `argument` is whatever the editor passes: the `commandArg` string when a row
+   * is clicked, but the row's element itself when a context-menu item runs.
+   */
+  registerCommand(id: string, handler: (argument?: unknown) => void): Disposable
   executeCommand(id: string, argument?: string): Promise<void>
   log(line: string): void
 }

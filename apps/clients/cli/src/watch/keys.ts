@@ -11,6 +11,8 @@
 
 export type Key =
   | { readonly kind: 'up' | 'down' | 'left' | 'right' | 'enter' | 'escape' | 'backspace' | 'tab' | 'ctrl-c' | 'ctrl-d' }
+  /** The mouse wheel (SGR reporting) and PageUp/PageDown: they scroll the detail pane, never the selection. */
+  | { readonly kind: 'scroll-up' | 'scroll-down' | 'page-up' | 'page-down' }
   | { readonly kind: 'char'; readonly char: string }
 
 export interface KeyParser {
@@ -38,11 +40,33 @@ const arrow = (final: number): Key | undefined => {
   }
 }
 
+/**
+ * A CSI sequence that is not an arrow: SGR mouse (`ESC [ < b ; x ; y M`), where
+ * 64 and 65 are the wheel, and `ESC [ 5 ~` / `ESC [ 6 ~` for PageUp/PageDown.
+ * Clicks, drags and the rest are read and dropped.
+ */
+const csiKey = (params: string, final: number): Key | undefined => {
+  const end = String.fromCharCode(final)
+  if (params.startsWith('<') && end === 'M') {
+    const button = Number(params.slice(1).split(';')[0])
+    if (button === 64) return { kind: 'scroll-up' }
+    if (button === 65) return { kind: 'scroll-down' }
+    return undefined
+  }
+  if (end === '~') {
+    if (params === '5') return { kind: 'page-up' }
+    if (params === '6') return { kind: 'page-down' }
+    return undefined
+  }
+  return params === '' || params === '1' ? arrow(final) : undefined
+}
+
 /** How many bytes a UTF-8 character that starts with `lead` has. */
 const utf8Length = (lead: number): number => (lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1)
 
 export const createKeyParser = (): KeyParser => {
   let mode: Mode = 'ground'
+  let params = ''
   let utf8: number[] = []
   let want = 0
 
@@ -98,7 +122,10 @@ export const createKeyParser = (): KeyParser => {
           ground(byte, out)
           break
         case 'esc':
-          if (byte === 0x5b) mode = 'csi'
+          if (byte === 0x5b) {
+            mode = 'csi'
+            params = ''
+          }
           else if (byte === 0x4f) mode = 'ss3'
           else {
             // ESC then something else: the escape key, and that something on its own.
@@ -108,12 +135,14 @@ export const createKeyParser = (): KeyParser => {
           }
           break
         case 'csi':
-          // Parameters and intermediates are 0x20-0x3F; the final byte is 0x40-0x7E. Mouse, focus and
-          // the rest end here unread: only the four arrows mean anything.
+          // Parameters and intermediates are 0x20-0x3F; the final byte is 0x40-0x7E. The arrows, the
+          // wheel and PageUp/PageDown mean something (`csiKey`); focus and the rest end here unread.
           if (byte >= 0x40 && byte <= 0x7e) {
             mode = 'ground'
-            const key = arrow(byte)
+            const key = csiKey(params, byte)
             if (key !== undefined) out.push(key)
+          } else {
+            params += String.fromCharCode(byte)
           }
           break
         case 'ss3': {
