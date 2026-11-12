@@ -20,7 +20,7 @@ import { readFile } from 'node:fs/promises'
 
 import { fleetError } from '@fleet/foundation-core'
 
-import type { Profile } from '../config/profile.ts'
+import { cursorForwardableEnv, type Profile } from '../config/profile.ts'
 import type { DeepInfraEnvOptions } from './deepinfra-env.ts'
 
 /** The variable cursor-agent reads, and the variable `tokenEnv` means when a profile names only a file. */
@@ -74,3 +74,33 @@ export const readCursorToken = async (options: DeepInfraEnvOptions): Promise<str
 
 /** The fragment a cursor session needs beyond a process: the one variable. */
 export const cursorEnv = (token: string): Readonly<Record<string, string>> => ({ [CURSOR_API_KEY_ENV]: token })
+
+/**
+ * The git/ssh credentials a cursor peer was explicitly given (TASK-80): the
+ * variables the profile's `cursor.forwardEnv` names, copied from **fleetd's own**
+ * environment.
+ *
+ * The sdk allowlist drops `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` and `GIT_*`
+ * by design, so without this a cursor peer cannot push. The route is opt-in and
+ * by name — never "everything that looks like git" — and only names that match
+ * `cursorForwardableEnv` are accepted (re-checked here, so a profile built
+ * without the decoder cannot smuggle `CURSOR_API_KEY` or `AWS_*` through it; the
+ * key has its own route above). A variable fleetd does not hold is skipped, not an
+ * error: `SSH_AUTH_SOCK` is legitimately absent on a headless box. Values appear in
+ * no message; nothing is read from files.
+ */
+export const readCursorForwardedEnv = (
+  options: Pick<DeepInfraEnvOptions, 'profile' | 'environ'>,
+): Readonly<Record<string, string>> => {
+  const out: Record<string, string> = {}
+  for (const name of options.profile.providers?.cursor?.forwardEnv ?? []) {
+    if (!cursorForwardableEnv.test(name)) {
+      throw fleetError('config_mismatch', `cursor.forwardEnv names ${name}, which is not a git/ssh credential variable`, {
+        details: { env: name },
+      })
+    }
+    const value = options.environ[name]
+    if (value !== undefined && value !== '') out[name] = value
+  }
+  return out
+}

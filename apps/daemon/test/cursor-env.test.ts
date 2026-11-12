@@ -13,6 +13,7 @@ import { describe, it } from 'node:test'
 import {
   CURSOR_API_KEY_ENV,
   cursorKeyRouted,
+  readCursorForwardedEnv,
   readCursorToken,
 } from '../src/env/cursor-env.ts'
 import { createProviderEnv, judgeEnvFor, type DeepInfraEnvOptions } from '../src/env/deepinfra-env.ts'
@@ -114,5 +115,62 @@ describe('the profile holds a reference, not a literal', () => {
     assert.equal(profile.providers?.cursor?.tokenEnv, 'X')
     assert.equal(profile.providers?.cursor?.tokenFile, '/y')
     assert.throws(() => profileWith({ apiKey: KEY }), /apiKey|unknown/i)
+  })
+})
+
+describe('git/ssh credentials reach a cursor peer only by name (TASK-80)', () => {
+  const environ = {
+    GH_TOKEN: 'gh-not-real',
+    GITHUB_TOKEN: 'ghs-not-real',
+    SSH_AUTH_SOCK: '/tmp/agent.sock',
+    GIT_AUTHOR_NAME: 'Fleet',
+    AWS_SECRET_ACCESS_KEY: 'aws-not-real',
+    CURSOR_API_KEY: KEY,
+  }
+
+  it('forwards nothing when the profile names nothing, whatever fleetd holds', async () => {
+    const profile = profileWith({})
+    assert.deepEqual(await createProviderEnv(optionsWith(profile, { environ }))(peerOf(profile)), {})
+  })
+
+  it('forwards exactly the named variables, and skips one fleetd does not have', async () => {
+    const profile = profileWith({ forwardEnv: ['GH_TOKEN', 'SSH_AUTH_SOCK', 'GIT_AUTHOR_NAME', 'GIT_COMMITTER_NAME'] })
+    assert.deepEqual(await createProviderEnv(optionsWith(profile, { environ }))(peerOf(profile)), {
+      GH_TOKEN: 'gh-not-real',
+      SSH_AUTH_SOCK: '/tmp/agent.sock',
+      GIT_AUTHOR_NAME: 'Fleet',
+    })
+  })
+
+  it('composes with the key route without touching it', async () => {
+    const profile = profileWith({ forwardEnv: ['GITHUB_TOKEN'], tokenEnv: 'HETZNER_CURSOR_KEY' })
+    const options = optionsWith(profile, { environ: { ...environ, HETZNER_CURSOR_KEY: 'k-not-real' } })
+    assert.deepEqual(await createProviderEnv(options)(peerOf(profile)), {
+      GITHUB_TOKEN: 'ghs-not-real',
+      [CURSOR_API_KEY_ENV]: 'k-not-real',
+    })
+  })
+
+  it('is for cursor peers only', async () => {
+    const profile = profileWith({ forwardEnv: ['GH_TOKEN'] }, 'claude')
+    assert.deepEqual(await createProviderEnv(optionsWith(profile, { environ }))(peerOf(profile)), {})
+  })
+
+  it('refuses at load a name that is not a git/ssh credential', () => {
+    for (const name of ['AWS_SECRET_ACCESS_KEY', 'CURSOR_API_KEY', 'ANTHROPIC_API_KEY', 'PATH', 'git_dir', 'GITHUB_TOKEN2']) {
+      assert.throws(() => profileWith({ forwardEnv: [name] }), /match|forwardEnv/i, name)
+    }
+  })
+
+  it('re-checks the name at read time, without echoing a value', () => {
+    const profile = { providers: { cursor: { forwardEnv: ['AWS_SECRET_ACCESS_KEY'] } } } as unknown as Profile
+    assert.throws(
+      () => readCursorForwardedEnv({ profile, environ }),
+      (thrown: unknown) => {
+        assert.equal((thrown as { code?: string }).code, 'config_mismatch')
+        assert.equal(rendered(thrown).includes('aws-not-real'), false)
+        return true
+      },
+    )
   })
 })

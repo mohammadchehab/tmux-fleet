@@ -181,6 +181,15 @@ export interface CursorProfile {
   /** The file to read the key from when the variable yields nothing: its **first line**. No default. */
   readonly tokenFile?: string
   /**
+   * TASK-80: the git/ssh credential variables of **fleetd's own** environment to
+   * hand a cursor peer, by name — a reference, never a value. Only names that match
+   * `cursorForwardableEnv` are accepted (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`,
+   * `GIT_*`); anything else is refused at load. Absent, nothing is forwarded: the
+   * sdk allowlist stays deny-by-default and a peer pushes only on what the machine
+   * itself provides. A named variable fleetd does not have is skipped.
+   */
+  readonly forwardEnv?: readonly string[]
+  /**
    * The context window per cursor model id, in tokens. Keys are the ids
    * `cursor-agent models` prints, which is what a peer's `model` must name too.
    */
@@ -650,11 +659,15 @@ const deepInfraBlock = (): Schema<DeepInfraProfile> =>
     tokenFile: optional(text(400)),
   })
 
+/** What `cursor.forwardEnv` may name: git/ssh credentials and git's own config, not a blanket pass-through. */
+export const cursorForwardableEnv = /^(GH_TOKEN|GITHUB_TOKEN|SSH_AUTH_SOCK|GIT_[A-Z0-9_]+)$/
+
 const cursorBlock = (): Schema<CursorProfile> =>
   objectAs<CursorProfile>()({
     contextLimits: optional(record(positiveInt())),
     tokenEnv: optional(text(120)),
     tokenFile: optional(text(400)),
+    forwardEnv: optional(array(string({ minLength: 1, maxLength: 120, pattern: cursorForwardableEnv }), { maxItems: 30 })),
   })
 
 /**
