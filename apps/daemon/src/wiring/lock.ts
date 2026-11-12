@@ -160,6 +160,41 @@ const holderVerdict = async (holder: number, options: FleetLockOptions): Promise
   return FLEETD_COMMAND.test(command) ? 'fleetd' : 'not-fleetd'
 }
 
+/** A takeover guard older than this is a fleetd that died mid-takeover, not one still deciding. */
+const GUARD_STALE_MS = 10_000
+
+/**
+ * Remove the leftover at `lockPath` if it is still the file `judgedKey` describes, under a guard file created
+ * `wx` beside it. Holding the guard serialises takeovers: a fleetd that judged the leftover before a rival's
+ * takeover finds, once it holds the guard, the rival's fresh lock — a different identity — and leaves it alone.
+ * `busy` means another fleetd holds the guard; refusing is recoverable, two daemons on one store is not.
+ */
+const takeOver = async (lockPath: string, judgedKey: string, pid: number): Promise<'removed' | 'changed' | 'busy'> => {
+  const guardPath = `${lockPath}.takeover`
+  let guard: Awaited<ReturnType<typeof open>>
+  try {
+    guard = await open(guardPath, 'wx')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    const held = await identityOf(guardPath)
+    const owner = await pidIn(guardPath)
+    const dead = held !== undefined && (owner === undefined ? Date.now() - held.mtimeMs > GUARD_STALE_MS : !alive(owner))
+    // A guard whose owner is gone is cleared and the caller retries; anything else is somebody mid-takeover.
+    if (dead) await rm(guardPath, { force: true })
+    return 'busy'
+  }
+  try {
+    await guard.writeFile(`${String(pid)}\n`, 'utf8')
+    await guard.close()
+    const now = await identityOf(lockPath)
+    if (now === undefined || now.key !== judgedKey) return 'changed'
+    await rm(lockPath, { force: true })
+    return 'removed'
+  } finally {
+    await rm(guardPath, { force: true })
+  }
+}
+
 /**
  * Take the lock or refuse with `conflict`, naming the pid that holds it. Two
  * rounds at most: the second is the stale file being removed under us by a
@@ -215,13 +250,15 @@ export const acquireFleetLock = async (lockPath: string, options: FleetLockOptio
       // No pid, a pid that is gone, or a live pid that is provably not a fleetd:
       // whoever wrote the file is not this fleet's daemon, so it is a leftover
       // and this fleetd is the one that takes over.
-      // Checked again right before the remove. What is left is the gap between
-      // this stat and the unlink, which a filesystem cannot close without a
-      // compare-and-delete; it is microseconds, where it was a whole verdict.
-      const now = await identityOf(lockPath)
-      if (now === undefined) continue
-      if (now.key !== judged.key) continue
-      await rm(lockPath, { force: true })
+      // Only one fleetd at a time may remove a leftover, and it re-checks the file *while holding that right*.
+      // A bare check-then-`rm` leaves two awaits (stat, read) between a rival's check and its unlink, long enough
+      // for another fleetd to remove the same leftover, create its own live lock, and have this one delete it.
+      const taken = await takeOver(lockPath, judged.key, pid)
+      if (taken === 'busy') {
+        throw fleetError('conflict', `the lock at ${lockPath} is being taken over by another fleetd; try again`, {
+          details: { lockPath },
+        })
+      }
       continue
     }
 
