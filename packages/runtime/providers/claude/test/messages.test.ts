@@ -14,7 +14,7 @@ import { test } from 'node:test'
 
 import type { TurnId } from '@fleet/foundation-core'
 
-import { mapMessage, questionAnswers, readQuestions, summariseToolUse } from '../src/index.ts'
+import { displaySummary, displayToolUses, mapMessage, questionAnswers, readQuestions, summariseToolUse } from '../src/index.ts'
 
 const turn = 'trn_0123456789abcdef' as TurnId
 const at = '2026-08-20T10:00:00.000Z'
@@ -219,4 +219,39 @@ test('an answer is keyed by the question text, one label per question, in the or
     'Which?': 'Blue',
     'When?': '',
   })
+})
+
+test('the live view shows a shell command and a search pattern, redacted; the stored summary still does not', () => {
+  assert.equal(displaySummary('Bash', { command: 'pnpm test\n  --watch=false' }), 'pnpm test --watch=false')
+  assert.equal(displaySummary('Grep', { pattern: 'questionThinCards' }), 'questionThinCards')
+  assert.equal(displaySummary('Read', { file_path: '/tmp/a.ts' }), '/tmp/a.ts', 'an edit-family call is still its path')
+  assert.equal(displaySummary('WebFetch', { url: 'https://example.com' }), undefined)
+  assert.equal(displaySummary('Bash', { command: `echo ${'x'.repeat(500)}` })?.length, 300)
+  assert.ok(!displaySummary('Bash', { command: 'curl -H "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz0123456789" x' })?.includes('ghp_abcdefghijklmnopqrstuvwxyz0123456789'), 'a token is redacted')
+  for (const [command, leaked] of [
+    ['curl -u alice:hunter2 https://x', 'hunter2'],
+    ['mysql -phunter2 db', 'hunter2'],
+    ['DB_PASSWORD=hunter2 node a.js', 'hunter2'],
+    ['tool --password hunter2 run', 'hunter2'],
+    ['tool --token=hunter2 run', 'hunter2'],
+  ] as const) {
+    const shown = displaySummary('Bash', { command }) ?? ''
+    assert.ok(!shown.includes(leaked), `${command} -> ${shown}`)
+    assert.ok(shown.length > 0)
+  }
+  assert.equal(displaySummary('Bash', { command: 'pnpm test -p foo' }), 'pnpm test -p foo', 'a plain flag is not a credential')
+  // The stored event is unchanged: no command in it.
+  assert.equal(summariseToolUse('Bash', { command: 'ls' }), undefined)
+})
+
+test('displayToolUses lines up with the tool.use events of the same message', () => {
+  const message = {
+    type: 'assistant',
+    message: { content: [
+      { type: 'tool_use', name: 'Bash', input: { command: 'git status' } },
+      { type: 'tool_use', name: 'Read', input: { file_path: '/tmp/a.ts' } },
+    ] },
+  }
+  assert.deepEqual(displayToolUses(message), ['git status', '/tmp/a.ts'])
+  assert.equal(mapMessage(message, 'trn_1' as never, live, at).length, 2)
 })

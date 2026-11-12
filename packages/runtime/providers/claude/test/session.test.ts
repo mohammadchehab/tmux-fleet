@@ -175,8 +175,8 @@ test('the display carries the peer’s words, its tools and its turn boundaries 
   for await (const line of provider.display(handle)) {
     lines.push(line.kind === 'text' ? `text:${line.text}` : line.kind === 'tool' ? `tool:${line.tool}:${line.summary ?? ''}` : `turn:${line.phase}${line.reason === undefined ? '' : `:${line.reason}`}`)
   }
-  assert.deepEqual(lines, ['turn:started', 'text:Hel', 'text:lo', 'tool:Bash:', 'turn:ended:completed'])
-  // A Bash command is never summarised (the redaction `tool.use` already applies): the display adds no second path to it.
+  assert.deepEqual(lines, ['turn:started', 'text:Hel', 'text:lo', 'tool:Bash:ls', 'turn:ended:completed'])
+  // The live display shows a shell command (redacted), because a person watching needs it; the stored `tool.use` does not carry it.
   assert.ok(!lines.some((line) => /SECRET|subagent/.test(line)))
 
   // Conformance (§12): the display says a turn started and ended exactly when the contract events do.
