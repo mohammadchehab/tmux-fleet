@@ -140,6 +140,14 @@ export interface ChecksAt {
 }
 
 /**
+ * The ref a *detached* merge-request pipeline reports instead of the source branch. It runs on the head commit
+ * itself, so the sha pin still holds; only the ref differs. A merged-results pipeline (`.../merge`) runs on a
+ * synthesized commit that is not the head, so it is deliberately not matched: the sha pin cannot vouch for it, and
+ * it stays `pending` rather than being graded on a commit nobody identified.
+ */
+const detachedMergeRequestRef = /^refs\/merge-requests\/\d+\/head$/
+
+/**
  * The rows that ran on `at` — rule 1's pin, as a filter over the pipelines. A row
  * carrying no `sha` cannot be shown to describe `at`, so it is dropped: a verdict
  * about a commit nobody identified is the one thing §10 must not act on. `ref` is
@@ -154,7 +162,7 @@ const ranOn = (
   return rows.filter((row) => {
     if (text(row['sha']) !== at.sha) return false
     const ref = text(row['ref'])
-    return at.ref === undefined || ref === undefined || ref === at.ref
+    return at.ref === undefined || ref === undefined || ref === at.ref || detachedMergeRequestRef.test(ref)
   })
 }
 

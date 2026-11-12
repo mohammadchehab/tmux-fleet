@@ -111,6 +111,15 @@ describe('checksFrom: the verdict is about the head sha, whatever else the merge
   it('drops a pipeline for another branch, so a green one on a sibling ref is not this head’s verdict', () => {
     assert.deepEqual(checksFrom([pipeline(1, 'success', { ref: 'other' })], head), { state: 'pending', failing: [] })
     // A row with no ref is the same branch as far as GitLab tells us; only a differing ref is a mismatch.
+    assert.deepEqual(checksFrom([pipeline(1, 'success', { ref: 'refs/merge-requests/7/head' })], head), {
+      state: 'passing',
+      failing: [],
+    })
+    // Merged-results runs on a synthesized commit the head pin cannot vouch for: it stays pending, not graded.
+    assert.deepEqual(
+      checksFrom([pipeline(1, 'success', { ref: 'refs/merge-requests/7/merge', sha: 'merge99' })], head),
+      { state: 'pending', failing: [] },
+    )
     assert.deepEqual(checksFrom([pipeline(1, 'success', { ref: undefined })], head), { state: 'passing', failing: [] })
   })
 
